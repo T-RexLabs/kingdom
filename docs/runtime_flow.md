@@ -156,8 +156,8 @@ Plan rework behavior:
 
 After builder execution:
 
-1. `reviewer-shieldmaiden` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line near the top of the response
-2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line near the top of the response
+1. `reviewer-shieldmaiden` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
+2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
 
 Rework behavior:
 

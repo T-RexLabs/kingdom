@@ -382,6 +382,48 @@ func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
 	}
 }
 
+func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	tests := []struct {
+		roleID    string
+		expected  string
+		forbidden string
+	}{
+		{
+			roleID:    "reviewer-shieldmaiden",
+			expected:  "approved plan, and accepted rework",
+			forbidden: "operator-visible behavior",
+		},
+		{
+			roleID:    "intelligence-qa-scout",
+			expected:  "operator-visible behavior",
+			forbidden: "secret-handling",
+		},
+		{
+			roleID:    "intelligence-nightraven",
+			expected:  "secret-handling, data-exposure, and blast-radius weaknesses",
+			forbidden: "operator-visible behavior",
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.roleID, func(t *testing.T) {
+			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "validation_node", "nr_1", "Inspect decree scope")
+			if !strings.Contains(prompt, tc.expected) {
+				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
+			}
+			if strings.Contains(prompt, tc.forbidden) {
+				t.Fatalf("expected %s prompt to stay distinct from other validation roles, got:\n%s", tc.roleID, prompt)
+			}
+		})
+	}
+}
+
 func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 	t.Parallel()
 
