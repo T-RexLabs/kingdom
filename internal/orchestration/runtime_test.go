@@ -470,6 +470,13 @@ permission = payload.get("permission", {})
 if payload.get("$schema") != "https://opencode.ai/config.json":
     print("unexpected schema", file=sys.stderr)
     sys.exit(1)
+if payload.get("share") != "disabled":
+    print("share not disabled", file=sys.stderr)
+    sys.exit(1)
+server = payload.get("server", {})
+if server.get("mdns") is not False:
+    print("mdns not disabled", file=sys.stderr)
+    sys.exit(1)
 if permission.get("external_directory") != "deny":
     print("missing external_directory deny", file=sys.stderr)
     sys.exit(1)

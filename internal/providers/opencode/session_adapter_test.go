@@ -199,6 +199,16 @@ func TestSessionAdapterSetsConfiguredOpencodeInlineConfigContent(t *testing.T) {
 	if err := json.Unmarshal([]byte(configContent), &payload); err != nil {
 		t.Fatalf("decode inline config payload: %v", err)
 	}
+	if payload["share"] != shareModeDisabled {
+		t.Fatalf("expected share mode %q, got %#v", shareModeDisabled, payload["share"])
+	}
+	server, ok := payload["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected server object, got %#v", payload["server"])
+	}
+	if server["mdns"] != false {
+		t.Fatalf("expected server.mdns false, got %#v", server["mdns"])
+	}
 	permission, ok := payload["permission"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected inline config permission object, got %#v", payload["permission"])
