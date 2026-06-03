@@ -1,0 +1,711 @@
+package state
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+var ErrPlanningOperationEventNotFound = errors.New("planning operation event not found")
+
+type PlanningSessionLifecycleState string
+
+const (
+	PlanningSessionLifecycleStateActive   PlanningSessionLifecycleState = "active"
+	PlanningSessionLifecycleStateArchived PlanningSessionLifecycleState = "archived"
+)
+
+type PlanningSessionConversationState string
+
+const (
+	PlanningSessionConversationStateReady      PlanningSessionConversationState = "ready"
+	PlanningSessionConversationStateProcessing PlanningSessionConversationState = "processing"
+)
+
+type PlanningOperationType string
+
+const (
+	PlanningOperationTypeBootstrapContext PlanningOperationType = "bootstrap_context"
+	PlanningOperationTypeReply            PlanningOperationType = "reply"
+	PlanningOperationTypeFormalize        PlanningOperationType = "formalize"
+	PlanningOperationTypeRegenerate       PlanningOperationType = "regenerate"
+	PlanningOperationTypeGenerateTitle    PlanningOperationType = "generate_title"
+)
+
+type PlanningOperationStatus string
+
+const (
+	PlanningOperationStatusQueued    PlanningOperationStatus = "queued"
+	PlanningOperationStatusRunning   PlanningOperationStatus = "running"
+	PlanningOperationStatusSucceeded PlanningOperationStatus = "succeeded"
+	PlanningOperationStatusFailed    PlanningOperationStatus = "failed"
+	PlanningOperationStatusCancelled PlanningOperationStatus = "cancelled"
+)
+
+const (
+	DefaultPlanningOperationListLimit      = 100
+	DefaultPlanningOperationEventListLimit = 100
+)
+
+type PlanningMessageRole string
+
+const (
+	PlanningMessageRoleUser      PlanningMessageRole = "user"
+	PlanningMessageRoleAssistant PlanningMessageRole = "assistant"
+)
+
+type PlanningSession struct {
+	PlanningSessionID        string
+	Title                    string
+	TitleState               string
+	LifecycleState           PlanningSessionLifecycleState
+	ConversationState        PlanningSessionConversationState
+	CurrentQuestionMessageID *string
+	CurrentOperationID       *string
+	CurrentTitleOperationID  *string
+	CurrentDraftID           *string
+	ContextSnapshotID        *string
+	ProjectRoot              string
+	ModelSelectionJSON       string
+	CreatedAt                string
+	UpdatedAt                string
+}
+
+type PlanningMessage struct {
+	PlanningMessageID   string
+	PlanningSessionID   string
+	TurnIndex           int
+	Role                PlanningMessageRole
+	ContentMarkdown     string
+	QuestionPayloadJSON string
+	AnswerPayloadJSON   string
+	VariantIndex        int
+	Active              bool
+	CreatedAt           string
+}
+
+type PlanningMessagePage struct {
+	PlanningSessionID string
+	Items             []PlanningMessage
+	TotalCount        int
+	FirstItemIndex    int
+}
+
+type PlanningDraft struct {
+	PlanningDraftID   string
+	PlanningSessionID string
+	DecreeTitle       string
+	DecreeText        string
+	SummaryJSON       string
+	CreatedAt         string
+}
+
+type PlanningContextSnapshot struct {
+	PlanningContextSnapshotID string
+	PlanningSessionID         string
+	SummaryMarkdown           string
+	IncludedFilesJSON         string
+	ExcludedFilesJSON         string
+	CreatedAt                 string
+}
+
+type PlanningOperation struct {
+	OperationID                string
+	PlanningSessionID          string
+	Type                       PlanningOperationType
+	Status                     PlanningOperationStatus
+	RequestPayloadJSON         string
+	LeaseOwner                 string
+	LeaseExpiresAt             *string
+	LeaseVersion               int
+	LastHeartbeatAt            *string
+	ProviderSessionID          *string
+	ActiveProviderInvocationID *string
+	ObservedOutputText         string
+	Error                      *string
+	ResultRef                  *string
+	CanonicalSettlementID      *string
+	CreatedAt                  string
+	StartedAt                  *string
+	FinishedAt                 *string
+}
+
+type PlanningOperationEvent struct {
+	EventID     string
+	OperationID string
+	Seq         int
+	EventType   string
+	PayloadJSON string
+	CreatedAt   string
+}
+
+type CreatePlanningSessionRequest struct {
+	PlanningSessionID        string
+	Title                    string
+	TitleState               string
+	LifecycleState           PlanningSessionLifecycleState
+	ConversationState        PlanningSessionConversationState
+	CurrentQuestionMessageID string
+	CurrentOperationID       string
+	CurrentTitleOperationID  string
+	CurrentDraftID           string
+	ContextSnapshotID        string
+	ProjectRoot              string
+	ModelSelectionJSON       string
+	CreatedAt                string
+	UpdatedAt                string
+}
+
+type UpdatePlanningSessionRequest struct {
+	PlanningSessionID        string
+	Title                    *string
+	TitleState               *string
+	LifecycleState           *PlanningSessionLifecycleState
+	ConversationState        *PlanningSessionConversationState
+	CurrentQuestionMessageID *string
+	CurrentOperationID       *string
+	CurrentTitleOperationID  *string
+	CurrentDraftID           *string
+	ContextSnapshotID        *string
+	ModelSelectionJSON       *string
+	UpdatedAt                string
+}
+
+type AppendPlanningMessageRequest struct {
+	PlanningMessageID   string
+	PlanningSessionID   string
+	TurnIndex           int
+	Role                PlanningMessageRole
+	ContentMarkdown     string
+	QuestionPayloadJSON string
+	AnswerPayloadJSON   string
+	VariantIndex        int
+	Active              bool
+	CreatedAt           string
+}
+
+type CreatePlanningDraftRequest struct {
+	PlanningDraftID   string
+	PlanningSessionID string
+	DecreeTitle       string
+	DecreeText        string
+	SummaryJSON       string
+	CreatedAt         string
+}
+
+type CreatePlanningContextSnapshotRequest struct {
+	PlanningContextSnapshotID string
+	PlanningSessionID         string
+	SummaryMarkdown           string
+	IncludedFilesJSON         string
+	ExcludedFilesJSON         string
+	CreatedAt                 string
+}
+
+type CreatePlanningOperationRequest struct {
+	OperationID                string
+	PlanningSessionID          string
+	Type                       PlanningOperationType
+	Status                     PlanningOperationStatus
+	RequestPayloadJSON         string
+	LeaseOwner                 string
+	LeaseExpiresAt             string
+	LeaseVersion               int
+	LastHeartbeatAt            string
+	ProviderSessionID          string
+	ActiveProviderInvocationID string
+	ObservedOutputText         string
+	Error                      string
+	ResultRef                  string
+	CanonicalSettlementID      string
+	CreatedAt                  string
+	StartedAt                  string
+	FinishedAt                 string
+}
+
+type UpdatePlanningOperationRequest struct {
+	OperationID                string
+	Status                     *PlanningOperationStatus
+	LeaseOwner                 *string
+	LeaseExpiresAt             *string
+	LeaseVersion               *int
+	LastHeartbeatAt            *string
+	ProviderSessionID          *string
+	ActiveProviderInvocationID *string
+	ObservedOutputText         *string
+	Error                      *string
+	ResultRef                  *string
+	CanonicalSettlementID      *string
+	StartedAt                  *string
+	FinishedAt                 *string
+}
+
+type AppendPlanningOperationEventRequest struct {
+	EventID     string
+	OperationID string
+	Seq         int
+	EventType   string
+	PayloadJSON string
+	CreatedAt   string
+}
+
+type CreatePlanningSessionBundleRequest struct {
+	Session            CreatePlanningSessionRequest
+	OpeningMessage     AppendPlanningMessageRequest
+	BootstrapOperation CreatePlanningOperationRequest
+}
+
+type CreatePlanningReplyBundleRequest struct {
+	SessionID         string
+	TruncateFromTurn  *int
+	UserMessage       AppendPlanningMessageRequest
+	Operation         CreatePlanningOperationRequest
+	ConversationState PlanningSessionConversationState
+	UpdatedAt         string
+}
+
+type CreateRegenerateBundleRequest struct {
+	SessionID         string
+	TargetTurnIndex   int
+	Operation         CreatePlanningOperationRequest
+	ConversationState PlanningSessionConversationState
+	UpdatedAt         string
+}
+
+type CreatePlanningGenerateTitleBundleRequest struct {
+	SessionID               string
+	Operation               CreatePlanningOperationRequest
+	CurrentTitleOperationID string
+	UpdatedAt               string
+}
+
+type CreatePlanningFormalizeBundleRequest struct {
+	SessionID          string
+	Operation          CreatePlanningOperationRequest
+	ConversationState  PlanningSessionConversationState
+	CurrentOperationID string
+	UpdatedAt          string
+}
+
+// FinalizeOperationKind identifies the per-operation post-conditions that
+// FinalizeOperation must apply atomically with the lease-fenced terminal write.
+type FinalizeOperationKind int
+
+const (
+	FinalizeReply FinalizeOperationKind = iota + 1
+	FinalizeRegenerate
+	FinalizeFormalize
+	FinalizeFail
+	// FinalizeCancel terminates an in-flight operation as cancelled
+	// (status = cancelled), distinct from FinalizeFail. Used when the
+	// operation is interrupted by a system event such as service
+	// shutdown — the runner observed the cancellation, so this is not
+	// a planner-side failure and must not be conflated with one in
+	// metrics, alerts, or UI copy. The request carries the cancellation
+	// reason in ErrorMessage so consumers have human-readable context.
+	FinalizeCancel
+)
+
+// FinalizeOperationRequest collapses the interactive planning operation
+// terminal paths (reply, regenerate, formalize, fail, cancel) into one
+// parametric shape. Generated title runs on its own background lane and uses a
+// dedicated finalize path so it cannot contend with the session's interactive
+// slot.
+type FinalizeOperationRequest struct {
+	Kind         FinalizeOperationKind
+	SessionID    string
+	OperationID  string
+	LeaseOwner   string // owner from claim — required to fence the terminal write
+	LeaseVersion int    // version from claim — required to fence the terminal write
+
+	ConversationState PlanningSessionConversationState
+	UpdatedAt         string
+	FinishedAt        string
+
+	// Reply / Regenerate
+	UserMessage              *AppendPlanningMessageRequest
+	AssistantMessage         *AppendPlanningMessageRequest
+	CurrentQuestionMessageID string
+	DeleteMessagesFromTurn   *int
+	DeleteMessagesAfterTurn  *int
+	DeactivateVariantsAtTurn *int
+
+	// Formalize
+	Draft          *CreatePlanningDraftRequest
+	CurrentDraftID string
+
+	// Common
+	ResultRef          string
+	ErrorMessage       string // FinalizeFail / FinalizeCancel only
+	ObservedOutputText string
+	ProviderSettlement *FinalizePlanningProviderSettlementRequest
+	TerminalEvent      *AppendPlanningOperationEventRequest
+}
+
+// FinalizeGenerateTitleRequest settles a successful generated-title operation
+// on the title lane. Unlike interactive finalization, it never touches
+// conversation_state or current_operation_id.
+type FinalizeGenerateTitleRequest struct {
+	SessionID    string
+	OperationID  string
+	LeaseOwner   string
+	LeaseVersion int
+
+	UpdatedAt          string
+	FinishedAt         string
+	GeneratedTitle     string
+	ObservedOutputText string
+	ProviderSettlement *FinalizePlanningProviderSettlementRequest
+	TerminalEvent      *AppendPlanningOperationEventRequest
+}
+
+// FinalizeGenerateTitleAbortRequest terminates a generated-title operation as
+// failed or cancelled without touching the interactive session lane.
+type FinalizeGenerateTitleAbortRequest struct {
+	SessionID    string
+	OperationID  string
+	LeaseOwner   string
+	LeaseVersion int
+
+	Status             PlanningOperationStatus
+	UpdatedAt          string
+	FinishedAt         string
+	ErrorMessage       string
+	ObservedOutputText string
+	ProviderSettlement *FinalizePlanningProviderSettlementRequest
+	TerminalEvent      *AppendPlanningOperationEventRequest
+}
+
+// FinalizeBootstrapRequest is the input to FinalizeBootstrap. The caller
+// reserves the next event sequence on its cursor and supplies the terminal
+// event metadata; the store builds the payload internally so it can name
+// the snapshot id that the session actually adopted (which may differ from
+// the candidate when /context/refresh raced ahead).
+type FinalizeBootstrapRequest struct {
+	SessionID                  string
+	OperationID                string
+	LeaseOwner                 string
+	LeaseVersion               int
+	UpdatedAt                  string
+	FinishedAt                 string
+	CandidateContextSnapshotID string
+
+	TerminalEventID        string
+	TerminalEventSeq       int
+	TerminalEventCreatedAt string
+}
+
+// FinalizeBootstrapAbortRequest is the input to FinalizeBootstrapAbort.
+// Mirrors FinalizeBootstrapRequest but for non-success termination
+// (failed or cancelled): the caller picks the terminal status, supplies
+// the cancellation/failure reason in ErrorMessage, and provides a
+// pre-built terminal event the store inserts atomically with the
+// op-row update.
+type FinalizeBootstrapAbortRequest struct {
+	SessionID    string
+	OperationID  string
+	LeaseOwner   string
+	LeaseVersion int
+	// Status must be PlanningOperationStatusFailed or
+	// PlanningOperationStatusCancelled. Reply/Regenerate/Formalize
+	// terminalisation goes through FinalizeOperation; bootstrap takes
+	// this dedicated path because it never claims the session's
+	// interactive current_operation_id slot.
+	Status        PlanningOperationStatus
+	UpdatedAt     string
+	FinishedAt    string
+	ErrorMessage  string
+	TerminalEvent *AppendPlanningOperationEventRequest
+}
+
+type PlanningStore struct {
+	db *sql.DB
+}
+
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+type sqlQueryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func NewPlanningStore(db *sql.DB) *PlanningStore {
+	return &PlanningStore{db: db}
+}
+
+func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		return fmt.Errorf("planning session title is required")
+	}
+	if !isValidPlanningSessionTitleState(req.TitleState) {
+		return fmt.Errorf("planning session title state is required")
+	}
+	if !isValidPlanningSessionLifecycleState(req.LifecycleState) {
+		return fmt.Errorf("invalid planning session lifecycle state: %q", req.LifecycleState)
+	}
+	if !isValidPlanningSessionConversationState(req.ConversationState) {
+		return fmt.Errorf("invalid planning session conversation state: %q", req.ConversationState)
+	}
+	if strings.TrimSpace(req.ProjectRoot) == "" {
+		return fmt.Errorf("planning session project root is required")
+	}
+	if strings.TrimSpace(req.ModelSelectionJSON) == "" {
+		return fmt.Errorf("planning session model selection json is required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" || strings.TrimSpace(req.UpdatedAt) == "" {
+		return fmt.Errorf("planning session timestamps are required")
+	}
+	return nil
+}
+
+func isValidPlanningSessionTitleState(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "placeholder", "generated", "custom":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPlanningSessionLifecycleState(state PlanningSessionLifecycleState) bool {
+	switch state {
+	case PlanningSessionLifecycleStateActive, PlanningSessionLifecycleStateArchived:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPlanningSessionConversationState(state PlanningSessionConversationState) bool {
+	switch state {
+	case PlanningSessionConversationStateReady, PlanningSessionConversationStateProcessing:
+		return true
+	default:
+		return false
+	}
+}
+
+func trimOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	return &trimmed
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func nullableString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func nullableStringFromSQL(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return nullableString(value.String)
+}
+
+func nullableStringValue(value *string) any {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return nil
+	}
+	return strings.TrimSpace(*value)
+}
+
+func normalizedNullableString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func lifecycleStatePtrValue(value *PlanningSessionLifecycleState) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(*value))
+	return &trimmed
+}
+
+func conversationStatePtrValue(value *PlanningSessionConversationState) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(*value))
+	return &trimmed
+}
+
+func operationStatusPtrValue(value *PlanningOperationStatus) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(*value))
+	return &trimmed
+}
+
+func intPtrValue(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func validatePlanningMessageAppend(req AppendPlanningMessageRequest) error {
+	if strings.TrimSpace(req.PlanningMessageID) == "" {
+		return fmt.Errorf("planning message id is required")
+	}
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if req.TurnIndex < 1 {
+		return fmt.Errorf("planning message turn index must be >= 1")
+	}
+	if !isValidPlanningMessageRole(req.Role) {
+		return fmt.Errorf("invalid planning message role: %q", req.Role)
+	}
+	if strings.TrimSpace(req.ContentMarkdown) == "" && !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON) {
+		return fmt.Errorf("planning message content is required")
+	}
+	if strings.TrimSpace(req.QuestionPayloadJSON) == "" || strings.TrimSpace(req.AnswerPayloadJSON) == "" {
+		return fmt.Errorf("planning message payload json fields are required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("planning message created_at is required")
+	}
+	return nil
+}
+
+func allowsEmptyPlanningMessageContent(role PlanningMessageRole, questionPayloadJSON string) bool {
+	return role == PlanningMessageRoleAssistant && hasPlanningPayload(questionPayloadJSON)
+}
+
+func hasPlanningPayload(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return trimmed != "" && trimmed != "{}"
+}
+
+func validatePlanningDraftCreate(req CreatePlanningDraftRequest) error {
+	if strings.TrimSpace(req.PlanningDraftID) == "" {
+		return fmt.Errorf("planning draft id is required")
+	}
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if strings.TrimSpace(req.DecreeTitle) == "" {
+		return fmt.Errorf("planning draft decree title is required")
+	}
+	if strings.TrimSpace(req.DecreeText) == "" {
+		return fmt.Errorf("planning draft decree text is required")
+	}
+	if strings.TrimSpace(req.SummaryJSON) == "" {
+		return fmt.Errorf("planning draft summary json is required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("planning draft created_at is required")
+	}
+	return nil
+}
+
+func validatePlanningContextSnapshotCreate(req CreatePlanningContextSnapshotRequest) error {
+	if strings.TrimSpace(req.PlanningContextSnapshotID) == "" {
+		return fmt.Errorf("planning context snapshot id is required")
+	}
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if strings.TrimSpace(req.SummaryMarkdown) == "" {
+		return fmt.Errorf("planning context summary is required")
+	}
+	if strings.TrimSpace(req.IncludedFilesJSON) == "" || strings.TrimSpace(req.ExcludedFilesJSON) == "" {
+		return fmt.Errorf("planning context file json fields are required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("planning context created_at is required")
+	}
+	return nil
+}
+
+func validatePlanningOperationCreate(req CreatePlanningOperationRequest) error {
+	if strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("planning operation id is required")
+	}
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if !isValidPlanningOperationType(req.Type) {
+		return fmt.Errorf("invalid planning operation type: %q", req.Type)
+	}
+	if !isValidPlanningOperationStatus(req.Status) {
+		return fmt.Errorf("invalid planning operation status: %q", req.Status)
+	}
+	if strings.TrimSpace(req.RequestPayloadJSON) == "" {
+		return fmt.Errorf("planning operation request payload json is required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("planning operation created_at is required")
+	}
+	return nil
+}
+
+func validatePlanningOperationEventAppend(req AppendPlanningOperationEventRequest) error {
+	if strings.TrimSpace(req.EventID) == "" {
+		return fmt.Errorf("planning operation event id is required")
+	}
+	if strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("planning operation id is required")
+	}
+	if req.Seq < 1 {
+		return fmt.Errorf("planning operation event seq must be >= 1")
+	}
+	if strings.TrimSpace(req.EventType) == "" {
+		return fmt.Errorf("planning operation event type is required")
+	}
+	if strings.TrimSpace(req.PayloadJSON) == "" {
+		return fmt.Errorf("planning operation event payload json is required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("planning operation event created_at is required")
+	}
+	return nil
+}
+
+func isValidPlanningOperationType(operationType PlanningOperationType) bool {
+	switch operationType {
+	case PlanningOperationTypeBootstrapContext, PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate, PlanningOperationTypeGenerateTitle:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPlanningOperationStatus(status PlanningOperationStatus) bool {
+	switch status {
+	case PlanningOperationStatusQueued, PlanningOperationStatusRunning, PlanningOperationStatusSucceeded, PlanningOperationStatusFailed, PlanningOperationStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPlanningMessageRole(role PlanningMessageRole) bool {
+	switch role {
+	case PlanningMessageRoleUser, PlanningMessageRoleAssistant:
+		return true
+	default:
+		return false
+	}
+}

@@ -1,0 +1,303 @@
+package state
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+type RunPlanningOutputKind string
+
+const (
+	RunPlanningOutputKindAdvisoryGuidance RunPlanningOutputKind = "advisory_guidance"
+	RunPlanningOutputKindPlanRevision     RunPlanningOutputKind = "plan_revision"
+)
+
+type RunPlanningOutput struct {
+	PlanningOutputID  string
+	PlanningOutputSeq int64
+	RunID             string
+	NodeID            string
+	NodeRunID         string
+	AttemptID         string
+	AgentID           string
+	SourceMessageID   string
+	Kind              RunPlanningOutputKind
+	ContentMarkdown   string
+	CreatedAt         string
+}
+
+type CreateRunPlanningOutputRequest struct {
+	PlanningOutputID string
+	RunID            string
+	NodeID           string
+	NodeRunID        string
+	AttemptID        string
+	AgentID          string
+	SourceMessageID  string
+	Kind             RunPlanningOutputKind
+	ContentMarkdown  string
+	CreatedAt        string
+}
+
+type RunPlanningOutputStore struct {
+	db *sql.DB
+}
+
+func NewRunPlanningOutputStore(db *sql.DB) *RunPlanningOutputStore {
+	return &RunPlanningOutputStore{db: db}
+}
+
+func (s *RunPlanningOutputStore) LatestRunPlanningOutput(ctx context.Context, runID string, kind RunPlanningOutputKind) (RunPlanningOutput, bool, error) {
+	items, err := s.ListRunPlanningOutputs(ctx, runID, kind, "", 1)
+	if err != nil {
+		return RunPlanningOutput{}, false, err
+	}
+	if len(items) == 0 {
+		return RunPlanningOutput{}, false, nil
+	}
+	return items[0], true, nil
+}
+
+func (s *RunPlanningOutputStore) ListRunPlanningOutputs(ctx context.Context, runID string, kind RunPlanningOutputKind, agentID string, limit int) ([]RunPlanningOutput, error) {
+	trimmedRunID := strings.TrimSpace(runID)
+	trimmedAgentID := strings.TrimSpace(agentID)
+	if trimmedRunID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+	if !isSupportedRunPlanningOutputKind(kind) {
+		return nil, fmt.Errorf("run planning output kind is required")
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+
+	query := `SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at
+		FROM run_planning_outputs
+		WHERE run_id = ?
+		  AND kind = ?`
+	args := []any{trimmedRunID, string(kind)}
+	if trimmedAgentID != "" {
+		query += `
+		  AND agent_id = ?`
+		args = append(args, trimmedAgentID)
+	}
+	query += `
+		ORDER BY planning_output_seq DESC
+		LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list run planning outputs: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]RunPlanningOutput, 0, limit)
+	for rows.Next() {
+		var item RunPlanningOutput
+		if err := scanRunPlanningOutput(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan run planning output: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run planning outputs: %w", err)
+	}
+	return items, nil
+}
+
+func insertRunPlanningOutput(ctx context.Context, exec sqlExecutor, req CreateRunPlanningOutputRequest) (RunPlanningOutput, error) {
+	if err := validateRunPlanningOutputCreate(req); err != nil {
+		return RunPlanningOutput{}, err
+	}
+	row := RunPlanningOutput{
+		PlanningOutputID: strings.TrimSpace(req.PlanningOutputID),
+		RunID:            strings.TrimSpace(req.RunID),
+		NodeID:           strings.TrimSpace(req.NodeID),
+		NodeRunID:        strings.TrimSpace(req.NodeRunID),
+		AttemptID:        strings.TrimSpace(req.AttemptID),
+		AgentID:          strings.TrimSpace(req.AgentID),
+		SourceMessageID:  strings.TrimSpace(req.SourceMessageID),
+		Kind:             req.Kind,
+		ContentMarkdown:  strings.TrimSpace(req.ContentMarkdown),
+		CreatedAt:        strings.TrimSpace(req.CreatedAt),
+	}
+	result, err := exec.ExecContext(ctx,
+		`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.PlanningOutputID,
+		row.RunID,
+		row.NodeID,
+		row.NodeRunID,
+		row.AttemptID,
+		row.AgentID,
+		row.SourceMessageID,
+		string(row.Kind),
+		row.ContentMarkdown,
+		row.CreatedAt,
+	)
+	if err != nil {
+		return RunPlanningOutput{}, fmt.Errorf("insert run planning output: %w", err)
+	}
+	seq, err := result.LastInsertId()
+	if err == nil {
+		row.PlanningOutputSeq = seq
+	}
+	return row, nil
+}
+
+func validateRunPlanningOutputLineageTx(ctx context.Context, tx *sql.Tx, req CreateRunPlanningOutputRequest) error {
+	if tx == nil {
+		return fmt.Errorf("run planning output transaction is required")
+	}
+	if err := validateRunPlanningOutputCreate(req); err != nil {
+		return err
+	}
+
+	var persistedRunID string
+	var persistedNodeID string
+	var persistedAgentID string
+	var nodeClass string
+	err := tx.QueryRowContext(ctx,
+		`SELECT nr.run_id, nr.node_id, nr.agent_id, wn.node_class
+		 FROM node_runs nr
+		 JOIN workflow_runs wr ON wr.run_id = nr.run_id
+		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
+		 WHERE nr.node_run_id = ?
+		 LIMIT 1`,
+		strings.TrimSpace(req.NodeRunID),
+	).Scan(&persistedRunID, &persistedNodeID, &persistedAgentID, &nodeClass)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("planning output node run %q not found", strings.TrimSpace(req.NodeRunID))
+	}
+	if err != nil {
+		return fmt.Errorf("load planning output lineage for node run %q: %w", strings.TrimSpace(req.NodeRunID), err)
+	}
+	if strings.TrimSpace(req.RunID) != strings.TrimSpace(persistedRunID) {
+		return fmt.Errorf("planning output run id must match node run lineage")
+	}
+	if strings.TrimSpace(req.NodeID) != strings.TrimSpace(persistedNodeID) {
+		return fmt.Errorf("planning output node id must match node run lineage")
+	}
+	if strings.TrimSpace(req.AgentID) != strings.TrimSpace(persistedAgentID) {
+		return fmt.Errorf("planning output agent id must match node run lineage")
+	}
+	var persistedAttemptID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT attempt_id
+		 FROM attempt_executions
+		 WHERE attempt_id = ?
+		   AND run_id = ?
+		   AND node_run_id = ?
+		 LIMIT 1`,
+		strings.TrimSpace(req.AttemptID),
+		strings.TrimSpace(req.RunID),
+		strings.TrimSpace(req.NodeRunID),
+	).Scan(&persistedAttemptID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("planning output attempt id must match node run lineage")
+	}
+	if err != nil {
+		return fmt.Errorf("load planning output attempt lineage for node run %q: %w", strings.TrimSpace(req.NodeRunID), err)
+	}
+
+	expectedNodeClass := ""
+	switch req.Kind {
+	case RunPlanningOutputKindAdvisoryGuidance:
+		expectedNodeClass = "advisory_synthesis"
+	case RunPlanningOutputKindPlanRevision:
+		expectedNodeClass = "plan_drafting"
+	}
+	if expectedNodeClass != "" && strings.TrimSpace(nodeClass) != expectedNodeClass {
+		return fmt.Errorf("planning output kind %q requires node class %q", req.Kind, expectedNodeClass)
+	}
+
+	trimmedSourceMessageID := strings.TrimSpace(req.SourceMessageID)
+	if trimmedSourceMessageID == "" {
+		return nil
+	}
+	var sourceMessageRunID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT run_id
+		 FROM mailbox_messages
+		 WHERE message_id = ?
+		 LIMIT 1`,
+		trimmedSourceMessageID,
+	).Scan(&sourceMessageRunID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("planning output source message %q not found", trimmedSourceMessageID)
+	}
+	if err != nil {
+		return fmt.Errorf("load planning output source message %q: %w", trimmedSourceMessageID, err)
+	}
+	if strings.TrimSpace(sourceMessageRunID) != strings.TrimSpace(req.RunID) {
+		return fmt.Errorf("planning output source message must belong to the same run")
+	}
+	return nil
+}
+
+func validateRunPlanningOutputCreate(req CreateRunPlanningOutputRequest) error {
+	if strings.TrimSpace(req.PlanningOutputID) == "" {
+		return fmt.Errorf("planning output id is required")
+	}
+	if strings.TrimSpace(req.RunID) == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if strings.TrimSpace(req.NodeID) == "" {
+		return fmt.Errorf("node id is required")
+	}
+	if strings.TrimSpace(req.NodeRunID) == "" {
+		return fmt.Errorf("node run id is required")
+	}
+	if strings.TrimSpace(req.AttemptID) == "" {
+		return fmt.Errorf("attempt id is required")
+	}
+	if strings.TrimSpace(req.AgentID) == "" {
+		return fmt.Errorf("agent id is required")
+	}
+	if !isSupportedRunPlanningOutputKind(req.Kind) {
+		return fmt.Errorf("unsupported run planning output kind %q", req.Kind)
+	}
+	if strings.TrimSpace(req.ContentMarkdown) == "" {
+		return fmt.Errorf("content markdown is required")
+	}
+	if strings.TrimSpace(req.CreatedAt) == "" {
+		return fmt.Errorf("created_at is required")
+	}
+	return nil
+}
+
+func isSupportedRunPlanningOutputKind(kind RunPlanningOutputKind) bool {
+	switch kind {
+	case RunPlanningOutputKindAdvisoryGuidance, RunPlanningOutputKindPlanRevision:
+		return true
+	default:
+		return false
+	}
+}
+
+func scanRunPlanningOutput(scanner interface{ Scan(dest ...any) error }, target *RunPlanningOutput) error {
+	if target == nil {
+		return fmt.Errorf("run planning output target is required")
+	}
+	var kind string
+	if err := scanner.Scan(
+		&target.PlanningOutputSeq,
+		&target.PlanningOutputID,
+		&target.RunID,
+		&target.NodeID,
+		&target.NodeRunID,
+		&target.AttemptID,
+		&target.AgentID,
+		&target.SourceMessageID,
+		&kind,
+		&target.ContentMarkdown,
+		&target.CreatedAt,
+	); err != nil {
+		return err
+	}
+	target.Kind = RunPlanningOutputKind(strings.TrimSpace(kind))
+	return nil
+}

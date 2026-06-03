@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kingdom.local/contracts/schemas/workflow.schema.json",
+  "title": "WorkflowDefinition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "workflow_id", "nodes", "edges"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "workflow_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-v[0-9]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_execution_review_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_validation_rework_cycles": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "required_role", "node_class"],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+        },
+        "required_role": {
+          "type": "string",
+          "enum": [
+            "king",
+            "allfather",
+            "chancellor",
+            "council-member",
+            "noble-delegate",
+            "clergy-delegate",
+            "burgher-delegate",
+            "peasant-delegate",
+            "builder-berserker",
+            "reviewer-shieldmaiden",
+            "intelligence-qa-scout",
+            "intelligence-nightraven",
+            "intelligence-loki-chaos"
+          ]
+        },
+        "node_class": {
+          "type": "string",
+          "enum": [
+            "decree_intake",
+            "advisor_consultation",
+            "advisory_synthesis",
+            "plan_drafting",
+            "king_plan_decision",
+            "execution_kickoff",
+            "delegated_execution",
+            "execution_review",
+            "validation_gates",
+            "royal_closure"
+          ]
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to"],
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$"
+        },
+        "on": {
+          "type": "string",
+          "enum": ["success", "failed", "blocked", "approved", "needs_rework"]
+        }
+      }
+    }
+  }
+}

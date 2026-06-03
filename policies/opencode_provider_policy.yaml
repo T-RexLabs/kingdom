@@ -1,0 +1,69 @@
+version: v2
+policy_id: opencode-provider-policy-mvp-v2
+
+model_policy:
+  fallback_enabled: false
+  fallback_strategy: disabled_for_mvp
+
+agent_policy:
+  default_agent: advisor
+  role_agents:
+    allfather: king
+    king: king
+    chancellor: chancellor
+    council-member: council
+    noble-delegate: advisor
+    clergy-delegate: advisor
+    burgher-delegate: advisor
+    peasant-delegate: advisor
+    intelligence-qa-scout: qa_scout
+    intelligence-nightraven: nightraven
+    intelligence-loki-chaos: tester
+    builder-berserker: builder
+    reviewer-shieldmaiden: reviewer
+
+timeouts:
+  strict_probe_attempt_timeout: 30s
+  strict_startup_total_timeout: 90s
+  strict_probe_backoff_schedule:
+    - 1s
+    - 5s
+    - 10s
+  completion_reconcile_total_timeout: 20s
+  completion_reconcile_backoff_schedule:
+    - 250ms
+    - 500ms
+    - 1s
+    - 2s
+    - 3s
+    - 5s
+  dispatch_ack_timeout: 5s
+  first_event_timeout: 60s
+  stream_inactivity_timeout: 10m
+  cancel_grace_timeout: 5s
+  cancel_force_timeout: 10s
+  node_wall_clock:
+    advisor_consultation: 8m
+    advisory_synthesis: 10m
+    plan_drafting: 15m
+    delegated_execution: 20m
+    validation_gates: 20m
+
+retry_boundaries:
+  policy_source: policies/retry_policy.yaml
+  provider_retry_class: transient_transport_provider_session
+  internal_runtime_retry_class: internal_runtime
+  conditional_retry_class: conditional_limited
+  non_retryable_class: non_retryable
+  hard_fail_codes:
+    - invalid_output_schema
+    - policy_violation
+    - idempotency_conflict
+    - dependency_blocked
+    - llm_invalid_response
+    - llm_context_overflow
+
+escalation:
+  retry_exhausted_target_role: chancellor
+  unresolved_strategic_target_role: king
+  dead_letter_required: true

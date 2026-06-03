@@ -1,0 +1,225 @@
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	mergeExecutionItems,
+	overlayExecutionDetail,
+	overlayExecutionItem,
+	patchLiveExecutionProjection,
+	readLiveExecutionProjection,
+} from "./run-live-execution-projection";
+
+describe("run-live-execution-projection", () => {
+	const clients: QueryClient[] = [];
+
+	afterEach(() => {
+		for (const client of clients) {
+			client.clear();
+		}
+		clients.length = 0;
+	});
+
+	function makeClient(): QueryClient {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		clients.push(client);
+		return client;
+	}
+
+	it("keeps a terminal live status from regressing to running on later telemetry", () => {
+		const queryClient = makeClient();
+
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:08:00Z",
+			status: "succeeded",
+			terminal_observed_at: "2026-03-01T10:08:00Z",
+			live_label: "Execution succeeded",
+		});
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:09:00Z",
+			status: "running",
+			live_label: "Completion observed",
+			live_reason_code: "runtime_completion_observation",
+		});
+
+		expect(readLiveExecutionProjection(queryClient, "run-1")).toEqual({
+			"nr-1": {
+				node_run_id: "nr-1",
+				activity_at: "2026-03-01T10:08:00Z",
+				status: "succeeded",
+				terminal_observed_at: "2026-03-01T10:08:00Z",
+				live_label: "Execution succeeded",
+			},
+		});
+	});
+
+	it("accepts later terminal telemetry for an in-flight live status", () => {
+		const queryClient = makeClient();
+
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:07:00Z",
+			status: "running",
+			started_at: "2026-03-01T10:07:00Z",
+			live_label: "Provider running",
+		});
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:08:00Z",
+			status: "succeeded",
+			terminal_observed_at: "2026-03-01T10:08:00Z",
+			live_label: "Execution succeeded",
+		});
+
+		expect(readLiveExecutionProjection(queryClient, "run-1")).toEqual({
+			"nr-1": {
+				node_run_id: "nr-1",
+				activity_at: "2026-03-01T10:08:00Z",
+				status: "succeeded",
+				started_at: "2026-03-01T10:07:00Z",
+				terminal_observed_at: "2026-03-01T10:08:00Z",
+				live_label: "Execution succeeded",
+			},
+		});
+	});
+
+	it("prefers a later same-timestamp terminal event when run event ordering advances", () => {
+		const queryClient = makeClient();
+
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:08:00Z",
+			run_event_seq: 140,
+			attempt_seq: 1,
+			status: "running",
+			started_at: "2026-03-01T10:08:00Z",
+			live_label: "Execution started",
+		});
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:08:00Z",
+			run_event_seq: 143,
+			attempt_seq: 2,
+			status: "succeeded",
+			terminal_observed_at: "2026-03-01T10:08:00Z",
+			live_label: "Execution succeeded",
+		});
+
+		expect(readLiveExecutionProjection(queryClient, "run-1")).toEqual({
+			"nr-1": {
+				node_run_id: "nr-1",
+				activity_at: "2026-03-01T10:08:00Z",
+				run_event_seq: 143,
+				attempt_seq: 2,
+				status: "succeeded",
+				started_at: "2026-03-01T10:08:00Z",
+				terminal_observed_at: "2026-03-01T10:08:00Z",
+				live_label: "Execution succeeded",
+			},
+		});
+	});
+
+	it("does not let stale live running status override canonical terminal execution state", () => {
+		const execution = {
+			attempt_id: "attempt-1",
+			node_run_id: "nr-1",
+			node_id: "execution_kickoff",
+			attempt: 1,
+			agent_id: "agent-council",
+			required_role: "council-member",
+			execution_mode: "runtime_owned",
+			status: "succeeded",
+			activity_at: "2026-03-01T10:08:00Z",
+			updated_at: "2026-03-01T10:08:00Z",
+			terminal_observed_at: "2026-03-01T10:08:00Z",
+			committed_at: "2026-03-01T10:08:00Z",
+		} as const;
+
+		expect(overlayExecutionItem(execution, {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:09:00Z",
+			status: "running",
+			live_label: "Execution started",
+		})).toEqual(execution);
+
+		expect(overlayExecutionDetail({
+			...execution,
+			settlement_status: "not_applicable",
+			output_status: "none",
+		}, {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:09:00Z",
+			status: "running",
+			live_label: "Execution started",
+		})).toEqual({
+			...execution,
+			settlement_status: "not_applicable",
+			output_status: "none",
+		});
+	});
+
+	it("overlays completion observation as verifying detail while settlement is still pending", () => {
+		expect(overlayExecutionDetail({
+			attempt_id: "attempt-1",
+			node_run_id: "nr-1",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "running",
+			activity_at: "2026-03-01T10:08:00Z",
+			updated_at: "2026-03-01T10:08:00Z",
+			provider_session_id: "ses-1",
+			provider_invocation_id: "inv-1",
+			settlement_status: "pending",
+			output_status: "none",
+		}, {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:08:05Z",
+			status: "verifying",
+			live_label: "Completion observed",
+			live_reason_code: "runtime_completion_observation",
+		})).toMatchObject({
+			status: "verifying",
+			activity_at: "2026-03-01T10:08:05Z",
+			live_signal: {
+				live_label: "Completion observed",
+				live_reason_code: "runtime_completion_observation",
+			},
+		});
+	});
+
+	it("materializes live-only execution rows when SSE arrives before the executions refetch", () => {
+		const merged = mergeExecutionItems([], {
+			"nr-live-only": {
+				node_run_id: "nr-live-only",
+				attempt_id: "attempt-live-only",
+				node_id: "delegated_execution_berserker",
+				attempt: 2,
+				required_role: "builder-berserker",
+				execution_mode: "provider_backed",
+				activity_at: "2026-03-01T10:09:00Z",
+				status: "running",
+				started_at: "2026-03-01T10:09:00Z",
+				live_label: "Execution started",
+			},
+		});
+
+		expect(merged).toEqual([
+			{
+				attempt_id: "attempt-live-only",
+				node_run_id: "nr-live-only",
+				node_id: "delegated_execution_berserker",
+				attempt: 2,
+				agent_id: "",
+				required_role: "builder-berserker",
+				execution_mode: "provider_backed",
+				status: "running",
+				activity_at: "2026-03-01T10:09:00Z",
+				updated_at: "2026-03-01T10:09:00Z",
+				started_at: "2026-03-01T10:09:00Z",
+			},
+		]);
+	});
+});

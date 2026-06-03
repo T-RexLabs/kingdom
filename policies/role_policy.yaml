@@ -1,0 +1,171 @@
+version: v1
+policy_id: role-policy-mvp-v1
+mode: deny_by_default
+
+forbidden_command_classes:
+  - git_destructive
+  - privilege_escalation
+  - host_system_mutation
+  - out_of_workspace_write
+  - network_unallowlisted
+  - direct_state_bypass
+
+path_scopes:
+  workspace_root: /workspace
+  ephemeral_tmp_root: /workspace/.tmp
+  artifacts_root: /workspace/.artifacts
+
+roles:
+  king:
+    execution_authority: governance_only
+    allowed_tool_classes:
+      - workflow_review
+      - approval_decision
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  chancellor:
+    execution_authority: orchestration_only
+    allowed_tool_classes:
+      - workflow_review
+      - delegation_control
+      - retry_rerun_control
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  council-member:
+    execution_authority: orchestration_only
+    allowed_tool_classes:
+      - workflow_review
+      - delegation_control
+      - retry_rerun_control
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  noble-delegate:
+    execution_authority: advisory_only
+    allowed_tool_classes:
+      - advisory_analysis
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  clergy-delegate:
+    execution_authority: advisory_only
+    allowed_tool_classes:
+      - advisory_analysis
+      - security_review
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  burgher-delegate:
+    execution_authority: advisory_only
+    allowed_tool_classes:
+      - advisory_analysis
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  peasant-delegate:
+    execution_authority: advisory_only
+    allowed_tool_classes:
+      - advisory_analysis
+      - artifact_read
+      - mailbox
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+
+  builder-berserker:
+    execution_authority: implementation
+    allowed_tool_classes:
+      - workspace_read
+      - workspace_write
+      - unit_test
+      - build
+      - artifact_create
+    allowed_command_classes:
+      - git_safe
+      - go_toolchain
+      - node_toolchain
+      - test_runner
+    allowed_path_scopes:
+      - workspace_root
+      - ephemeral_tmp_root
+      - artifacts_root
+
+  reviewer-shieldmaiden:
+    execution_authority: review
+    allowed_tool_classes:
+      - workspace_read
+      - artifact_create
+    allowed_command_classes: []
+    allowed_path_scopes:
+      - workspace_root
+      - artifacts_root
+
+  intelligence-qa-scout:
+    execution_authority: validation
+    allowed_tool_classes:
+      - workspace_read
+      - test_runner
+      - artifact_create
+    allowed_command_classes:
+      - git_safe
+      - go_toolchain
+      - node_toolchain
+      - test_runner
+    allowed_path_scopes:
+      - workspace_root
+      - ephemeral_tmp_root
+      - artifacts_root
+
+  intelligence-nightraven:
+    execution_authority: validation_security
+    allowed_tool_classes:
+      - workspace_read
+      - security_test
+      - artifact_create
+    allowed_command_classes:
+      - git_safe
+      - go_toolchain
+      - node_toolchain
+      - test_runner
+      - security_scanner
+    allowed_path_scopes:
+      - workspace_root
+      - ephemeral_tmp_root
+      - artifacts_root
+
+  intelligence-loki-chaos:
+    execution_authority: validation_resilience
+    allowed_tool_classes:
+      - workspace_read
+      - chaos_test
+      - artifact_create
+    allowed_command_classes:
+      - git_safe
+      - go_toolchain
+      - node_toolchain
+      - test_runner
+      - chaos_injector
+    allowed_path_scopes:
+      - workspace_root
+      - ephemeral_tmp_root
+      - artifacts_root

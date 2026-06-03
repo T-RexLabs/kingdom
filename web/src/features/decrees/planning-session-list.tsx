@@ -1,0 +1,151 @@
+import { newIdempotencyKey, useDeletePlanningSession, usePlanningSessions, type PlanningSessionSummary } from "@/api/hooks";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ModalDialog } from "@/components/ui/modal-dialog";
+import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Plus, Sparkles, X } from "lucide-react";
+import { useState } from "react";
+import { getPlanningSessionDisplayTitle, hasPlaceholderTitle } from "./planning-session-title";
+
+function displaySessionTitle(session: PlanningSessionSummary): string {
+  return getPlanningSessionDisplayTitle(session, "New session");
+}
+
+export function PlanningSessionList() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const navigate = useNavigate();
+  const { data, isLoading, error, refetch } = usePlanningSessions();
+  const deletePlanningSession = useDeletePlanningSession();
+  const sessions = data?.items ?? [];
+  const [pendingDelete, setPendingDelete] = useState<PlanningSessionSummary | null>(null);
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) {
+      return;
+    }
+    const deletingSession = pendingDelete;
+    const isActiveSession = pathname === `/decrees/planning/${deletingSession.planning_session_id}`;
+    try {
+      await deletePlanningSession.mutateAsync({
+        value: deletingSession.planning_session_id,
+        key: newIdempotencyKey("planning-delete"),
+      });
+    } catch {
+      return;
+    }
+    setPendingDelete(null);
+    if (isActiveSession) {
+      await navigate({ to: "/decrees/planning" });
+    }
+  };
+
+  return (
+    <>
+      <Card className="flex h-full min-h-0 flex-col">
+        <CardHeader className="shrink-0 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-xs uppercase tracking-wider">
+            <Sparkles className="h-3.5 w-3.5" />
+            Sessions
+          </CardTitle>
+          <Link to="/decrees/planning" className={buttonVariants({ variant: "ghost", size: "sm" })}>
+            <Plus className="h-3.5 w-3.5" />
+            New
+          </Link>
+        </div>
+        </CardHeader>
+        <CardContent className="flex-1 min-h-0 overflow-y-auto space-y-2">
+        {sessions.map((session) => {
+          const isActive = pathname === `/decrees/planning/${session.planning_session_id}`;
+          return (
+            <Link
+              key={session.planning_session_id}
+              to="/decrees/planning/$sessionId"
+              params={{ sessionId: session.planning_session_id }}
+              className={`group flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${
+                isActive ? "border-gold/60 bg-gold/10" : "border-border bg-surface-raised/20 hover:bg-surface-raised/35"
+              }`}
+            >
+              <p className={`min-w-0 flex-1 truncate text-sm font-medium ${hasPlaceholderTitle(session) ? "text-foreground-subtle italic" : "text-foreground"}`}>
+                {displaySessionTitle(session)}
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                aria-label={`Delete ${displaySessionTitle(session)}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setPendingDelete(session);
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </Link>
+          );
+        })}
+
+        {isLoading && sessions.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-4 text-xs text-foreground-subtle">
+            Loading planning sessions...
+          </div>
+        ) : null}
+
+        {!isLoading && sessions.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border px-3 py-4 text-xs text-foreground-subtle">
+            No planning sessions yet. Start one from the planning workspace.
+          </div>
+        ) : null}
+
+        {error ? (
+          <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-3 py-4 text-xs text-status-failed">
+            Failed to load planning sessions.
+            <div className="mt-2">
+              <Button type="button" size="sm" variant="ghost" onClick={() => void refetch()}>
+                Retry
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+          {deletePlanningSession.error ? (
+            <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-3 py-3 text-xs text-status-failed">
+              {deletePlanningSession.error.message}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      {pendingDelete ? (
+        <ModalDialog
+          open
+          onClose={() => setPendingDelete(null)}
+          ariaLabel="Delete planning session"
+          panelClassName={`w-full ${modalShellSizeClass("sm")}`}
+        >
+          <ModalShell
+            title={displaySessionTitle(pendingDelete)}
+            caption="Delete Session"
+            description="This removes the planning session and its drafts, messages, and saved context snapshots."
+            onClose={() => setPendingDelete(null)}
+            footer={(
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)}>
+                  Cancel
+                </Button>
+                <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={deletePlanningSession.isPending}>
+                  {deletePlanningSession.isPending ? "Deleting..." : "Delete Session"}
+                </Button>
+              </div>
+            )}
+          >
+            <p className={MODAL_BODY_TEXT_CLASS}>This action cannot be undone.</p>
+          </ModalShell>
+        </ModalDialog>
+      ) : null}
+    </>
+  );
+}

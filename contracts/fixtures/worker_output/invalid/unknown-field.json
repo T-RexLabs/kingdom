@@ -1,0 +1,15 @@
+{
+  "schema_version": "v1",
+  "status": "failed",
+  "summary": "validation failed",
+  "payload_json": {},
+  "artifacts": [
+    {
+      "name": "log.txt",
+      "mime": "text/plain",
+      "path": "artifacts/log.txt",
+      "extra": "forbidden"
+    }
+  ],
+  "error_reason": "invalid_output_schema"
+}

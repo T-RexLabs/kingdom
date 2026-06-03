@@ -1,0 +1,316 @@
+package state
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+func (s *PlanningStore) CreateSession(ctx context.Context, req CreatePlanningSessionRequest) (PlanningSession, error) {
+	if err := validatePlanningSessionCreate(req); err != nil {
+		return PlanningSession{}, err
+	}
+	row, err := insertPlanningSession(ctx, s.db, req)
+	if err != nil {
+		return PlanningSession{}, err
+	}
+	return row, nil
+}
+
+func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlanningSessionRequest) (PlanningSession, error) {
+	row := PlanningSession{
+		PlanningSessionID:        strings.TrimSpace(req.PlanningSessionID),
+		Title:                    strings.TrimSpace(req.Title),
+		TitleState:               strings.TrimSpace(req.TitleState),
+		LifecycleState:           req.LifecycleState,
+		ConversationState:        req.ConversationState,
+		CurrentQuestionMessageID: nullableString(req.CurrentQuestionMessageID),
+		CurrentOperationID:       nullableString(req.CurrentOperationID),
+		CurrentTitleOperationID:  nullableString(req.CurrentTitleOperationID),
+		CurrentDraftID:           nullableString(req.CurrentDraftID),
+		ContextSnapshotID:        nullableString(req.ContextSnapshotID),
+		ProjectRoot:              strings.TrimSpace(req.ProjectRoot),
+		ModelSelectionJSON:       strings.TrimSpace(req.ModelSelectionJSON),
+		CreatedAt:                strings.TrimSpace(req.CreatedAt),
+		UpdatedAt:                strings.TrimSpace(req.UpdatedAt),
+	}
+	_, err := exec.ExecContext(ctx,
+		`INSERT INTO planning_sessions (
+			planning_session_id, title, title_state, lifecycle_state, conversation_state,
+			current_question_message_id, current_operation_id, current_title_operation_id,
+			current_draft_id, context_snapshot_id, project_root, model_selection_json,
+			created_at, updated_at
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.PlanningSessionID,
+		row.Title,
+		row.TitleState,
+		row.LifecycleState,
+		row.ConversationState,
+		nullableStringValue(row.CurrentQuestionMessageID),
+		nullableStringValue(row.CurrentOperationID),
+		nullableStringValue(row.CurrentTitleOperationID),
+		nullableStringValue(row.CurrentDraftID),
+		nullableStringValue(row.ContextSnapshotID),
+		row.ProjectRoot,
+		row.ModelSelectionJSON,
+		row.CreatedAt,
+		row.UpdatedAt,
+	)
+	if err != nil {
+		return PlanningSession{}, fmt.Errorf("insert planning session: %w", err)
+	}
+	return row, nil
+}
+
+func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlanningSessionBundleRequest) (PlanningSession, PlanningOperation, error) {
+	if err := validatePlanningSessionCreate(req.Session); err != nil {
+		return PlanningSession{}, PlanningOperation{}, err
+	}
+	if err := validatePlanningMessageAppend(req.OpeningMessage); err != nil {
+		return PlanningSession{}, PlanningOperation{}, err
+	}
+	if err := validatePlanningOperationCreate(req.BootstrapOperation); err != nil {
+		return PlanningSession{}, PlanningOperation{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningSession{}, PlanningOperation{}, fmt.Errorf("begin create planning session bundle: %w", err)
+	}
+
+	session, err := insertPlanningSession(ctx, tx, req.Session)
+	if err != nil {
+		return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", err)
+	}
+	if _, err := insertPlanningMessage(ctx, tx, req.OpeningMessage); err != nil {
+		return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", err)
+	}
+	operation, err := insertPlanningOperation(ctx, tx, req.BootstrapOperation)
+	if err != nil {
+		return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningSession{}, PlanningOperation{}, fmt.Errorf("commit create planning session bundle: %w", err)
+	}
+	return session, operation, nil
+}
+
+func (s *PlanningStore) UpdateSession(ctx context.Context, req UpdatePlanningSessionRequest) error {
+	return updatePlanningSession(ctx, s.db, req)
+}
+
+func updatePlanningSession(ctx context.Context, exec sqlExecutor, req UpdatePlanningSessionRequest) error {
+	if strings.TrimSpace(req.PlanningSessionID) == "" {
+		return fmt.Errorf("planning session id is required")
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" {
+		return fmt.Errorf("updated_at is required")
+	}
+	if req.Title != nil && strings.TrimSpace(*req.Title) == "" {
+		return fmt.Errorf("planning session title is required")
+	}
+	if req.TitleState != nil && !isValidPlanningSessionTitleState(strings.TrimSpace(*req.TitleState)) {
+		return fmt.Errorf("invalid planning session title state: %q", strings.TrimSpace(*req.TitleState))
+	}
+	if req.LifecycleState != nil && !isValidPlanningSessionLifecycleState(*req.LifecycleState) {
+		return fmt.Errorf("invalid planning session lifecycle state: %q", *req.LifecycleState)
+	}
+	if req.ConversationState != nil && !isValidPlanningSessionConversationState(*req.ConversationState) {
+		return fmt.Errorf("invalid planning session conversation state: %q", *req.ConversationState)
+	}
+	if req.ModelSelectionJSON != nil && strings.TrimSpace(*req.ModelSelectionJSON) == "" {
+		return fmt.Errorf("planning session model selection json is required")
+	}
+
+	builder := newUpdateBuilder("planning_sessions")
+	if title := trimOptionalString(req.Title); title != nil {
+		builder.Set("title", *title)
+	}
+	if titleState := trimOptionalString(req.TitleState); titleState != nil {
+		builder.Set("title_state", *titleState)
+	}
+	if lifecycleState := lifecycleStatePtrValue(req.LifecycleState); lifecycleState != nil {
+		builder.Set("lifecycle_state", *lifecycleState)
+	}
+	if conversationState := conversationStatePtrValue(req.ConversationState); conversationState != nil {
+		builder.Set("conversation_state", *conversationState)
+	}
+	if req.CurrentQuestionMessageID != nil {
+		builder.Set("current_question_message_id", finalizeNullable(*req.CurrentQuestionMessageID))
+	}
+	if req.CurrentOperationID != nil {
+		builder.Set("current_operation_id", finalizeNullable(*req.CurrentOperationID))
+	}
+	if req.CurrentTitleOperationID != nil {
+		builder.Set("current_title_operation_id", finalizeNullable(*req.CurrentTitleOperationID))
+	}
+	if req.CurrentDraftID != nil {
+		builder.Set("current_draft_id", finalizeNullable(*req.CurrentDraftID))
+	}
+	if req.ContextSnapshotID != nil {
+		builder.Set("context_snapshot_id", finalizeNullable(*req.ContextSnapshotID))
+	}
+	if modelSelectionJSON := trimOptionalString(req.ModelSelectionJSON); modelSelectionJSON != nil {
+		builder.Set("model_selection_json", *modelSelectionJSON)
+	}
+	builder.Set("updated_at", strings.TrimSpace(req.UpdatedAt))
+	builder.Where("planning_session_id = ?", strings.TrimSpace(req.PlanningSessionID))
+
+	_, err := builder.Exec(ctx, exec)
+	if err != nil {
+		return fmt.Errorf("update planning session: %w", err)
+	}
+	return nil
+}
+
+func (s *PlanningStore) GetSession(ctx context.Context, planningSessionID string) (PlanningSession, bool, error) {
+	var row PlanningSession
+	err := scanPlanningSession(s.db.QueryRowContext(ctx,
+		`SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
+		        current_question_message_id, current_operation_id, current_title_operation_id,
+		        current_draft_id, context_snapshot_id,
+		        project_root, model_selection_json, created_at, updated_at
+		 FROM planning_sessions
+		 WHERE planning_session_id = ?`,
+		strings.TrimSpace(planningSessionID),
+	), &row)
+	if err == sql.ErrNoRows {
+		return PlanningSession{}, false, nil
+	}
+	if err != nil {
+		return PlanningSession{}, false, fmt.Errorf("get planning session: %w", err)
+	}
+	return row, true, nil
+}
+
+func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]PlanningSession, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
+		        current_question_message_id, current_operation_id, current_title_operation_id,
+		        current_draft_id, context_snapshot_id,
+		        project_root, model_selection_json, created_at, updated_at
+		 FROM planning_sessions
+		 ORDER BY updated_at DESC, planning_session_id DESC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list planning sessions: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]PlanningSession, 0)
+	for rows.Next() {
+		var row PlanningSession
+		if err := scanPlanningSession(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan planning session: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planning sessions: %w", err)
+	}
+	return items, nil
+}
+
+func scanPlanningSession(row scannable, dest *PlanningSession) error {
+	var currentQuestionMessageID sql.NullString
+	var currentOperationID sql.NullString
+	var currentTitleOperationID sql.NullString
+	var currentDraftID sql.NullString
+	var contextSnapshotID sql.NullString
+
+	if err := row.Scan(
+		&dest.PlanningSessionID,
+		&dest.Title,
+		&dest.TitleState,
+		&dest.LifecycleState,
+		&dest.ConversationState,
+		&currentQuestionMessageID,
+		&currentOperationID,
+		&currentTitleOperationID,
+		&currentDraftID,
+		&contextSnapshotID,
+		&dest.ProjectRoot,
+		&dest.ModelSelectionJSON,
+		&dest.CreatedAt,
+		&dest.UpdatedAt,
+	); err != nil {
+		return err
+	}
+
+	dest.CurrentQuestionMessageID = nullableStringFromSQL(currentQuestionMessageID)
+	dest.CurrentOperationID = nullableStringFromSQL(currentOperationID)
+	dest.CurrentTitleOperationID = nullableStringFromSQL(currentTitleOperationID)
+	dest.CurrentDraftID = nullableStringFromSQL(currentDraftID)
+	dest.ContextSnapshotID = nullableStringFromSQL(contextSnapshotID)
+	return nil
+}
+
+func (s *PlanningStore) DeleteSession(ctx context.Context, planningSessionID string) (bool, error) {
+	trimmedID := strings.TrimSpace(planningSessionID)
+	if trimmedID == "" {
+		return false, fmt.Errorf("planning session id is required")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM planning_sessions WHERE planning_session_id = ?`, trimmedID)
+	if err != nil {
+		return false, fmt.Errorf("delete planning session: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete planning session rows affected: %w", err)
+	}
+	return rowsAffected > 0, nil
+}
+
+// CountSessionsByLifecycleAndConversation returns lifecycle and conversation
+// state breakdowns in two grouped scans rather than pulling the full
+// `ListSessions(ctx, 1000)` result and counting in Go.
+func (s *PlanningStore) CountSessionsByLifecycleAndConversation(ctx context.Context) (
+	map[PlanningSessionLifecycleState]int,
+	map[PlanningSessionConversationState]int,
+	error,
+) {
+	lifecycle := make(map[PlanningSessionLifecycleState]int)
+	conv := make(map[PlanningSessionConversationState]int)
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT lifecycle_state, COUNT(*) FROM planning_sessions GROUP BY lifecycle_state`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("count planning sessions by lifecycle: %w", err)
+	}
+	for rows.Next() {
+		var state PlanningSessionLifecycleState
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("scan planning session lifecycle count: %w", err)
+		}
+		lifecycle[state] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+
+	rows, err = s.db.QueryContext(ctx,
+		`SELECT conversation_state, COUNT(*) FROM planning_sessions GROUP BY conversation_state`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("count planning sessions by conversation state: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state PlanningSessionConversationState
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, nil, fmt.Errorf("scan planning session conversation count: %w", err)
+		}
+		conv[state] = count
+	}
+	return lifecycle, conv, rows.Err()
+}

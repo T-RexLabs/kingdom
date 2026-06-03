@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "status": "succeeded",
+  "summary": "Plan validated",
+  "payload_json": {
+    "checks": 5,
+    "passed": 5
+  },
+  "artifacts": [
+    {
+      "name": "report.md",
+      "mime": "text/markdown",
+      "path": "artifacts/report.md"
+    }
+  ],
+  "error_reason": null
+}

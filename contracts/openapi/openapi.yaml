@@ -1,0 +1,4084 @@
+openapi: 3.0.3
+info:
+  title: Kingdom API
+  version: 0.2.0
+  license:
+    name: Proprietary
+    url: https://kingdom.local/license
+servers:
+  - url: https://api.kingdom.local/api/v1
+security:
+  - ActorIdHeader: []
+    RoleIdHeader: []
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Read service health status.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          $ref: "#/components/responses/HealthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /decrees:
+    post:
+      tags: [decrees]
+      operationId: createDecree
+      summary: Create a decree entry.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDecreeRequest"
+      responses:
+        "201":
+          description: Decree accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateDecreeResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /decrees/{id}:
+    get:
+      tags: [decrees]
+      operationId: getDecree
+      summary: Get a decree by ID.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/DecreeId"
+      responses:
+        "200":
+          description: Decree details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecreeDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions:
+    get:
+      tags: [planning]
+      operationId: listPlanningSessions
+      summary: List planning sessions ordered by recent activity.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Planning sessions ordered by updated time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningSessionListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    post:
+      tags: [planning]
+      operationId: createPlanningSession
+      summary: Create a planning session with the first question ready immediately.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlanningSessionRequest"
+      responses:
+        "201":
+          description: Planning session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePlanningSessionResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}:
+    get:
+      tags: [planning]
+      operationId: getPlanningSession
+      summary: Get a planning session by ID.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+      responses:
+        "200":
+          description: Planning session detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningSessionDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    patch:
+      tags: [planning]
+      operationId: updatePlanningSession
+      summary: Update a planning session title or planner model.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePlanningSessionRequest"
+      responses:
+        "200":
+          description: Updated planning session detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningSessionDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    delete:
+      tags: [planning]
+      operationId: deletePlanningSession
+      summary: Delete a planning session and its associated plans, messages, and context snapshots.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: Planning session deleted.
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/messages:
+    get:
+      tags: [planning]
+      operationId: listPlanningSessionMessages
+      summary: List planning session messages as a paginated transcript page.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/PlanningMessagesBefore"
+      responses:
+        "200":
+          description: Latest or previous planning session transcript page in ascending display order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningMessagesPage"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/plan:
+    get:
+      tags: [planning]
+      operationId: getPlanningSessionPlan
+      summary: Get the current formalized plan for a planning session.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+      responses:
+        "200":
+          description: Current planning session plan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningDraft"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/operations:
+    post:
+      tags: [planning]
+      operationId: createPlanningSessionOperation
+      summary: Create a durable planner operation.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlanningOperationRequest"
+      responses:
+        "201":
+          description: Planner operation created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningOperationDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-operations/{id}:
+    get:
+      tags: [planning]
+      operationId: getPlanningOperation
+      summary: Get planner operation status and result references.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningOperationId"
+      responses:
+        "200":
+          description: Planner operation detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningOperationDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-operations/{id}/events:
+    get:
+      tags: [planning]
+      operationId: streamPlanningOperationEvents
+      summary: Stream durable planner operation events with Last-Event-ID resume.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningOperationId"
+        - $ref: "#/components/parameters/LastEventId"
+      responses:
+        "200":
+          description: SSE stream of durable planner operation events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/context/refresh:
+    post:
+      tags: [planning]
+      operationId: refreshPlanningSessionContext
+      summary: Refresh the sanitized planning context snapshot for a session.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Refreshed planning context snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshPlanningSessionContextResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/generate-title:
+    post:
+      tags: [planning]
+      operationId: generatePlanningSessionTitle
+      summary: Auto-generate a title from the conversation so far.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Generated title.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratePlanningSessionTitleResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/messages/{messageId}/activate:
+    put:
+      tags: [planning]
+      operationId: activatePlanningMessageVariant
+      summary: Switch the active variant for a planning message position.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Variant activated. Returns the activated message.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningMessage"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/messages/{messageId}/variants:
+    get:
+      tags: [planning]
+      operationId: listPlanningMessageVariants
+      summary: List all variants at the same position as the specified message.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: List of variants at this position.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanningMessageVariantsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /workflows/publish:
+    post:
+      tags: [workflows]
+      operationId: publishWorkflow
+      summary: Publish an immutable workflow version.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishWorkflowRequest"
+      responses:
+        "201":
+          description: Workflow version published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishWorkflowResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /roles:
+    get:
+      tags: [roles]
+      operationId: listRoles
+      summary: List canonical agent roles.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: Canonical role metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RolesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /agents:
+    get:
+      tags: [agents]
+      operationId: listAgents
+      summary: List all registered agents regardless of run association.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: All agents ordered by lineage depth and creation time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /provider/models:
+    get:
+      tags: [providers]
+      operationId: listProviderModels
+      summary: List available OpenCode provider models.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - name: refresh
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Available provider models with display labels.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderModelsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailableError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /workspace-capabilities:
+    get:
+      tags: [system]
+      operationId: getWorkspaceCapabilities
+      summary: Read publish-mode capabilities for the configured project root.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: Workspace capabilities for decree issuance and run creation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceCapabilities"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs:
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: List workflow runs with filtering, ranked search, and cursor pagination.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/RunStateFilter"
+        - $ref: "#/components/parameters/RunSearch"
+      responses:
+        "200":
+          description: Run summaries ordered by search relevance when searching, otherwise newest-first or by newest activity when filtered to awaiting human decisions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    post:
+      tags: [runs]
+      operationId: createRun
+      summary: Start a workflow run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "201":
+          description: Run started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailableError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/events/stream:
+    get:
+      tags: [runs]
+      operationId: streamRunCollectionEvents
+      summary: Stream collection-level run updates over SSE with Last-Event-ID resume.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/LastEventId"
+        - $ref: "#/components/parameters/Follow"
+        - $ref: "#/components/parameters/PollMs"
+      responses:
+        "200":
+          description: Collection event stream (SSE).
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}:
+    get:
+      tags: [runs]
+      operationId: getRun
+      summary: Fetch run state snapshot.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunDetailSummary"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/cancel:
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      summary: Cancel an active workflow run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelRunRequest"
+      responses:
+        "200":
+          description: Run cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/plan:
+    get:
+      tags: [runs]
+      operationId: getRunPlan
+      summary: Fetch the latest reviewable current plan snapshot for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Latest reviewable current plan snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunPlanSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/plan-reviews:
+    get:
+      tags: [runs]
+      operationId: listRunPlanReviews
+      summary: List durable allfather plan review history for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run plan review history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunPlanReviewsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/governance-decisions:
+    get:
+      tags: [runs]
+      operationId: listRunGovernanceDecisions
+      summary: List durable allfather governance decision history for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Run governance decision history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GovernanceDecisionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/artifacts:
+    get:
+      tags: [runs]
+      operationId: listRunArtifacts
+      summary: List artifacts produced for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run artifact list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunArtifactsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/artifacts/archive:
+    get:
+      tags: [runs]
+      operationId: getRunArtifactsArchive
+      summary: Download all artifacts for a run as a zip archive.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: ZIP archive containing run artifacts.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/graph:
+    get:
+      tags: [runs]
+      operationId: getRunGraph
+      summary: Fetch run DAG graph snapshot.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: DAG graph snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunGraphResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/executions:
+    get:
+      tags: [runs]
+      operationId: listRunExecutions
+      summary: List durable execution attempts for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run execution attempts ordered by most recent execution activity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunExecutionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/executions/{attemptId}:
+    get:
+      tags: [runs]
+      operationId: getRunExecution
+      summary: Fetch canonical detail for one durable execution attempt.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+      responses:
+        "200":
+          description: Canonical execution detail for one durable attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunExecutionDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/agents:
+    get:
+      tags: [runs]
+      operationId: listRunAgents
+      summary: List agents that participated in a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run participants ordered by lineage depth and creation time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunAgentsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/timeline:
+    get:
+      tags: [runs]
+      operationId: getRunTimeline
+      summary: Fetch paginated run timeline.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Timeline page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunTimelineResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/mailbox/messages:
+    get:
+      tags: [runs]
+      operationId: listRunMailboxMessages
+      summary: List mailbox messages for a run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/Limit"
+        - name: thread_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: to_agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: unread_only
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: communication_type
+          in: query
+          required: false
+          description: Filter handoff messages by communication type (`instruction_dispatched`, `response_received`, `approval_request`, `approval_response`).
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Mailbox messages for the run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunMailboxMessagesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/mailbox/messages/{messageId}:
+    get:
+      tags: [runs]
+      operationId: getRunMailboxMessage
+      summary: Fetch full mailbox message details.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/MessageId"
+      responses:
+        "200":
+          description: Mailbox message detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunMailboxMessageDetail"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/mailbox/messages/{messageId}/read:
+    post:
+      tags: [runs]
+      operationId: markRunMailboxMessageRead
+      summary: Mark mailbox message as read.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/MessageId"
+      responses:
+        "204":
+          description: Message read marker updated.
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/nodes/{nodeKey}/retry:
+    post:
+      tags: [runs]
+      operationId: retryNode
+      summary: Queue a retry for one node.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/NodeKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetryNodeRequest"
+      responses:
+        "202":
+          description: Retry queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryNodeResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/rerun-from/{nodeKey}:
+    post:
+      tags: [runs]
+      operationId: rerunFromNode
+      summary: Queue rerun from a node.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/NodeKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RerunFromNodeRequest"
+      responses:
+        "202":
+          description: Rerun queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RerunFromNodeResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/final-approval:
+    post:
+      tags: [governance]
+      operationId: createFinalApproval
+      summary: Record allfather final decree confirmation or rework decision.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFinalApprovalRequest"
+      responses:
+        "201":
+          description: Final approval decision recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateFinalApprovalResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/plan-approval:
+    post:
+      tags: [governance]
+      operationId: createPlanApproval
+      summary: Record allfather plan approval or rework decision.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePlanApprovalRequest"
+      responses:
+        "201":
+          description: Plan approval decision recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreatePlanApprovalResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /artifacts/{id}:
+    get:
+      tags: [artifacts]
+      operationId: getArtifact
+      summary: Fetch artifact metadata.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: Artifact metadata and download pointer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /artifacts/{id}/content:
+    get:
+      tags: [artifacts]
+      operationId: getArtifactContent
+      summary: Fetch artifact content bytes.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/ArtifactId"
+        - name: download
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Artifact content.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /artifacts/{id}/preview-session:
+    post:
+      tags: [artifacts]
+      operationId: createArtifactPreviewSession
+      summary: Create a short-lived browser preview session for a previewable artifact.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/ArtifactId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateArtifactPreviewSessionRequest"
+      responses:
+        "201":
+          description: Preview session created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateArtifactPreviewSessionResult"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /preview/{token}:
+    get:
+      tags: [artifacts]
+      operationId: getArtifactPreviewContent
+      summary: Fetch preview root content by token.
+      description: Returns inline preview content using the artifact MIME type recorded for the preview session.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PreviewToken"
+      responses:
+        "200":
+          description: Preview content bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /preview/{token}/{assetPath}:
+    get:
+      tags: [artifacts]
+      operationId: getArtifactPreviewAssetContent
+      summary: Fetch linked preview asset content by token and relative path.
+      description: |
+        Browser preview HTML may request linked assets under this route.
+
+        `assetPath` is an opaque slash-preserving relative path emitted by the preview content. This route intentionally stays outside the strict request-validation middleware because standard OpenAPI path parameters do not model arbitrary nested asset paths without changing the public browser URL contract.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PreviewToken"
+        - $ref: "#/components/parameters/PreviewAssetPath"
+      responses:
+        "200":
+          description: Preview asset content bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /events/stream:
+    get:
+      tags: [events]
+      operationId: streamEvents
+      summary: Stream run events over SSE.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunIdQuery"
+        - $ref: "#/components/parameters/LastEventId"
+        - $ref: "#/components/parameters/Follow"
+        - $ref: "#/components/parameters/PollMs"
+      responses:
+        "200":
+          description: Event stream (SSE).
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /metrics/runtime:
+    get:
+      tags: [metrics]
+      operationId: getMetricsRuntime
+      summary: Fetch runtime health metrics.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: Runtime health metrics payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeMetrics"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /dashboard/snapshot:
+    get:
+      tags: [metrics]
+      operationId: getDashboardSnapshot
+      summary: Fetch the Throne Room dashboard snapshot.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+      responses:
+        "200":
+          description: Dashboard snapshot payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /realm-analytics/snapshot:
+    get:
+      tags: [metrics]
+      operationId: getRealmAnalyticsSnapshot
+      summary: Fetch the Realm Analytics page snapshot.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/WindowMinutes"
+      responses:
+        "200":
+          description: Realm Analytics snapshot payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RealmAnalyticsSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /realm-analytics/execution-detail:
+    get:
+      tags: [metrics]
+      operationId: getRealmAnalyticsExecutionDetailSnapshot
+      summary: Fetch aggregate execution detail or an exact selected-run snapshot for Realm Analytics.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/WindowMinutes"
+        - name: run_id
+          in: query
+          required: false
+          description: When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Realm Analytics execution detail snapshot payload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RealmAnalyticsExecutionDetailSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+components:
+  securitySchemes:
+    ActorIdHeader:
+      type: apiKey
+      in: header
+      name: X-Actor-Id
+    RoleIdHeader:
+      type: apiKey
+      in: header
+      name: X-Role-Id
+
+  parameters:
+    ActorId:
+      name: X-Actor-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    RoleId:
+      name: X-Role-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    RunId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    AttemptId:
+      name: attemptId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    DecreeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    NodeKey:
+      name: nodeKey
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ArtifactId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    PreviewToken:
+      name: token
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    PreviewAssetPath:
+      name: assetPath
+      in: path
+      required: true
+      description: Relative preview asset path as emitted by preview content. Browser requests may include nested slash-separated segments.
+      schema:
+        type: string
+        minLength: 1
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    RunIdQuery:
+      name: run_id
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    WindowMinutes:
+      name: window_minutes
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 525600
+        default: 1440
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    RunStateFilter:
+      name: state_filter
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [pending, running, awaiting_human_decision, succeeded, failed, cancelled]
+    RunSearch:
+      name: search
+      in: query
+      required: false
+      description: Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms.
+      schema:
+        type: string
+        minLength: 1
+    Follow:
+      name: follow
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    PollMs:
+      name: poll_ms
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 5000
+        default: 2000
+
+    PlanningSessionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+
+    PlanningOperationId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+
+    PlanningMessagesBefore:
+      name: before
+      in: query
+      required: false
+      schema:
+        type: string
+        minLength: 1
+
+    LastEventId:
+      name: Last-Event-ID
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+
+  responses:
+    HealthResponse:
+      description: Service health.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HealthResponse"
+    ErrorResponse:
+      description: Canonical error response envelope for unexpected or unclassified failures.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: internal_error
+              message: unexpected server error
+              retryable: true
+              category: core
+              details: {}
+              correlation_id: api.internal
+              occurred_at: "2026-04-30T12:00:00Z"
+    BadRequestError:
+      description: Canonical validation or request-shape error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: policy_violation
+              message: missing Idempotency-Key header
+              retryable: false
+              category: core
+              details: {}
+              correlation_id: idempotency-middleware
+              occurred_at: "2026-04-30T12:00:00Z"
+    UnauthorizedError:
+      description: Canonical authentication error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: policy_violation
+              message: missing authentication headers
+              retryable: false
+              category: core
+              details: {}
+              correlation_id: api.require_actor_headers
+              occurred_at: "2026-04-30T12:00:00Z"
+    ForbiddenError:
+      description: Canonical authorization error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: policy_violation
+              message: plan approval endpoint is allfather-only
+              retryable: false
+              category: core
+              details:
+                role_id: chancellor
+              correlation_id: api.create_plan_approval
+              occurred_at: "2026-04-30T12:00:00Z"
+    NotFoundError:
+      description: Canonical missing-resource error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: dependency_blocked
+              message: run not found
+              retryable: false
+              category: core
+              details:
+                run_id: run_missing
+              correlation_id: api.get_run
+              occurred_at: "2026-04-30T12:00:00Z"
+    ConflictError:
+      description: Canonical state-conflict error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: dependency_blocked
+              message: plan transition is not allowed
+              retryable: false
+              category: core
+              details:
+                run_id: run_123
+              correlation_id: api.create_plan_approval
+              occurred_at: "2026-04-30T12:00:00Z"
+    ServiceUnavailableError:
+      description: Canonical transient dependency or runtime availability error response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: internal_error
+              message: provider model catalog unavailable
+              retryable: true
+              category: core
+              details: {}
+              correlation_id: api.list_provider_models
+              occurred_at: "2026-04-30T12:00:00Z"
+
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    PlannerRuntimeMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          queued_operations,
+          running_operations,
+          failed_operations,
+          active_sessions,
+          processing_sessions,
+          planning_stream_replay_count,
+          planning_stream_resume_count,
+          planning_operation_recovery_count,
+          planning_operation_failure_count,
+        ]
+      properties:
+        queued_operations:
+          type: integer
+          minimum: 0
+        running_operations:
+          type: integer
+          minimum: 0
+        failed_operations:
+          type: integer
+          minimum: 0
+        active_sessions:
+          type: integer
+          minimum: 0
+        processing_sessions:
+          type: integer
+          minimum: 0
+        planning_stream_replay_count:
+          type: integer
+          minimum: 0
+        planning_stream_resume_count:
+          type: integer
+          minimum: 0
+        planning_operation_recovery_count:
+          type: integer
+          minimum: 0
+        planning_operation_failure_count:
+          type: integer
+          minimum: 0
+        oldest_queued_created_at:
+          type: string
+          format: date-time
+        oldest_running_started_at:
+          type: string
+          format: date-time
+
+    RuntimeMetrics:
+      type: object
+      additionalProperties: false
+      required: [status, running_runs, running_nodes, stale_running_nodes]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        running_runs:
+          type: integer
+          minimum: 0
+        running_nodes:
+          type: integer
+          minimum: 0
+        stale_running_nodes:
+          type: integer
+          minimum: 0
+        latest_event_at:
+          type: string
+          format: date-time
+        planner:
+          $ref: "#/components/schemas/PlannerRuntimeMetrics"
+
+    DashboardTokenSummary:
+      type: object
+      additionalProperties: false
+      required: [derived_total_tokens, input, output, reasoning]
+      properties:
+        derived_total_tokens:
+          type: integer
+          minimum: 0
+        input:
+          type: integer
+          minimum: 0
+        output:
+          type: integer
+          minimum: 0
+        reasoning:
+          type: integer
+          minimum: 0
+
+    DashboardTrendPoint:
+      type: object
+      additionalProperties: false
+      required: [bucket_start_at, run_count]
+      properties:
+        bucket_start_at:
+          type: string
+          format: date-time
+        run_count:
+          type: integer
+          minimum: 0
+
+    DashboardSnapshot:
+      type: object
+      additionalProperties: false
+      required: [snapshot_at, window_minutes, all_time_run_count, runtime, overview, tokens, recent_runs, run_trend]
+      properties:
+        snapshot_at:
+          type: string
+          format: date-time
+        window_minutes:
+          type: integer
+          minimum: 1
+        all_time_run_count:
+          type: integer
+          minimum: 0
+        runtime:
+          $ref: "#/components/schemas/RuntimeMetrics"
+        overview:
+          $ref: "#/components/schemas/RealmAnalyticsOverview"
+        tokens:
+          $ref: "#/components/schemas/DashboardTokenSummary"
+        recent_runs:
+          type: array
+          description: Runs created within the dashboard window, ordered by most recent activity.
+          items:
+            $ref: "#/components/schemas/RunSummary"
+        run_trend:
+          type: array
+          items:
+            $ref: "#/components/schemas/DashboardTrendPoint"
+
+    AnalyticsOutcomeBucket:
+      type: object
+      additionalProperties: false
+      required: [bucket, succeeded, failed, cancelled]
+      properties:
+        bucket:
+          type: string
+          minLength: 1
+        succeeded:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+        cancelled:
+          type: integer
+          minimum: 0
+
+    AnalyticsRoleDuration:
+      type: object
+      additionalProperties: false
+      required: [role, avg_duration_seconds]
+      properties:
+        role:
+          type: string
+          minLength: 1
+        avg_duration_seconds:
+          type: number
+          minimum: 0
+
+    RealmAnalyticsOverview:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          total_runs,
+          succeeded_runs,
+          failed_runs,
+          cancelled_runs,
+          avg_duration_seconds,
+          success_rate,
+          review_rework_rate,
+          validation_rework_rate,
+        ]
+      properties:
+        total_runs:
+          type: integer
+          minimum: 0
+        succeeded_runs:
+          type: integer
+          minimum: 0
+        failed_runs:
+          type: integer
+          minimum: 0
+        cancelled_runs:
+          type: integer
+          minimum: 0
+        avg_duration_seconds:
+          type: number
+          minimum: 0
+        success_rate:
+          type: number
+          minimum: 0
+        review_rework_rate:
+          type: number
+          minimum: 0
+        validation_rework_rate:
+          type: number
+          minimum: 0
+
+    RealmAnalyticsRunAnalytics:
+      type: object
+      additionalProperties: false
+      required: [bucket_type, outcome_series, duration_by_role, recent_runs]
+      properties:
+        bucket_type:
+          type: string
+          enum: [hour, day]
+        outcome_series:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnalyticsOutcomeBucket"
+        duration_by_role:
+          type: array
+          items:
+            $ref: "#/components/schemas/AnalyticsRoleDuration"
+        recent_runs:
+          type: array
+          description: Completed runs created within the selected analytics window, ordered by most recent completion.
+          items:
+            $ref: "#/components/schemas/RunSummary"
+
+    TokenUsageByRoleModel:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          provider_total_tokens,
+          derived_total_tokens,
+          input_tokens,
+          output_tokens,
+          reasoning_tokens,
+          record_count,
+          run_count,
+        ]
+      properties:
+        provider_id:
+          type: string
+          minLength: 1
+        provider_name:
+          type: string
+          minLength: 1
+        model:
+          type: string
+          minLength: 1
+        model_name:
+          type: string
+          minLength: 1
+        thinking_effort:
+          type: string
+          minLength: 1
+        provider_total_tokens:
+          type: integer
+          minimum: 0
+        derived_total_tokens:
+          type: integer
+          minimum: 0
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        reasoning_tokens:
+          type: integer
+          minimum: 0
+        record_count:
+          type: integer
+          minimum: 0
+        run_count:
+          type: integer
+          minimum: 0
+
+    TokenUsageByRole:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          required_role,
+          provider_total_tokens,
+          derived_total_tokens,
+          input_tokens,
+          output_tokens,
+          reasoning_tokens,
+          record_count,
+          by_model,
+        ]
+      properties:
+        required_role:
+          type: string
+          minLength: 1
+        model:
+          type: string
+          minLength: 1
+        thinking_effort:
+          type: string
+          minLength: 1
+        mixed_model:
+          type: boolean
+        mixed_thinking_effort:
+          type: boolean
+        provider_total_tokens:
+          type: integer
+          minimum: 0
+        derived_total_tokens:
+          type: integer
+          minimum: 0
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+        reasoning_tokens:
+          type: integer
+          minimum: 0
+        record_count:
+          type: integer
+          minimum: 0
+        by_model:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenUsageByRoleModel"
+
+    RealmAnalyticsTokenSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          provider_total_tokens,
+          derived_total_tokens,
+          input,
+          output,
+          reasoning,
+          cache_read,
+          cache_write,
+          by_role,
+        ]
+      properties:
+        provider_total_tokens:
+          type: integer
+          minimum: 0
+        derived_total_tokens:
+          type: integer
+          minimum: 0
+        input:
+          type: integer
+          minimum: 0
+        output:
+          type: integer
+          minimum: 0
+        reasoning:
+          type: integer
+          minimum: 0
+        cache_read:
+          type: integer
+          minimum: 0
+        cache_write:
+          type: integer
+          minimum: 0
+        by_role:
+          type: array
+          items:
+            $ref: "#/components/schemas/TokenUsageByRole"
+
+    RealmAnalyticsArtifactSummary:
+      type: object
+      additionalProperties: false
+      required: [total_count, total_size_bytes]
+      properties:
+        total_count:
+          type: integer
+          minimum: 0
+        total_size_bytes:
+          type: integer
+          minimum: 0
+
+    RealmAnalyticsNodeSummary:
+      type: object
+      additionalProperties: false
+      required: [total_executed]
+      properties:
+        total_executed:
+          type: integer
+          minimum: 0
+
+    RealmAnalyticsSelectedRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, decree_title, status, created_at]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        decree_title:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [pending, running, awaiting_human_confirmation, succeeded, failed, cancelled]
+        created_at:
+          type: string
+          format: date-time
+
+    RealmAnalyticsExecutionDetail:
+      type: object
+      additionalProperties: false
+      required: [tokens, artifacts, nodes]
+      properties:
+        selected_run:
+          $ref: "#/components/schemas/RealmAnalyticsSelectedRun"
+        tokens:
+          $ref: "#/components/schemas/RealmAnalyticsTokenSummary"
+        artifacts:
+          $ref: "#/components/schemas/RealmAnalyticsArtifactSummary"
+        nodes:
+          $ref: "#/components/schemas/RealmAnalyticsNodeSummary"
+
+    RealmAnalyticsExecutionDetailSnapshot:
+      type: object
+      additionalProperties: false
+      required: [snapshot_at, window_minutes, execution_detail]
+      properties:
+        snapshot_at:
+          type: string
+          format: date-time
+        window_minutes:
+          type: integer
+          minimum: 1
+        execution_detail:
+          $ref: "#/components/schemas/RealmAnalyticsExecutionDetail"
+
+    RealmAnalyticsSnapshot:
+      type: object
+      additionalProperties: false
+      required: [snapshot_at, window_minutes, all_time_run_count, overview, run_analytics]
+      properties:
+        snapshot_at:
+          type: string
+          format: date-time
+        window_minutes:
+          type: integer
+          minimum: 1
+        all_time_run_count:
+          type: integer
+          minimum: 0
+        overview:
+          $ref: "#/components/schemas/RealmAnalyticsOverview"
+        run_analytics:
+          $ref: "#/components/schemas/RealmAnalyticsRunAnalytics"
+
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            [
+              code,
+              message,
+              retryable,
+              category,
+              details,
+              correlation_id,
+              occurred_at,
+            ]
+          properties:
+            code:
+              type: string
+              enum:
+                [
+                  transient_transport,
+                  timeout,
+                  invalid_output_schema,
+                  policy_violation,
+                  dependency_blocked,
+                  budget_exceeded,
+                  internal_error,
+                  llm_rate_limited,
+                  llm_model_unavailable,
+                  llm_context_overflow,
+                  llm_invalid_response,
+                  agent_unresponsive,
+                  session_lease_expired,
+                  tool_execution_failed,
+                  container_start_failed,
+                  container_oom_killed,
+                  event_sequence_gap,
+                  idempotency_conflict,
+                ]
+            message:
+              type: string
+              minLength: 1
+            retryable:
+              type: boolean
+            category:
+              type: string
+              enum: [core, provider, runtime, control_plane]
+            details:
+              type: object
+              additionalProperties: true
+            correlation_id:
+              type: string
+              minLength: 1
+            occurred_at:
+              type: string
+              format: date-time
+      example:
+        error:
+          code: policy_violation
+          message: missing Idempotency-Key header
+          retryable: false
+          category: core
+          details: {}
+          correlation_id: idempotency-middleware
+          occurred_at: "2026-04-30T12:00:00Z"
+
+    CreateDecreeRequest:
+      type: object
+      additionalProperties: false
+      required: [decree_title, decree_text]
+      properties:
+        decree_title:
+          type: string
+          minLength: 1
+        decree_text:
+          type: string
+          minLength: 1
+        metadata:
+          type: object
+          additionalProperties: true
+      example:
+        decree_title: Stabilize decree issuance flow
+        decree_text: Audit the decree issuance path, remove drift, and ship the clean contract.
+        metadata:
+          source: remediation
+          priority: high
+
+    CreateDecreeResult:
+      type: object
+      additionalProperties: false
+      required: [decree_id, created_at]
+      properties:
+        decree_id:
+          type: string
+          minLength: 1
+        created_at:
+          type: string
+          format: date-time
+      example:
+        decree_id: decree_123
+        created_at: "2026-04-30T12:00:00Z"
+
+    DecreeDetail:
+      type: object
+      additionalProperties: false
+      required: [decree_id, decree_title, decree_text, created_at]
+      properties:
+        decree_id:
+          type: string
+          minLength: 1
+        decree_title:
+          type: string
+          minLength: 1
+        decree_text:
+          type: string
+          minLength: 1
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    CreatePlanningSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+        model_selection:
+          $ref: "#/components/schemas/PlanningAgentModelSelection"
+
+    CreatePlanningSessionResult:
+      type: object
+      additionalProperties: false
+      required: [session]
+      properties:
+        session:
+          $ref: "#/components/schemas/PlanningSessionDetail"
+        opening_message:
+          $ref: "#/components/schemas/PlanningMessage"
+
+    UpdatePlanningSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+        model_selection:
+          $ref: "#/components/schemas/PlanningAgentModelSelection"
+
+    CreatePlanningOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [reply, formalize, regenerate]
+        reply:
+          $ref: "#/components/schemas/PlanningReplyOperationRequest"
+        regenerate:
+          $ref: "#/components/schemas/PlanningRegenerateOperationRequest"
+
+    PlanningSessionSummary:
+      type: object
+      additionalProperties: false
+      required: [planning_session_id, title, title_state, lifecycle_state, conversation_state, created_at, updated_at]
+      properties:
+        planning_session_id:
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+        title_state:
+          type: string
+          enum: [placeholder, generated, custom]
+        lifecycle_state:
+          type: string
+          enum: [active, archived]
+        conversation_state:
+          type: string
+          enum: [ready, processing]
+        current_question_message_id:
+          type: string
+          minLength: 1
+        current_operation_id:
+          type: string
+          minLength: 1
+        current_title_operation_id:
+          type: string
+          minLength: 1
+        current_draft_id:
+          type: string
+          minLength: 1
+        context_snapshot_id:
+          type: string
+          minLength: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PlanningSessionDetail:
+      example:
+        planning_session_id: ps_123
+        title: Harden the run approval path
+        title_state: custom
+        lifecycle_state: active
+        conversation_state: ready
+        current_question_message_id: msg_123
+        current_operation_id: op_123
+        current_title_operation_id: op_title_123
+        current_draft_id: draft_123
+        context_snapshot_id: ctx_123
+        created_at: "2026-04-30T12:00:00Z"
+        updated_at: "2026-04-30T12:05:00Z"
+        project_root: /workspace/kingdom
+        model_selection:
+          model: provider/model-id
+          thinking_effort: low
+      allOf:
+        - $ref: "#/components/schemas/PlanningSessionSummary"
+        - type: object
+          additionalProperties: false
+          required: [project_root, model_selection]
+          properties:
+            project_root:
+              type: string
+              minLength: 1
+            model_selection:
+              $ref: "#/components/schemas/PlanningAgentModelSelection"
+
+    PlanningReplyOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [content_markdown]
+      properties:
+        content_markdown:
+          type: string
+          minLength: 1
+        answer_payload:
+          $ref: "#/components/schemas/StructuredQuestionAnswer"
+        truncate_from_turn:
+          type: integer
+          minimum: 1
+
+    PlanningRegenerateOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [target_turn_index]
+      properties:
+        target_turn_index:
+          type: integer
+          minimum: 1
+
+    PlanningOperationSummary:
+      type: object
+      additionalProperties: false
+      required: [operation_id, planning_session_id, type, status, created_at]
+      properties:
+        operation_id:
+          type: string
+          minLength: 1
+        planning_session_id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          enum: [bootstrap_context, reply, formalize, regenerate, generate_title]
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        error:
+          type: string
+        result_ref:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+
+    PlanningOperationDetail:
+      example:
+        operation_id: op_123
+        planning_session_id: ps_123
+        type: reply
+        status: succeeded
+        request:
+          type: reply
+          content_markdown: Please narrow the scope to API error-contract work only.
+          answer_payload:
+            text: Focus on API canonical errors and OpenAPI examples.
+          user_message_id: msg_user_123
+          user_created_at: "2026-04-30T12:03:00Z"
+        created_at: "2026-04-30T12:03:00Z"
+        started_at: "2026-04-30T12:03:01Z"
+        finished_at: "2026-04-30T12:03:08Z"
+      allOf:
+        - $ref: "#/components/schemas/PlanningOperationSummary"
+        - type: object
+          additionalProperties: false
+          required: [request]
+          properties:
+            request:
+              $ref: "#/components/schemas/PlanningOperationRequestEnvelope"
+            observed_output_text:
+              type: string
+
+    PlanningOperationEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, operation_id, seq, event_type, payload, created_at]
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+        operation_id:
+          type: string
+          minLength: 1
+        seq:
+          type: integer
+          minimum: 1
+        event_type:
+          type: string
+          minLength: 1
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    PlanningOperationRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [bootstrap_context, reply, formalize, regenerate, generate_title]
+        content_markdown:
+          type: string
+          minLength: 1
+        answer_payload:
+          $ref: "#/components/schemas/StructuredQuestionAnswer"
+        user_message_id:
+          type: string
+          minLength: 1
+        user_created_at:
+          type: string
+          format: date-time
+        turn_index:
+          type: integer
+          minimum: 1
+        assistant_message_id:
+          type: string
+          minLength: 1
+        assistant_created_at:
+          type: string
+          format: date-time
+        draft_id:
+          type: string
+          minLength: 1
+        draft_created_at:
+          type: string
+          format: date-time
+
+    PlanningAgentModelSelection:
+      type: object
+      additionalProperties: false
+      required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+        thinking_effort:
+          type: string
+
+    RunPublishMode:
+      type: string
+      enum: [direct, git_worktree]
+
+    WorkspaceCapabilities:
+      type: object
+      additionalProperties: false
+      required: [project_root, default_publish_mode, git_repo, git_worktree_available]
+      properties:
+        project_root:
+          type: string
+          minLength: 1
+        default_publish_mode:
+          $ref: "#/components/schemas/RunPublishMode"
+        git_repo:
+          type: boolean
+        git_worktree_available:
+          type: boolean
+        git_worktree_reason:
+          type: string
+          minLength: 1
+      example:
+        project_root: /workspace/kingdom
+        default_publish_mode: direct
+        git_repo: false
+        git_worktree_available: false
+        git_worktree_reason: project root is not a valid git working tree
+
+    PlanningSessionListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanningSessionSummary"
+
+    StructuredQuestionOption:
+      type: object
+      additionalProperties: false
+      required: [label, value]
+      properties:
+        label:
+          type: string
+          minLength: 1
+        value:
+          type: string
+          minLength: 1
+
+    StructuredQuestion:
+      type: object
+      additionalProperties: false
+      required: [prompt, type]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          enum: [yes_no, single_select, multi_select, short_text, long_text]
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/StructuredQuestionOption"
+
+    StructuredQuestionAnswer:
+      type: object
+      additionalProperties: false
+      properties:
+        value:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+        text:
+          type: string
+
+    PlanningMessage:
+      type: object
+      additionalProperties: false
+      required: [planning_message_id, planning_session_id, turn_index, role, content_markdown, variant_index, active, created_at]
+      properties:
+        planning_message_id:
+          type: string
+          minLength: 1
+        planning_session_id:
+          type: string
+          minLength: 1
+        turn_index:
+          type: integer
+          minimum: 1
+        role:
+          type: string
+          enum: [user, assistant]
+        content_markdown:
+          type: string
+        question_payload:
+          $ref: "#/components/schemas/StructuredQuestion"
+        answer_payload:
+          $ref: "#/components/schemas/StructuredQuestionAnswer"
+        variant_index:
+          type: integer
+          minimum: 0
+        active:
+          type: boolean
+        variant_count:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+
+    PlanningMessagesPage:
+      type: object
+      additionalProperties: false
+      required: [planning_session_id, items, total_count, first_item_index]
+      properties:
+        planning_session_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanningMessage"
+        total_count:
+          type: integer
+          minimum: 0
+        first_item_index:
+          type: integer
+          minimum: 0
+        previous_cursor:
+          type: string
+          minLength: 1
+
+    PlanningMessageVariantsResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanningMessage"
+
+    PlanningDraft:
+      type: object
+      additionalProperties: false
+      required: [planning_draft_id, planning_session_id, decree_title, decree_text, created_at]
+      properties:
+        planning_draft_id:
+          type: string
+          minLength: 1
+        planning_session_id:
+          type: string
+          minLength: 1
+        decree_title:
+          type: string
+          minLength: 1
+        decree_text:
+          type: string
+          minLength: 1
+        summary:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    PlanningContextFileEntry:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+        size_bytes:
+          type: integer
+          minimum: 0
+
+    PlanningContextSnapshot:
+      type: object
+      additionalProperties: false
+      required: [planning_context_snapshot_id, planning_session_id, summary_markdown, included_files, excluded_files, created_at]
+      properties:
+        planning_context_snapshot_id:
+          type: string
+          minLength: 1
+        planning_session_id:
+          type: string
+          minLength: 1
+        summary_markdown:
+          type: string
+          minLength: 1
+        included_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanningContextFileEntry"
+        excluded_files:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlanningContextFileEntry"
+        created_at:
+          type: string
+          format: date-time
+
+    RefreshPlanningSessionContextResult:
+      type: object
+      additionalProperties: false
+      required: [session, context_snapshot]
+      properties:
+        session:
+          $ref: "#/components/schemas/PlanningSessionDetail"
+        context_snapshot:
+          $ref: "#/components/schemas/PlanningContextSnapshot"
+
+    GeneratePlanningSessionTitleResult:
+      $ref: "#/components/schemas/PlanningSessionDetail"
+
+    PublishWorkflowRequest:
+      type: object
+      additionalProperties: false
+      required: [workflow_id, version, definition_json]
+      properties:
+        workflow_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+        definition_json:
+          type: object
+          additionalProperties: true
+
+    PublishWorkflowResult:
+      type: object
+      additionalProperties: false
+      required: [workflow_id, version, published_at]
+      properties:
+        workflow_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+        published_at:
+          type: string
+          format: date-time
+
+    CreateRunRequest:
+      type: object
+      additionalProperties: false
+      required: [decree_id, model_selection, publish_mode]
+      properties:
+        decree_id:
+          type: string
+          minLength: 1
+        skip_reviews_and_validations:
+          type: boolean
+          description: When true, Kingdom uses the built-in alternate workflow that routes builder output directly to royal closure.
+        run_until_all_approve:
+          type: boolean
+          description: When true, review and validation loops continue until approval. Workflows without execution review or validation nodes normalize this to false.
+        max_execution_review_cycles:
+          type: integer
+          minimum: 0
+          description: Review-cycle cap override. `0` keeps execution-review nodes in the workflow but auto-succeeds the first ready review wave immediately. Workflows without review nodes report `0`.
+        max_validation_rework_cycles:
+          type: integer
+          minimum: 0
+          description: Validation rework cap override. `0` keeps validation-gate nodes in the workflow but auto-succeeds the first ready validation wave immediately. Workflows without validation nodes report `0`.
+        autonomous_approvals:
+          type: boolean
+        publish_mode:
+          $ref: "#/components/schemas/RunPublishMode"
+        model_selection:
+          $ref: "#/components/schemas/RunModelSelection"
+      example:
+        decree_id: decree_123
+        skip_reviews_and_validations: true
+        run_until_all_approve: true
+        max_execution_review_cycles: 2
+        max_validation_rework_cycles: 2
+        autonomous_approvals: false
+        publish_mode: direct
+        model_selection:
+          global:
+            model: provider/model-id
+            thinking_effort: low
+
+    CancelRunRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 1
+
+    RunSummary:
+      type: object
+      additionalProperties: false
+      required: [run_id, workflow_id, decree_id, decree_title, status, display_state, plan_state, created_at, updated_at, last_activity_at]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        workflow_id:
+          type: string
+          minLength: 1
+        decree_id:
+          type: string
+          minLength: 1
+        decree_title:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [pending, running, awaiting_human_confirmation, succeeded, failed, cancelled]
+        display_state:
+          $ref: "#/components/schemas/RunDisplayState"
+        plan_state:
+          type: string
+          enum: [draft, in_council_review, awaiting_king_decision, approved, needs_rework]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_activity_at:
+          type: string
+          format: date-time
+        run_until_all_approve:
+          type: boolean
+        max_execution_review_cycles:
+          type: integer
+          minimum: 0
+          description: Stored review-cycle cap. Workflows without execution-review nodes report `0`.
+        max_validation_rework_cycles:
+          type: integer
+          minimum: 0
+          description: Stored validation-cycle cap. Workflows without validation-gate nodes report `0`.
+        autonomous_approvals:
+          type: boolean
+        pending_approval_key:
+          type: string
+          minLength: 1
+          description: Stable identity for the current manual approval gate. Present only while a run is awaiting manual plan or final approval.
+        publish_mode:
+          $ref: "#/components/schemas/RunPublishMode"
+        model_selection:
+          $ref: "#/components/schemas/RunModelSelection"
+      example:
+        run_id: run_123
+        workflow_id: royal-decree-v1
+        decree_id: decree_123
+        decree_title: Stabilize decree issuance flow
+        status: awaiting_human_confirmation
+        display_state: awaiting_final_decision
+        plan_state: approved
+        created_at: "2026-04-30T12:10:00Z"
+        updated_at: "2026-04-30T12:25:00Z"
+        last_activity_at: "2026-04-30T12:29:00Z"
+        run_until_all_approve: true
+        max_execution_review_cycles: 2
+        max_validation_rework_cycles: 2
+        autonomous_approvals: false
+        pending_approval_key: final:gate_7
+        publish_mode: direct
+
+    RuntimeRetryStatus:
+      type: object
+      additionalProperties: false
+      required: [node_id, node_run_id, retry_index, retry_max, delay_seconds]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        node_run_id:
+          type: string
+          minLength: 1
+        retry_index:
+          type: integer
+          minimum: 1
+        retry_max:
+          type: integer
+          minimum: 1
+        delay_seconds:
+          type: integer
+          minimum: 1
+
+    RunTabCounts:
+      type: object
+      additionalProperties: false
+      required: [dag_nodes, agents, activity_events, executions, messages]
+      properties:
+        dag_nodes:
+          type: integer
+          minimum: 0
+        agents:
+          type: integer
+          minimum: 0
+        activity_events:
+          type: integer
+          minimum: 0
+        executions:
+          type: integer
+          minimum: 0
+        messages:
+          type: integer
+          minimum: 0
+      example:
+        dag_nodes: 6
+        agents: 4
+        activity_events: 50
+        executions: 12
+        messages: 8
+
+    RunStreamCursor:
+      type: object
+      additionalProperties: false
+      required: [event_id, run_event_seq]
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+        run_event_seq:
+          type: integer
+          minimum: 1
+
+    RunDetailSummary:
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          additionalProperties: false
+          required:
+            [
+              tab_counts,
+              review_rework_cycles,
+              review_current_wave,
+              validation_rework_waves,
+              validation_current_wave,
+              review_auto_succeeded_count,
+              validation_auto_succeeded_count,
+              failed_nodes,
+              runtime_retries,
+            ]
+          properties:
+            tab_counts:
+              $ref: "#/components/schemas/RunTabCounts"
+            review_rework_cycles:
+              type: integer
+              minimum: 0
+            review_current_wave:
+              type: integer
+              minimum: 0
+            validation_rework_waves:
+              type: integer
+              minimum: 0
+            validation_current_wave:
+              type: integer
+              minimum: 0
+            review_auto_succeeded_count:
+              type: integer
+              minimum: 0
+            validation_auto_succeeded_count:
+              type: integer
+              minimum: 0
+            failed_nodes:
+              type: array
+              items:
+                $ref: "#/components/schemas/RunGraphNode"
+            stream_cursor:
+              $ref: "#/components/schemas/RunStreamCursor"
+            runtime_retries:
+              type: array
+              items:
+                $ref: "#/components/schemas/RuntimeRetryStatus"
+      example:
+        run_id: run_123
+        workflow_id: royal-decree-v1
+        decree_id: decree_123
+        decree_title: Stabilize decree issuance flow
+        status: awaiting_human_confirmation
+        display_state: awaiting_final_decision
+        plan_state: approved
+        created_at: "2026-04-30T12:10:00Z"
+        updated_at: "2026-04-30T12:25:00Z"
+        last_activity_at: "2026-04-30T12:29:00Z"
+        run_until_all_approve: true
+        max_execution_review_cycles: 2
+        max_validation_rework_cycles: 2
+        autonomous_approvals: false
+        publish_mode: direct
+        tab_counts:
+          dag_nodes: 6
+          agents: 4
+          activity_events: 50
+          executions: 12
+          messages: 8
+        model_selection:
+          global:
+            model: provider/model-id
+            thinking_effort: low
+        review_rework_cycles: 1
+        review_current_wave: 1
+        validation_rework_waves: 0
+        validation_current_wave: 0
+        review_auto_succeeded_count: 0
+        validation_auto_succeeded_count: 0
+        failed_nodes: []
+        stream_cursor:
+          event_id: evt_123
+          run_event_seq: 50
+        runtime_retries:
+          - node_id: delegated_execution_berserker
+            node_run_id: nr_123
+            retry_index: 2
+            retry_max: 3
+            delay_seconds: 10
+
+    RunListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunSummary"
+        next_cursor:
+          type: string
+          minLength: 1
+
+    RunDisplayState:
+      type: string
+      enum: [pending, running, awaiting_plan_decision, awaiting_final_decision, succeeded, failed, cancelled]
+
+    ThinkingEffortOption:
+      type: object
+      additionalProperties: false
+      required: [value, label]
+      properties:
+        value:
+          type: string
+          minLength: 1
+        label:
+          type: string
+          minLength: 1
+
+    RunModelSelectionEntry:
+      type: object
+      additionalProperties: false
+      required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+        thinking_effort:
+          type: string
+          minLength: 1
+
+    RunModelSelection:
+      type: object
+      additionalProperties: false
+      required: [global]
+      properties:
+        global:
+          $ref: "#/components/schemas/RunModelSelectionEntry"
+        role_overrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RunModelSelectionEntry"
+      example:
+        global:
+          model: provider/model-id
+          thinking_effort: low
+        role_overrides:
+          chancellor:
+            model: provider/model-id
+            thinking_effort: low
+          builder-berserker:
+            model: provider/model-id
+            thinking_effort: low
+
+    ProviderModel:
+      type: object
+      additionalProperties: false
+      required: [id, provider_id, provider_name, model_name, thinking_effort_options]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        provider_id:
+          type: string
+          minLength: 1
+        provider_name:
+          type: string
+          minLength: 1
+        model_name:
+          type: string
+          minLength: 1
+        thinking_effort_default:
+          type: string
+          minLength: 1
+        thinking_effort_options:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThinkingEffortOption"
+
+    ProviderModelsResponse:
+      type: object
+      additionalProperties: false
+      required: [items, catalog_status]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderModel"
+        catalog_status:
+          type: string
+          enum: [fresh, stale, unavailable]
+        last_success_at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: string
+          enum: [timeout, binary_missing, command_failed, parse_failed]
+        failure_message:
+          type: string
+
+    Role:
+      type: object
+      additionalProperties: false
+      required: [role_id, display_name, description, can_spawn, agent_model_selector_visible, agent_model_selector_section_id, agent_model_selector_section_label, agent_model_selector_section_order, agent_model_selector_role_order]
+      properties:
+        role_id:
+          type: string
+          minLength: 1
+        display_name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        can_spawn:
+          type: boolean
+        agent_model_selector_visible:
+          type: boolean
+        agent_model_selector_section_id:
+          type: string
+        agent_model_selector_section_label:
+          type: string
+        agent_model_selector_section_order:
+          type: integer
+          minimum: 0
+        agent_model_selector_role_order:
+          type: integer
+          minimum: 0
+
+    RolesResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+
+    RunPlanSnapshot:
+      type: object
+      description: Latest canonical run-level plan revision currently eligible for operator approval and prompt hydration.
+      additionalProperties: false
+      required: [run_id, plan_state, revision_status, components, created_at, format, content]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        plan_state:
+          type: string
+          enum: [draft, in_council_review, awaiting_king_decision, approved, needs_rework]
+        revision_status:
+          type: string
+          enum: [pending, ready]
+        plan_revision_id:
+          type: string
+          minLength: 1
+        components:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunPlanSnapshotComponent"
+        created_at:
+          type: string
+          format: date-time
+        format:
+          type: string
+          enum: [markdown, plain_text]
+        content:
+          type: string
+      example:
+        run_id: run_123
+        plan_state: awaiting_king_decision
+        revision_status: ready
+        plan_revision_id: planrev_123
+        components:
+          - node_id: plan_drafting_scope
+            planning_output_id: planout_scope_123
+            created_at: "2026-04-30T12:18:00Z"
+            content: |
+              Narrow the feature scope and define verification gates.
+          - node_id: plan_drafting_delivery
+            planning_output_id: planout_delivery_123
+            created_at: "2026-04-30T12:20:00Z"
+            content: |
+              Sequence the implementation work and rollout checkpoints.
+        created_at: "2026-04-30T12:20:00Z"
+        format: markdown
+        content: |
+          ## plan_drafting_scope
+          
+          Narrow the feature scope and define verification gates.
+
+          ## plan_drafting_delivery
+
+          Sequence the implementation work and rollout checkpoints.
+
+    RunPlanSnapshotComponent:
+      type: object
+      additionalProperties: false
+      required: [node_id, planning_output_id, created_at, content]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        planning_output_id:
+          type: string
+          minLength: 1
+        created_at:
+          type: string
+          format: date-time
+        content:
+          type: string
+
+    RunPlanReview:
+      type: object
+      additionalProperties: false
+      required: [plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, created_at]
+      properties:
+        plan_review_id:
+          type: string
+          minLength: 1
+        run_id:
+          type: string
+          minLength: 1
+        reviewed_plan_revision_id:
+          type: string
+          minLength: 1
+        decision:
+          type: string
+          enum: [approved, needs_rework]
+        feedback_markdown:
+          type: string
+        actor_id:
+          type: string
+          minLength: 1
+        role_id:
+          type: string
+          minLength: 1
+        queued_advisory_attempt:
+          type: integer
+          minimum: 1
+        queued_plan_attempt:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+
+    RunPlanReviewsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunPlanReview"
+
+    GovernanceDecision:
+      type: object
+      additionalProperties: false
+      required: [decision_id, stage, decision, feedback_markdown, created_at]
+      properties:
+        decision_id:
+          type: string
+          minLength: 1
+        stage:
+          type: string
+          enum: [plan, final]
+        decision:
+          type: string
+          enum: [approved, confirmed, needs_rework]
+        feedback_markdown:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    GovernanceDecisionsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/GovernanceDecision"
+        next_cursor:
+          type: string
+          minLength: 1
+
+    RunMailboxMessageSummary:
+      type: object
+      additionalProperties: false
+      required:
+        [message_id, run_id, node_id, from_agent_id, from_agent_name, to_agent_id, to_agent_name, thread_id, message_type, communication_type, message_source, priority, created_at, preview, format]
+      properties:
+        message_id:
+          type: string
+          minLength: 1
+        run_id:
+          type: string
+          minLength: 1
+        node_id:
+          type: string
+        from_agent_id:
+          type: string
+          minLength: 1
+        from_agent_name:
+          type: string
+          minLength: 1
+        to_agent_id:
+          type: string
+          minLength: 1
+        to_agent_name:
+          type: string
+          minLength: 1
+        thread_id:
+          type: string
+          minLength: 1
+        message_type:
+          type: string
+          enum: [clarification, escalation, decision_request, status_update]
+        communication_type:
+          type: string
+          minLength: 1
+        message_source:
+          type: string
+          minLength: 1
+        reason_code:
+          type: string
+          nullable: true
+        verdict_type:
+          type: string
+          enum: [review, validation]
+          nullable: true
+        verdict_status:
+          type: string
+          enum: [pass, rework, invalid, auto_succeeded]
+          nullable: true
+        priority:
+          type: string
+          enum: [low, normal, high, critical]
+        created_at:
+          type: string
+          format: date-time
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        preview:
+          type: string
+        format:
+          type: string
+          enum: [markdown, plain_text, json]
+
+    RunMailboxMessagesResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunMailboxMessageSummary"
+
+    RunMailboxMessageDetail:
+      type: object
+      additionalProperties: false
+      required:
+        [message_id, run_id, node_id, from_agent_id, from_agent_name, to_agent_id, to_agent_name, thread_id, message_type, communication_type, message_source, priority, created_at, format, content, payload_json]
+      properties:
+        message_id:
+          type: string
+          minLength: 1
+        run_id:
+          type: string
+          minLength: 1
+        node_id:
+          type: string
+        from_agent_id:
+          type: string
+          minLength: 1
+        from_agent_name:
+          type: string
+          minLength: 1
+        to_agent_id:
+          type: string
+          minLength: 1
+        to_agent_name:
+          type: string
+          minLength: 1
+        thread_id:
+          type: string
+          minLength: 1
+        message_type:
+          type: string
+          enum: [clarification, escalation, decision_request, status_update]
+        communication_type:
+          type: string
+          minLength: 1
+        message_source:
+          type: string
+          minLength: 1
+        reason_code:
+          type: string
+          nullable: true
+        verdict_type:
+          type: string
+          enum: [review, validation]
+          nullable: true
+        verdict_status:
+          type: string
+          enum: [pass, rework, invalid, auto_succeeded]
+          nullable: true
+        priority:
+          type: string
+          enum: [low, normal, high, critical]
+        created_at:
+          type: string
+          format: date-time
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        format:
+          type: string
+          enum: [markdown, plain_text, json]
+        content:
+          type: string
+        payload_json:
+          type: object
+          additionalProperties: true
+
+    RunGraphNode:
+      type: object
+      additionalProperties: false
+      required: [node_id, state, required_role, execution_ownership]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          enum: [pending, ready, running, succeeded, failed, blocked, cancelled, skipped]
+        required_role:
+          type: string
+          minLength: 1
+        execution_ownership:
+          type: string
+          enum: [provider_backed, runtime_owned]
+        node_run_id:
+          type: string
+          minLength: 1
+        attempt:
+          type: integer
+          minimum: 1
+        failure_reason:
+          type: string
+          nullable: true
+
+    RunGraphEdge:
+      type: object
+      additionalProperties: false
+      required: [from, to]
+      properties:
+        from:
+          type: string
+          minLength: 1
+        to:
+          type: string
+          minLength: 1
+        on:
+          type: string
+          minLength: 1
+
+    RunGraphResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, nodes, edges]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunGraphNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunGraphEdge"
+
+    RunAgent:
+      type: object
+      additionalProperties: false
+      required: [agent_id, role_id, display_name, status, spawn_depth, created_at]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+        role_id:
+          type: string
+          minLength: 1
+        display_name:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [idle, busy, blocked, offline, failed]
+        parent_agent_id:
+          type: string
+          minLength: 1
+        spawn_depth:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        last_heartbeat_at:
+          type: string
+          format: date-time
+
+    RunParticipant:
+      type: object
+      additionalProperties: false
+      required: [agent_id, role_id, display_name, status, spawn_depth, first_seen_at]
+      properties:
+        agent_id:
+          type: string
+          minLength: 1
+        role_id:
+          type: string
+          minLength: 1
+        display_name:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [idle, busy, blocked, offline, failed]
+        parent_agent_id:
+          type: string
+          minLength: 1
+        spawn_depth:
+          type: integer
+          minimum: 0
+        first_seen_at:
+          type: string
+          format: date-time
+        last_heartbeat_at:
+          type: string
+          format: date-time
+
+    RunExecution:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, node_run_id, node_id, attempt, agent_id, required_role, execution_mode, status, activity_at, updated_at]
+      properties:
+        attempt_id:
+          type: string
+          minLength: 1
+        node_run_id:
+          type: string
+          minLength: 1
+        node_id:
+          type: string
+          minLength: 1
+        attempt:
+          type: integer
+          minimum: 1
+        agent_id:
+          type: string
+          minLength: 1
+        required_role:
+          type: string
+          minLength: 1
+        execution_mode:
+          type: string
+          enum: [provider_backed, runtime_owned]
+        status:
+          type: string
+          enum: [queued, starting, running, verifying, succeeded, failed, cancelled]
+        logical_session_id:
+          type: string
+          minLength: 1
+        provider_session_id:
+          type: string
+          minLength: 1
+        last_heartbeat_at:
+          type: string
+          format: date-time
+        activity_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        terminal_observed_at:
+          type: string
+          format: date-time
+        committed_at:
+          type: string
+          format: date-time
+        failure_code:
+          type: string
+          minLength: 1
+        failure_text:
+          type: string
+          minLength: 1
+
+    RunExecutionDetail:
+      allOf:
+        - $ref: "#/components/schemas/RunExecution"
+        - type: object
+          additionalProperties: false
+          required: [settlement_status, output_status]
+          properties:
+            provider_invocation_id:
+              type: string
+              minLength: 1
+            provider_invocation_at:
+              type: string
+              format: date-time
+            settlement_status:
+              type: string
+              enum: [not_applicable, not_started, pending, succeeded, failed, cancelled]
+            settlement_detail:
+              $ref: "#/components/schemas/RunExecutionSettlementDetail"
+            settled_at:
+              type: string
+              format: date-time
+            output_status:
+              type: string
+              enum: [none, observed, settled, unavailable]
+            output_text:
+              type: string
+              minLength: 1
+            output_verdict:
+              type: string
+              enum: [PASS, REWORK]
+            output_verdict_status:
+              type: string
+              enum: [observed, settled]
+
+    RunExecutionSettlementDetail:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          minLength: 1
+
+    RunExecutionsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunExecution"
+
+    RunAgentsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunParticipant"
+
+    AgentsResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunAgent"
+
+    TimelineEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, run_event_seq, attempt_seq, event_type, emitted_at, payload_json]
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+        run_event_seq:
+          type: integer
+          minimum: 1
+        attempt_seq:
+          type: integer
+          minimum: 1
+        event_type:
+          type: string
+          minLength: 1
+        reason_code:
+          type: string
+          minLength: 1
+        emitted_at:
+          type: string
+          format: date-time
+        payload_json:
+          type: object
+          additionalProperties: true
+
+    RunTimelineResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineEvent"
+        next_cursor:
+          type: string
+
+    RetryNodeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+
+    RetryNodeResult:
+      type: object
+      additionalProperties: false
+      required: [run_id, node_key, retry_enqueued]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        node_key:
+          type: string
+          minLength: 1
+        retry_enqueued:
+          type: boolean
+
+    RerunFromNodeRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+
+    RerunFromNodeResult:
+      type: object
+      additionalProperties: false
+      required: [run_id, from_node, rerun_enqueued]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        from_node:
+          type: string
+          minLength: 1
+        rerun_enqueued:
+          type: boolean
+
+    CreateFinalApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [confirm, rework]
+        reason:
+          type: string
+          minLength: 1
+
+    CreatePlanApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [action, plan_revision_id]
+      properties:
+        action:
+          type: string
+          enum: [confirm, rework]
+        plan_revision_id:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          minLength: 1
+
+    CreateFinalApprovalResult:
+      type: object
+      additionalProperties: false
+      required: [approval_id, run_id, status, recorded_at]
+      properties:
+        approval_id:
+          type: string
+          minLength: 1
+        run_id:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [succeeded, running]
+        recorded_at:
+          type: string
+          format: date-time
+
+    CreatePlanApprovalResult:
+      type: object
+      additionalProperties: false
+      required: [approval_id, run_id, status, recorded_at]
+      properties:
+        approval_id:
+          type: string
+          minLength: 1
+        run_id:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [approved, needs_rework]
+        recorded_at:
+          type: string
+          format: date-time
+
+    ArtifactResponse:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, name, mime, size_bytes, sha256, download_url]
+      properties:
+        artifact_id:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        mime:
+          type: string
+          minLength: 1
+        size_bytes:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        download_url:
+          type: string
+          format: uri
+
+    CreateArtifactPreviewSessionRequest:
+      type: object
+      additionalProperties: false
+
+    CreateArtifactPreviewSessionResult:
+      type: object
+      additionalProperties: false
+      required: [token, preview_url, expires_at]
+      properties:
+        token:
+          type: string
+          minLength: 1
+        preview_url:
+          type: string
+          minLength: 1
+        expires_at:
+          type: string
+          format: date-time
+
+    RunArtifactsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunArtifactItem"
+
+    RunArtifactItem:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, artifact_kind, name, mime, path, size_bytes, sha256, created_at, previewable, content_url, download_url]
+      properties:
+        artifact_id:
+          type: string
+          minLength: 1
+        artifact_kind:
+          type: string
+          enum: [deliverable, verification, orchestration_meta]
+        name:
+          type: string
+          minLength: 1
+        mime:
+          type: string
+          minLength: 1
+        path:
+          type: string
+          minLength: 1
+        size_bytes:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        created_at:
+          type: string
+          format: date-time
+        previewable:
+          type: boolean
+        content_url:
+          type: string
+          minLength: 1
+        download_url:
+          type: string
+          minLength: 1

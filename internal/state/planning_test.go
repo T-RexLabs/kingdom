@@ -1,0 +1,2212 @@
+package state
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	created, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_1",
+		Title:              "Planner session",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4","thinking_effort":"medium"}`,
+		CreatedAt:          "2026-04-21T16:00:00Z",
+		UpdatedAt:          "2026-04-21T16:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if created.PlanningSessionID != "ps_1" {
+		t.Fatalf("expected planning session id ps_1, got %q", created.PlanningSessionID)
+	}
+	if created.ConversationState != PlanningSessionConversationStateReady {
+		t.Fatalf("expected conversation_state ready, got %q", created.ConversationState)
+	}
+
+	items, err := store.ListSessions(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(items))
+	}
+
+	fetched, ok, err := store.GetSession(context.Background(), "ps_1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected session to exist")
+	}
+	if fetched.ProjectRoot != "/workspace/project" {
+		t.Fatalf("expected project root /workspace/project, got %q", fetched.ProjectRoot)
+	}
+	if fetched.TitleState != "custom" {
+		t.Fatalf("expected title state custom, got %q", fetched.TitleState)
+	}
+	if fetched.LifecycleState != PlanningSessionLifecycleStateActive {
+		t.Fatalf("expected active lifecycle state, got %q", fetched.LifecycleState)
+	}
+}
+
+func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_flow",
+		Title:              "Planner flow",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:10:00Z",
+		UpdatedAt:          "2026-04-21T16:10:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_user",
+		PlanningSessionID:   "ps_flow",
+		TurnIndex:           1,
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Need a planner",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{"text":"Need a planner"}`,
+		Active:              true,
+		CreatedAt:           "2026-04-21T16:11:00Z",
+	})
+	if err != nil {
+		t.Fatalf("append user message: %v", err)
+	}
+
+	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_assistant",
+		PlanningSessionID:   "ps_flow",
+		TurnIndex:           1,
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "What scope should we cover?",
+		QuestionPayloadJSON: `{"prompt":"What scope should we cover?","type":"long_text"}`,
+		AnswerPayloadJSON:   `{}`,
+		Active:              true,
+		CreatedAt:           "2026-04-21T16:12:00Z",
+	})
+	if err != nil {
+		t.Fatalf("append assistant message: %v", err)
+	}
+
+	messages, err := store.ListMessages(context.Background(), "ps_flow")
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[0].PlanningMessageID != "pm_user" || messages[1].PlanningMessageID != "pm_assistant" {
+		t.Fatalf("unexpected message order: %+v", messages)
+	}
+
+	_, err = store.CreateDraft(context.Background(), CreatePlanningDraftRequest{
+		PlanningDraftID:   "pd_1",
+		PlanningSessionID: "ps_flow",
+		DecreeTitle:       "Planner title",
+		DecreeText:        "Planner text",
+		SummaryJSON:       `{"ready":false}`,
+		CreatedAt:         "2026-04-21T16:13:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+
+	_, err = store.CreateContextSnapshot(context.Background(), CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "pcs_1",
+		PlanningSessionID:         "ps_flow",
+		SummaryMarkdown:           "Scanned 2 files",
+		IncludedFilesJSON:         `["README.md","docs/architecture_rfc.md"]`,
+		ExcludedFilesJSON:         `[{"path":".env","reason":"secret"}]`,
+		CreatedAt:                 "2026-04-21T16:14:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create context snapshot: %v", err)
+	}
+
+	draft, ok, err := store.GetLatestDraft(context.Background(), "ps_flow")
+	if err != nil {
+		t.Fatalf("get latest draft: %v", err)
+	}
+	if !ok || draft.PlanningDraftID != "pd_1" {
+		t.Fatalf("expected latest draft pd_1, got ok=%v draft=%+v", ok, draft)
+	}
+
+	snapshot, ok, err := store.GetLatestContextSnapshot(context.Background(), "ps_flow")
+	if err != nil {
+		t.Fatalf("get latest context snapshot: %v", err)
+	}
+	if !ok || snapshot.PlanningContextSnapshotID != "pcs_1" {
+		t.Fatalf("expected latest context snapshot pcs_1, got ok=%v snapshot=%+v", ok, snapshot)
+	}
+
+	conversationState := PlanningSessionConversationStateProcessing
+	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
+		PlanningSessionID:        "ps_flow",
+		Title:                    refString("Planner flow updated"),
+		TitleState:               refString("generated"),
+		ConversationState:        &conversationState,
+		CurrentQuestionMessageID: refString("pm_assistant"),
+		CurrentDraftID:           refString("pd_1"),
+		ContextSnapshotID:        refString("pcs_1"),
+		ModelSelectionJSON:       refString(`{"model":"opencode/gpt-5-nano"}`),
+		UpdatedAt:                "2026-04-21T16:15:00Z",
+	}); err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+
+	fetched, ok := PlanningSession{}, false
+	fetched, ok, err = store.GetSession(context.Background(), "ps_flow")
+	if err != nil {
+		t.Fatalf("get updated session: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected updated session to exist")
+	}
+	if fetched.CurrentDraftID == nil || *fetched.CurrentDraftID != "pd_1" || fetched.ContextSnapshotID == nil {
+		t.Fatalf("unexpected updated session: %+v", fetched)
+	}
+	if fetched.TitleState != "generated" {
+		t.Fatalf("expected updated title state generated, got %q", fetched.TitleState)
+	}
+	if fetched.ConversationState != PlanningSessionConversationStateProcessing {
+		t.Fatalf("expected updated conversation state processing, got %q", fetched.ConversationState)
+	}
+	if fetched.CurrentQuestionMessageID == nil || *fetched.CurrentQuestionMessageID != "pm_assistant" {
+		t.Fatalf("expected current question message id pm_assistant, got %+v", fetched.CurrentQuestionMessageID)
+	}
+}
+
+func TestPlanningStoreOperationsAndEvents(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_ops",
+		Title:              "Planner ops",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:30:00Z",
+		UpdatedAt:          "2026-04-21T16:30:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	operation, err := store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
+		OperationID:        "po_1",
+		PlanningSessionID:  "ps_ops",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"content_markdown":"hello"}`,
+		CreatedAt:          "2026-04-21T16:31:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	if operation.Type != PlanningOperationTypeReply {
+		t.Fatalf("expected reply operation type, got %q", operation.Type)
+	}
+
+	startedAt := "2026-04-21T16:31:10Z"
+	statusRunning := PlanningOperationStatusRunning
+	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+		OperationID: operation.OperationID,
+		Status:      &statusRunning,
+		StartedAt:   &startedAt,
+	}); err != nil {
+		t.Fatalf("update operation running: %v", err)
+	}
+
+	_, err = store.AppendOperationEvent(context.Background(), AppendPlanningOperationEventRequest{
+		EventID:     "poe_1",
+		OperationID: operation.OperationID,
+		Seq:         1,
+		EventType:   "user_message",
+		PayloadJSON: `{"planning_message_id":"pm_1"}`,
+		CreatedAt:   "2026-04-21T16:31:11Z",
+	})
+	if err != nil {
+		t.Fatalf("append operation event 1: %v", err)
+	}
+	_, err = store.AppendOperationEvent(context.Background(), AppendPlanningOperationEventRequest{
+		EventID:     "poe_2",
+		OperationID: operation.OperationID,
+		Seq:         2,
+		EventType:   "question_ready",
+		PayloadJSON: `{"planning_message_id":"pm_2"}`,
+		CreatedAt:   "2026-04-21T16:31:12Z",
+	})
+	if err != nil {
+		t.Fatalf("append operation event 2: %v", err)
+	}
+
+	resultRef := "pm_2"
+	finishedAt := "2026-04-21T16:31:13Z"
+	statusSucceeded := PlanningOperationStatusSucceeded
+	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+		OperationID: operation.OperationID,
+		Status:      &statusSucceeded,
+		ResultRef:   &resultRef,
+		FinishedAt:  &finishedAt,
+	}); err != nil {
+		t.Fatalf("update operation succeeded: %v", err)
+	}
+
+	fetchedOperation, ok, err := store.GetOperation(context.Background(), operation.OperationID)
+	if err != nil {
+		t.Fatalf("get operation: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected operation to exist")
+	}
+	if fetchedOperation.Status != PlanningOperationStatusSucceeded {
+		t.Fatalf("expected succeeded operation status, got %q", fetchedOperation.Status)
+	}
+	if fetchedOperation.ResultRef == nil || *fetchedOperation.ResultRef != "pm_2" {
+		t.Fatalf("expected result_ref pm_2, got %+v", fetchedOperation.ResultRef)
+	}
+
+	events, err := store.ListOperationEventsAfterSeqPage(context.Background(), operation.OperationID, 1, 10)
+	if err != nil {
+		t.Fatalf("list operation events after seq: %v", err)
+	}
+	if len(events) != 1 || events[0].EventID != "poe_2" {
+		t.Fatalf("expected one replayable event poe_2, got %+v", events)
+	}
+
+	queuedAndRunning, err := store.ListOperationsByStatusPage(context.Background(), "", "", 10, PlanningOperationStatusQueued, PlanningOperationStatusRunning)
+	if err != nil {
+		t.Fatalf("list operations by status: %v", err)
+	}
+	if len(queuedAndRunning) != 0 {
+		t.Fatalf("expected no queued/running operations, got %+v", queuedAndRunning)
+	}
+}
+
+func TestPlanningStoreOperationPagingUsesLimitAndCursor(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_paging",
+		Title:              "Paging",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-27T09:00:00Z",
+		UpdatedAt:          "2026-04-27T09:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		createdAt := fmt.Sprintf("2026-04-27T09:00:0%dZ", i)
+		if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+			OperationID:        fmt.Sprintf("po_page_%d", i),
+			PlanningSessionID:  "ps_paging",
+			Type:               PlanningOperationTypeBootstrapContext,
+			Status:             PlanningOperationStatusQueued,
+			RequestPayloadJSON: `{}`,
+			LeaseOwner:         "",
+			LeaseVersion:       0,
+			CreatedAt:          createdAt,
+		}); err != nil {
+			t.Fatalf("create operation %d: %v", i, err)
+		}
+	}
+
+	firstPage, err := store.ListOperationsByStatusPage(ctx, "", "", 2, PlanningOperationStatusQueued)
+	if err != nil {
+		t.Fatalf("list first operation page: %v", err)
+	}
+	if got := len(firstPage); got != 2 {
+		t.Fatalf("expected 2 operations in first page, got %d", got)
+	}
+	if firstPage[0].OperationID != "po_page_1" || firstPage[1].OperationID != "po_page_2" {
+		t.Fatalf("unexpected first page ordering: %+v", firstPage)
+	}
+
+	secondPage, err := store.ListOperationsByStatusPage(ctx, firstPage[len(firstPage)-1].CreatedAt, firstPage[len(firstPage)-1].OperationID, 2, PlanningOperationStatusQueued)
+	if err != nil {
+		t.Fatalf("list second operation page: %v", err)
+	}
+	if got := len(secondPage); got != 1 {
+		t.Fatalf("expected 1 operation in second page, got %d", got)
+	}
+	if secondPage[0].OperationID != "po_page_3" {
+		t.Fatalf("expected cursor to resume at po_page_3, got %+v", secondPage)
+	}
+}
+
+func TestPlanningStoreOperationEventPagingUsesLimitAndCursor(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_event_paging",
+		Title:              "Event paging",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-27T09:30:00Z",
+		UpdatedAt:          "2026-04-27T09:30:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_event_paging",
+		PlanningSessionID:  "ps_event_paging",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "planner",
+		LeaseExpiresAt:     "2026-04-27T09:35:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-27T09:30:01Z",
+		StartedAt:          "2026-04-27T09:30:02Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		if _, err := store.AppendOperationEvent(ctx, AppendPlanningOperationEventRequest{
+			EventID:     fmt.Sprintf("po_event_paging:%d", i),
+			OperationID: "po_event_paging",
+			Seq:         i,
+			EventType:   "text_delta",
+			PayloadJSON: `{}`,
+			CreatedAt:   fmt.Sprintf("2026-04-27T09:30:0%dZ", i+2),
+		}); err != nil {
+			t.Fatalf("append event %d: %v", i, err)
+		}
+	}
+
+	firstPage, err := store.ListOperationEventsAfterSeqPage(ctx, "po_event_paging", 0, 2)
+	if err != nil {
+		t.Fatalf("list first event page: %v", err)
+	}
+	if got := len(firstPage); got != 2 {
+		t.Fatalf("expected 2 events in first page, got %d", got)
+	}
+	if firstPage[0].EventID != "po_event_paging:1" || firstPage[1].EventID != "po_event_paging:2" {
+		t.Fatalf("unexpected first event page ordering: %+v", firstPage)
+	}
+
+	secondPage, err := store.ListOperationEventsAfterEventIDPage(ctx, "po_event_paging", firstPage[len(firstPage)-1].EventID, 2)
+	if err != nil {
+		t.Fatalf("list second event page: %v", err)
+	}
+	if got := len(secondPage); got != 1 {
+		t.Fatalf("expected 1 event in second page, got %d", got)
+	}
+	if secondPage[0].EventID != "po_event_paging:3" {
+		t.Fatalf("expected cursor to resume at event 3, got %+v", secondPage)
+	}
+}
+
+func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:        "ps_update_optional",
+		Title:                    "Original title",
+		TitleState:               "custom",
+		LifecycleState:           PlanningSessionLifecycleStateActive,
+		ConversationState:        PlanningSessionConversationStateReady,
+		CurrentQuestionMessageID: "pm_original",
+		CurrentOperationID:       "po_original",
+		CurrentDraftID:           "pd_original",
+		ContextSnapshotID:        "pcs_original",
+		ProjectRoot:              "/workspace/project",
+		ModelSelectionJSON:       `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:                "2026-04-21T16:00:00Z",
+		UpdatedAt:                "2026-04-21T16:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
+		PlanningSessionID: "ps_update_optional",
+		UpdatedAt:         "2026-04-21T16:01:00Z",
+	}); err != nil {
+		t.Fatalf("update session without optional changes: %v", err)
+	}
+
+	session, ok, err := store.GetSession(context.Background(), "ps_update_optional")
+	if err != nil {
+		t.Fatalf("get unchanged session: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected unchanged session to exist")
+	}
+	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_original" {
+		t.Fatalf("expected current_question_message_id to stay set, got %+v", session.CurrentQuestionMessageID)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_original" {
+		t.Fatalf("expected current_operation_id to stay set, got %+v", session.CurrentOperationID)
+	}
+	if session.CurrentDraftID == nil || *session.CurrentDraftID != "pd_original" {
+		t.Fatalf("expected current_draft_id to stay set, got %+v", session.CurrentDraftID)
+	}
+	if session.ContextSnapshotID == nil || *session.ContextSnapshotID != "pcs_original" {
+		t.Fatalf("expected context_snapshot_id to stay set, got %+v", session.ContextSnapshotID)
+	}
+
+	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
+		PlanningSessionID:        "ps_update_optional",
+		CurrentQuestionMessageID: refString(""),
+		CurrentOperationID:       refString(""),
+		CurrentDraftID:           refString(""),
+		ContextSnapshotID:        refString(""),
+		UpdatedAt:                "2026-04-21T16:02:00Z",
+	}); err != nil {
+		t.Fatalf("clear session optional fields: %v", err)
+	}
+
+	session, ok, err = store.GetSession(context.Background(), "ps_update_optional")
+	if err != nil {
+		t.Fatalf("get cleared session: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cleared session to exist")
+	}
+	if session.CurrentQuestionMessageID != nil || session.CurrentOperationID != nil || session.CurrentDraftID != nil || session.ContextSnapshotID != nil {
+		t.Fatalf("expected nullable fields to clear to NULL, got %+v", session)
+	}
+
+	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
+		PlanningSessionID:        "ps_update_optional",
+		CurrentQuestionMessageID: refString("pm_new"),
+		CurrentOperationID:       refString("po_new"),
+		CurrentDraftID:           refString("pd_new"),
+		ContextSnapshotID:        refString("pcs_new"),
+		UpdatedAt:                "2026-04-21T16:03:00Z",
+	}); err != nil {
+		t.Fatalf("set session optional fields: %v", err)
+	}
+
+	session, ok, err = store.GetSession(context.Background(), "ps_update_optional")
+	if err != nil {
+		t.Fatalf("get updated session: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected updated session to exist")
+	}
+	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_new" {
+		t.Fatalf("expected current_question_message_id pm_new, got %+v", session.CurrentQuestionMessageID)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_new" {
+		t.Fatalf("expected current_operation_id po_new, got %+v", session.CurrentOperationID)
+	}
+	if session.CurrentDraftID == nil || *session.CurrentDraftID != "pd_new" {
+		t.Fatalf("expected current_draft_id pd_new, got %+v", session.CurrentDraftID)
+	}
+	if session.ContextSnapshotID == nil || *session.ContextSnapshotID != "pcs_new" {
+		t.Fatalf("expected context_snapshot_id pcs_new, got %+v", session.ContextSnapshotID)
+	}
+}
+
+func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_operation_optional",
+		Title:              "Planner ops optional",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:30:00Z",
+		UpdatedAt:          "2026-04-21T16:30:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err = store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
+		OperationID:        "po_optional",
+		PlanningSessionID:  "ps_operation_optional",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{"content_markdown":"hello"}`,
+		LeaseOwner:         "worker-a",
+		LeaseExpiresAt:     "2026-04-21T16:31:00Z",
+		LeaseVersion:       1,
+		LastHeartbeatAt:    "2026-04-21T16:30:30Z",
+		Error:              "temporary",
+		ResultRef:          "pm_original",
+		CreatedAt:          "2026-04-21T16:30:00Z",
+		StartedAt:          "2026-04-21T16:30:05Z",
+		FinishedAt:         "2026-04-21T16:30:10Z",
+	})
+	if err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{OperationID: "po_optional"}); err != nil {
+		t.Fatalf("update operation without optional changes: %v", err)
+	}
+
+	operation, ok, err := store.GetOperation(context.Background(), "po_optional")
+	if err != nil {
+		t.Fatalf("get unchanged operation: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected unchanged operation to exist")
+	}
+	if operation.LeaseOwner != "worker-a" || operation.LeaseExpiresAt == nil || operation.LastHeartbeatAt == nil || operation.Error == nil || operation.ResultRef == nil || operation.StartedAt == nil || operation.FinishedAt == nil {
+		t.Fatalf("expected unchanged optional fields to remain set, got %+v", operation)
+	}
+
+	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+		OperationID:     "po_optional",
+		LeaseOwner:      refString(""),
+		LeaseExpiresAt:  refString(""),
+		LastHeartbeatAt: refString(""),
+		Error:           refString(""),
+		ResultRef:       refString(""),
+		StartedAt:       refString(""),
+		FinishedAt:      refString(""),
+	}); err != nil {
+		t.Fatalf("clear operation optional fields: %v", err)
+	}
+
+	operation, ok, err = store.GetOperation(context.Background(), "po_optional")
+	if err != nil {
+		t.Fatalf("get cleared operation: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cleared operation to exist")
+	}
+	if operation.LeaseOwner != "" {
+		t.Fatalf("expected lease_owner to clear to empty string, got %q", operation.LeaseOwner)
+	}
+	if operation.LeaseExpiresAt != nil || operation.LastHeartbeatAt != nil || operation.Error != nil || operation.ResultRef != nil || operation.StartedAt != nil || operation.FinishedAt != nil {
+		t.Fatalf("expected nullable operation fields to clear to NULL, got %+v", operation)
+	}
+
+	leaseVersion := 2
+	statusSucceeded := PlanningOperationStatusSucceeded
+	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+		OperationID:     "po_optional",
+		Status:          &statusSucceeded,
+		LeaseOwner:      refString("worker-b"),
+		LeaseExpiresAt:  refString("2026-04-21T16:32:00Z"),
+		LeaseVersion:    &leaseVersion,
+		LastHeartbeatAt: refString("2026-04-21T16:31:30Z"),
+		Error:           refString("resolved"),
+		ResultRef:       refString("pm_updated"),
+		StartedAt:       refString("2026-04-21T16:31:05Z"),
+		FinishedAt:      refString("2026-04-21T16:31:10Z"),
+	}); err != nil {
+		t.Fatalf("set operation optional fields: %v", err)
+	}
+
+	operation, ok, err = store.GetOperation(context.Background(), "po_optional")
+	if err != nil {
+		t.Fatalf("get updated operation: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected updated operation to exist")
+	}
+	if operation.Status != PlanningOperationStatusSucceeded || operation.LeaseOwner != "worker-b" || operation.LeaseVersion != 2 {
+		t.Fatalf("expected status/lease fields to update, got %+v", operation)
+	}
+	if operation.LeaseExpiresAt == nil || *operation.LeaseExpiresAt != "2026-04-21T16:32:00Z" {
+		t.Fatalf("expected lease_expires_at to update, got %+v", operation.LeaseExpiresAt)
+	}
+	if operation.LastHeartbeatAt == nil || *operation.LastHeartbeatAt != "2026-04-21T16:31:30Z" {
+		t.Fatalf("expected last_heartbeat_at to update, got %+v", operation.LastHeartbeatAt)
+	}
+	if operation.Error == nil || *operation.Error != "resolved" {
+		t.Fatalf("expected error to update, got %+v", operation.Error)
+	}
+	if operation.ResultRef == nil || *operation.ResultRef != "pm_updated" {
+		t.Fatalf("expected result_ref to update, got %+v", operation.ResultRef)
+	}
+	if operation.StartedAt == nil || *operation.StartedAt != "2026-04-21T16:31:05Z" {
+		t.Fatalf("expected started_at to update, got %+v", operation.StartedAt)
+	}
+	if operation.FinishedAt == nil || *operation.FinishedAt != "2026-04-21T16:31:10Z" {
+		t.Fatalf("expected finished_at to update, got %+v", operation.FinishedAt)
+	}
+}
+
+func TestPlanningStoreDeleteMessage(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_delete_message",
+		Title:              "Planner delete message",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:35:00Z",
+		UpdatedAt:          "2026-04-21T16:35:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_delete",
+		PlanningSessionID:   "ps_delete_message",
+		TurnIndex:           1,
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Delete me",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		Active:              true,
+		CreatedAt:           "2026-04-21T16:35:10Z",
+	})
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	deleted, err := store.DeleteMessage(context.Background(), "pm_delete")
+	if err != nil {
+		t.Fatalf("delete message: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected message delete to report true")
+	}
+}
+
+func TestPlanningStoreClaimOperationPreventsDualExecution(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	store := NewPlanningStore(db)
+	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_claim",
+		Title:              "Planner claim",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:40:00Z",
+		UpdatedAt:          "2026-04-21T16:40:00Z",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err = store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
+		OperationID:        "po_claim_1",
+		PlanningSessionID:  "ps_claim",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"reply_markdown":"hello"}`,
+		LeaseOwner:         "",
+		LeaseVersion:       0,
+		CreatedAt:          "2026-04-21T16:40:01Z",
+	})
+	if err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	claimed, ok, err := store.ClaimOperation(context.Background(), "po_claim_1", "worker-a", "2026-04-21T16:41:00Z", "2026-04-21T16:40:10Z")
+	if err != nil {
+		t.Fatalf("claim operation first time: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected first claim to succeed")
+	}
+	if claimed.Status != PlanningOperationStatusRunning || claimed.LeaseOwner != "worker-a" || claimed.LeaseVersion != 1 {
+		t.Fatalf("unexpected claimed operation: %+v", claimed)
+	}
+
+	_, ok, err = store.ClaimOperation(context.Background(), "po_claim_1", "worker-b", "2026-04-21T16:41:00Z", "2026-04-21T16:40:11Z")
+	if err != nil {
+		t.Fatalf("claim operation second time: %v", err)
+	}
+	if ok {
+		t.Fatal("expected second claim to be rejected while lease is active")
+	}
+
+	if err := store.RenewOperationLease(context.Background(), "po_claim_1", "worker-a", 1, "2026-04-21T16:41:30Z", "2026-04-21T16:40:20Z"); err != nil {
+		t.Fatalf("renew operation lease: %v", err)
+	}
+
+	if err := store.RenewOperationLease(context.Background(), "po_claim_1", "worker-b", 1, "2026-04-21T16:41:30Z", "2026-04-21T16:40:21Z"); err == nil {
+		t.Fatal("expected renew with wrong owner to fail")
+	}
+}
+
+func refString(value string) *string {
+	return &value
+}
+
+// TestClaimOperationRejectsExpiredRunningRow pins the queued-only claim
+// contract: a running row whose lease has expired is still not reclaimable.
+// Recovery owns abandoned running rows after the grace window; claiming them
+// early would race the original worker and duplicate planner side effects.
+func TestClaimOperationRejectsExpiredRunningRow(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_claim_expired",
+		Title:              "claim-expired",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T10:00:00Z",
+		UpdatedAt:          "2026-04-26T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// Seed a running row with an already-expired lease.
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_running_expired",
+		PlanningSessionID:  "ps_claim_expired",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "abandoned-worker",
+		LeaseExpiresAt:     "2026-04-26T09:00:00Z", // 1h before our heartbeat clock
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-26T08:55:00Z",
+		StartedAt:          "2026-04-26T08:55:01Z",
+	}); err != nil {
+		t.Fatalf("seed running op: %v", err)
+	}
+
+	_, ok, err := store.ClaimOperation(ctx, "po_running_expired", "new-worker", "2026-04-26T11:00:00Z", "2026-04-26T10:00:00Z")
+	if err != nil {
+		t.Fatalf("claim attempt: %v", err)
+	}
+	if ok {
+		t.Fatal("expected expired-running row claim to be rejected (queued-only contract)")
+	}
+
+	// Row state must be unchanged — no partial mutation from the
+	// rejected claim attempt.
+	op, found, err := store.GetOperation(ctx, "po_running_expired")
+	if err != nil || !found {
+		t.Fatalf("get op: ok=%v err=%v", found, err)
+	}
+	if op.LeaseOwner != "abandoned-worker" || op.LeaseVersion != 1 {
+		t.Fatalf("expected row lease unchanged, got owner=%q version=%d", op.LeaseOwner, op.LeaseVersion)
+	}
+}
+
+// TestFinalizeOperationRejectsStaleLeaseOwner verifies the dual-row fence:
+// a worker that loses its lease cannot finalize successfully just because it
+// still holds the operation id.
+func TestFinalizeOperationRejectsStaleLeaseOwner(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_fence",
+		Title:              "fence",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_fence",
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-25T16:40:00Z",
+		UpdatedAt:          "2026-04-25T16:40:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_fence",
+		PlanningSessionID:  "ps_fence",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-25T16:40:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_fence", "worker-a", "2026-04-25T17:40:00Z", "2026-04-25T16:40:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	// Recovery sees the lease as expired and re-claims with worker-b.
+	// Easiest way to simulate is a direct UPDATE that bumps lease_version,
+	// matching what ClaimOperation would do.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE planning_operations SET lease_owner = 'worker-b', lease_version = lease_version + 1 WHERE operation_id = 'po_fence'`); err != nil {
+		t.Fatalf("simulate recovery reclaim: %v", err)
+	}
+
+	// Worker-a comes back online and tries to finalize using its stale
+	// LeaseOwner / LeaseVersion. The fence must reject this cleanly.
+	err = store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind:              FinalizeReply,
+		SessionID:         "ps_fence",
+		OperationID:       "po_fence",
+		LeaseOwner:        claimed.LeaseOwner,
+		LeaseVersion:      claimed.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-25T16:41:00Z",
+		FinishedAt:        "2026-04-25T16:41:00Z",
+		ResultRef:         "pm_done",
+		AssistantMessage: &AppendPlanningMessageRequest{
+			PlanningMessageID:   "pm_done",
+			PlanningSessionID:   "ps_fence",
+			TurnIndex:           1,
+			Role:                PlanningMessageRoleAssistant,
+			ContentMarkdown:     "stale",
+			QuestionPayloadJSON: `{}`,
+			AnswerPayloadJSON:   `{}`,
+			Active:              true,
+			CreatedAt:           "2026-04-25T16:41:00Z",
+		},
+	})
+	if !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("expected ErrPlanningLeaseConflict, got %v", err)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_fence")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusRunning {
+		t.Fatalf("operation status should remain running after rejected finalize, got %q", op.Status)
+	}
+}
+
+func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageInsert(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_reply_race",
+		Title:              "reply-race",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_reply_race",
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-27T10:00:00Z",
+		UpdatedAt:          "2026-04-27T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_reply_race",
+		PlanningSessionID:  "ps_reply_race",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-27T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_reply_race", "worker-a", "2026-04-27T11:00:00Z", "2026-04-27T10:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	finalizeReq := FinalizeOperationRequest{
+		Kind:              FinalizeReply,
+		SessionID:         "ps_reply_race",
+		OperationID:       "po_reply_race",
+		LeaseOwner:        claimed.LeaseOwner,
+		LeaseVersion:      claimed.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-27T10:01:00Z",
+		FinishedAt:        "2026-04-27T10:01:00Z",
+		ResultRef:         "pm_reply_done",
+		AssistantMessage: &AppendPlanningMessageRequest{
+			PlanningMessageID:   "pm_reply_done",
+			PlanningSessionID:   "ps_reply_race",
+			TurnIndex:           1,
+			Role:                PlanningMessageRoleAssistant,
+			ContentMarkdown:     "Canonical reply",
+			QuestionPayloadJSON: `{}`,
+			AnswerPayloadJSON:   `{}`,
+			Active:              true,
+			CreatedAt:           "2026-04-27T10:01:00Z",
+		},
+		CurrentQuestionMessageID: "pm_reply_done",
+	}
+	if err := store.FinalizeOperation(ctx, finalizeReq); err != nil {
+		t.Fatalf("winner finalize: %v", err)
+	}
+
+	err = store.FinalizeOperation(ctx, finalizeReq)
+	if !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("expected ErrPlanningLeaseConflict, got %v", err)
+	}
+	if err != nil && (IsUniqueViolation(err) || strings.Contains(err.Error(), "UNIQUE")) {
+		t.Fatalf("stale reply finalizer surfaced unique constraint instead of lease conflict: %v", err)
+	}
+
+	messages, err := store.ListMessages(ctx, "ps_reply_race")
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].PlanningMessageID != "pm_reply_done" {
+		t.Fatalf("expected exactly one canonical assistant message, got %+v", messages)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_reply_race")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentOperationID != nil {
+		t.Fatalf("expected current_operation_id cleared, got %+v", session.CurrentOperationID)
+	}
+	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_reply_done" {
+		t.Fatalf("expected current question to point at canonical reply, got %+v", session.CurrentQuestionMessageID)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_reply_race")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusSucceeded {
+		t.Fatalf("expected reply operation succeeded, got %q", op.Status)
+	}
+}
+
+func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTranscriptMutation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:        "ps_regen_race",
+		Title:                    "regen-race",
+		TitleState:               "custom",
+		LifecycleState:           PlanningSessionLifecycleStateActive,
+		ConversationState:        PlanningSessionConversationStateProcessing,
+		CurrentQuestionMessageID: "pm_regen_old",
+		CurrentOperationID:       "po_regen_race",
+		ProjectRoot:              "/workspace/project",
+		ModelSelectionJSON:       `{"model":"m"}`,
+		CreatedAt:                "2026-04-27T11:00:00Z",
+		UpdatedAt:                "2026-04-27T11:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_regen_old",
+		PlanningSessionID:   "ps_regen_race",
+		TurnIndex:           1,
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Old answer",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		VariantIndex:        0,
+		Active:              true,
+		CreatedAt:           "2026-04-27T11:00:01Z",
+	}); err != nil {
+		t.Fatalf("append old assistant message: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_regen_future_user",
+		PlanningSessionID:   "ps_regen_race",
+		TurnIndex:           2,
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Future turn",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		Active:              true,
+		CreatedAt:           "2026-04-27T11:00:02Z",
+	}); err != nil {
+		t.Fatalf("append future user message: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_regen_race",
+		PlanningSessionID:  "ps_regen_race",
+		Type:               PlanningOperationTypeRegenerate,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-27T11:00:03Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_regen_race", "worker-a", "2026-04-27T12:00:00Z", "2026-04-27T11:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	targetTurn := 1
+	finalizeReq := FinalizeOperationRequest{
+		Kind:                     FinalizeRegenerate,
+		SessionID:                "ps_regen_race",
+		OperationID:              "po_regen_race",
+		LeaseOwner:               claimed.LeaseOwner,
+		LeaseVersion:             claimed.LeaseVersion,
+		ConversationState:        PlanningSessionConversationStateReady,
+		UpdatedAt:                "2026-04-27T11:01:00Z",
+		FinishedAt:               "2026-04-27T11:01:00Z",
+		CurrentQuestionMessageID: "pm_regen_new",
+		DeleteMessagesAfterTurn:  &targetTurn,
+		DeactivateVariantsAtTurn: &targetTurn,
+		ResultRef:                "pm_regen_new",
+		AssistantMessage: &AppendPlanningMessageRequest{
+			PlanningMessageID:   "pm_regen_new",
+			PlanningSessionID:   "ps_regen_race",
+			TurnIndex:           1,
+			Role:                PlanningMessageRoleAssistant,
+			ContentMarkdown:     "New answer",
+			QuestionPayloadJSON: `{}`,
+			AnswerPayloadJSON:   `{}`,
+			VariantIndex:        1,
+			Active:              true,
+			CreatedAt:           "2026-04-27T11:01:00Z",
+		},
+	}
+	if err := store.FinalizeOperation(ctx, finalizeReq); err != nil {
+		t.Fatalf("winner finalize: %v", err)
+	}
+
+	err = store.FinalizeOperation(ctx, finalizeReq)
+	if !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("expected ErrPlanningLeaseConflict, got %v", err)
+	}
+	if err != nil && (IsUniqueViolation(err) || strings.Contains(err.Error(), "UNIQUE")) {
+		t.Fatalf("stale regenerate finalizer surfaced unique constraint instead of lease conflict: %v", err)
+	}
+
+	messages, err := store.ListMessages(ctx, "ps_regen_race")
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].PlanningMessageID != "pm_regen_new" {
+		t.Fatalf("expected only the regenerated assistant message to remain active, got %+v", messages)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_regen_race")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentOperationID != nil {
+		t.Fatalf("expected current_operation_id cleared, got %+v", session.CurrentOperationID)
+	}
+	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_regen_new" {
+		t.Fatalf("expected regenerated assistant to remain canonical, got %+v", session.CurrentQuestionMessageID)
+	}
+}
+
+// TestFinalizeOperationCancel pins the FinalizeCancel post-conditions:
+// status = cancelled, lease cleared, reason stored in error column,
+// session current_operation_id cleared, session conversation_state
+// returned to ready, terminal event recorded. Cancel and Fail share
+// most of the no-side-effects shape, but the row's status must be
+// cancelled (not failed) so failure-rate metrics aren't polluted by
+// shutdowns.
+func TestFinalizeOperationCancel(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_cancel",
+		Title:              "cancel",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_cancel",
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T12:00:00Z",
+		UpdatedAt:          "2026-04-26T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_cancel",
+		PlanningSessionID:  "ps_cancel",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_cancel", "worker-a", "2026-04-26T13:00:00Z", "2026-04-26T12:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	const reason = "operation cancelled during shutdown"
+	if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind:              FinalizeCancel,
+		SessionID:         "ps_cancel",
+		OperationID:       "po_cancel",
+		LeaseOwner:        claimed.LeaseOwner,
+		LeaseVersion:      claimed.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-26T12:00:30Z",
+		FinishedAt:        "2026-04-26T12:00:30Z",
+		ErrorMessage:      reason,
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_cancel:1",
+			OperationID: "po_cancel",
+			Seq:         1,
+			EventType:   "cancelled",
+			PayloadJSON: `{"reason":"operation cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-26T12:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize cancel: %v", err)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_cancel")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected status=cancelled, got %q", op.Status)
+	}
+	if op.LeaseOwner != "" {
+		t.Fatalf("expected lease_owner cleared, got %q", op.LeaseOwner)
+	}
+	if op.LeaseVersion != claimed.LeaseVersion+1 {
+		t.Fatalf("expected lease_version to bump from %d to %d, got %d", claimed.LeaseVersion, claimed.LeaseVersion+1, op.LeaseVersion)
+	}
+	if op.Error == nil || *op.Error != reason {
+		t.Fatalf("expected error column = %q, got %+v", reason, op.Error)
+	}
+	if op.ResultRef != nil && *op.ResultRef != "" {
+		t.Fatalf("expected result_ref empty for cancelled op, got %q", *op.ResultRef)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_cancel")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.ConversationState != PlanningSessionConversationStateReady {
+		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)
+	}
+	if session.CurrentOperationID != nil {
+		t.Fatalf("expected current_operation_id cleared, got %q", *session.CurrentOperationID)
+	}
+
+	events, err := store.ListOperationEventsAfterEventIDPage(ctx, "po_cancel", "", DefaultPlanningOperationEventListLimit)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != "cancelled" {
+		t.Fatalf("expected one cancelled terminal event, got %+v", events)
+	}
+}
+
+// TestFinalizeOperationCancelRequiresReason locks in the validation
+// gate: a FinalizeCancel without an ErrorMessage is meaningless to the
+// UI and to operators reading metrics, and we'd rather catch missing
+// reasons in tests than ship empty cancellations.
+func TestFinalizeOperationCancelRequiresReason(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	err := store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind:              FinalizeCancel,
+		SessionID:         "ps_x",
+		OperationID:       "po_x",
+		LeaseOwner:        "worker",
+		LeaseVersion:      1,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-26T12:00:00Z",
+		FinishedAt:        "2026-04-26T12:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected validation error for FinalizeCancel without ErrorMessage")
+	}
+	if !strings.Contains(err.Error(), "cancel") {
+		t.Fatalf("expected cancel-specific validation error, got %v", err)
+	}
+}
+
+// TestFinalizeBootstrapAbortWithEmptySessionSlot pins the trivial case:
+// a session with current_operation_id = NULL (the default coming out
+// of CreateSessionBundle) can have its bootstrap op terminalised
+// cleanly without touching the session row at all.
+func TestFinalizeBootstrapAbortWithEmptySessionSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	// Session with no current_operation_id — the realistic default for
+	// a freshly-created session before any interactive op claims it.
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_bs_empty",
+		Title:              "bootstrap-empty",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T13:00:00Z",
+		UpdatedAt:          "2026-04-26T13:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_bs_empty",
+		PlanningSessionID:  "ps_bs_empty",
+		Type:               PlanningOperationTypeBootstrapContext,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T13:00:01Z",
+	}); err != nil {
+		t.Fatalf("create bootstrap op: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_bs_empty", "bootstrap-worker", "2026-04-26T14:00:00Z", "2026-04-26T13:00:02Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.FinalizeBootstrapAbort(ctx, FinalizeBootstrapAbortRequest{
+		SessionID:    "ps_bs_empty",
+		OperationID:  "po_bs_empty",
+		LeaseOwner:   claimed.LeaseOwner,
+		LeaseVersion: claimed.LeaseVersion,
+		Status:       PlanningOperationStatusCancelled,
+		UpdatedAt:    "2026-04-26T13:00:30Z",
+		FinishedAt:   "2026-04-26T13:00:30Z",
+		ErrorMessage: "operation cancelled during shutdown",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_bs_empty:1",
+			OperationID: "po_bs_empty",
+			Seq:         1,
+			EventType:   "cancelled",
+			PayloadJSON: `{"reason":"operation cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-26T13:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize bootstrap abort: %v", err)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_bs_empty")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected status=cancelled, got %q", op.Status)
+	}
+	if op.LeaseOwner != "" {
+		t.Fatalf("expected lease cleared, got owner=%q", op.LeaseOwner)
+	}
+	if op.Error == nil || *op.Error != "operation cancelled during shutdown" {
+		t.Fatalf("expected error column populated with reason, got %+v", op.Error)
+	}
+
+	// Session row must remain untouched — bootstrap abort does NOT
+	// reach into planning_sessions, by design.
+	session, found, err := store.GetSession(ctx, "ps_bs_empty")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentOperationID != nil {
+		t.Fatalf("expected session current_operation_id to remain NULL, got %q", *session.CurrentOperationID)
+	}
+	if session.ConversationState != PlanningSessionConversationStateReady {
+		t.Fatalf("expected conversation_state preserved, got %q", session.ConversationState)
+	}
+}
+
+// TestFinalizeBootstrapAbortWhileForegroundOpHoldsSlot is the
+// load-bearing regression test for the lifecycle split. A session can
+// have a bootstrap op stuck in the background AND a foreground reply
+// op holding the interactive current_operation_id slot at the same
+// time. Bootstrap terminalisation must not touch the slot — otherwise
+// the foreground op's UI surface (composer, "in progress" indicators)
+// would be corrupted by the bootstrap abort. This is the case the
+// naive `IS NULL OR = ?` SQL relaxation would have missed.
+func TestFinalizeBootstrapAbortWhileForegroundOpHoldsSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	// Session with current_operation_id pointing at a foreground reply
+	// op — the realistic shape when a user submits a reply while the
+	// bootstrap is still running in the background.
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_bs_fg",
+		Title:              "bootstrap-fg",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_reply_fg",
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T13:00:00Z",
+		UpdatedAt:          "2026-04-26T13:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// Foreground reply op (running) — owns the session slot.
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_reply_fg",
+		PlanningSessionID:  "ps_bs_fg",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "fg-worker",
+		LeaseExpiresAt:     "2026-04-26T13:30:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-26T13:00:01Z",
+	}); err != nil {
+		t.Fatalf("create reply op: %v", err)
+	}
+	// Bootstrap op (running) — different op, never claimed the slot.
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_bs_fg",
+		PlanningSessionID:  "ps_bs_fg",
+		Type:               PlanningOperationTypeBootstrapContext,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T13:00:01Z",
+	}); err != nil {
+		t.Fatalf("create bootstrap op: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_bs_fg", "bs-worker", "2026-04-26T14:00:00Z", "2026-04-26T13:00:02Z")
+	if err != nil || !ok {
+		t.Fatalf("claim bootstrap: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.FinalizeBootstrapAbort(ctx, FinalizeBootstrapAbortRequest{
+		SessionID:    "ps_bs_fg",
+		OperationID:  "po_bs_fg",
+		LeaseOwner:   claimed.LeaseOwner,
+		LeaseVersion: claimed.LeaseVersion,
+		Status:       PlanningOperationStatusCancelled,
+		UpdatedAt:    "2026-04-26T13:00:30Z",
+		FinishedAt:   "2026-04-26T13:00:30Z",
+		ErrorMessage: "operation cancelled during shutdown",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_bs_fg:1",
+			OperationID: "po_bs_fg",
+			Seq:         1,
+			EventType:   "cancelled",
+			PayloadJSON: `{"reason":"operation cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-26T13:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize bootstrap abort: %v", err)
+	}
+
+	// Bootstrap op terminal as cancelled.
+	op, found, err := store.GetOperation(ctx, "po_bs_fg")
+	if err != nil || !found {
+		t.Fatalf("get bootstrap op: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected bootstrap status=cancelled, got %q", op.Status)
+	}
+
+	// Foreground reply op untouched.
+	reply, found, err := store.GetOperation(ctx, "po_reply_fg")
+	if err != nil || !found {
+		t.Fatalf("get reply op: ok=%v err=%v", found, err)
+	}
+	if reply.Status != PlanningOperationStatusRunning {
+		t.Fatalf("expected reply still running, got %q", reply.Status)
+	}
+	if reply.LeaseOwner != "fg-worker" || reply.LeaseVersion != 1 {
+		t.Fatalf("expected reply lease intact, got owner=%q version=%d", reply.LeaseOwner, reply.LeaseVersion)
+	}
+
+	// Session slot untouched — still pointing at the foreground reply.
+	session, found, err := store.GetSession(ctx, "ps_bs_fg")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_reply_fg" {
+		t.Fatalf("expected session.current_operation_id to remain po_reply_fg, got %+v", session.CurrentOperationID)
+	}
+	if session.ConversationState != PlanningSessionConversationStateProcessing {
+		t.Fatalf("expected conversation_state preserved as processing, got %q", session.ConversationState)
+	}
+}
+
+// TestFinalizeBootstrapAbortRejectsStaleLease mirrors
+// TestFinalizeOperationRejectsStaleLeaseOwner for the bootstrap path:
+// a worker that has lost its lease (lease_version bumped by another
+// claim) cannot terminalise the op — the fence rejects with
+// ErrPlanningLeaseConflict and the row stays running.
+func TestFinalizeBootstrapAbortRejectsStaleLease(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_bs_stale",
+		Title:              "bs-stale",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T13:00:00Z",
+		UpdatedAt:          "2026-04-26T13:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_bs_stale",
+		PlanningSessionID:  "ps_bs_stale",
+		Type:               PlanningOperationTypeBootstrapContext,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T13:00:01Z",
+	}); err != nil {
+		t.Fatalf("create bootstrap op: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_bs_stale", "worker-a", "2026-04-26T14:00:00Z", "2026-04-26T13:00:02Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	// Simulate a re-claim by another worker bumping lease_version.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE planning_operations SET lease_owner = 'worker-b', lease_version = lease_version + 1 WHERE operation_id = 'po_bs_stale'`); err != nil {
+		t.Fatalf("simulate reclaim: %v", err)
+	}
+
+	err = store.FinalizeBootstrapAbort(ctx, FinalizeBootstrapAbortRequest{
+		SessionID:    "ps_bs_stale",
+		OperationID:  "po_bs_stale",
+		LeaseOwner:   claimed.LeaseOwner,
+		LeaseVersion: claimed.LeaseVersion,
+		Status:       PlanningOperationStatusFailed,
+		UpdatedAt:    "2026-04-26T13:00:30Z",
+		FinishedAt:   "2026-04-26T13:00:30Z",
+		ErrorMessage: "stuck",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_bs_stale:1",
+			OperationID: "po_bs_stale",
+			Seq:         1,
+			EventType:   "error",
+			PayloadJSON: `{"error":"stuck"}`,
+			CreatedAt:   "2026-04-26T13:00:30Z",
+		},
+	})
+	if !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("expected ErrPlanningLeaseConflict, got %v", err)
+	}
+
+	// Op row stays running — concurrent finaliser wins, this caller
+	// cleanly stands down.
+	op, found, err := store.GetOperation(ctx, "po_bs_stale")
+	if err != nil || !found {
+		t.Fatalf("get op: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusRunning {
+		t.Fatalf("expected running after rejected finalise, got %q", op.Status)
+	}
+}
+
+func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:       "ps_title_fg",
+		Title:                   "plan_title_fg",
+		TitleState:              "placeholder",
+		LifecycleState:          PlanningSessionLifecycleStateActive,
+		ConversationState:       PlanningSessionConversationStateProcessing,
+		CurrentOperationID:      "po_reply_fg",
+		CurrentTitleOperationID: "po_title_fg",
+		ProjectRoot:             "/workspace/project",
+		ModelSelectionJSON:      `{"model":"m"}`,
+		CreatedAt:               "2026-04-26T13:00:00Z",
+		UpdatedAt:               "2026-04-26T13:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_reply_fg",
+		PlanningSessionID:  "ps_title_fg",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "fg-worker",
+		LeaseExpiresAt:     "2026-04-26T13:30:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-26T13:00:01Z",
+	}); err != nil {
+		t.Fatalf("create reply op: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_title_fg",
+		PlanningSessionID:  "ps_title_fg",
+		Type:               PlanningOperationTypeGenerateTitle,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T13:00:02Z",
+	}); err != nil {
+		t.Fatalf("create title op: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_title_fg", "title-worker", "2026-04-26T14:00:00Z", "2026-04-26T13:00:03Z")
+	if err != nil || !ok {
+		t.Fatalf("claim title: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.FinalizeGenerateTitle(ctx, FinalizeGenerateTitleRequest{
+		SessionID:      "ps_title_fg",
+		OperationID:    "po_title_fg",
+		LeaseOwner:     claimed.LeaseOwner,
+		LeaseVersion:   claimed.LeaseVersion,
+		UpdatedAt:      "2026-04-26T13:00:30Z",
+		FinishedAt:     "2026-04-26T13:00:30Z",
+		GeneratedTitle: "Foreground-safe title",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_title_fg:1",
+			OperationID: "po_title_fg",
+			Seq:         1,
+			EventType:   "done",
+			PayloadJSON: `{"title":"Foreground-safe title","title_state":"generated"}`,
+			CreatedAt:   "2026-04-26T13:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize generate title: %v", err)
+	}
+
+	titleOp, found, err := store.GetOperation(ctx, "po_title_fg")
+	if err != nil || !found {
+		t.Fatalf("get title op: ok=%v err=%v", found, err)
+	}
+	if titleOp.Status != PlanningOperationStatusSucceeded {
+		t.Fatalf("expected title op succeeded, got %q", titleOp.Status)
+	}
+
+	replyOp, found, err := store.GetOperation(ctx, "po_reply_fg")
+	if err != nil || !found {
+		t.Fatalf("get reply op: ok=%v err=%v", found, err)
+	}
+	if replyOp.Status != PlanningOperationStatusRunning {
+		t.Fatalf("expected reply op to remain running, got %q", replyOp.Status)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_title_fg")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_reply_fg" {
+		t.Fatalf("expected interactive slot preserved, got %+v", session.CurrentOperationID)
+	}
+	if session.CurrentTitleOperationID != nil {
+		t.Fatalf("expected title slot cleared after completion, got %+v", session.CurrentTitleOperationID)
+	}
+	if session.ConversationState != PlanningSessionConversationStateProcessing {
+		t.Fatalf("expected conversation_state preserved as processing, got %q", session.ConversationState)
+	}
+	if session.Title != "Foreground-safe title" || session.TitleState != "generated" {
+		t.Fatalf("expected generated title to settle on title lane, got %+v", session)
+	}
+}
+
+// TestActivateVariantRequiresMatchingSession verifies that variant lookup is
+// scoped by both session id and message id.
+func TestActivateVariantRequiresMatchingSession(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	for _, sessionID := range []string{"ps_a", "ps_b"} {
+		if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+			PlanningSessionID:  sessionID,
+			Title:              sessionID,
+			TitleState:         "custom",
+			LifecycleState:     PlanningSessionLifecycleStateActive,
+			ConversationState:  PlanningSessionConversationStateReady,
+			ProjectRoot:        "/workspace/project",
+			ModelSelectionJSON: `{"model":"m"}`,
+			CreatedAt:          "2026-04-25T16:40:00Z",
+			UpdatedAt:          "2026-04-25T16:40:00Z",
+		}); err != nil {
+			t.Fatalf("create session %s: %v", sessionID, err)
+		}
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_a",
+		PlanningSessionID:   "ps_a",
+		TurnIndex:           1,
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "answer in A",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		Active:              true,
+		CreatedAt:           "2026-04-25T16:40:10Z",
+	}); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+
+	// pm_a belongs to ps_a; activating it via ps_b must return Not Found.
+	if _, err := store.ActivateVariant(ctx, "ps_b", "pm_a"); !errors.Is(err, ErrPlanningMessageNotFound) {
+		t.Fatalf("expected ErrPlanningMessageNotFound, got %v", err)
+	}
+	if _, err := store.GetMessageInSession(ctx, "ps_b", "pm_a"); !errors.Is(err, ErrPlanningMessageNotFound) {
+		t.Fatalf("expected ErrPlanningMessageNotFound for cross-session GetMessageInSession, got %v", err)
+	}
+	// And the legitimate (ps_a, pm_a) lookup still works.
+	if _, err := store.GetMessageInSession(ctx, "ps_a", "pm_a"); err != nil {
+		t.Fatalf("unexpected error fetching pm_a in ps_a: %v", err)
+	}
+}
+
+// TestFinalizeBootstrapRejectsStaleLease guards the durability invariant:
+// a stale bootstrap worker that lost its lease must NOT publish its
+// snapshot to the session row. The lease fence on the operation row
+// rolls the entire transaction back, so observers never see a candidate
+// snapshot id that the session never adopted.
+func TestFinalizeBootstrapRejectsStaleLease(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_boot",
+		Title:              "boot",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T10:00:00Z",
+		UpdatedAt:          "2026-04-26T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_boot",
+		PlanningSessionID:  "ps_boot",
+		Type:               PlanningOperationTypeBootstrapContext,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_boot", "worker-a", "2026-04-26T11:00:00Z", "2026-04-26T10:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_candidate",
+		PlanningSessionID:         "ps_boot",
+		SummaryMarkdown:           "candidate",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T10:01:00Z",
+	}); err != nil {
+		t.Fatalf("create candidate snapshot: %v", err)
+	}
+
+	// Recovery has reclaimed in the background — bump lease_version
+	// directly to simulate a different worker now owning the lease.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE planning_operations SET lease_owner = 'worker-b', lease_version = lease_version + 1 WHERE operation_id = 'po_boot'`); err != nil {
+		t.Fatalf("simulate reclaim: %v", err)
+	}
+
+	// Worker-a's stale finalize must be rejected by the lease fence.
+	_, err = store.FinalizeBootstrap(ctx, FinalizeBootstrapRequest{
+		SessionID:                  "ps_boot",
+		OperationID:                "po_boot",
+		LeaseOwner:                 claimed.LeaseOwner,
+		LeaseVersion:               claimed.LeaseVersion,
+		UpdatedAt:                  "2026-04-26T10:02:00Z",
+		FinishedAt:                 "2026-04-26T10:02:00Z",
+		CandidateContextSnapshotID: "snap_candidate",
+		TerminalEventID:            "po_boot:1",
+		TerminalEventSeq:           1,
+		TerminalEventCreatedAt:     "2026-04-26T10:02:00Z",
+	})
+	if !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("expected ErrPlanningLeaseConflict, got %v", err)
+	}
+
+	// Snapshot must NOT have been published to the session row.
+	session, _, err := store.GetSession(ctx, "ps_boot")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if session.ContextSnapshotID != nil && *session.ContextSnapshotID == "snap_candidate" {
+		t.Fatalf("stale worker published snapshot despite losing lease — durability bug not closed")
+	}
+
+	// Terminal event must NOT have been written.
+	if _, ok, err := store.GetLatestOperationEvent(ctx, "po_boot"); err != nil {
+		t.Fatalf("get latest event: %v", err)
+	} else if ok {
+		t.Fatalf("stale worker wrote a terminal event despite losing lease")
+	}
+}
+
+// TestFinalizeBootstrapPublishesAdoptedID verifies that when a refresh has
+// already adopted a newer snapshot, the bootstrap's terminal event payload
+// reports the adopted (newer) id rather than the candidate. Observers can
+// rely on the terminal event matching session.context_snapshot_id.
+func TestFinalizeBootstrapPublishesAdoptedID(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_adopt",
+		Title:              "adopt",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateProcessing,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T10:00:00Z",
+		UpdatedAt:          "2026-04-26T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_adopt",
+		PlanningSessionID:  "ps_adopt",
+		Type:               PlanningOperationTypeBootstrapContext,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-26T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_adopt", "worker-a", "2026-04-26T11:00:00Z", "2026-04-26T10:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	// Slow bootstrap candidate.
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_slow",
+		PlanningSessionID:         "ps_adopt",
+		SummaryMarkdown:           "slow candidate",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T10:01:00Z",
+	}); err != nil {
+		t.Fatalf("create candidate snapshot: %v", err)
+	}
+	// /context/refresh adopted a newer snapshot ahead of the bootstrap.
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_newer",
+		PlanningSessionID:         "ps_adopt",
+		SummaryMarkdown:           "refresh winner",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T10:01:30Z",
+	}); err != nil {
+		t.Fatalf("create newer snapshot: %v", err)
+	}
+	if _, err := store.PublishContextSnapshot(ctx, "ps_adopt", "snap_newer", "2026-04-26T10:01:31Z"); err != nil {
+		t.Fatalf("pre-publish refresh winner: %v", err)
+	}
+
+	adopted, err := store.FinalizeBootstrap(ctx, FinalizeBootstrapRequest{
+		SessionID:                  "ps_adopt",
+		OperationID:                "po_adopt",
+		LeaseOwner:                 claimed.LeaseOwner,
+		LeaseVersion:               claimed.LeaseVersion,
+		UpdatedAt:                  "2026-04-26T10:02:00Z",
+		FinishedAt:                 "2026-04-26T10:02:00Z",
+		CandidateContextSnapshotID: "snap_slow",
+		TerminalEventID:            "po_adopt:1",
+		TerminalEventSeq:           1,
+		TerminalEventCreatedAt:     "2026-04-26T10:02:00Z",
+	})
+	if err != nil {
+		t.Fatalf("finalize bootstrap: %v", err)
+	}
+	if adopted != "snap_newer" {
+		t.Fatalf("expected adopted=snap_newer, got %q", adopted)
+	}
+	// Terminal event payload must carry the adopted id.
+	event, ok, err := store.GetLatestOperationEvent(ctx, "po_adopt")
+	if err != nil || !ok {
+		t.Fatalf("get latest event: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(event.PayloadJSON, `"snap_newer"`) {
+		t.Fatalf("expected terminal event payload to contain snap_newer, got %q", event.PayloadJSON)
+	}
+	// Operation row's result_ref must also reflect adopted.
+	op, _, err := store.GetOperation(ctx, "po_adopt")
+	if err != nil {
+		t.Fatalf("get op: %v", err)
+	}
+	if op.ResultRef == nil || *op.ResultRef != "snap_newer" {
+		t.Fatalf("expected result_ref=snap_newer, got %+v", op.ResultRef)
+	}
+}
+
+// TestPublishContextSnapshotPreservesNewer guards the bootstrap-vs-refresh
+// race: a slow bootstrap finishing after a manual /context/refresh must
+// not roll the session back to the older snapshot. PublishContextSnapshot
+// races on the session's adopted slot — once the newer snapshot is in,
+// the older publish's UPDATE evaluates the ELSE branch and the column
+// stays put.
+func TestPublishContextSnapshotPreservesNewer(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_pub",
+		Title:              "pub",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-25T16:40:00Z",
+		UpdatedAt:          "2026-04-25T16:40:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_old",
+		PlanningSessionID:         "ps_pub",
+		SummaryMarkdown:           "old",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-25T16:40:01Z",
+	}); err != nil {
+		t.Fatalf("create old snapshot: %v", err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_new",
+		PlanningSessionID:         "ps_pub",
+		SummaryMarkdown:           "new",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-25T16:42:00Z",
+	}); err != nil {
+		t.Fatalf("create new snapshot: %v", err)
+	}
+
+	// /context/refresh wins by publishing the newer snapshot first.
+	adopted, err := store.PublishContextSnapshot(ctx, "ps_pub", "snap_new", "2026-04-25T16:42:01Z")
+	if err != nil {
+		t.Fatalf("publish newer: %v", err)
+	}
+	if adopted != "snap_new" {
+		t.Fatalf("expected adopted=snap_new, got %q", adopted)
+	}
+	// Slow bootstrap finishes and tries to publish the older snapshot.
+	// The publish must succeed (no error) but report the still-adopted
+	// newer snapshot id so the bootstrap's terminal event can carry the
+	// truth, not the candidate.
+	adopted, err = store.PublishContextSnapshot(ctx, "ps_pub", "snap_old", "2026-04-25T16:42:02Z")
+	if err != nil {
+		t.Fatalf("publish older (expected silent demotion-rejection): %v", err)
+	}
+	if adopted != "snap_new" {
+		t.Fatalf("expected adopted=snap_new (newer wins), got %q", adopted)
+	}
+
+	session, ok, err := store.GetSession(ctx, "ps_pub")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if session.ContextSnapshotID == nil || *session.ContextSnapshotID != "snap_new" {
+		t.Fatalf("expected newer snapshot to remain published, got %+v", session.ContextSnapshotID)
+	}
+}
+
+// TestPublishContextSnapshotFreshSessionAdoptsNewerOnSequentialPublish
+// pins the regression that motivated the adopted-slot rewrite: when two
+// snapshots already exist in the table for a session whose adopted slot
+// is still NULL, publishing the older one first must succeed (set the
+// slot) and publishing the newer one second must succeed (replace the
+// slot). The previous shape compared against the snapshot table and so
+// silently no-op'd the first publish whenever the second snapshot row
+// pre-existed in the table — losing the very first adoption on a fresh
+// session under any concurrent refresh that beat the bootstrap into the
+// table.
+func TestPublishContextSnapshotFreshSessionAdoptsNewerOnSequentialPublish(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_fresh",
+		Title:              "fresh",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T11:00:00Z",
+		UpdatedAt:          "2026-04-26T11:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Pre-create both snapshot rows before either is published. This
+	// reproduces the racing-publishers shape where two refreshes both
+	// inserted snapshot rows before either won the slot.
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_a",
+		PlanningSessionID:         "ps_fresh",
+		SummaryMarkdown:           "a",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T11:00:01Z",
+	}); err != nil {
+		t.Fatalf("create snap_a: %v", err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_b",
+		PlanningSessionID:         "ps_fresh",
+		SummaryMarkdown:           "b",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T11:00:02Z",
+	}); err != nil {
+		t.Fatalf("create snap_b: %v", err)
+	}
+
+	// Publishing snap_a first must adopt it — the slot is empty (NULL),
+	// so the candidate always wins regardless of what else exists in the
+	// snapshot table. The previous shape regressed exactly here.
+	adopted, err := store.PublishContextSnapshot(ctx, "ps_fresh", "snap_a", "2026-04-26T11:00:03Z")
+	if err != nil {
+		t.Fatalf("publish snap_a: %v", err)
+	}
+	if adopted != "snap_a" {
+		t.Fatalf("expected adopted=snap_a after first publish, got %q", adopted)
+	}
+
+	// Publishing snap_b must promote it — strictly newer than snap_a.
+	adopted, err = store.PublishContextSnapshot(ctx, "ps_fresh", "snap_b", "2026-04-26T11:00:04Z")
+	if err != nil {
+		t.Fatalf("publish snap_b: %v", err)
+	}
+	if adopted != "snap_b" {
+		t.Fatalf("expected adopted=snap_b after second publish, got %q", adopted)
+	}
+
+	session, ok, err := store.GetSession(ctx, "ps_fresh")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if session.ContextSnapshotID == nil || *session.ContextSnapshotID != "snap_b" {
+		t.Fatalf("expected session adopted=snap_b, got %+v", session.ContextSnapshotID)
+	}
+}
+
+// TestPublishContextSnapshotSameSecondTiebreaks asserts that two snapshots
+// produced in the same RFC3339 second still have a deterministic winner —
+// the tuple (created_at, planning_context_snapshot_id) gives a total order
+// matching the read order, so the lexicographically-greater id wins.
+func TestPublishContextSnapshotSameSecondTiebreaks(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_tie",
+		Title:              "tie",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-26T10:00:00Z",
+		UpdatedAt:          "2026-04-26T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	const sameTS = "2026-04-26T10:00:01Z"
+	for _, id := range []string{"snap_a", "snap_b"} {
+		if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+			PlanningContextSnapshotID: id,
+			PlanningSessionID:         "ps_tie",
+			SummaryMarkdown:           id,
+			IncludedFilesJSON:         `[]`,
+			ExcludedFilesJSON:         `[]`,
+			CreatedAt:                 sameTS,
+		}); err != nil {
+			t.Fatalf("create snapshot %s: %v", id, err)
+		}
+	}
+
+	// Publishing snap_b (lex-greater) first sets the pointer.
+	if _, err := store.PublishContextSnapshot(ctx, "ps_tie", "snap_b", sameTS); err != nil {
+		t.Fatalf("publish snap_b: %v", err)
+	}
+	// Publishing snap_a after must NOT demote — same created_at, smaller
+	// id, so the tuple ordering treats snap_b as the strictly-newer entry.
+	adopted, err := store.PublishContextSnapshot(ctx, "ps_tie", "snap_a", sameTS)
+	if err != nil {
+		t.Fatalf("publish snap_a: %v", err)
+	}
+	if adopted != "snap_b" {
+		t.Fatalf("expected adopted=snap_b (lex-greater wins on equal timestamps), got %q", adopted)
+	}
+}
+
+// TestPublishContextSnapshotRejectsCrossSession guards against a caller
+// that hands a snapshot id from a different session. Looking up by id
+// alone would let a foreign snapshot land on this session's pointer.
+func TestPublishContextSnapshotRejectsCrossSession(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	for _, sessionID := range []string{"ps_x", "ps_y"} {
+		if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+			PlanningSessionID:  sessionID,
+			Title:              sessionID,
+			TitleState:         "custom",
+			LifecycleState:     PlanningSessionLifecycleStateActive,
+			ConversationState:  PlanningSessionConversationStateReady,
+			ProjectRoot:        "/workspace/project",
+			ModelSelectionJSON: `{"model":"m"}`,
+			CreatedAt:          "2026-04-26T10:00:00Z",
+			UpdatedAt:          "2026-04-26T10:00:00Z",
+		}); err != nil {
+			t.Fatalf("create session %s: %v", sessionID, err)
+		}
+	}
+	if _, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "snap_x",
+		PlanningSessionID:         "ps_x",
+		SummaryMarkdown:           "x",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-26T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("create snapshot for ps_x: %v", err)
+	}
+
+	// snap_x belongs to ps_x; publishing it under ps_y must fail.
+	if _, err := store.PublishContextSnapshot(ctx, "ps_y", "snap_x", "2026-04-26T10:00:02Z"); !errors.Is(err, ErrPlanningSnapshotNotInSession) {
+		t.Fatalf("expected ErrPlanningSnapshotNotInSession, got %v", err)
+	}
+}
+
+// (Counter-based stuck-progression tests removed: the integer counter
+// was replaced with a timestamp-derived predicate so observer count cannot
+// bias the failure decision. See TestIsStuckOperation* and
+// TestFinaliseIfStuck* in service_test.go for the new coverage.)

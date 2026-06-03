@@ -1,0 +1,10 @@
+{
+  "schema_version": "v1",
+  "status": "failed",
+  "summary": "Command denied",
+  "payload_json": {
+    "reason_code": "policy_violation"
+  },
+  "artifacts": [],
+  "error_reason": "policy_violation"
+}

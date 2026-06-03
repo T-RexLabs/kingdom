@@ -1,0 +1,57 @@
+{
+  "version": "v1",
+  "workflow_id": "royal-decree-v1",
+  "name": "Royal Decree",
+  "nodes": [
+    {
+      "node_id": "decree_intake",
+      "required_role": "king",
+      "node_class": "decree_intake"
+    },
+    {
+      "node_id": "advisor_consultation_noble",
+      "required_role": "noble-delegate",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "advisory_synthesis",
+      "required_role": "chancellor",
+      "node_class": "advisory_synthesis"
+    },
+    {
+      "node_id": "plan_drafting",
+      "required_role": "council-member",
+      "node_class": "plan_drafting"
+    },
+    {
+      "node_id": "king_plan_decision",
+      "required_role": "king",
+      "node_class": "king_plan_decision"
+    }
+  ],
+  "edges": [
+    {
+      "from": "decree_intake",
+      "to": "advisor_consultation_noble",
+      "on": "success"
+    },
+    {
+      "from": "advisor_consultation_noble",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "advisory_synthesis",
+      "to": "plan_drafting",
+      "on": "success"
+    },
+    {
+      "from": "plan_drafting",
+      "to": "king_plan_decision",
+      "on": "success"
+    }
+  ],
+  "metadata": {
+    "max_execution_review_cycles": 2
+  }
+}

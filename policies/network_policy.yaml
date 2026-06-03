@@ -1,0 +1,109 @@
+version: v1
+policy_id: network-policy-mvp-v1
+mode: deny_by_default
+
+notes:
+  - No role has implicit outbound network permissions.
+  - Domains are allowlisted only for explicitly named node classes.
+  - Private RFC1918/localhost/meta-data targets remain blocked.
+
+global_denies:
+  cidr_blocks:
+    - 127.0.0.0/8
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+  hostnames:
+    - localhost
+    - metadata.google.internal
+    - 169.254.169.254
+
+roles:
+  king:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  chancellor:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  council-member:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  noble-delegate:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  clergy-delegate:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  burgher-delegate:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  peasant-delegate:
+    default_allowed_domains: []
+    node_class_overrides: {}
+
+  builder-berserker:
+    default_allowed_domains: []
+    node_class_overrides:
+      dependency_install:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+      build:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+
+  reviewer-shieldmaiden:
+    default_allowed_domains: []
+    node_class_overrides:
+      dependency_install:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+      build:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+
+  intelligence-qa-scout:
+    default_allowed_domains: []
+    node_class_overrides:
+      dependency_install:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+      build:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+
+  intelligence-nightraven:
+    default_allowed_domains: []
+    node_class_overrides:
+      dependency_install:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+      build:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+
+  intelligence-loki-chaos:
+    default_allowed_domains: []
+    node_class_overrides:
+      dependency_install:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org
+      build:
+        - proxy.golang.org
+        - sum.golang.org
+        - registry.npmjs.org

@@ -1,0 +1,11 @@
+{
+  "event_id": "evt_004",
+  "schema_version": "v2",
+  "attempt_id": "att_001",
+  "run_id": "run_001",
+  "node_id": "plan_drafting",
+  "seq": 20,
+  "emitted_at": "2026-03-01T12:03:00Z",
+  "event_type": "attempt.progress",
+  "payload_json": {}
+}

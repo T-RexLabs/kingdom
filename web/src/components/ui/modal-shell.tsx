@@ -1,0 +1,66 @@
+import type { HTMLAttributes, ReactNode } from "react";
+import { X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+type ModalShellSize = "sm" | "md" | "lg" | "xl";
+
+const MODAL_SHELL_SIZE_CLASS: Record<ModalShellSize, string> = {
+	sm: "max-w-md",
+	md: "max-w-3xl",
+	lg: "max-w-4xl",
+	xl: "max-w-5xl",
+};
+
+export function modalShellSizeClass(size: ModalShellSize = "md"): string {
+	return MODAL_SHELL_SIZE_CLASS[size];
+}
+
+export const MODAL_BODY_TEXT_CLASS = "text-sm text-foreground";
+export const MODAL_SUPPORTING_TEXT_CLASS = "text-sm text-foreground-muted";
+export const MODAL_LABEL_CLASS = "text-xs font-medium uppercase tracking-wide text-foreground-subtle";
+
+export function ModalContentCard({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+	return <div className={cn("rounded-xl border border-border bg-background p-4", className)} {...props} />;
+}
+
+export function ModalContentSection({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+	return <div className={cn("space-y-1 rounded-lg border border-border bg-surface px-3 py-3", className)} {...props} />;
+}
+
+export function ModalShell({
+	title,
+	caption,
+	description,
+	onClose,
+	children,
+	footer,
+	bodyClassName,
+	className,
+}: {
+	title: ReactNode;
+	caption?: ReactNode;
+	description?: ReactNode;
+	onClose: () => void;
+	children: ReactNode;
+	footer?: ReactNode;
+	bodyClassName?: string;
+	className?: string;
+}) {
+	return (
+		<div className={cn("flex max-h-[85vh] min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl", className)}>
+			<div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+				<div className="min-w-0">
+					{caption ? <p className="text-xs uppercase tracking-[0.22em] text-foreground-subtle">{caption}</p> : null}
+					<h3 className={cn("text-lg font-semibold text-foreground", caption ? "mt-2" : "")}>{title}</h3>
+					{description ? <p className="mt-1 text-sm text-foreground-muted">{description}</p> : null}
+				</div>
+				<Button type="button" variant="ghost" size="icon" aria-label="Close dialog" onClick={onClose}>
+					<X className="h-4 w-4" />
+				</Button>
+			</div>
+			<div className={cn("min-h-0 flex-1 overflow-y-auto px-5 py-4", bodyClassName)}>{children}</div>
+			{footer ? <div className="border-t border-border px-5 py-3">{footer}</div> : null}
+		</div>
+	);
+}

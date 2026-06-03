@@ -1,0 +1,19 @@
+{
+  "version": "v1",
+  "policy_id": "retry-policy-mvp-v1",
+  "defaults": {
+    "jitter_mode": "full"
+  },
+  "classes": {
+    "non_retryable": {
+      "max_retries": 0,
+      "escalation": {
+        "target_role": "chancellor"
+      }
+    }
+  },
+  "error_code_map": {
+    "invalid_output_schema": "non_retryable"
+  },
+  "surprise": "nope"
+}

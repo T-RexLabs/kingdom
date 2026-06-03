@@ -1,0 +1,11 @@
+{
+  "name": "seed-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Seed project for e2e existing repo checks",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node test/main.test.js"
+  }
+}

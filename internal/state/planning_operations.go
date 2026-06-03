@@ -1,0 +1,880 @@
+package state
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningOperationRequest) (PlanningOperation, error) {
+	if err := validatePlanningOperationCreate(req); err != nil {
+		return PlanningOperation{}, err
+	}
+	return insertPlanningOperation(ctx, s.db, req)
+}
+
+func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePlanningOperationRequest) (PlanningOperation, error) {
+	row := PlanningOperation{
+		OperationID:                strings.TrimSpace(req.OperationID),
+		PlanningSessionID:          strings.TrimSpace(req.PlanningSessionID),
+		Type:                       req.Type,
+		Status:                     req.Status,
+		RequestPayloadJSON:         strings.TrimSpace(req.RequestPayloadJSON),
+		LeaseOwner:                 strings.TrimSpace(req.LeaseOwner),
+		LeaseExpiresAt:             nullableString(req.LeaseExpiresAt),
+		LeaseVersion:               req.LeaseVersion,
+		LastHeartbeatAt:            nullableString(req.LastHeartbeatAt),
+		ProviderSessionID:          nullableString(req.ProviderSessionID),
+		ActiveProviderInvocationID: nullableString(req.ActiveProviderInvocationID),
+		ObservedOutputText:         strings.TrimSpace(req.ObservedOutputText),
+		Error:                      nullableString(req.Error),
+		ResultRef:                  nullableString(req.ResultRef),
+		CanonicalSettlementID:      nullableString(req.CanonicalSettlementID),
+		CreatedAt:                  strings.TrimSpace(req.CreatedAt),
+		StartedAt:                  nullableString(req.StartedAt),
+		FinishedAt:                 nullableString(req.FinishedAt),
+	}
+	_, err := exec.ExecContext(ctx,
+		`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		row.OperationID,
+		row.PlanningSessionID,
+		row.Type,
+		row.Status,
+		row.RequestPayloadJSON,
+		row.LeaseOwner,
+		nullableStringValue(row.LeaseExpiresAt),
+		row.LeaseVersion,
+		nullableStringValue(row.LastHeartbeatAt),
+		nullableStringValue(row.ProviderSessionID),
+		nullableStringValue(row.ActiveProviderInvocationID),
+		row.ObservedOutputText,
+		nullableStringValue(row.Error),
+		nullableStringValue(row.ResultRef),
+		nullableStringValue(row.CanonicalSettlementID),
+		row.CreatedAt,
+		nullableStringValue(row.StartedAt),
+		nullableStringValue(row.FinishedAt),
+	)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("insert planning operation: %w", err)
+	}
+	return row, nil
+}
+
+func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlanningReplyBundleRequest) (PlanningOperation, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return PlanningOperation{}, fmt.Errorf("planning session id is required")
+	}
+	if err := validatePlanningMessageAppend(req.UserMessage); err != nil {
+		return PlanningOperation{}, err
+	}
+	if err := validatePlanningOperationCreate(req.Operation); err != nil {
+		return PlanningOperation{}, err
+	}
+	if !isValidPlanningSessionConversationState(req.ConversationState) {
+		return PlanningOperation{}, fmt.Errorf("invalid planning session conversation state: %q", req.ConversationState)
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" {
+		return PlanningOperation{}, fmt.Errorf("updated_at is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("begin create planning reply bundle: %w", err)
+	}
+
+	if req.TruncateFromTurn == nil {
+		if _, err := insertPlanningMessage(ctx, tx, req.UserMessage); err != nil {
+			return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
+		}
+	}
+	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	if err != nil {
+		rollbackErr := rollbackPlanningTx(tx, "create planning reply bundle", err)
+		if IsUniqueViolation(err) {
+			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
+		}
+		return PlanningOperation{}, rollbackErr
+	}
+	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
+		PlanningSessionID:  req.SessionID,
+		ConversationState:  &req.ConversationState,
+		CurrentOperationID: stringPtr(req.Operation.OperationID),
+		UpdatedAt:          req.UpdatedAt,
+	}); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, fmt.Errorf("commit create planning reply bundle: %w", err)
+	}
+	return operation, nil
+}
+
+func (s *PlanningStore) CreateFormalizeBundle(ctx context.Context, req CreatePlanningFormalizeBundleRequest) (PlanningOperation, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return PlanningOperation{}, fmt.Errorf("planning session id is required")
+	}
+	if err := validatePlanningOperationCreate(req.Operation); err != nil {
+		return PlanningOperation{}, err
+	}
+	if !isValidPlanningSessionConversationState(req.ConversationState) {
+		return PlanningOperation{}, fmt.Errorf("invalid planning session conversation state: %q", req.ConversationState)
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" {
+		return PlanningOperation{}, fmt.Errorf("updated_at is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("begin create planning formalize bundle: %w", err)
+	}
+	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	if err != nil {
+		rollbackErr := rollbackPlanningTx(tx, "create planning formalize bundle", err)
+		if IsUniqueViolation(err) {
+			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
+		}
+		return PlanningOperation{}, rollbackErr
+	}
+	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
+		PlanningSessionID:  req.SessionID,
+		ConversationState:  &req.ConversationState,
+		CurrentOperationID: stringPtr(req.CurrentOperationID),
+		UpdatedAt:          req.UpdatedAt,
+	}); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning formalize bundle", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, fmt.Errorf("commit create planning formalize bundle: %w", err)
+	}
+	return operation, nil
+}
+
+func (s *PlanningStore) CreateGenerateTitleBundle(ctx context.Context, req CreatePlanningGenerateTitleBundleRequest) (PlanningOperation, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return PlanningOperation{}, fmt.Errorf("planning session id is required")
+	}
+	if err := validatePlanningOperationCreate(req.Operation); err != nil {
+		return PlanningOperation{}, err
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" {
+		return PlanningOperation{}, fmt.Errorf("updated_at is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("begin create planning generate title bundle: %w", err)
+	}
+	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	if err != nil {
+		rollbackErr := rollbackPlanningTx(tx, "create planning generate title bundle", err)
+		if IsUniqueViolation(err) {
+			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
+		}
+		return PlanningOperation{}, rollbackErr
+	}
+	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
+		PlanningSessionID:       req.SessionID,
+		CurrentTitleOperationID: stringPtr(req.CurrentTitleOperationID),
+		UpdatedAt:               req.UpdatedAt,
+	}); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning generate title bundle", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, fmt.Errorf("commit create planning generate title bundle: %w", err)
+	}
+	return operation, nil
+}
+
+func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRegenerateBundleRequest) (PlanningOperation, error) {
+	if strings.TrimSpace(req.SessionID) == "" {
+		return PlanningOperation{}, fmt.Errorf("planning session id is required")
+	}
+	if req.TargetTurnIndex < 1 {
+		return PlanningOperation{}, fmt.Errorf("target turn index must be >= 1")
+	}
+	if err := validatePlanningOperationCreate(req.Operation); err != nil {
+		return PlanningOperation{}, err
+	}
+	if !isValidPlanningSessionConversationState(req.ConversationState) {
+		return PlanningOperation{}, fmt.Errorf("invalid planning session conversation state: %q", req.ConversationState)
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" {
+		return PlanningOperation{}, fmt.Errorf("updated_at is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("begin create regenerate bundle: %w", err)
+	}
+
+	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
+	if err != nil {
+		rollbackErr := rollbackPlanningTx(tx, "create regenerate bundle", err)
+		if IsUniqueViolation(err) {
+			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
+		}
+		return PlanningOperation{}, rollbackErr
+	}
+	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
+		PlanningSessionID:  req.SessionID,
+		ConversationState:  &req.ConversationState,
+		CurrentOperationID: stringPtr(req.Operation.OperationID),
+		UpdatedAt:          req.UpdatedAt,
+	}); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create regenerate bundle", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, fmt.Errorf("commit create regenerate bundle: %w", err)
+	}
+	return operation, nil
+}
+
+// CountOperationsByStatus returns one row per status with a COUNT, in a
+// single query — replaces three full table scans (one per status) the metrics
+// scrape used to perform.
+func (s *PlanningStore) CountOperationsByStatus(ctx context.Context) (map[PlanningOperationStatus]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM planning_operations GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("count planning operations by status: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[PlanningOperationStatus]int)
+	for rows.Next() {
+		var status PlanningOperationStatus
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("scan planning operation status count: %w", err)
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
+// OldestQueuedOperationCreatedAt returns the created_at of the longest-queued
+// operation, used as a saturation indicator on the metrics endpoint.
+func (s *PlanningStore) OldestQueuedOperationCreatedAt(ctx context.Context) (string, error) {
+	var createdAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT created_at FROM planning_operations
+		 WHERE status = ?
+		 ORDER BY created_at ASC
+		 LIMIT 1`, PlanningOperationStatusQueued,
+	).Scan(&createdAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("oldest queued planning operation: %w", err)
+	}
+	return normalizedNullableString(nullableStringFromSQL(createdAt)), nil
+}
+
+// OldestRunningOperationStartedAt mirrors OldestQueuedOperationCreatedAt for
+// the running set.
+func (s *PlanningStore) OldestRunningOperationStartedAt(ctx context.Context) (string, error) {
+	var startedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT started_at FROM planning_operations
+		 WHERE status = ?
+		 ORDER BY COALESCE(started_at, created_at) ASC
+		 LIMIT 1`, PlanningOperationStatusRunning,
+	).Scan(&startedAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("oldest running planning operation: %w", err)
+	}
+	return normalizedNullableString(nullableStringFromSQL(startedAt)), nil
+}
+
+func (s *PlanningStore) UpdateOperation(ctx context.Context, req UpdatePlanningOperationRequest) error {
+	return updatePlanningOperation(ctx, s.db, req)
+}
+
+// FinalizeOperation applies the per-Kind post-conditions for a planning
+// operation atomically with a lease-fenced terminal write on both the
+// operation row and the session row. If either fence fails (i.e. the worker
+// has lost its lease since claiming, or the session has already moved on to a
+// newer operation) the entire transaction is rolled back and
+// ErrPlanningLeaseConflict is returned, leaving any concurrent recovery cycle
+// free to claim and finalize the operation correctly.
+func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOperationRequest) error {
+	if err := validateFinalizeOperationRequest(req); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin finalize planning operation: %w", err)
+	}
+	operation, found, err := getPlanningOperation(ctx, tx, req.OperationID)
+	if err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", err)
+	}
+	if !found {
+		return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("planning operation %q not found", strings.TrimSpace(req.OperationID)))
+	}
+	if operation.PlanningSessionID != strings.TrimSpace(req.SessionID) {
+		return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("planning operation %q does not belong to session %q", strings.TrimSpace(req.OperationID), strings.TrimSpace(req.SessionID)))
+	}
+	if err := validateFinalizeOperationProviderContract(operation, req); err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", err)
+	}
+
+	var terminalStatus PlanningOperationStatus
+	switch req.Kind {
+	case FinalizeFail:
+		terminalStatus = PlanningOperationStatusFailed
+	case FinalizeCancel:
+		terminalStatus = PlanningOperationStatusCancelled
+	default:
+		terminalStatus = PlanningOperationStatusSucceeded
+	}
+
+	opUpdate := newUpdateBuilder("planning_operations").
+		Set("status", string(terminalStatus)).
+		Set("active_provider_invocation_id", nil).
+		Set("lease_owner", "").
+		Set("lease_expires_at", nil).
+		SetExpr("lease_version", "lease_version + 1").
+		Set("last_heartbeat_at", nil).
+		Set("finished_at", strings.TrimSpace(req.FinishedAt))
+	if strings.TrimSpace(req.ObservedOutputText) != "" {
+		opUpdate.Set("observed_output_text", strings.TrimSpace(req.ObservedOutputText))
+	}
+	switch req.Kind {
+	case FinalizeFail, FinalizeCancel:
+		opUpdate.Set("error", strings.TrimSpace(req.ErrorMessage))
+	default:
+		opUpdate.Set("result_ref", strings.TrimSpace(req.ResultRef))
+	}
+	opUpdate.
+		Where("operation_id = ?", strings.TrimSpace(req.OperationID)).
+		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
+		Where("lease_version = ?", req.LeaseVersion).
+		Where("status = ?", string(PlanningOperationStatusRunning))
+
+	opResult, err := opUpdate.Exec(ctx, tx)
+	if err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("finalize planning operation: %w", err))
+	}
+	if affected, err := opResult.RowsAffected(); err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("finalize planning operation rows affected: %w", err))
+	} else if affected == 0 {
+		return rollbackPlanningTx(tx, "finalize planning operation", ErrPlanningLeaseConflict)
+	}
+
+	{
+		sessionUpdate := newUpdateBuilder("planning_sessions").
+			Set("updated_at", strings.TrimSpace(req.UpdatedAt)).
+			Set("conversation_state", string(req.ConversationState)).
+			Set("current_operation_id", nil)
+		switch req.Kind {
+		case FinalizeReply, FinalizeRegenerate:
+			sessionUpdate.Set("current_question_message_id", finalizeNullable(req.CurrentQuestionMessageID))
+		case FinalizeFormalize:
+			sessionUpdate.Set("current_draft_id", finalizeNullable(req.CurrentDraftID))
+		}
+		sessionUpdate.
+			Where("planning_session_id = ?", strings.TrimSpace(req.SessionID)).
+			Where("current_operation_id = ?", strings.TrimSpace(req.OperationID))
+
+		sessionResult, err := sessionUpdate.Exec(ctx, tx)
+		if err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("finalize planning session: %w", err))
+		}
+		if affected, err := sessionResult.RowsAffected(); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", fmt.Errorf("finalize planning session rows affected: %w", err))
+		} else if affected == 0 {
+			return rollbackPlanningTx(tx, "finalize planning operation", ErrPlanningLeaseConflict)
+		}
+	}
+
+	// Only apply transcript/draft side effects after both fences land so a
+	// stale worker loses cleanly with ErrPlanningLeaseConflict instead of
+	// surfacing raw unique-constraint errors from canonical tables.
+	switch req.Kind {
+	case FinalizeReply:
+		if req.DeleteMessagesFromTurn != nil {
+			if err := deleteMessagesFromTurn(ctx, tx, req.SessionID, *req.DeleteMessagesFromTurn); err != nil {
+				return rollbackPlanningTx(tx, "finalize planning operation", err)
+			}
+		}
+		if req.UserMessage != nil {
+			if _, err := insertPlanningMessage(ctx, tx, *req.UserMessage); err != nil {
+				return rollbackPlanningTx(tx, "finalize planning operation", err)
+			}
+		}
+		if _, err := insertPlanningMessage(ctx, tx, *req.AssistantMessage); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	case FinalizeRegenerate:
+		if req.DeleteMessagesAfterTurn != nil {
+			if err := deleteMessagesAfterTurn(ctx, tx, req.SessionID, *req.DeleteMessagesAfterTurn); err != nil {
+				return rollbackPlanningTx(tx, "finalize planning operation", err)
+			}
+		}
+		if req.DeactivateVariantsAtTurn != nil {
+			if err := deactivateVariantsAtTurn(ctx, tx, req.SessionID, *req.DeactivateVariantsAtTurn, PlanningMessageRoleAssistant); err != nil {
+				return rollbackPlanningTx(tx, "finalize planning operation", err)
+			}
+		}
+		if _, err := insertPlanningMessage(ctx, tx, *req.AssistantMessage); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	case FinalizeFormalize:
+		if _, err := insertPlanningDraft(ctx, tx, *req.Draft); err != nil {
+			if !IsUniqueViolation(err) {
+				return rollbackPlanningTx(tx, "finalize planning operation", err)
+			}
+			// Idempotent re-finalize: draft already exists.
+		}
+	case FinalizeFail, FinalizeCancel:
+		// No domain insert. Cancel and Fail share the no-side-effects
+		// shape — the only difference is the terminal status the row
+		// gets and the column the reason is written to (both use
+		// `error` since neither produces a result_ref).
+	}
+
+	if req.TerminalEvent != nil {
+		if _, err := insertPlanningOperationEvent(ctx, tx, *req.TerminalEvent); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	}
+
+	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit finalize planning operation: %w", err)
+	}
+	return nil
+}
+
+func validateFinalizeOperationRequest(req FinalizeOperationRequest) error {
+	if strings.TrimSpace(req.SessionID) == "" || strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("planning session id and operation id are required")
+	}
+	if strings.TrimSpace(req.LeaseOwner) == "" {
+		return fmt.Errorf("planning operation lease owner is required to fence terminal writes")
+	}
+	if req.LeaseVersion < 0 {
+		return fmt.Errorf("planning operation lease version must be non-negative")
+	}
+	if !isValidPlanningSessionConversationState(req.ConversationState) {
+		return fmt.Errorf("invalid planning session conversation state: %q", req.ConversationState)
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" || strings.TrimSpace(req.FinishedAt) == "" {
+		return fmt.Errorf("planning operation finalize timestamps are required")
+	}
+	switch req.Kind {
+	case FinalizeReply, FinalizeRegenerate:
+		if req.UserMessage != nil {
+			if err := validatePlanningMessageAppend(*req.UserMessage); err != nil {
+				return err
+			}
+		}
+		if req.AssistantMessage == nil {
+			return fmt.Errorf("assistant message is required for %s finalize", req.Kind)
+		}
+		if err := validatePlanningMessageAppend(*req.AssistantMessage); err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.ResultRef) == "" {
+			return fmt.Errorf("result_ref is required for assistant finalize")
+		}
+	case FinalizeFormalize:
+		if req.Draft == nil {
+			return fmt.Errorf("draft is required for formalize finalize")
+		}
+		if err := validatePlanningDraftCreate(*req.Draft); err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.ResultRef) == "" {
+			return fmt.Errorf("result_ref is required for formalize finalize")
+		}
+	case FinalizeFail:
+		if strings.TrimSpace(req.ErrorMessage) == "" {
+			return fmt.Errorf("error message is required for failed finalize")
+		}
+	case FinalizeCancel:
+		if strings.TrimSpace(req.ErrorMessage) == "" {
+			return fmt.Errorf("error message (cancellation reason) is required for cancel finalize")
+		}
+	default:
+		return fmt.Errorf("unsupported finalize kind: %d", req.Kind)
+	}
+	if req.TerminalEvent != nil {
+		if err := validatePlanningOperationEventAppend(*req.TerminalEvent); err != nil {
+			return err
+		}
+	}
+	if req.ProviderSettlement != nil {
+		if _, err := normalizeFinalizePlanningProviderSettlementRequest(*req.ProviderSettlement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFinalizeOperationProviderContract(operation PlanningOperation, req FinalizeOperationRequest) error {
+	activeInvocationID := ""
+	if operation.ActiveProviderInvocationID != nil {
+		activeInvocationID = strings.TrimSpace(*operation.ActiveProviderInvocationID)
+	}
+	if activeInvocationID == "" {
+		if req.ProviderSettlement != nil {
+			return fmt.Errorf("provider settlement requires an active provider invocation")
+		}
+		return nil
+	}
+	if req.ProviderSettlement == nil {
+		return fmt.Errorf("provider settlement is required for provider-backed planning finalization")
+	}
+	if strings.TrimSpace(req.ProviderSettlement.PlanningProviderInvocationID) != activeInvocationID {
+		return fmt.Errorf("provider settlement invocation %q does not match active provider invocation %q", strings.TrimSpace(req.ProviderSettlement.PlanningProviderInvocationID), activeInvocationID)
+	}
+	return nil
+}
+
+// String implements fmt.Stringer for FinalizeOperationKind so error messages
+// stay readable without callers reaching for a switch.
+func (k FinalizeOperationKind) String() string {
+	switch k {
+	case FinalizeReply:
+		return "reply"
+	case FinalizeRegenerate:
+		return "regenerate"
+	case FinalizeFormalize:
+		return "formalize"
+	case FinalizeFail:
+		return "fail"
+	case FinalizeCancel:
+		return "cancel"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(k))
+	}
+}
+
+// finalizeNullable returns nil when the trimmed value is empty so the SQL
+// builder writes NULL rather than the empty string for fields that are
+// modelled as nullable on the schema (e.g. current_question_message_id).
+func finalizeNullable(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.TrimSpace(value)
+}
+
+func updatePlanningOperation(ctx context.Context, exec sqlExecutor, req UpdatePlanningOperationRequest) error {
+	if strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("operation id is required")
+	}
+	if req.Status != nil && !isValidPlanningOperationStatus(*req.Status) {
+		return fmt.Errorf("invalid planning operation status: %q", *req.Status)
+	}
+	builder := newUpdateBuilder("planning_operations")
+	if status := operationStatusPtrValue(req.Status); status != nil {
+		builder.Set("status", *status)
+	}
+	if req.LeaseOwner != nil {
+		builder.Set("lease_owner", strings.TrimSpace(*req.LeaseOwner))
+	}
+	if req.LeaseExpiresAt != nil {
+		builder.Set("lease_expires_at", finalizeNullable(*req.LeaseExpiresAt))
+	}
+	if leaseVersion := intPtrValue(req.LeaseVersion); leaseVersion != nil {
+		builder.Set("lease_version", *leaseVersion)
+	}
+	if req.LastHeartbeatAt != nil {
+		builder.Set("last_heartbeat_at", finalizeNullable(*req.LastHeartbeatAt))
+	}
+	if req.ProviderSessionID != nil {
+		builder.Set("provider_session_id", finalizeNullable(*req.ProviderSessionID))
+	}
+	if req.ActiveProviderInvocationID != nil {
+		builder.Set("active_provider_invocation_id", finalizeNullable(*req.ActiveProviderInvocationID))
+	}
+	if req.ObservedOutputText != nil {
+		builder.Set("observed_output_text", strings.TrimSpace(*req.ObservedOutputText))
+	}
+	if req.Error != nil {
+		builder.Set("error", finalizeNullable(*req.Error))
+	}
+	if req.ResultRef != nil {
+		builder.Set("result_ref", finalizeNullable(*req.ResultRef))
+	}
+	if req.CanonicalSettlementID != nil {
+		builder.Set("canonical_settlement_id", finalizeNullable(*req.CanonicalSettlementID))
+	}
+	if req.StartedAt != nil {
+		builder.Set("started_at", finalizeNullable(*req.StartedAt))
+	}
+	if req.FinishedAt != nil {
+		builder.Set("finished_at", finalizeNullable(*req.FinishedAt))
+	}
+	if !builder.HasUpdates() {
+		return nil
+	}
+	builder.Where("operation_id = ?", strings.TrimSpace(req.OperationID))
+
+	_, err := builder.Exec(ctx, exec)
+	if err != nil {
+		return fmt.Errorf("update planning operation: %w", err)
+	}
+	return nil
+}
+
+func (s *PlanningStore) GetOperation(ctx context.Context, operationID string) (PlanningOperation, bool, error) {
+	return getPlanningOperation(ctx, s.db, operationID)
+}
+
+func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID string) (PlanningOperation, bool, error) {
+	var row PlanningOperation
+	err := scanPlanningOperation(query.QueryRowContext(ctx,
+		`SELECT operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		 FROM planning_operations WHERE operation_id = ?`,
+		strings.TrimSpace(operationID),
+	), &row)
+	if err == sql.ErrNoRows {
+		return PlanningOperation{}, false, nil
+	}
+	if err != nil {
+		return PlanningOperation{}, false, fmt.Errorf("get planning operation: %w", err)
+	}
+	return row, true, nil
+}
+
+func (s *PlanningStore) ListSessionOperations(ctx context.Context, planningSessionID string, limit int) ([]PlanningOperation, error) {
+	if limit <= 0 {
+		limit = DefaultPlanningOperationListLimit
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		 FROM planning_operations
+		 WHERE planning_session_id = ?
+		 ORDER BY created_at DESC, operation_id DESC
+		 LIMIT ?`,
+		strings.TrimSpace(planningSessionID), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list planning operations: %w", err)
+	}
+	defer rows.Close()
+	items := make([]PlanningOperation, 0)
+	for rows.Next() {
+		var row PlanningOperation
+		if err := scanPlanningOperation(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan planning operation: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planning operations: %w", err)
+	}
+	return items, nil
+}
+
+func (s *PlanningStore) ListOperationsByStatusPage(ctx context.Context, afterCreatedAt, afterOperationID string, limit int, statuses ...PlanningOperationStatus) ([]PlanningOperation, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = DefaultPlanningOperationListLimit
+	}
+	trimmedAfterCreatedAt := strings.TrimSpace(afterCreatedAt)
+	trimmedAfterOperationID := strings.TrimSpace(afterOperationID)
+	if trimmedAfterCreatedAt == "" && trimmedAfterOperationID != "" {
+		return nil, fmt.Errorf("planning operation cursor timestamp is required when operation cursor id is set")
+	}
+	placeholders := make([]string, 0, len(statuses))
+	args := make([]any, 0, len(statuses)+5)
+	for _, status := range statuses {
+		if !isValidPlanningOperationStatus(status) {
+			return nil, fmt.Errorf("invalid planning operation status: %q", status)
+		}
+		placeholders = append(placeholders, "?")
+		args = append(args, status)
+	}
+	args = append(args, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterOperationID, limit)
+	query := `SELECT operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		 FROM planning_operations
+		 WHERE status IN (` + strings.Join(placeholders, ", ") + `)
+		   AND (? = '' OR created_at > ? OR (created_at = ? AND operation_id > ?))
+		 ORDER BY created_at ASC, operation_id ASC
+		 LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list planning operations by status page: %w", err)
+	}
+	defer rows.Close()
+	items := make([]PlanningOperation, 0)
+	for rows.Next() {
+		var row PlanningOperation
+		if err := scanPlanningOperation(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan planning operation by status page: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planning operations by status page: %w", err)
+	}
+	return items, nil
+}
+
+func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, leaseOwner string, leaseExpiresAt string, heartbeatAt string) (PlanningOperation, bool, error) {
+	trimmedOperationID := strings.TrimSpace(operationID)
+	trimmedLeaseOwner := strings.TrimSpace(leaseOwner)
+	trimmedLeaseExpiresAt := strings.TrimSpace(leaseExpiresAt)
+	trimmedHeartbeatAt := strings.TrimSpace(heartbeatAt)
+	if trimmedOperationID == "" || trimmedLeaseOwner == "" || trimmedLeaseExpiresAt == "" || trimmedHeartbeatAt == "" {
+		return PlanningOperation{}, false, fmt.Errorf("operation id and lease fields are required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, false, fmt.Errorf("begin claim planning operation: %w", err)
+	}
+
+	row, ok, err := getPlanningOperation(ctx, tx, trimmedOperationID)
+	if err != nil || !ok {
+		return PlanningOperation{}, ok, rollbackPlanningTx(tx, "claim planning operation", err)
+	}
+	// Queued-only claim. Running rows stay owned by the current worker until
+	// shutdown or stuck-operation recovery finalizes them; reclaiming them here
+	// would race in-flight planner work inside the grace window.
+	if row.Status != PlanningOperationStatusQueued {
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
+	}
+
+	statusRunning := PlanningOperationStatusRunning
+	nextLeaseVersion := row.LeaseVersion + 1
+	startedAt := trimmedHeartbeatAt
+	if row.StartedAt != nil && strings.TrimSpace(*row.StartedAt) != "" {
+		startedAt = strings.TrimSpace(*row.StartedAt)
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE planning_operations
+		 SET status = ?, lease_owner = ?, lease_expires_at = ?, lease_version = ?, last_heartbeat_at = ?, started_at = ?, finished_at = NULL
+		 WHERE operation_id = ?
+		   AND status = ?
+		   AND lease_owner = ?
+		   AND COALESCE(lease_expires_at, '') = ?
+		   AND lease_version = ?`,
+		statusRunning,
+		trimmedLeaseOwner,
+		trimmedLeaseExpiresAt,
+		nextLeaseVersion,
+		trimmedHeartbeatAt,
+		startedAt,
+		trimmedOperationID,
+		row.Status,
+		row.LeaseOwner,
+		normalizedNullableString(row.LeaseExpiresAt),
+		row.LeaseVersion,
+	)
+	if err != nil {
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("claim planning operation: %w", err))
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("claim planning operation rows affected: %w", err))
+	}
+	if rowsAffected == 0 {
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
+	}
+	updated, ok, err := getPlanningOperation(ctx, tx, trimmedOperationID)
+	if err != nil || !ok {
+		return PlanningOperation{}, ok, rollbackPlanningTx(tx, "claim planning operation", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, false, fmt.Errorf("commit claim planning operation: %w", err)
+	}
+	return updated, true, nil
+}
+
+func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
+	var leaseExpiresAt sql.NullString
+	var lastHeartbeatAt sql.NullString
+	var providerSessionID sql.NullString
+	var activeProviderInvocationID sql.NullString
+	var observedOutputText sql.NullString
+	var operationError sql.NullString
+	var resultRef sql.NullString
+	var canonicalSettlementID sql.NullString
+	var startedAt sql.NullString
+	var finishedAt sql.NullString
+
+	if err := row.Scan(
+		&dest.OperationID,
+		&dest.PlanningSessionID,
+		&dest.Type,
+		&dest.Status,
+		&dest.RequestPayloadJSON,
+		&dest.LeaseOwner,
+		&leaseExpiresAt,
+		&dest.LeaseVersion,
+		&lastHeartbeatAt,
+		&providerSessionID,
+		&activeProviderInvocationID,
+		&observedOutputText,
+		&operationError,
+		&resultRef,
+		&canonicalSettlementID,
+		&dest.CreatedAt,
+		&startedAt,
+		&finishedAt,
+	); err != nil {
+		return err
+	}
+
+	dest.LeaseExpiresAt = nullableStringFromSQL(leaseExpiresAt)
+	dest.LastHeartbeatAt = nullableStringFromSQL(lastHeartbeatAt)
+	dest.ProviderSessionID = nullableStringFromSQL(providerSessionID)
+	dest.ActiveProviderInvocationID = nullableStringFromSQL(activeProviderInvocationID)
+	dest.ObservedOutputText = normalizedNullableString(nullableStringFromSQL(observedOutputText))
+	dest.Error = nullableStringFromSQL(operationError)
+	dest.ResultRef = nullableStringFromSQL(resultRef)
+	dest.CanonicalSettlementID = nullableStringFromSQL(canonicalSettlementID)
+	dest.StartedAt = nullableStringFromSQL(startedAt)
+	dest.FinishedAt = nullableStringFromSQL(finishedAt)
+	return nil
+}
+
+func (s *PlanningStore) RenewOperationLease(ctx context.Context, operationID string, leaseOwner string, leaseVersion int, leaseExpiresAt string, heartbeatAt string) error {
+	trimmedOperationID := strings.TrimSpace(operationID)
+	trimmedLeaseOwner := strings.TrimSpace(leaseOwner)
+	trimmedLeaseExpiresAt := strings.TrimSpace(leaseExpiresAt)
+	trimmedHeartbeatAt := strings.TrimSpace(heartbeatAt)
+	if trimmedOperationID == "" || trimmedLeaseOwner == "" || trimmedLeaseExpiresAt == "" || trimmedHeartbeatAt == "" {
+		return fmt.Errorf("operation id and lease fields are required")
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE planning_operations
+		 SET lease_expires_at = ?, last_heartbeat_at = ?
+		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running'`,
+		trimmedLeaseExpiresAt,
+		trimmedHeartbeatAt,
+		trimmedOperationID,
+		trimmedLeaseOwner,
+		leaseVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("renew planning operation lease: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("renew planning operation lease rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("planning operation lease lost")
+	}
+	return nil
+}

@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kingdom.local/contracts/schemas/retry_policy.schema.json",
+  "title": "RetryPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "policy_id", "defaults", "classes", "error_code_map"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jitter_mode"],
+      "properties": {
+        "jitter_mode": {
+          "type": "string",
+          "enum": ["none", "full"]
+        }
+      }
+    },
+    "classes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["max_retries", "escalation"],
+        "properties": {
+          "max_retries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "backoff": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["initial_delay", "multiplier", "max_delay"],
+            "properties": {
+              "initial_delay": {
+                "type": "string",
+                "minLength": 2
+              },
+              "multiplier": {
+                "type": "number",
+                "minimum": 1
+              },
+              "max_delay": {
+                "type": "string",
+                "minLength": 2
+              }
+            }
+          },
+          "escalation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target_role"],
+            "properties": {
+              "on_exhausted": {
+                "type": "string"
+              },
+              "on_failure": {
+                "type": "string"
+              },
+              "target_role": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "error_code_map": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

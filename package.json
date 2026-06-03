@@ -1,0 +1,13 @@
+{
+  "name": "kingdom",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Kingdom orchestration workspace tooling",
+  "packageManager": "pnpm@11.2.2",
+  "devDependencies": {
+    "@redocly/cli": "2.1.0"
+  },
+  "scripts": {
+    "openapi:lint": "redocly lint contracts/openapi/openapi.yaml"
+  }
+}

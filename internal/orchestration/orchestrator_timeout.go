@@ -1,0 +1,432 @@
+package orchestration
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
+)
+
+func (o *orchestrationLoop) enforceRunningAttemptTimeouts(ctx context.Context, run runSnapshot, latest map[string]nodeAttempt, now string) error {
+	nowTime, err := time.Parse(time.RFC3339, now)
+	if err != nil {
+		nowTime = o.now().UTC()
+		now = nowTime.Format(time.RFC3339)
+	}
+
+	for _, attempt := range latest {
+		if attempt.NodeStatus != "running" {
+			continue
+		}
+		attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
+		if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
+			continue
+		}
+		if err := o.emitRunningAttemptObservationIfNeeded(ctx, run, attempt, attemptID, now, nowTime); err != nil {
+			return err
+		}
+
+		providerTimeoutMillis := attempt.ProviderTimeoutMillis
+		if providerTimeoutMillis < 0 {
+			providerTimeoutMillis = 0
+		}
+		timeout := time.Duration(providerTimeoutMillis) * time.Millisecond
+		if timeout <= 0 {
+			timeout = o.providerTimeoutForNode(attempt.NodeID, "")
+		}
+		if timeout <= 0 {
+			continue
+		}
+		if !attempt.StartedAt.Valid {
+			continue
+		}
+
+		startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(attempt.StartedAt.String))
+		if err != nil {
+			continue
+		}
+		elapsed := nowTime.Sub(startedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+
+		if elapsed >= timeout {
+			if err := o.emitTimeoutWarningIfNeeded(ctx, run, attempt, attemptID, now, elapsed, timeout); err != nil {
+				return err
+			}
+			if err := o.failTimedOutAttempt(ctx, run, attempt, attemptID, now, elapsed, timeout); err != nil {
+				return err
+			}
+			continue
+		}
+
+		warningAt := time.Duration(float64(timeout) * 0.8)
+		if elapsed >= warningAt {
+			if err := o.emitTimeoutWarningIfNeeded(ctx, run, attempt, attemptID, now, elapsed, timeout); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (o *orchestrationLoop) emitRunningAttemptObservationIfNeeded(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, now string, nowTime time.Time) error {
+	const observationInterval = 3 * time.Second
+
+	var latestObservationAt sql.NullString
+	if err := o.db.QueryRowContext(ctx,
+		`SELECT MAX(created_at)
+		 FROM events
+		 WHERE attempt_id = ? AND event_type = 'attempt.progress' AND reason_code = 'runtime_observation'`,
+		attemptID,
+	).Scan(&latestObservationAt); err != nil {
+		return err
+	}
+	if latestObservationAt.Valid {
+		if observedAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(latestObservationAt.String)); parseErr == nil {
+			if nowTime.Sub(observedAt.UTC()) < observationInterval {
+				return nil
+			}
+		}
+	}
+
+	diagnostics := o.collectAttemptExecutionDiagnostics(ctx, attemptID, o.preferredAttemptSessionID(ctx, attemptID), now)
+	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "runtime_observation", map[string]any{
+		"execution_diagnostics": diagnostics,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal runtime observation payload: %w", err)
+	}
+
+	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_observe_%d", sanitizeFileToken(run.RunID), sanitizeFileToken(attempt.NodeID), attempt.Attempt, nowTime.Unix()),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: strings.TrimSpace(attempt.NodeRunID) != ""},
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.progress",
+		Seq:             o.nextEventSeq(ctx, attemptID),
+		PayloadJSON:     string(payloadRaw),
+		ActorID:         "runtime_orchestrator",
+		RoleID:          attempt.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "runtime_observation",
+		ReasonText:      "running attempt telemetry snapshot",
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_observation", run.RunID, attempt.NodeRunID),
+		CreatedAt:       now,
+	})
+	return err
+}
+
+func (o *orchestrationLoop) emitTimeoutWarningIfNeeded(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, now string, elapsed, timeout time.Duration) error {
+	var count int
+	if err := o.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM events WHERE attempt_id = ? AND event_type = 'attempt.timeout_warning'`, attemptID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	diagnostics := o.collectAttemptExecutionDiagnostics(ctx, attemptID, o.preferredAttemptSessionID(ctx, attemptID), now)
+	seq := o.nextEventSeq(ctx, attemptID)
+	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "timeout", map[string]any{
+		"elapsed_ms":            elapsed.Milliseconds(),
+		"timeout_ms":            timeout.Milliseconds(),
+		"threshold":             "warning",
+		"execution_diagnostics": diagnostics,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal timeout warning payload: %w", err)
+	}
+	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_warning", run.RunID, attempt.NodeID, attempt.Attempt),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.timeout_warning",
+		Seq:             seq,
+		PayloadJSON:     string(payloadRaw),
+		ActorID:         "runtime_orchestrator",
+		RoleID:          attempt.RequiredRole,
+		AuthoritySource: "runtime.timeout",
+		ReasonCode:      "timeout",
+		ReasonText:      "attempt elapsed time reached warning threshold",
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_timeout_warning", run.RunID, attempt.NodeRunID),
+		CreatedAt:       now,
+	})
+	return err
+}
+
+func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, now string, elapsed, timeout time.Duration) error {
+	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID, now)
+	if err != nil {
+		return err
+	}
+	executionDiagnostics := o.collectAttemptExecutionDiagnostics(ctx, attemptID, o.preferredAttemptSessionID(ctx, attemptID), now)
+	reasonCode := "timeout"
+	reasonText := "node attempt exceeded node wall-clock timeout"
+	errorText := "node timeout exceeded"
+	if executionNeverStarted(executionDiagnostics, cancelDiagnostics) {
+		reasonCode = "execution_not_started"
+		reasonText = "node execution never started before wall-clock timeout"
+		errorText = (&executionNotStartedError{
+			AttemptID: attemptID,
+			NodeID:    attempt.NodeID,
+			Reason:    "provider execution never became observable before timeout",
+		}).Error()
+	}
+
+	// Reset the agent from busy->idle so it doesn't stay stuck after a timeout.
+	if o.registry != nil && attempt.AgentID != "" {
+		if statusErr := o.registry.UpdateAgentStatus(ctx, state.UpdateAgentStatusRequest{
+			AgentID:    attempt.AgentID,
+			FromStatus: state.AgentStatusBusy,
+			ToStatus:   state.AgentStatusIdle,
+			UpdatedAt:  now,
+		}); statusErr != nil {
+			slog.Warn("failed to transition agent to idle after timeout", "agent_id", attempt.AgentID, "error", statusErr)
+		}
+	}
+
+	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, reasonCode, map[string]any{
+		"error":                 errorText,
+		"elapsed_ms":            elapsed.Milliseconds(),
+		"timeout_ms":            timeout.Milliseconds(),
+		"execution_diagnostics": executionDiagnostics,
+		"cancel_diagnostics":    cancelDiagnostics,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal timeout failure payload: %w", err)
+	}
+
+	return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
+		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		Entity:          state.EntityTypeNode,
+		FromState:       "running",
+		ToState:         "failed",
+		ActorID:         "runtime_orchestrator",
+		RoleID:          attempt.RequiredRole,
+		AuthoritySource: "runtime.timeout",
+		ReasonCode:      reasonCode,
+		ReasonText:      reasonText,
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_timeout_failed", run.RunID, attempt.NodeRunID),
+		OccurredAt:      now,
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.failed",
+		EventSeq:        o.nextEventSeq(ctx, attemptID),
+		PayloadJSON:     string(payloadRaw),
+	}})
+}
+
+func executionNeverStarted(executionDiagnostics, cancelDiagnostics map[string]any) bool {
+	if eventCount, ok := executionDiagnostics["event_count"].(int); ok && eventCount > 0 {
+		return false
+	}
+	if eventCount, ok := executionDiagnostics["event_count"].(int64); ok && eventCount > 0 {
+		return false
+	}
+	if eventCount, ok := executionDiagnostics["event_count"].(float64); ok && eventCount > 0 {
+		return false
+	}
+	if strings.TrimSpace(fmt.Sprint(cancelDiagnostics["result"])) == "attempt_not_found" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(fmt.Sprint(executionDiagnostics["stream_error"]))), "attempt not found")
+}
+
+func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID, occurredAt string) (map[string]any, error) {
+	request := opencode.CancelRequest{
+		SessionID:  o.preferredAttemptSessionID(ctx, attemptID),
+		AttemptID:  attemptID,
+		Reason:     "node wall-clock timeout exceeded",
+		OccurredAt: occurredAt,
+	}
+
+	diagnostics := map[string]any{
+		"attempt_id":      attemptID,
+		"session_id":      request.SessionID,
+		"cancel_grace_ms": o.cancelGrace.Milliseconds(),
+		"cancel_force_ms": o.cancelForce.Milliseconds(),
+	}
+
+	graceCtx, cancelGrace := context.WithTimeout(ctx, o.cancelGrace)
+	defer cancelGrace()
+	err := o.adapter.Cancel(graceCtx, request)
+	if err == nil {
+		diagnostics["result"] = "grace_success"
+		return diagnostics, nil
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		diagnostics["grace_error"] = err.Error()
+		if o.forceCloseActive() {
+			diagnostics["result"] = "close_aborted"
+			return diagnostics, err
+		}
+		forceCtx, cancelForce := context.WithTimeout(context.WithoutCancel(ctx), o.cancelForce)
+		defer cancelForce()
+		if forceErr := o.adapter.Cancel(forceCtx, request); forceErr == nil {
+			diagnostics["result"] = "force_success"
+			return diagnostics, nil
+		} else {
+			diagnostics["force_error"] = forceErr.Error()
+		}
+	}
+
+	var missing *opencode.AttemptNotFoundError
+	if errors.As(err, &missing) {
+		diagnostics["result"] = "attempt_not_found"
+		return diagnostics, nil
+	}
+	diagnostics["result"] = "error"
+	diagnostics["error"] = err.Error()
+	return diagnostics, fmt.Errorf("cancel timed-out attempt %s: %w", attemptID, err)
+}
+
+func (o *orchestrationLoop) collectAttemptExecutionDiagnostics(ctx context.Context, attemptID, sessionID, observedAt string) map[string]any {
+	diagnostics := map[string]any{
+		"attempt_id":  strings.TrimSpace(attemptID),
+		"session_id":  strings.TrimSpace(sessionID),
+		"observed_at": strings.TrimSpace(observedAt),
+	}
+	if strings.TrimSpace(attemptID) == "" {
+		return diagnostics
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		diagnostics["stream_error"] = "missing durable attempt session id"
+		return diagnostics
+	}
+	if o == nil || o.adapter == nil {
+		diagnostics["stream_error"] = "execution adapter unavailable"
+		return diagnostics
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	eventCh, errCh, err := o.adapter.Stream(streamCtx, opencode.StreamRequest{SessionID: sessionID, AttemptID: attemptID})
+	if err != nil {
+		diagnostics["stream_error"] = err.Error()
+		return diagnostics
+	}
+
+	var firstEventAt string
+	var lastEventAt string
+	eventCount := 0
+	eventTypeCounts := map[string]int{}
+	lastProgressTextLen := 0
+	lastProgressTextSHA := ""
+	lastProgressTextExcerpt := ""
+	terminalEventSeen := false
+	stepFinishSeen := false
+	succeededEventSeen := false
+	failedEventSeen := false
+	cancelledEventSeen := false
+	for event := range eventCh {
+		eventCount++
+		eventType := strings.TrimSpace(event.EventType)
+		eventTypeCounts[eventType]++
+		if eventType == opencode.AttemptEventTypeSucceeded || eventType == opencode.AttemptEventTypeFailed || eventType == opencode.AttemptEventTypeCancelled {
+			terminalEventSeen = true
+		}
+		if eventType == opencode.AttemptEventTypeSucceeded {
+			succeededEventSeen = true
+		}
+		if eventType == opencode.AttemptEventTypeFailed {
+			failedEventSeen = true
+		}
+		if eventType == opencode.AttemptEventTypeCancelled {
+			cancelledEventSeen = true
+		}
+		if firstEventAt == "" {
+			firstEventAt = strings.TrimSpace(event.OccurredAt)
+		}
+		lastEventAt = strings.TrimSpace(event.OccurredAt)
+		if strings.TrimSpace(event.PayloadJSON) != "" {
+			var payload map[string]any
+			if decodeErr := json.Unmarshal([]byte(event.PayloadJSON), &payload); decodeErr == nil {
+				if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
+					lastProgressTextLen = len(text)
+					trimmed := strings.TrimSpace(text)
+					if len(trimmed) > 600 {
+						trimmed = trimmed[:600]
+					}
+					lastProgressTextExcerpt = trimmed
+					sum := sha256.Sum256([]byte(text))
+					lastProgressTextSHA = fmt.Sprintf("%x", sum[:])
+				}
+				if streamDiag, ok := payload["stream_diagnostics"]; ok {
+					diagnostics["stream_diagnostics"] = streamDiag
+				}
+				if executionPathDiag, ok := payload["execution_path_diagnostics"]; ok {
+					diagnostics["execution_path_diagnostics"] = executionPathDiag
+					if diagMap, ok := executionPathDiag.(map[string]any); ok {
+						if seen, ok := diagMap["step_finish_seen"].(bool); ok && seen {
+							stepFinishSeen = true
+						}
+					}
+				}
+				if snapshot, ok := payload["execution_path_diagnostics_snapshot"]; ok {
+					diagnostics["execution_path_diagnostics_snapshot"] = snapshot
+					if snapshotMap, ok := snapshot.(map[string]any); ok {
+						if seen, ok := snapshotMap["step_finish_seen"].(bool); ok && seen {
+							stepFinishSeen = true
+						}
+					}
+				}
+				if timeoutType, ok := payload["timeout_type"]; ok {
+					diagnostics["timeout_type"] = timeoutType
+				}
+			}
+		}
+	}
+
+	if errCh != nil {
+		select {
+		case streamErr := <-errCh:
+			if streamErr != nil && !errors.Is(streamErr, context.DeadlineExceeded) && !errors.Is(streamErr, context.Canceled) {
+				diagnostics["stream_error"] = streamErr.Error()
+			}
+		default:
+		}
+	}
+
+	diagnostics["event_count"] = eventCount
+	diagnostics["event_types"] = eventTypeCounts
+	diagnostics["terminal_event_seen"] = terminalEventSeen
+	diagnostics["succeeded_event_seen"] = succeededEventSeen
+	diagnostics["failed_event_seen"] = failedEventSeen
+	diagnostics["cancelled_event_seen"] = cancelledEventSeen
+	diagnostics["step_finish_seen"] = stepFinishSeen
+	diagnostics["last_progress_text_len"] = lastProgressTextLen
+	if strings.TrimSpace(lastProgressTextSHA) != "" {
+		diagnostics["last_progress_text_sha"] = lastProgressTextSHA
+	}
+	if strings.TrimSpace(lastProgressTextExcerpt) != "" {
+		diagnostics["last_progress_text_excerpt"] = lastProgressTextExcerpt
+	}
+	if firstEventAt != "" {
+		diagnostics["first_event_at"] = firstEventAt
+	}
+	if lastEventAt != "" {
+		diagnostics["last_event_at"] = lastEventAt
+	}
+	return diagnostics
+}

@@ -1,0 +1,229 @@
+@import "tailwindcss";
+
+/*
+ * Kingdom Design System
+ * Dark-first command center with medieval/Viking accents.
+ */
+
+@theme {
+  /* Core palette - deep blues and golds */
+  --color-background: #0a0e17;
+  --color-background-secondary: #111827;
+  --color-background-tertiary: #1a2332;
+
+  --color-foreground: #e8e6e1;
+  --color-foreground-muted: #9ca3af;
+  --color-foreground-subtle: #6b7280;
+
+  /* Kingdom gold accent */
+  --color-gold: #c9a84c;
+  --color-gold-dim: #a68a3e;
+  --color-gold-bright: #e4c65a;
+
+  /* Borders and surfaces */
+  --color-border: #1f2937;
+  --color-border-strong: #374151;
+  --color-surface: #111827;
+  --color-surface-raised: #1a2332;
+  --color-surface-overlay: #1e293b;
+
+  /* Status colors */
+  --color-status-running: #3b82f6;
+  --color-status-succeeded: #22c55e;
+  --color-status-failed: #ef4444;
+  --color-status-pending: #6b7280;
+  --color-status-blocked: #f59e0b;
+  --color-status-cancelled: #8b5cf6;
+  --color-status-rework: #ec4899;
+  --color-status-skipped: #64748b;
+
+  /* Role accent colors */
+  --color-role-king: #c9a84c;
+  --color-role-chancellor: #8b5cf6;
+  --color-role-council: #3b82f6;
+  --color-role-noble: #14b8a6;
+  --color-role-clergy: #f472b6;
+  --color-role-burgher: #f59e0b;
+  --color-role-peasant: #22c55e;
+  --color-role-berserker: #ef4444;
+  --color-role-shieldmaiden: #06b6d4;
+  --color-role-scout: #a3e635;
+  --color-role-nightraven: #8b5cf6;
+  --color-role-loki: #f97316;
+
+  /* Spacing */
+  --spacing-page: 1.5rem;
+
+  /* Border radius */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+
+  /* Fonts */
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-display: "Cinzel", "Inter", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Base layer */
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-foreground-subtle);
+}
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 2px;
+}
+
+.text-wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Glow-pulse animation for busy/running elements.
+   --glow-color: glow hue (falls back to currentColor for HTML elements).
+   --glow-r1..r4: shadow radii, overridable per utility class for intensity control. */
+@keyframes glow-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 var(--glow-r1, 2px) var(--glow-color, currentColor))
+            drop-shadow(0 0 var(--glow-r2, 6px) var(--glow-color, currentColor));
+    opacity: 1;
+  }
+  50% {
+    filter: drop-shadow(0 0 var(--glow-r3, 4px) var(--glow-color, currentColor))
+            drop-shadow(0 0 var(--glow-r4, 12px) var(--glow-color, currentColor));
+    opacity: 0.85;
+  }
+}
+
+/* Full-intensity glow — role icons, DAG node rects */
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* Card-border glow — uses box-shadow (not drop-shadow) so children
+   are unaffected.  Paired with .animate-glow-pulse for the full system. */
+@keyframes card-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 3px var(--glow-color, currentColor),
+                0 0 1px var(--glow-color, currentColor);
+  }
+  50% {
+    box-shadow: 0 0 6px var(--glow-color, currentColor),
+                0 0 2px var(--glow-color, currentColor);
+  }
+}
+
+.animate-glow-pulse-subtle {
+  animation: card-glow-pulse 2s ease-in-out infinite;
+}
+
+/* Quill-writing animation for planner typing indicator */
+@keyframes quill-write {
+  0%, 100% { transform: rotate(-4deg) translateX(0); }
+  25%      { transform: rotate(2deg) translateX(2px); }
+  50%      { transform: rotate(-2deg) translateX(4px); }
+  75%      { transform: rotate(3deg) translateX(2px); }
+}
+
+.animate-quill-write {
+  animation: quill-write 1.4s ease-in-out infinite;
+  transform-origin: bottom left;
+}
+
+/* Streaming text cursor — blinking caret appended via ::after.
+   Activated by [data-streaming] attribute on the content wrapper. */
+@keyframes streaming-cursor-blink {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 0; }
+}
+
+[data-streaming] > p::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.15em;
+  background-color: var(--color-gold);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  border-radius: 1px;
+  animation: streaming-cursor-blink 1s step-end infinite;
+}
+
+/* Chat bubble entrance animation */
+@keyframes chat-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-chat-bubble-in {
+  animation: chat-bubble-in 300ms ease-out both;
+}
+
+/* Word-by-word title reveal animation */
+@keyframes title-word-reveal {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+/* Notification slide animations */
+@keyframes notification-slide-in {
+  from { transform: translateX(calc(100% + 1rem)); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes notification-slide-out {
+  from { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(calc(100% + 1rem)); opacity: 0; }
+}
+
+.animate-notification-in {
+  animation: notification-slide-in 300ms ease-out forwards;
+}
+
+.animate-notification-out {
+  animation: notification-slide-out 250ms ease-in forwards;
+}
+
+/* Dark-theme native date/time pickers */
+.color-scheme-dark {
+  color-scheme: dark;
+}
+
+input[type="date"],
+input[type="datetime-local"] {
+  color-scheme: dark;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8);
+}

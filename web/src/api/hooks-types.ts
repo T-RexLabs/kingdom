@@ -1,0 +1,107 @@
+import type { components } from "./schema";
+
+/**
+ * Mutation argument shape used by every mutation in this module.
+ *
+ * The `key` is the Idempotency-Key the server will see. By making it part of
+ * the mutation's variables, retries from TanStack Query (or the caller) reuse
+ * the same key - that's the point of an idempotency key. The previous
+ * implementation generated `Date.now()-Math.random()` inside `mutationFn`,
+ * which produced a fresh key on every call and silently defeated server-side
+ * deduplication.
+ *
+ * Callers obtain a key once via `newIdempotencyKey(scope)` at the call site.
+ */
+export type MutationWithBody<TBody> = { body: TBody; key: string };
+export type MutationWithValue<TValue> = { value: TValue; key: string };
+export type MutationKeyOnly = { key: string };
+
+/*
+ * Re-export generated schema types for convenience.
+ * These are the canonical API shapes - never hand-roll interfaces
+ * that duplicate OpenAPI contract types.
+ */
+export type RunSummary = components["schemas"]["RunSummary"];
+export type RunDetailSummary = components["schemas"]["RunDetailSummary"];
+export type RunTabCounts = components["schemas"]["RunTabCounts"];
+export type RunPlanSnapshot = components["schemas"]["RunPlanSnapshot"];
+export type RunPlanReview = components["schemas"]["RunPlanReview"];
+export type RunPlanReviewsResponse = components["schemas"]["RunPlanReviewsResponse"];
+export type GovernanceDecision = components["schemas"]["GovernanceDecision"];
+export type GovernanceDecisionsResponse = components["schemas"]["GovernanceDecisionsResponse"];
+export type RunListResponse = components["schemas"]["RunListResponse"];
+export type RunGraphNode = components["schemas"]["RunGraphNode"];
+export type RunGraphEdge = components["schemas"]["RunGraphEdge"];
+export type RunGraphResponse = components["schemas"]["RunGraphResponse"];
+export type RunAgent = components["schemas"]["RunAgent"];
+export type RunParticipant = components["schemas"]["RunParticipant"];
+export type RunAgentsResponse = components["schemas"]["RunAgentsResponse"];
+export type RunExecution = components["schemas"]["RunExecution"];
+export type RunExecutionDetail = components["schemas"]["RunExecutionDetail"];
+export type RunExecutionsResponse = components["schemas"]["RunExecutionsResponse"];
+export type AgentsResponse = components["schemas"]["AgentsResponse"];
+export type Role = components["schemas"]["Role"];
+export type RolesResponse = components["schemas"]["RolesResponse"];
+export type ProviderModel = components["schemas"]["ProviderModel"];
+export type ProviderModelsResponse = components["schemas"]["ProviderModelsResponse"];
+export type WorkspaceCapabilities = components["schemas"]["WorkspaceCapabilities"];
+export type ThinkingEffortOption = components["schemas"]["ThinkingEffortOption"];
+export type RunModelSelection = components["schemas"]["RunModelSelection"];
+export type RunModelSelectionEntry = components["schemas"]["RunModelSelectionEntry"];
+export type TimelineEvent = components["schemas"]["TimelineEvent"];
+export type RunTimelineResponse = components["schemas"]["RunTimelineResponse"];
+export type MailboxMessage = components["schemas"]["RunMailboxMessageSummary"];
+export type MailboxMessagesResponse = components["schemas"]["RunMailboxMessagesResponse"];
+export type MailboxMessageDetail = components["schemas"]["RunMailboxMessageDetail"];
+export type DecreeDetail = components["schemas"]["DecreeDetail"];
+export type PlanningSessionSummary = components["schemas"]["PlanningSessionSummary"];
+export type PlanningSessionDetail = components["schemas"]["PlanningSessionDetail"];
+export type CreatePlanningSessionResult = components["schemas"]["CreatePlanningSessionResult"];
+export type PlanningSessionListResponse = components["schemas"]["PlanningSessionListResponse"];
+export type PlanningMessage = components["schemas"]["PlanningMessage"];
+export type PlanningMessagesPage = components["schemas"]["PlanningMessagesPage"];
+export type PlanningDraft = components["schemas"]["PlanningDraft"];
+export type PlanningContextSnapshot = components["schemas"]["PlanningContextSnapshot"];
+export type PlanningAgentModelSelection = components["schemas"]["PlanningAgentModelSelection"];
+export type PlanningOperationSummary = components["schemas"]["PlanningOperationSummary"];
+export type PlanningOperationDetail = components["schemas"]["PlanningOperationDetail"];
+export type PlanningOperationEvent = components["schemas"]["PlanningOperationEvent"];
+export type PlanningMessageVariantsResponse = components["schemas"]["PlanningMessageVariantsResponse"];
+export type HealthResponse = components["schemas"]["HealthResponse"];
+export type PlannerRuntimeMetrics = components["schemas"]["PlannerRuntimeMetrics"];
+export type RuntimeMetrics = components["schemas"]["RuntimeMetrics"];
+export type DashboardSnapshot = components["schemas"]["DashboardSnapshot"];
+export type DashboardTrendPoint = components["schemas"]["DashboardTrendPoint"];
+export type AnalyticsOutcomeBucket = components["schemas"]["AnalyticsOutcomeBucket"];
+export type AnalyticsRoleDuration = components["schemas"]["AnalyticsRoleDuration"];
+export type RealmAnalyticsOverview = components["schemas"]["RealmAnalyticsOverview"];
+export type RealmAnalyticsRunAnalytics = components["schemas"]["RealmAnalyticsRunAnalytics"];
+export type TokenUsageByRole = components["schemas"]["TokenUsageByRole"];
+export type TokenUsageByRoleModel = components["schemas"]["TokenUsageByRoleModel"];
+export type RealmAnalyticsTokenSummary = components["schemas"]["RealmAnalyticsTokenSummary"];
+export type RealmAnalyticsArtifactSummary = components["schemas"]["RealmAnalyticsArtifactSummary"];
+export type RealmAnalyticsNodeSummary = components["schemas"]["RealmAnalyticsNodeSummary"];
+export type RealmAnalyticsSelectedRun = components["schemas"]["RealmAnalyticsSelectedRun"];
+export type RealmAnalyticsExecutionDetail = components["schemas"]["RealmAnalyticsExecutionDetail"];
+export type RealmAnalyticsExecutionDetailSnapshot = components["schemas"]["RealmAnalyticsExecutionDetailSnapshot"];
+export type RealmAnalyticsSnapshot = components["schemas"]["RealmAnalyticsSnapshot"];
+
+export interface MailboxFilters {
+  communicationType?: string;
+}
+
+export type CreateDecreeRequest = components["schemas"]["CreateDecreeRequest"];
+export type CreateDecreeResult = components["schemas"]["CreateDecreeResult"];
+export type CreatePlanningSessionRequest = components["schemas"]["CreatePlanningSessionRequest"];
+export type UpdatePlanningSessionRequest = components["schemas"]["UpdatePlanningSessionRequest"];
+export type CreatePlanningOperationRequest = components["schemas"]["CreatePlanningOperationRequest"];
+export type CreateRunRequest = components["schemas"]["CreateRunRequest"];
+export type CancelRunRequest = components["schemas"]["CancelRunRequest"];
+export type PublishWorkflowRequest = components["schemas"]["PublishWorkflowRequest"];
+export type PublishWorkflowResult = components["schemas"]["PublishWorkflowResult"];
+export type CreateFinalApprovalRequest = components["schemas"]["CreateFinalApprovalRequest"];
+export type CreateFinalApprovalResult = components["schemas"]["CreateFinalApprovalResult"];
+export type CreatePlanApprovalRequest = components["schemas"]["CreatePlanApprovalRequest"];
+export type CreatePlanApprovalResult = components["schemas"]["CreatePlanApprovalResult"];
+export type RetryNodeResult = components["schemas"]["RetryNodeResult"];
+export type RerunFromNodeResult = components["schemas"]["RerunFromNodeResult"];

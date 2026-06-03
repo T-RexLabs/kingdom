@@ -1,0 +1,32 @@
+{
+  "version": "v1",
+  "policy_id": "retry-policy-mvp-v1",
+  "defaults": {
+    "jitter_mode": "full"
+  },
+  "classes": {
+    "transient_transport_provider_session": {
+      "max_retries": 3,
+      "backoff": {
+        "initial_delay": "1s",
+        "multiplier": 2,
+        "max_delay": "30s"
+      },
+      "escalation": {
+        "on_exhausted": "dead_letter",
+        "target_role": "chancellor"
+      }
+    },
+    "non_retryable": {
+      "max_retries": 0,
+      "escalation": {
+        "on_failure": "immediate",
+        "target_role": "chancellor"
+      }
+    }
+  },
+  "error_code_map": {
+    "transient_transport": "transient_transport_provider_session",
+    "invalid_output_schema": "non_retryable"
+  }
+}

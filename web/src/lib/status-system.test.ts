@@ -1,0 +1,32 @@
+import { describe, expect, it } from "vitest";
+import { STATUS_TONE_HEX, statusBadgeClass, statusTextClass, statusToneForKey } from "./status-system";
+
+describe("status system", () => {
+	it("keeps cancelled and rework on distinct tones", () => {
+		expect(STATUS_TONE_HEX.cancelled).toBe("#8b5cf6");
+		expect(STATUS_TONE_HEX.rework).toBe("#ec4899");
+		expect(statusToneForKey("cancelled")).toBe("cancelled");
+		expect(statusToneForKey("rework")).toBe("rework");
+	});
+
+	it("emits cancelled purple badges separately from rework rose badges", () => {
+		expect(statusBadgeClass("cancelled", "strong")).toContain("bg-status-cancelled/15");
+		expect(statusBadgeClass("cancelled", "strong")).toContain("text-status-cancelled");
+		expect(statusBadgeClass("rework", "strong")).toContain("bg-status-rework/15");
+		expect(statusBadgeClass("rework", "strong")).toContain("text-status-rework");
+		expect(statusTextClass("cancelled")).toBe("text-status-cancelled");
+		expect(statusTextClass("rework")).toBe("text-status-rework");
+	});
+
+	it("treats ready as attention rather than running", () => {
+		expect(statusToneForKey("ready")).toBe("attention");
+		expect(statusBadgeClass("ready")).toContain("bg-status-blocked/10");
+		expect(statusTextClass("ready")).toBe("text-status-blocked");
+	});
+
+	it("treats queued as attention so pending work stays visible", () => {
+		expect(statusToneForKey("queued")).toBe("attention");
+		expect(statusBadgeClass("queued")).toContain("bg-status-blocked/10");
+		expect(statusTextClass("queued")).toBe("text-status-blocked");
+	});
+});
