@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a concrete improvement
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What change would you like to see?
+    validations:
+      required: true
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Are you willing to address this issue?
+      options:
+        - Yes - I can open a PR
+        - Maybe - Will need guidance
+        - No - I'm just a friendly reporter
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Share any extra background that would help.
+    validations:
+      required: false
