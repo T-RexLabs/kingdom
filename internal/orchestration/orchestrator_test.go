@@ -326,6 +326,33 @@ func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.
 	}
 }
 
+func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	prompt := loop.renderSystemPrompt("council-member", "run_1", "plan_drafting", "nr_1", "Refine decree scope")
+
+	for _, expected := range []string{
+		"the planning voice at the war-table",
+		"Turn decree intent and chancellor guidance into a clear, execution-ready plan",
+		"Decompose work into execution-ready implementation slices.",
+		"scoped delta plan that preserves what remains valid and changes only what is necessary.",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected council-member prompt to include %q, got:\n%s", expected, prompt)
+		}
+	}
+
+	if !strings.Contains(prompt, "Stay at the planning layer.") {
+		t.Fatalf("expected council-member prompt to stay at planning layer, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not claim implementation work") {
+		t.Fatalf("expected council-member prompt to avoid implementation posture, got:\n%s", prompt)
+	}
+}
+
 func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 	t.Parallel()
 

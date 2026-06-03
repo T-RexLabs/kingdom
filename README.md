@@ -155,7 +155,7 @@ Kingdom has a canonical role catalog in the runtime, and a smaller set of manage
 | :cloud: `allfather` | Human operator who issues decrees and makes plan and final approval decisions when manual approvals are enabled. |
 | :crown: `king` | Supreme governance authority that approves plans, requests rework when needed, and closes decrees. |
 | :scroll: `chancellor` | Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction. |
-| :compass: `council-member` | Strategic planner that turns decree intent into an execution plan and kicks off implementation. |
+| :compass: `council-member` | Strategic planner that turns decree intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework. |
 | :classical_building: `noble-delegate` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
 | :church: `clergy-delegate` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
 | :hammer_and_pick: `burgher-delegate` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |

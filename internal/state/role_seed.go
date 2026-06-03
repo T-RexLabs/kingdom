@@ -60,7 +60,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "council-member",
 		DisplayName:                    "Council Member",
-		Description:                    "Strategic planner that turns decree intent into an execution plan and kicks off implementation.",
+		Description:                    "Strategic planner that turns decree intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework.",
 		CanSpawn:                       true,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "council-member",
