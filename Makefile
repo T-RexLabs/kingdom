@@ -22,7 +22,6 @@ CORE_COVERAGE_MIN ?= 72.0
 MAKE_STATE_DIR := .make
 PNPM_READY_STAMP := $(MAKE_STATE_DIR)/pnpm-ready-$(PNPM_VERSION).stamp
 WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
-ROOT_NODE_MODULES_STAMP := node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
 WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
 WEB_DIST_INDEX := web/dist/index.html
 KD_BINARY := bin/kd
@@ -47,7 +46,7 @@ install: $(WEB_DIST_INDEX) ## Install `kd` with the embedded web UI
 build: $(KD_BINARY) ## Build the local `kd` binary into `bin/`
 
 dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
-	$(PNPM) --dir web --ignore-workspace dev
+	$(PNPM) --dir web dev
 
 ##@ Verification
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
@@ -84,8 +83,8 @@ verify: test test-race vet coverage-core contracts-check ## Run the main verific
 contracts-check: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED) ## Verify generated OpenAPI types are up to date
 	git diff --exit-code -- $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
 
-openapi-lint: $(ROOT_NODE_MODULES_STAMP) ## Lint the OpenAPI spec with Redocly
-	$(PNPM) redocly lint $(OPENAPI_SPEC)
+openapi-lint: $(WEB_NODE_MODULES_STAMP) ## Lint the OpenAPI spec with Redocly
+	$(PNPM) --dir web exec redocly lint ../$(OPENAPI_SPEC)
 
 ##@ Utilities
 tool-versions: ## Print the pinned local tool versions
@@ -102,18 +101,13 @@ $(PNPM_READY_STAMP): Makefile
 	touch $@
 
 
-$(ROOT_NODE_MODULES_STAMP): package.json pnpm-lock.yaml pnpm-workspace.yaml $(PNPM_READY_STAMP)
-	$(PNPM) install --frozen-lockfile --force
-	mkdir -p node_modules
-	touch $@
-
-$(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml $(PNPM_READY_STAMP)
-	$(PNPM) --dir web --ignore-workspace install --frozen-lockfile --force --config.dangerouslyAllowAllBuilds=true
-	mkdir -p web/node_modules
+$(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml $(PNPM_READY_STAMP)
+	rm -rf web/node_modules
+	$(PNPM) --dir web install --frozen-lockfile
 	touch $@
 
 $(WEB_DIST_INDEX): $(WEB_BUILD_INPUTS) $(WEB_NODE_MODULES_STAMP)
-	$(PNPM) --dir web --ignore-workspace build
+	$(PNPM) --dir web build
 
 $(KD_BINARY): $(KD_GO_SOURCES) $(BOOTSTRAP_ASSETS) $(DB_MIGRATIONS) go.mod go.sum $(WEB_DIST_INDEX)
 	mkdir -p bin
@@ -123,4 +117,4 @@ $(OPENAPI_GENERATED): $(OPENAPI_SPEC) Makefile
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o $(OPENAPI_GENERATED) $(OPENAPI_SPEC)
 
 $(WEB_OPENAPI_GENERATED): $(OPENAPI_SPEC) $(WEB_NODE_MODULES_STAMP)
-	$(PNPM) --dir web --ignore-workspace exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts
+	$(PNPM) --dir web exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts

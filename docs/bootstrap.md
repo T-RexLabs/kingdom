@@ -13,7 +13,7 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 
 - enables Corepack
 - prepares the pinned pnpm version
-- installs web dependencies
+- installs the frontend and JavaScript tooling dependencies under `web/`
 - builds the embedded web UI
 - installs `kd`
 
@@ -21,7 +21,7 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 
 Run `make` or `make help` to list the supported public make targets.
 
-Targets that need root-level JavaScript tooling, such as `make openapi-lint`, install those dependencies on demand.
+Targets that need JavaScript tooling, such as `make openapi-lint`, reuse the dependencies installed under `web/`.
 
 ## Main Verification Commands
 
