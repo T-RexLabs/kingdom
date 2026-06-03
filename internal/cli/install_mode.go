@@ -118,37 +118,23 @@ func summonAPIURL(cfg installConfig) string {
 }
 
 func runInitCommand(stdout io.Writer, args []string) error {
+	opts := initCommandOptions{}
 	flags := newFlagSet("init")
-	var projectPath string
-	var force bool
-	var publishMode string
-	var autonomousApprovalsRaw string
-	var providerEngine string
-	var providerStrictRaw string
-	var listen string
-	var basePath string
-	flags.StringVar(&projectPath, "path", ".", "project root path")
-	flags.BoolVar(&force, "force", false, "overwrite generated files")
-	flags.StringVar(&publishMode, "publish-mode", kingdom.PublishModeDirect, "publish mode: direct or git_worktree")
-	flags.StringVar(&autonomousApprovalsRaw, "autonomous-approvals", "true", "default autonomous approvals for new runs (true or false)")
-	flags.StringVar(&providerEngine, "provider-engine", "opencode", "provider engine: opencode")
-	flags.StringVar(&providerStrictRaw, "provider-strict", "true", "enforce provider startup health checks (true or false)")
-	flags.StringVar(&listen, "listen", "127.0.0.1:8080", "summon API listen address")
-	flags.StringVar(&basePath, "base-path", "/api/v1", "summon API base path")
+	bindInitFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
 
-	autonomousApprovals, err := strconv.ParseBool(strings.TrimSpace(autonomousApprovalsRaw))
+	autonomousApprovals, err := strconv.ParseBool(strings.TrimSpace(opts.autonomousApprovalsRaw))
 	if err != nil {
 		return usageError{err: fmt.Errorf("--autonomous-approvals must be true or false")}
 	}
-	providerStrict, err := strconv.ParseBool(strings.TrimSpace(providerStrictRaw))
+	providerStrict, err := strconv.ParseBool(strings.TrimSpace(opts.providerStrictRaw))
 	if err != nil {
 		return usageError{err: fmt.Errorf("--provider-strict must be true or false")}
 	}
 
-	absProjectPath, err := filepath.Abs(strings.TrimSpace(projectPath))
+	absProjectPath, err := filepath.Abs(strings.TrimSpace(opts.projectPath))
 	if err != nil {
 		return fmt.Errorf("resolve --path: %w", err)
 	}
@@ -158,7 +144,7 @@ func runInitCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("create kingdom home: %w", err)
 	}
 
-	if err := bootstrapassets.WriteScaffold(kingdomHome, absProjectPath, force); err != nil {
+	if err := bootstrapassets.WriteScaffold(kingdomHome, absProjectPath, opts.force); err != nil {
 		return fmt.Errorf("write embedded scaffold: %w", err)
 	}
 
@@ -170,12 +156,12 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	}
 
 	cfg := defaultInstallConfig(kingdomHome)
-	cfg.Publish.Mode = strings.ToLower(strings.TrimSpace(publishMode))
+	cfg.Publish.Mode = strings.ToLower(strings.TrimSpace(opts.publishMode))
 	cfg.Governance.AutonomousApprovals = boolPtr(autonomousApprovals)
-	cfg.Provider.Engine = strings.ToLower(strings.TrimSpace(providerEngine))
+	cfg.Provider.Engine = strings.ToLower(strings.TrimSpace(opts.providerEngine))
 	cfg.Provider.Strict = providerStrict
-	cfg.Server.Listen = strings.TrimSpace(listen)
-	cfg.Server.BasePath = strings.TrimSpace(basePath)
+	cfg.Server.Listen = strings.TrimSpace(opts.listen)
+	cfg.Server.BasePath = strings.TrimSpace(opts.basePath)
 	// Capture the validator's normalized return back into cfg before
 	// writing — otherwise `kd init --base-path v1` would persist
 	// `server.base_path: v1` to disk even though the validator on
@@ -199,14 +185,14 @@ func runInitCommand(stdout io.Writer, args []string) error {
 }
 
 func runCleanCommand(stdout io.Writer, args []string) error {
+	opts := cleanCommandOptions{}
 	flags := newFlagSet("clean")
-	var projectPath string
-	flags.StringVar(&projectPath, "path", ".", "project root path")
+	bindCleanFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
 
-	absProjectPath, err := filepath.Abs(strings.TrimSpace(projectPath))
+	absProjectPath, err := filepath.Abs(strings.TrimSpace(opts.projectPath))
 	if err != nil {
 		return fmt.Errorf("resolve --path: %w", err)
 	}
@@ -241,14 +227,10 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 }
 
 func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
+	opts := summonServeOptions{}
 	flags := newFlagSet("summon")
-	var configPath string
-	var detach bool
-	var readyTimeout time.Duration
 	readyTimeoutExplicit := false
-	flags.StringVar(&configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "path to summon config")
-	flags.BoolVar(&detach, "detach", false, "run summon in background")
-	flags.DurationVar(&readyTimeout, "ready-timeout", defaultSummonReadyTimeout, "maximum readiness wait time")
+	bindSummonServeFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
@@ -258,7 +240,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		}
 	})
 
-	resolvedConfigPath, err := filepath.Abs(configPath)
+	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("resolve --config: %w", err)
 	}
@@ -267,11 +249,11 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 	if err != nil {
 		return err
 	}
-	readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), readyTimeout, readyTimeoutExplicit)
+	opts.readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), opts.readyTimeout, readyTimeoutExplicit)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 
-	if detach {
-		return runSummonDetach(stdout, cfg, resolvedConfigPath, readyTimeout)
+	if opts.detach {
+		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts.readyTimeout)
 	}
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
@@ -418,7 +400,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		errCh <- server.ListenAndServe()
 	}()
 
-	if err := waitForSummonReady(cfg, readyTimeout, errCh); err != nil {
+	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh); err != nil {
 		// The deferred safety-net above owns shutdown. Returning
 		// here drains apiHandler + server through the lifted
 		// Coordinator instead of doing a duplicate
@@ -746,14 +728,14 @@ func publishOutputRootFromConfig(cfg installConfig) string {
 }
 
 func runSummonStatus(stdout io.Writer, args []string) error {
+	opts := summonConfigOptions{}
 	flags := newFlagSet("summon status")
-	var configPath string
-	flags.StringVar(&configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "path to summon config")
+	bindSummonConfigFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
 
-	resolvedConfigPath, err := filepath.Abs(configPath)
+	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("resolve --config: %w", err)
 	}
@@ -793,13 +775,13 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 }
 
 func runSummonStop(stdout io.Writer, args []string) error {
+	opts := summonConfigOptions{}
 	flags := newFlagSet("summon stop")
-	var configPath string
-	flags.StringVar(&configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "path to summon config")
+	bindSummonConfigFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	resolvedConfigPath, err := filepath.Abs(configPath)
+	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("resolve --config: %w", err)
 	}
