@@ -20,6 +20,8 @@
 - strict startup total timeout budget: `90s`
 - strict probe startup backoff schedule: `1s`, `5s`, `10s` (bounded by total startup timeout budget)
 - provider skip-permissions: `true`
+- Kingdom-managed OpenCode sharing: `disabled`
+- Kingdom-managed OpenCode mDNS discovery: `false`
 - planner OpenCode inline permissions: `external_directory=deny`
 - execution OpenCode inline permissions: `external_directory=deny`, `question=deny`
 - governance mode: `autonomous` (MVP-supported)
@@ -44,7 +46,7 @@
 - Node attempt cap (`max_attempts_per_node`): `internal/api/server.go`
 - Provider engine and strict startup defaults: `cmd/kingdomd/main.go`, `internal/orchestration/runtime.go`
 - Provider skip-permissions default and runtime wiring: `internal/cli/install_mode.go`, `internal/providers/opencode/session_adapter.go`
-- Planner/execution OpenCode inline permission wiring: `internal/api/server.go`, `internal/orchestration/runtime.go`, `internal/providers/opencode/session_policy.go`
+- Planner/execution OpenCode inline config wiring (`share`, `server.mdns`, and permissions): `internal/api/server.go`, `internal/orchestration/runtime.go`, `internal/providers/opencode/session_policy.go`
 - Governance mode default/behavior: `internal/cli/install_mode.go`, `cmd/kingdomd/main.go`, `internal/orchestration/orchestrator.go`
 - Autonomous approvals default/behavior: `internal/cli/install_mode.go`, `cmd/kingdomd/main.go`, `internal/orchestration/runtime.go`, `internal/orchestration/orchestrator.go`, `internal/api/server.go`
 - Workflow default id config: `internal/cli/install_mode.go`, `internal/cli/dispatch.go`, `web/src/features/decrees/decrees-page.tsx`
@@ -62,7 +64,7 @@
 - Use `provider.engine=opencode` for runtime operation.
 - Keep `provider.strict=true` for production-like startup guarantees; set `false` only to skip strict startup probes and agent-resolution checks while still requiring OpenCode initialization.
 - Keep `provider.skip_permissions=true` for autonomous headless runs so tool permissions do not block on interactive prompts.
-- Keep planner and execution inline permission profiles aligned with the runtime contract: both remain workspace-bound via `external_directory=deny`, and execution-only sessions keep `question=deny` so autonomous runs never block on interactive input.
+- Keep planner and execution inline OpenCode config aligned with the runtime contract: all Kingdom-managed sessions keep `share=disabled` and `server.mdns=false`, both session types remain workspace-bound via `external_directory=deny`, and execution-only sessions keep `question=deny` so autonomous runs never block on interactive input.
 - In `governance.autonomous_approvals=false`, runtime pauses at `plan_state=awaiting_king_decision` and requires `allfather` `confirm|rework` before execution can continue.
 - In `governance.autonomous_approvals=false`, `allfather` plan `rework` reopens the planning wave without a hard cap.
 - In `governance.autonomous_approvals=false`, runtime also pauses at `run_status=awaiting_human_confirmation`; `allfather` `confirm` reaches terminal success, while `allfather` `rework` reopens the decree from `plan_drafting` without a hard cap.
