@@ -353,6 +353,35 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 	}
 }
 
+func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	prompt := loop.renderSystemPrompt("builder-berserker", "run_1", "delegated_execution_berserker", "nr_1", "Implement decree scope")
+
+	for _, expected := range []string{
+		"the Kingdom's implementation specialist",
+		"Prefer the simplest solution that fully satisfies the decree, the current plan, and the acceptance criteria.",
+		"Prefer durable solutions over duct-tape fixes.",
+		"Verify your work with the strongest practical evidence available.",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected builder prompt to include %q, got:\n%s", expected, prompt)
+		}
+	}
+
+	for _, expected := range []string{
+		"Stay at the implementation layer.",
+		"Do not drift into broad planning, governance, or review",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected builder prompt to include %q, got:\n%s", expected, prompt)
+		}
+	}
+}
+
 func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 	t.Parallel()
 

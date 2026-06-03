@@ -160,7 +160,7 @@ Kingdom has a canonical role catalog in the runtime, and a smaller set of manage
 | :church: `clergy-delegate` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
 | :hammer_and_pick: `burgher-delegate` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
 | :ear_of_rice: `peasant-delegate` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
-| :axe: `builder-berserker` | Implementation specialist and the only role whose output is treated as implementation deliverable content. |
+| :axe: `builder-berserker` | Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs. |
 | :shield: `reviewer-shieldmaiden` | Reviews builder output against the decree and approved plan, checks scope and correctness before validation begins. |
 | :test_tube: `intelligence-qa-scout` | Validates functional behavior, test evidence, and requirement coverage before royal closure. |
 | :candle: `intelligence-nightraven` | Validates security posture, security findings, and risk concerns before royal closure. |

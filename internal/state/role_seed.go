@@ -115,7 +115,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "builder-berserker",
 		DisplayName:                    "Berserker",
-		Description:                    "Implementation specialist and the only role whose output is treated as implementation deliverable content.",
+		Description:                    "Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "builder",
