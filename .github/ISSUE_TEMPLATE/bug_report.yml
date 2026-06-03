@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible bug
+title: "[Bug] "
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Are you willing to address this issue?
+      options:
+        - Yes - I can open a PR
+        - Maybe - Will need guidance
+        - No - I'm just a friendly reporter
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Kingdom version or commit
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: OS or browser
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Include logs, screenshots, or anything else that may help.
+    validations:
+      required: false
