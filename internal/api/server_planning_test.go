@@ -321,6 +321,16 @@ func TestPlannerSessionsApplyWorkspaceRestrictionWithoutBlockingQuestions(t *tes
 	if err := json.Unmarshal([]byte(configContent), &payload); err != nil {
 		t.Fatalf("decode planner inline config payload: %v", err)
 	}
+	if payload["share"] != "disabled" {
+		t.Fatalf("expected planner share disabled, got %#v", payload["share"])
+	}
+	server, ok := payload["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected planner server object, got %#v", payload["server"])
+	}
+	if server["mdns"] != false {
+		t.Fatalf("expected planner server.mdns false, got %#v", server["mdns"])
+	}
 	permission, ok := payload["permission"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected planner permission object, got %#v", payload["permission"])

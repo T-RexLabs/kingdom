@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func assertCommonSessionInlineConfig(t *testing.T, payload map[string]any) {
+	t.Helper()
+	if payload["$schema"] != configSchemaURL {
+		t.Fatalf("expected schema %q, got %#v", configSchemaURL, payload["$schema"])
+	}
+	if payload["share"] != shareModeDisabled {
+		t.Fatalf("expected share mode %q, got %#v", shareModeDisabled, payload["share"])
+	}
+	server, ok := payload["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected server object, got %#v", payload["server"])
+	}
+	if server["mdns"] != false {
+		t.Fatalf("expected server.mdns false, got %#v", server["mdns"])
+	}
+}
+
 func TestPlannerSessionInlineConfig(t *testing.T) {
 	configContent, err := PlannerSessionInlineConfig()
 	if err != nil {
@@ -15,9 +32,7 @@ func TestPlannerSessionInlineConfig(t *testing.T) {
 	if err := json.Unmarshal([]byte(configContent), &payload); err != nil {
 		t.Fatalf("decode planner inline config: %v", err)
 	}
-	if payload["$schema"] != configSchemaURL {
-		t.Fatalf("expected schema %q, got %#v", configSchemaURL, payload["$schema"])
-	}
+	assertCommonSessionInlineConfig(t, payload)
 	permission, ok := payload["permission"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected planner permission object, got %#v", payload["permission"])
@@ -40,9 +55,7 @@ func TestExecutionSessionInlineConfig(t *testing.T) {
 	if err := json.Unmarshal([]byte(configContent), &payload); err != nil {
 		t.Fatalf("decode execution inline config: %v", err)
 	}
-	if payload["$schema"] != configSchemaURL {
-		t.Fatalf("expected schema %q, got %#v", configSchemaURL, payload["$schema"])
-	}
+	assertCommonSessionInlineConfig(t, payload)
 	permission, ok := payload["permission"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected execution permission object, got %#v", payload["permission"])
