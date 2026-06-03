@@ -332,49 +332,28 @@ func (r *Runtime) currentPlanRevisionID(ctx context.Context, client *gen.ClientW
 }
 
 func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
-	var title string
-	var text string
-	var metadataRaw string
-	var skipReviewsAndValidations bool
-	var autonomousApprovalsRaw string
-	var runUntilAllApprove bool
-	var maxExecutionReviewCycles int
-	var maxValidationReworkCycles int
-	var publishModeRaw string
-	var globalModel string
-	var agentModelOverridesRaw string
-
+	opts := createDecreeOptions{}
 	flags := newFlagSet("create decree")
-	flags.StringVar(&title, "title", "", "decree title")
-	flags.StringVar(&text, "text", "", "decree text")
-	flags.StringVar(&metadataRaw, "metadata-json", "", "optional decree metadata JSON object")
-	flags.BoolVar(&skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
-	flags.StringVar(&autonomousApprovalsRaw, "autonomous-approvals", "inherit", "run approvals mode: inherit, true, or false")
-	flags.BoolVar(&runUntilAllApprove, "run-until-all-approve", false, "continue reviewer/validator loops until pass")
-	flags.IntVar(&maxExecutionReviewCycles, "max-execution-review-cycles", -1, "max execution review cycles (>= 0 when provided; 0 uses workflow defaults)")
-	flags.IntVar(&maxValidationReworkCycles, "max-validation-rework-cycles", -1, "max validation rework cycles (>= 0 when provided; 0 uses workflow defaults)")
-	flags.StringVar(&publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish mode: direct or git_worktree")
-	flags.StringVar(&globalModel, "global-model", "", "global model override (provider/model); required when provider.engine=opencode")
-	flags.StringVar(&agentModelOverridesRaw, "agent-model-overrides", "", "optional role=model overrides (comma-separated)")
+	bindCreateDecreeFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if title == "" || text == "" {
+	if opts.title == "" || opts.text == "" {
 		return usageError{err: errors.New("--title and --text are required")}
 	}
-	if err := requireGlobalModelForInstallMode(globalModel, r.config); err != nil {
+	if err := requireGlobalModelForInstallMode(opts.globalModel, r.config); err != nil {
 		return usageError{err: err}
 	}
 
-	decreeRequest := gen.CreateDecreeRequest{DecreeTitle: title, DecreeText: text}
-	if strings.TrimSpace(metadataRaw) != "" {
-		metadata, err := parseJSONObject(metadataRaw, "--metadata-json")
+	decreeRequest := gen.CreateDecreeRequest{DecreeTitle: opts.title, DecreeText: opts.text}
+	if strings.TrimSpace(opts.metadataRaw) != "" {
+		metadata, err := parseJSONObject(opts.metadataRaw, "--metadata-json")
 		if err != nil {
 			return usageError{err: err}
 		}
 		decreeRequest.Metadata = &metadata
 	}
-	publishMode, err := parsePublishModeFlag(publishModeRaw)
+	publishMode, err := parsePublishModeFlag(opts.publishModeRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -382,17 +361,17 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 		return usageError{err: err}
 	}
 	runRequest := gen.CreateRunRequest{PublishMode: publishMode}
-	autonomousApprovals, err := parseAutonomousApprovalsOverride(autonomousApprovalsRaw)
+	autonomousApprovals, err := parseAutonomousApprovalsOverride(opts.autonomousApprovalsRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
 	if autonomousApprovals != nil {
 		runRequest.AutonomousApprovals = autonomousApprovals
 	}
-	if err := applyRunWorkflowOptions(&runRequest, skipReviewsAndValidations, runUntilAllApprove, maxExecutionReviewCycles, maxValidationReworkCycles); err != nil {
+	if err := applyRunWorkflowOptions(&runRequest, opts.skipReviewsAndValidations, opts.runUntilAllApprove, opts.maxExecutionReviewCycles, opts.maxValidationReworkCycles); err != nil {
 		return usageError{err: err}
 	}
-	modelSelection, err := buildRunModelSelection(globalModel, agentModelOverridesRaw)
+	modelSelection, err := buildRunModelSelection(opts.globalModel, opts.agentModelOverridesRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -407,7 +386,7 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 	runRequest.DecreeId = decreeResponse.DecreeId
 	runResponse, err := r.createRun(ctx, runRequest)
 	if err != nil {
-		return &decreeIssueError{DecreeID: decreeResponse.DecreeId, SkipReviewsAndValidations: skipReviewsAndValidations, Err: err}
+		return &decreeIssueError{DecreeID: decreeResponse.DecreeId, SkipReviewsAndValidations: opts.skipReviewsAndValidations, Err: err}
 	}
 
 	if r.config.JSONOutput {
@@ -467,55 +446,38 @@ func (r *Runtime) createRun(ctx context.Context, request gen.CreateRunRequest) (
 }
 
 func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
-	var decreeID string
-	var skipReviewsAndValidations bool
-	var autonomousApprovalsRaw string
-	var runUntilAllApprove bool
-	var maxExecutionReviewCycles int
-	var maxValidationReworkCycles int
-	var publishModeRaw string
-	var globalModel string
-	var agentModelOverridesRaw string
-
+	opts := runStartOptions{}
 	flags := newFlagSet("run start")
-	flags.StringVar(&decreeID, "decree-id", "", "decree identifier")
-	flags.BoolVar(&skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
-	flags.StringVar(&autonomousApprovalsRaw, "autonomous-approvals", "inherit", "run approvals mode: inherit, true, or false")
-	flags.BoolVar(&runUntilAllApprove, "run-until-all-approve", false, "continue reviewer/validator loops until pass")
-	flags.IntVar(&maxExecutionReviewCycles, "max-execution-review-cycles", -1, "max execution review cycles (>= 0 when provided; 0 uses workflow defaults)")
-	flags.IntVar(&maxValidationReworkCycles, "max-validation-rework-cycles", -1, "max validation rework cycles (>= 0 when provided; 0 uses workflow defaults)")
-	flags.StringVar(&publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish mode: direct or git_worktree")
-	flags.StringVar(&globalModel, "global-model", "", "global model override (provider/model); required when provider.engine=opencode")
-	flags.StringVar(&agentModelOverridesRaw, "agent-model-overrides", "", "optional role=model overrides (comma-separated)")
+	bindRunStartFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if decreeID == "" {
+	if opts.decreeID == "" {
 		return usageError{err: errors.New("--decree-id is required")}
 	}
-	if err := requireGlobalModelForInstallMode(globalModel, r.config); err != nil {
+	if err := requireGlobalModelForInstallMode(opts.globalModel, r.config); err != nil {
 		return usageError{err: err}
 	}
 
-	publishMode, err := parsePublishModeFlag(publishModeRaw)
+	publishMode, err := parsePublishModeFlag(opts.publishModeRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
 	if err := requirePublishModeSupportForInstallMode(publishMode, r.config); err != nil {
 		return usageError{err: err}
 	}
-	request := gen.CreateRunRequest{DecreeId: decreeID, PublishMode: publishMode}
-	autonomousApprovals, err := parseAutonomousApprovalsOverride(autonomousApprovalsRaw)
+	request := gen.CreateRunRequest{DecreeId: opts.decreeID, PublishMode: publishMode}
+	autonomousApprovals, err := parseAutonomousApprovalsOverride(opts.autonomousApprovalsRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
 	if autonomousApprovals != nil {
 		request.AutonomousApprovals = autonomousApprovals
 	}
-	if err := applyRunWorkflowOptions(&request, skipReviewsAndValidations, runUntilAllApprove, maxExecutionReviewCycles, maxValidationReworkCycles); err != nil {
+	if err := applyRunWorkflowOptions(&request, opts.skipReviewsAndValidations, opts.runUntilAllApprove, opts.maxExecutionReviewCycles, opts.maxValidationReworkCycles); err != nil {
 		return usageError{err: err}
 	}
-	modelSelection, err := buildRunModelSelection(globalModel, agentModelOverridesRaw)
+	modelSelection, err := buildRunModelSelection(opts.globalModel, opts.agentModelOverridesRaw)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -549,14 +511,13 @@ func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 }
 
 func (r *Runtime) handleRunStatus(ctx context.Context, args []string) error {
-	var runID string
-
+	opts := runStatusOptions{}
 	flags := newFlagSet("run status")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
+	bindRunStatusFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" {
+	if opts.runID == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
 
@@ -565,7 +526,7 @@ func (r *Runtime) handleRunStatus(ctx context.Context, args []string) error {
 		return err
 	}
 
-	response, err := client.GetRunWithResponse(ctx, runID, &gen.GetRunParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunWithResponse(ctx, opts.runID, &gen.GetRunParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
 	if err != nil {
 		return err
 	}
@@ -590,20 +551,17 @@ func (r *Runtime) handleRunStatus(ctx context.Context, args []string) error {
 }
 
 func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) error {
-	var runID string
-	var outputPath string
-
+	opts := runArtifactsExportOptions{}
 	flags := newFlagSet("run artifacts export")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.StringVar(&outputPath, "output", "", "output zip file path (default: <run-id>-artifacts.zip)")
+	bindRunArtifactsExportFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" {
+	if opts.runID == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
-	if strings.TrimSpace(outputPath) == "" {
-		outputPath = fmt.Sprintf("%s-artifacts.zip", runID)
+	if strings.TrimSpace(opts.outputPath) == "" {
+		opts.outputPath = fmt.Sprintf("%s-artifacts.zip", opts.runID)
 	}
 
 	client, err := r.newResponsesClient()
@@ -611,7 +569,7 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 		return err
 	}
 
-	response, err := client.GetRunArtifactsArchiveWithResponse(ctx, runID, &gen.GetRunArtifactsArchiveParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunArtifactsArchiveWithResponse(ctx, opts.runID, &gen.GetRunArtifactsArchiveParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
 	if err != nil {
 		return err
 	}
@@ -621,38 +579,33 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 	}
 	body := response.Body
 
-	if err := os.WriteFile(outputPath, body, 0o644); err != nil {
+	if err := os.WriteFile(opts.outputPath, body, 0o644); err != nil {
 		return fmt.Errorf("write artifact archive: %w", err)
 	}
 
 	if r.config.JSONOutput {
 		return writeJSON(r.stdout, map[string]any{
-			"run_id":      runID,
-			"output_path": outputPath,
+			"run_id":      opts.runID,
+			"output_path": opts.outputPath,
 			"size_bytes":  len(body),
 		})
 	}
 
-	_, err = fmt.Fprintf(r.stdout, "artifacts exported: run=%s file=%s size=%d\n", runID, outputPath, len(body))
+	_, err = fmt.Fprintf(r.stdout, "artifacts exported: run=%s file=%s size=%d\n", opts.runID, opts.outputPath, len(body))
 	return err
 }
 
 func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
-	var runID string
-	var asMermaid bool
-	var asASCII bool
-
+	opts := graphShowOptions{}
 	flags := newFlagSet("graph show")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.BoolVar(&asMermaid, "mermaid", false, "print mermaid graph output")
-	flags.BoolVar(&asASCII, "ascii", false, "print ASCII graph output")
+	bindGraphShowFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" {
+	if opts.runID == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
-	if asMermaid && asASCII {
+	if opts.asMermaid && opts.asASCII {
 		return usageError{err: errors.New("choose one of --ascii or --mermaid")}
 	}
 
@@ -661,7 +614,7 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 		return err
 	}
 
-	response, err := client.GetRunGraphWithResponse(ctx, runID, &gen.GetRunGraphParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunGraphWithResponse(ctx, opts.runID, &gen.GetRunGraphParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
 	if err != nil {
 		return err
 	}
@@ -673,7 +626,7 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 		return writeJSON(r.stdout, response.JSON200)
 	}
 
-	if asMermaid {
+	if opts.asMermaid {
 		_, err = io.WriteString(r.stdout, renderMermaidGraph(response.JSON200))
 		return err
 	}
@@ -682,18 +635,13 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 }
 
 func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
-	var runID string
-	var nodeKey string
-	var reason string
-
+	opts := nodeMutationOptions{}
 	flags := newFlagSet("node retry")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.StringVar(&nodeKey, "node-key", "", "node identifier")
-	flags.StringVar(&reason, "reason", "", "retry reason")
+	bindNodeMutationFlags(flags, &opts, "retry reason")
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" || nodeKey == "" || reason == "" {
+	if opts.runID == "" || opts.nodeKey == "" || opts.reason == "" {
 		return usageError{err: errors.New("--run-id, --node-key, and --reason are required")}
 	}
 
@@ -702,11 +650,11 @@ func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
 		return err
 	}
 
-	response, err := client.RetryNodeWithResponse(ctx, runID, nodeKey, &gen.RetryNodeParams{
+	response, err := client.RetryNodeWithResponse(ctx, opts.runID, opts.nodeKey, &gen.RetryNodeParams{
 		XActorId:       r.config.ActorID,
 		XRoleId:        r.config.RoleID,
 		IdempotencyKey: newIdempotencyKey("node-retry"),
-	}, gen.RetryNodeRequest{Reason: reason})
+	}, gen.RetryNodeRequest{Reason: opts.reason})
 	if err != nil {
 		return err
 	}
@@ -723,18 +671,13 @@ func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
 }
 
 func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error {
-	var runID string
-	var nodeKey string
-	var reason string
-
+	opts := nodeMutationOptions{}
 	flags := newFlagSet("node rerun-from")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.StringVar(&nodeKey, "node-key", "", "node identifier")
-	flags.StringVar(&reason, "reason", "", "rerun reason")
+	bindNodeMutationFlags(flags, &opts, "rerun reason")
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" || nodeKey == "" || reason == "" {
+	if opts.runID == "" || opts.nodeKey == "" || opts.reason == "" {
 		return usageError{err: errors.New("--run-id, --node-key, and --reason are required")}
 	}
 
@@ -743,11 +686,11 @@ func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error 
 		return err
 	}
 
-	response, err := client.RerunFromNodeWithResponse(ctx, runID, nodeKey, &gen.RerunFromNodeParams{
+	response, err := client.RerunFromNodeWithResponse(ctx, opts.runID, opts.nodeKey, &gen.RerunFromNodeParams{
 		XActorId:       r.config.ActorID,
 		XRoleId:        r.config.RoleID,
 		IdempotencyKey: newIdempotencyKey("node-rerun-from"),
-	}, gen.RerunFromNodeRequest{Reason: reason})
+	}, gen.RerunFromNodeRequest{Reason: opts.reason})
 	if err != nil {
 		return err
 	}
@@ -764,14 +707,13 @@ func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error 
 }
 
 func (r *Runtime) handleTimelineFollow(ctx context.Context, args []string) error {
-	var runID string
-
+	opts := timelineFollowOptions{}
 	flags := newFlagSet("timeline follow")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
+	bindTimelineFollowFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" {
+	if opts.runID == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
 
@@ -780,7 +722,7 @@ func (r *Runtime) handleTimelineFollow(ctx context.Context, args []string) error
 		return err
 	}
 
-	response, err := client.StreamEvents(ctx, &gen.StreamEventsParams{RunId: runID, XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.StreamEvents(ctx, &gen.StreamEventsParams{RunId: opts.runID, XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
 	if err != nil {
 		return err
 	}
@@ -809,21 +751,16 @@ func (r *Runtime) handleTimelineFollow(ctx context.Context, args []string) error
 }
 
 func (r *Runtime) handleApprovalsList(ctx context.Context, args []string) error {
-	var runID string
-	var limit int
-	var cursor string
-
+	opts := approvalsListOptions{}
 	flags := newFlagSet("approvals list")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.IntVar(&limit, "limit", 50, "timeline page limit")
-	flags.StringVar(&cursor, "cursor", "", "timeline cursor")
+	bindApprovalsListFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if runID == "" {
+	if opts.runID == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
-	if limit <= 0 {
+	if opts.limit <= 0 {
 		return usageError{err: errors.New("--limit must be greater than zero")}
 	}
 
@@ -832,14 +769,14 @@ func (r *Runtime) handleApprovalsList(ctx context.Context, args []string) error 
 		return err
 	}
 
-	limitValue := gen.Limit(limit)
+	limitValue := gen.Limit(opts.limit)
 	params := &gen.GetRunTimelineParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID, Limit: &limitValue}
-	if cursor != "" {
-		cursorValue := gen.Cursor(cursor)
+	if opts.cursor != "" {
+		cursorValue := gen.Cursor(opts.cursor)
 		params.Cursor = &cursorValue
 	}
 
-	response, err := client.GetRunTimelineWithResponse(ctx, runID, params)
+	response, err := client.GetRunTimelineWithResponse(ctx, opts.runID, params)
 	if err != nil {
 		return err
 	}
@@ -899,25 +836,21 @@ func (r *Runtime) handleApprovalsList(ctx context.Context, args []string) error 
 }
 
 func (r *Runtime) handleApprovalsDecide(ctx context.Context, args []string) error {
-	var runID string
-	var action string
-	var reason string
-
+	opts := approvalDecisionOptions{}
 	flags := newFlagSet("approvals decide")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.StringVar(&action, "action", "", "final decision action: confirm or rework")
-	flags.StringVar(&reason, "reason", "", "decision rationale")
+	bindApprovalDecisionFlags(flags, &opts, "final decision `action`: confirm or rework")
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if strings.TrimSpace(runID) == "" {
+	if strings.TrimSpace(opts.runID) == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
-	action = strings.ToLower(strings.TrimSpace(action))
+	opts.action = strings.ToLower(strings.TrimSpace(opts.action))
+	action := opts.action
 	if action != string(gen.CreateFinalApprovalRequestActionConfirm) && action != string(gen.CreateFinalApprovalRequestActionRework) {
 		return usageError{err: errors.New("--action must be confirm or rework")}
 	}
-	reasonPtr, err := optionalReason(action, reason)
+	reasonPtr, err := optionalReason(action, opts.reason)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -927,7 +860,7 @@ func (r *Runtime) handleApprovalsDecide(ctx context.Context, args []string) erro
 		return err
 	}
 
-	response, err := client.CreateFinalApprovalWithResponse(ctx, runID, &gen.CreateFinalApprovalParams{
+	response, err := client.CreateFinalApprovalWithResponse(ctx, opts.runID, &gen.CreateFinalApprovalParams{
 		XActorId:       r.config.ActorID,
 		XRoleId:        r.config.RoleID,
 		IdempotencyKey: newIdempotencyKey("approval-decide"),
@@ -951,25 +884,21 @@ func (r *Runtime) handleApprovalsDecide(ctx context.Context, args []string) erro
 }
 
 func (r *Runtime) handleApprovalsPlanDecide(ctx context.Context, args []string) error {
-	var runID string
-	var action string
-	var reason string
-
+	opts := approvalDecisionOptions{}
 	flags := newFlagSet("approvals plan-decide")
-	flags.StringVar(&runID, "run-id", "", "run identifier")
-	flags.StringVar(&action, "action", "", "plan decision action: confirm or rework")
-	flags.StringVar(&reason, "reason", "", "decision rationale")
+	bindApprovalDecisionFlags(flags, &opts, "plan decision `action`: confirm or rework")
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
-	if strings.TrimSpace(runID) == "" {
+	if strings.TrimSpace(opts.runID) == "" {
 		return usageError{err: errors.New("--run-id is required")}
 	}
-	action = strings.ToLower(strings.TrimSpace(action))
+	opts.action = strings.ToLower(strings.TrimSpace(opts.action))
+	action := opts.action
 	if action != string(gen.CreatePlanApprovalRequestActionConfirm) && action != string(gen.CreatePlanApprovalRequestActionRework) {
 		return usageError{err: errors.New("--action must be confirm or rework")}
 	}
-	reasonPtr, err := optionalReason(action, reason)
+	reasonPtr, err := optionalReason(action, opts.reason)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -978,12 +907,12 @@ func (r *Runtime) handleApprovalsPlanDecide(ctx context.Context, args []string) 
 	if err != nil {
 		return err
 	}
-	planRevisionID, err := r.currentPlanRevisionID(ctx, client, runID)
+	planRevisionID, err := r.currentPlanRevisionID(ctx, client, opts.runID)
 	if err != nil {
 		return err
 	}
 
-	response, err := client.CreatePlanApprovalWithResponse(ctx, runID, &gen.CreatePlanApprovalParams{
+	response, err := client.CreatePlanApprovalWithResponse(ctx, opts.runID, &gen.CreatePlanApprovalParams{
 		XActorId:       r.config.ActorID,
 		XRoleId:        r.config.RoleID,
 		IdempotencyKey: newIdempotencyKey("approval-plan-decide"),
@@ -1170,70 +1099,6 @@ func hasHelpToken(values []string) bool {
 		}
 	}
 	return false
-}
-
-func writeCommandHelp(stdout io.Writer, topic []string) {
-	if len(topic) == 0 {
-		_, _ = io.WriteString(stdout, "usage: kd [--server URL] [--actor-id ID] [--role-id ROLE] [--json] [--timeout DURATION] <command>\n")
-		_, _ = io.WriteString(stdout, "commands: init | clean | summon [serve|status|stop] | create decree | run status|artifacts export | graph show --ascii|--mermaid | node retry|rerun-from | timeline follow | approvals list|plan-decide|decide\n")
-		return
-	}
-
-	primary := strings.TrimSpace(strings.ToLower(topic[0]))
-	switch primary {
-	case "init":
-		_, _ = io.WriteString(stdout, "usage: kd init [--path <project-root>] [--force] [--publish-mode <direct|git_worktree>] [--autonomous-approvals <bool>] [--provider-engine <opencode>] [--provider-strict <bool>] [--listen <addr>] [--base-path <path>]\n")
-	case "clean":
-		_, _ = io.WriteString(stdout, "usage: kd clean [--path <project-root>]\n")
-	case "summon":
-		if len(topic) >= 2 {
-			sub := strings.TrimSpace(strings.ToLower(topic[1]))
-			switch sub {
-			case "status":
-				_, _ = io.WriteString(stdout, "usage: kd summon status [--config <path>]\n")
-				return
-			case "stop":
-				_, _ = io.WriteString(stdout, "usage: kd summon stop [--config <path>]\n")
-				return
-			}
-		}
-		_, _ = io.WriteString(stdout, "usage: kd summon [serve] [--config <path>] [--ready-timeout <duration>] [--detach]\n")
-		_, _ = io.WriteString(stdout, "       kd summon status [--config <path>]\n")
-		_, _ = io.WriteString(stdout, "       kd summon stop [--config <path>]\n")
-	case "create":
-		_, _ = io.WriteString(stdout, "usage: kd create decree --title <title> --text <text> [--metadata-json <json>] [--skip-reviews-and-validations] [--autonomous-approvals <inherit|true|false>] [--run-until-all-approve] [--max-execution-review-cycles <n>] [--max-validation-rework-cycles <n>] --global-model <provider/model> [--agent-model-overrides <role=model,...>]\n")
-	case "run":
-		if len(topic) >= 2 && strings.TrimSpace(strings.ToLower(topic[1])) == "status" {
-			_, _ = io.WriteString(stdout, "usage: kd run status --run-id <id>\n")
-			return
-		}
-		if len(topic) >= 2 && strings.TrimSpace(strings.ToLower(topic[1])) == "artifacts" {
-			_, _ = io.WriteString(stdout, "usage: kd run artifacts export --run-id <id> [--output <path>]\n")
-			return
-		}
-		_, _ = io.WriteString(stdout, "usage: kd run start --decree-id <id> [--skip-reviews-and-validations] [--autonomous-approvals <inherit|true|false>] [--run-until-all-approve] [--max-execution-review-cycles <n>] [--max-validation-rework-cycles <n>] --global-model <provider/model> [--agent-model-overrides <role=model,...>]\n")
-		_, _ = io.WriteString(stdout, "       kd run status --run-id <id>\n")
-		_, _ = io.WriteString(stdout, "       kd run artifacts export --run-id <id> [--output <path>]\n")
-	case "graph":
-		_, _ = io.WriteString(stdout, "usage: kd graph show --run-id <id> [--ascii|--mermaid]\n")
-	case "node":
-		if len(topic) >= 2 && strings.TrimSpace(strings.ToLower(topic[1])) == "rerun-from" {
-			_, _ = io.WriteString(stdout, "usage: kd node rerun-from --run-id <id> --node-key <node> --reason <text>\n")
-			return
-		}
-		_, _ = io.WriteString(stdout, "usage: kd node retry --run-id <id> --node-key <node> --reason <text>\n")
-		_, _ = io.WriteString(stdout, "       kd node rerun-from --run-id <id> --node-key <node> --reason <text>\n")
-	case "timeline":
-		_, _ = io.WriteString(stdout, "usage: kd timeline follow --run-id <id>\n")
-	case "approvals":
-		_, _ = io.WriteString(stdout, "usage: kd approvals list --run-id <id> [--limit <n>] [--cursor <cursor>]\n")
-		_, _ = io.WriteString(stdout, "usage: kd approvals plan-decide --run-id <id> --action <confirm|rework> [--reason <text>]\n")
-		_, _ = io.WriteString(stdout, "       note: --reason is required when --action is rework\n")
-		_, _ = io.WriteString(stdout, "usage: kd approvals decide --run-id <id> --action <confirm|rework> [--reason <text>]\n")
-		_, _ = io.WriteString(stdout, "       note: --reason is required when --action is rework\n")
-	default:
-		_, _ = io.WriteString(stdout, "usage: kd [--server URL] [--actor-id ID] [--role-id ROLE] [--json] [--timeout DURATION] <command>\n")
-	}
 }
 
 func parseJSONObject(raw string, flagName string) (map[string]interface{}, error) {
@@ -1560,6 +1425,6 @@ func writeUsageError(stderr io.Writer, err error) {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "usage error: %v\n", err)
 	}
-	_, _ = io.WriteString(stderr, "usage: kd [--server URL] [--actor-id ID] [--role-id ROLE] [--json] [--timeout DURATION] <command>\n")
-	_, _ = io.WriteString(stderr, "commands: init | summon [serve|status|stop] | create decree | run status|artifacts export | graph show --ascii|--mermaid | node retry|rerun-from | timeline follow | approvals list|plan-decide|decide\n")
+	_, _ = io.WriteString(stderr, "\n")
+	writeRootHelp(stderr)
 }

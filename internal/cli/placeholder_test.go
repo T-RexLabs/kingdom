@@ -15,6 +15,15 @@ import (
 	"time"
 )
 
+func assertContainsAll(t *testing.T, output string, want ...string) {
+	t.Helper()
+	for _, item := range want {
+		if !strings.Contains(output, item) {
+			t.Fatalf("expected output to contain %q, got %q", item, output)
+		}
+	}
+}
+
 func TestExecuteReturnsUsageForUnknownCommand(t *testing.T) {
 	t.Parallel()
 
@@ -28,6 +37,7 @@ func TestExecuteReturnsUsageForUnknownCommand(t *testing.T) {
 	if !strings.Contains(stderr.String(), "usage error") {
 		t.Fatalf("expected usage error output, got %q", stderr.String())
 	}
+	assertContainsAll(t, stderr.String(), "Usage:", "clean", "run start", "Global Flags For API Commands")
 }
 
 func TestExecuteRootHelp(t *testing.T) {
@@ -40,21 +50,22 @@ func TestExecuteRootHelp(t *testing.T) {
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
-	if !strings.Contains(stdout.String(), "usage: kd") {
-		t.Fatalf("expected root usage output, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "create decree") {
-		t.Fatalf("expected root help to advertise create decree command, got %q", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "clean") {
-		t.Fatalf("expected root help to advertise clean command, got %q", stdout.String())
-	}
+	assertContainsAll(t, stdout.String(),
+		"Usage:",
+		"kd <command>",
+		"Workspace And Runtime:",
+		"clean",
+		"create decree",
+		"run start",
+		"Global Flags For API Commands:",
+		"Use `kd help <command>` for command details.",
+	)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
 }
 
-func TestExecuteCommandHelp(t *testing.T) {
+func TestExecuteRunHelp(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
@@ -64,9 +75,7 @@ func TestExecuteCommandHelp(t *testing.T) {
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
-	if !strings.Contains(stdout.String(), "kd run status") {
-		t.Fatalf("expected run usage output, got %q", stdout.String())
-	}
+	assertContainsAll(t, stdout.String(), "run", "kd run start --decree-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]")
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
@@ -82,8 +91,87 @@ func TestExecuteCleanHelp(t *testing.T) {
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
-	if !strings.Contains(stdout.String(), "usage: kd clean") {
-		t.Fatalf("expected clean usage output, got %q", stdout.String())
+	assertContainsAll(t, stdout.String(), "clean", "Remove the local Kingdom scaffold.", "kd clean [flags]", "--path <path>")
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestExecuteCreateDecreeHelpIncludesPublishMode(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "--help"})
+
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
+	}
+	assertContainsAll(t, stdout.String(),
+		"Create a decree and immediately start a run.",
+		"kd create decree --title <title> --text <text> [flags]",
+		"--publish-mode <mode>",
+		"--global-model <provider/model>",
+		"Global Flags For API Commands:",
+	)
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRunStartHelpIncludesPublishMode(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"run", "start", "--help"})
+
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
+	}
+	assertContainsAll(t, stdout.String(),
+		"Start a run for an existing decree.",
+		"kd run start --decree-id <id> [flags]",
+		"--publish-mode <mode>",
+		"--global-model <provider/model>",
+	)
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestExecuteApprovalsDecideHelpIsSpecific(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"approvals", "decide", "--help"})
+
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
+	}
+	assertContainsAll(t, stdout.String(), "Record the final approval decision.", "kd approvals decide --run-id <id> --action <confirm|rework> [flags]", "--reason <text>")
+	if strings.Contains(stdout.String(), "kd approvals plan-decide") {
+		t.Fatalf("expected specific decide help, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+}
+
+func TestExecuteNodeRetryHelpIsSpecific(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"node", "retry", "--help"})
+
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
+	}
+	assertContainsAll(t, stdout.String(), "Retry a specific node.", "kd node retry --run-id <id> --node-key <key> --reason <text>", "--node-key <key>")
+	if strings.Contains(stdout.String(), "kd node rerun-from") {
+		t.Fatalf("expected specific retry help, got %q", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())

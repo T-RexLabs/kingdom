@@ -59,8 +59,9 @@ Default endpoint:
 - `kd create decree --title <title> --text <text> [--metadata-json <json>] [--skip-reviews-and-validations] [--autonomous-approvals <inherit|true|false>] [--run-until-all-approve] [--max-execution-review-cycles <n>] [--max-validation-rework-cycles <n>] [--publish-mode <direct|git_worktree>] --global-model <provider/model> [--agent-model-overrides <role=model,...>]`
 - `kd run start --decree-id <id> [--skip-reviews-and-validations] [--autonomous-approvals <inherit|true|false>] [--run-until-all-approve] [--max-execution-review-cycles <n>] [--max-validation-rework-cycles <n>] [--publish-mode <direct|git_worktree>] --global-model <provider/model> [--agent-model-overrides <role=model,...>]`
 
-For both commands, `--max-execution-review-cycles` and `--max-validation-rework-cycles` must be greater than zero when provided.
-When `--skip-reviews-and-validations` is set, those loop controls are not accepted because the alternate workflow omits review and validation entirely.
+For both commands, `--max-execution-review-cycles` and `--max-validation-rework-cycles` accept `0` or greater when provided.
+`0` defers to the selected workflow default.
+When `--skip-reviews-and-validations` is set, those loop controls are still accepted, but the alternate workflow omits review and validation and therefore defaults both caps to `0`.
 - `kd run status --run-id <id>`
 - `kd graph show --run-id <id> [--ascii|--mermaid]`
 - `kd node retry --run-id <id> --node-key <node> --reason <text>`
