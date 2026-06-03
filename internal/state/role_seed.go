@@ -49,7 +49,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "chancellor",
 		DisplayName:                    "Chancellor",
-		Description:                    "Chief orchestrator that synthesizes advisor input, coordinates execution direction, and delegates work downstream.",
+		Description:                    "Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction.",
 		CanSpawn:                       true,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "chancellor",

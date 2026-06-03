@@ -302,6 +302,30 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 	}
 }
 
+func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	prompt := loop.renderSystemPrompt("chancellor", "run_1", "advisory_synthesis", "nr_1", "Refine decree scope")
+
+	for _, expected := range []string{
+		"marshal of coordination",
+		"advisory counsel into a coherent direction of travel",
+		"Keep every handoff explicit in scope, owner, expected outcome, and major constraint.",
+		"Stay in coordination and synthesis.",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected chancellor prompt to include %q, got:\n%s", expected, prompt)
+		}
+	}
+
+	if !strings.Contains(prompt, "Do not drift into low-level solutioning or claim implementation work") {
+		t.Fatalf("expected chancellor prompt to avoid implementation posture, got:\n%s", prompt)
+	}
+}
+
 func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 	t.Parallel()
 

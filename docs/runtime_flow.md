@@ -106,7 +106,7 @@ The seeded workflow definition contains these nodes.
 | `advisor_consultation_clergy` | `clergy-delegate` | Security, trust-boundary, and resilience counsel |
 | `advisor_consultation_burgher` | `burgher-delegate` | Performance, scalability, efficiency, and maintainability counsel |
 | `advisor_consultation_peasant` | `peasant-delegate` | Usability, operability, and day-2 practicality counsel |
-| `advisory_synthesis` | `chancellor` | Synthesize advisory output |
+| `advisory_synthesis` | `chancellor` | Synthesize advisory counsel into clear downstream direction |
 | `plan_drafting` | `council-member` | Draft the implementation plan |
 | `king_plan_decision` | `king` | Approve the plan or request plan rework |
 | `execution_kickoff` | `council-member` | Record the runtime-owned execution handoff after plan approval |
