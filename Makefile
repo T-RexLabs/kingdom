@@ -21,8 +21,9 @@ CORE_COVERAGE_MIN ?= 72.0
 
 MAKE_STATE_DIR := .make
 PNPM_READY_STAMP := $(MAKE_STATE_DIR)/pnpm-ready-$(PNPM_VERSION).stamp
-ROOT_NODE_MODULES_STAMP := $(MAKE_STATE_DIR)/root-node-modules.stamp
-WEB_NODE_MODULES_STAMP := $(MAKE_STATE_DIR)/web-node-modules.stamp
+WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
+ROOT_NODE_MODULES_STAMP := node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
+WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
 WEB_DIST_INDEX := web/dist/index.html
 KD_BINARY := bin/kd
 
@@ -46,7 +47,7 @@ install: $(WEB_DIST_INDEX) ## Install `kd` with the embedded web UI
 build: $(KD_BINARY) ## Build the local `kd` binary into `bin/`
 
 dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
-	cd web && $(PNPM) dev
+	$(PNPM) --dir web --ignore-workspace dev
 
 ##@ Verification
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
@@ -100,22 +101,19 @@ $(PNPM_READY_STAMP): Makefile
 	corepack prepare pnpm@$(PNPM_VERSION) --activate
 	touch $@
 
-node_modules: package.json pnpm-lock.yaml $(PNPM_READY_STAMP)
-	$(PNPM) install --frozen-lockfile
 
-$(ROOT_NODE_MODULES_STAMP): node_modules
-	mkdir -p $(MAKE_STATE_DIR)
+$(ROOT_NODE_MODULES_STAMP): package.json pnpm-lock.yaml pnpm-workspace.yaml $(PNPM_READY_STAMP)
+	$(PNPM) install --frozen-lockfile --force
+	mkdir -p node_modules
 	touch $@
 
-web/node_modules: web/package.json web/pnpm-lock.yaml $(PNPM_READY_STAMP)
-	cd web && $(PNPM) install --frozen-lockfile
-
-$(WEB_NODE_MODULES_STAMP): web/node_modules
-	mkdir -p $(MAKE_STATE_DIR)
+$(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml $(PNPM_READY_STAMP)
+	$(PNPM) --dir web --ignore-workspace install --frozen-lockfile --force --config.dangerouslyAllowAllBuilds=true
+	mkdir -p web/node_modules
 	touch $@
 
 $(WEB_DIST_INDEX): $(WEB_BUILD_INPUTS) $(WEB_NODE_MODULES_STAMP)
-	cd web && $(PNPM) build
+	$(PNPM) --dir web --ignore-workspace build
 
 $(KD_BINARY): $(KD_GO_SOURCES) $(BOOTSTRAP_ASSETS) $(DB_MIGRATIONS) go.mod go.sum $(WEB_DIST_INDEX)
 	mkdir -p bin
@@ -125,4 +123,4 @@ $(OPENAPI_GENERATED): $(OPENAPI_SPEC) Makefile
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o $(OPENAPI_GENERATED) $(OPENAPI_SPEC)
 
 $(WEB_OPENAPI_GENERATED): $(OPENAPI_SPEC) $(WEB_NODE_MODULES_STAMP)
-	cd web && $(PNPM) exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts
+	$(PNPM) --dir web --ignore-workspace exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts
