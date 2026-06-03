@@ -126,8 +126,8 @@ Policy source: `policies/opencode_provider_policy.yaml`
 - Delegator instruction retrieval is scoped to latest delegator `instruction_dispatched` message targeting the delegate agent + node.
 - Advisor fanout (`advisor_consultation_*`) does not fall back to latest king response text; when scoped instruction is absent runtime injects an advisor-safe advice-only fallback brief.
 - Role drift detection for king/advisor is non-blocking: runtime emits warning reason codes (`king_instruction_drift`, `advisor_scope_drift`) to timeline (`attempt.progress`) and mailbox communication previews without failing the run.
-- Validation nodes must include exactly one strict verdict line near the top: `VERDICT: PASS` or `VERDICT: REWORK`.
-- Execution review nodes inspect `hydrated/`, a self-contained inspection root materialized from the current prepared workspace after the latest successful builder publication, and must include exactly one strict verdict line near the top: `VERDICT: PASS` or `VERDICT: REWORK`.
+- Validation nodes must include exactly one strict verdict line as the first non-empty line: `VERDICT: PASS` or `VERDICT: REWORK`.
+- Execution review nodes inspect `hydrated/`, a self-contained inspection root materialized from the current prepared workspace after the latest successful builder publication, and must include exactly one strict verdict line as the first non-empty line: `VERDICT: PASS` or `VERDICT: REWORK`.
 - Duplicate, conflicting, or too-late verdict lines are invalid for both review and validation nodes.
 - Structured reviewer/validator sections are recommended for readability and downstream rework quality:
   - reviewer rework responses should prefer `REWORK_ITEMS:`

@@ -49,7 +49,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "chancellor",
 		DisplayName:                    "Chancellor",
-		Description:                    "Chief orchestrator that synthesizes advisor input, coordinates execution direction, and delegates work downstream.",
+		Description:                    "Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction.",
 		CanSpawn:                       true,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "chancellor",
@@ -60,7 +60,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "council-member",
 		DisplayName:                    "Council Member",
-		Description:                    "Strategic planner that turns decree intent into an execution plan and kicks off implementation.",
+		Description:                    "Strategic planner that turns decree intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework.",
 		CanSpawn:                       true,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "council-member",
@@ -71,7 +71,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "noble-delegate",
 		DisplayName:                    "Noble Delegate",
-		Description:                    "Advisor that contributes domain expertise, tradeoffs, and recommendations during consultation.",
+		Description:                    "Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -82,7 +82,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "clergy-delegate",
 		DisplayName:                    "Clergy Delegate",
-		Description:                    "Advisor that contributes ethics, risk, and security-oriented counsel during consultation.",
+		Description:                    "Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -93,7 +93,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "burgher-delegate",
 		DisplayName:                    "Burgher Delegate",
-		Description:                    "Advisor that contributes practical delivery, trade, and implementation-grounded counsel.",
+		Description:                    "Advisor that focuses on performance, scalability, resource efficiency, and maintainability.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -104,7 +104,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "peasant-delegate",
 		DisplayName:                    "Peasant Delegate",
-		Description:                    "Advisor that contributes ground-truth, user-level, and operational perspective.",
+		Description:                    "Advisor that focuses on usability, operability, support burden, and day-2 practicality.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -115,7 +115,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "builder-berserker",
 		DisplayName:                    "Berserker",
-		Description:                    "Implementation specialist and the only role whose output is treated as implementation deliverable content.",
+		Description:                    "Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "builder",

@@ -102,12 +102,12 @@ The seeded workflow definition contains these nodes.
 | Node ID | Required Role | Purpose |
 | ------- | ------------- | ------- |
 | `decree_intake` | `king` | Record royal intake and open advisory consultation |
-| `advisor_consultation_noble` | `noble-delegate` | Domain counsel |
-| `advisor_consultation_clergy` | `clergy-delegate` | Ethics and security counsel |
-| `advisor_consultation_burgher` | `burgher-delegate` | Practical and trade counsel |
-| `advisor_consultation_peasant` | `peasant-delegate` | Ground-truth counsel |
-| `advisory_synthesis` | `chancellor` | Synthesize advisory output |
-| `plan_drafting` | `council-member` | Draft the implementation plan |
+| `advisor_consultation_noble` | `noble-delegate` | Functional-fit, architecture-fit, and precedent counsel |
+| `advisor_consultation_clergy` | `clergy-delegate` | Security, trust-boundary, and resilience counsel |
+| `advisor_consultation_burgher` | `burgher-delegate` | Performance, scalability, efficiency, and maintainability counsel |
+| `advisor_consultation_peasant` | `peasant-delegate` | Usability, operability, and day-2 practicality counsel |
+| `advisory_synthesis` | `chancellor` | Synthesize advisory counsel into clear downstream direction |
+| `plan_drafting` | `council-member` | Draft the execution-ready plan and rework deltas |
 | `king_plan_decision` | `king` | Approve the plan or request plan rework |
 | `execution_kickoff` | `council-member` | Record the runtime-owned execution handoff after plan approval |
 | `delegated_execution_berserker` | `builder-berserker` | Perform implementation |
@@ -156,8 +156,8 @@ Plan rework behavior:
 
 After builder execution:
 
-1. `reviewer-shieldmaiden` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line near the top of the response
-2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line near the top of the response
+1. `reviewer-shieldmaiden` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
+2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
 
 Rework behavior:
 
