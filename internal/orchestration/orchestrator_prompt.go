@@ -868,21 +868,33 @@ func defaultDelegatorInstructionForDispatch(nodeID, roleID, decreeText string) s
 	if nodeClassForNodeID(nodeID) != "advisor_consultation" {
 		return ""
 	}
-	roleLens := strings.TrimSpace(roleID)
-	if roleLens == "" {
-		roleLens = "advisor"
-	}
 	decreeSummary := strings.TrimSpace(decreeText)
 	decreeSummary = strings.TrimSpace(stripControlCommandLines(decreeSummary))
 	if decreeSummary == "" {
 		decreeSummary = "No decree text was provided."
 	}
+	roleLens := strings.TrimSpace(roleID)
+	if roleLens == "" {
+		roleLens = "advisor"
+	}
+	lensGuidance := "Focus on the strongest recommendation, why it follows from your role's lens, and the most important risks and tradeoffs."
+	switch roleLens {
+	case "noble-delegate":
+		lensGuidance = "Focus on whether the decree satisfies the requested behavior, fits the existing architecture and public contracts, and avoids harmful precedent or system drift."
+	case "clergy-delegate":
+		lensGuidance = "Focus on trust boundaries, abuse resistance, blast radius, recovery posture, and any residual risk that remains after mitigation."
+	case "burgher-delegate":
+		lensGuidance = "Focus on performance under load, scalability as demand grows, resource efficiency, likely bottlenecks, and long-term maintainability."
+	case "peasant-delegate":
+		lensGuidance = "Focus on usability, operator burden, support burden, day-2 friction, and what ordinary users or operators can realistically sustain."
+	}
 	return fmt.Sprintf(`Provide advisory counsel for this decree through the %s lens.
 
-- Return advice only: recommendation, rationale, and key risks/tradeoffs.
-- Do not claim implementation work, code edits, or produced artifacts.
-- Keep guidance strategic and decision-ready so council can synthesize next actions.
+- Return advice only. Do not claim implementation work, code edits, or produced artifacts.
+- Keep the response freeform but decision-ready: make a recommendation, explain it through your role's lens, and call out the most important risks and tradeoffs.
+- %s
+- If key evidence is missing, say what uncertainty materially affects the recommendation.
 
 Decree focus:
-%s`, roleLens, decreeSummary)
+%s`, roleLens, lensGuidance, decreeSummary)
 }

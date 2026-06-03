@@ -156,10 +156,10 @@ Kingdom has a canonical role catalog in the runtime, and a smaller set of manage
 | :crown: `king` | Supreme governance authority that approves plans, requests rework when needed, and closes decrees. |
 | :scroll: `chancellor` | Chief orchestrator that synthesizes advisor input, coordinates execution direction, and delegates work downstream. |
 | :compass: `council-member` | Strategic planner that turns decree intent into an execution plan and kicks off implementation. |
-| :classical_building: `noble-delegate` | Advisor that contributes domain expertise, tradeoffs, and recommendations during consultation. |
-| :church: `clergy-delegate` | Advisor that contributes ethics, risk, and security-oriented counsel during consultation. |
-| :hammer_and_pick: `burgher-delegate` | Advisor that contributes practical delivery, trade, and implementation-grounded counsel. |
-| :ear_of_rice: `peasant-delegate` | Advisor that contributes ground-truth, user-level, and operational perspective. |
+| :classical_building: `noble-delegate` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
+| :church: `clergy-delegate` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
+| :hammer_and_pick: `burgher-delegate` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
+| :ear_of_rice: `peasant-delegate` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
 | :axe: `builder-berserker` | Implementation specialist and the only role whose output is treated as implementation deliverable content. |
 | :shield: `reviewer-shieldmaiden` | Reviews builder output against the decree and approved plan, checks scope and correctness before validation begins. |
 | :test_tube: `intelligence-qa-scout` | Validates functional behavior, test evidence, and requirement coverage before royal closure. |

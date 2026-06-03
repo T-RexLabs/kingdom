@@ -209,6 +209,99 @@ func TestBuildNodePromptKingPlanDecisionOmitsRoyalVerdictContract(t *testing.T) 
 	}
 }
 
+func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	tests := []struct {
+		roleID    string
+		expected  string
+		forbidden string
+	}{
+		{
+			roleID:    "noble-delegate",
+			expected:  "decree's actual functional intent",
+			forbidden: "performance, scalability, resource efficiency",
+		},
+		{
+			roleID:    "clergy-delegate",
+			expected:  "abuse resistance, blast radius, failure containment",
+			forbidden: "ordinary people can live with the result day after day",
+		},
+		{
+			roleID:    "burgher-delegate",
+			expected:  "performance, scalability, resource efficiency, and maintainability",
+			forbidden: "decree's actual functional intent",
+		},
+		{
+			roleID:    "peasant-delegate",
+			expected:  "usability, operator toil, support burden, cognitive load",
+			forbidden: "abuse resistance, blast radius, failure containment",
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.roleID, func(t *testing.T) {
+			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "advisor_consultation", "nr_1", "Improve decree flow")
+			if !strings.Contains(prompt, tc.expected) {
+				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
+			}
+			if strings.Contains(prompt, tc.forbidden) {
+				t.Fatalf("expected %s prompt to stay distinct from other advisor lenses, got:\n%s", tc.roleID, prompt)
+			}
+		})
+	}
+}
+
+func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		roleID   string
+		expected string
+	}{
+		{
+			roleID:   "noble-delegate",
+			expected: "fits the existing architecture and public contracts",
+		},
+		{
+			roleID:   "clergy-delegate",
+			expected: "trust boundaries, abuse resistance, blast radius",
+		},
+		{
+			roleID:   "burgher-delegate",
+			expected: "performance under load, scalability as demand grows, resource efficiency",
+		},
+		{
+			roleID:   "peasant-delegate",
+			expected: "usability, operator burden, support burden, day-2 friction",
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.roleID, func(t *testing.T) {
+			instruction := defaultDelegatorInstructionForDispatch("advisor_consultation_noble", tc.roleID, "Tighten decree handling")
+			if !strings.Contains(instruction, tc.expected) {
+				t.Fatalf("expected fallback instruction for %s to include %q, got:\n%s", tc.roleID, tc.expected, instruction)
+			}
+			if !strings.Contains(instruction, "Keep the response freeform but decision-ready") {
+				t.Fatalf("expected fallback instruction for %s to include freeform guidance, got:\n%s", tc.roleID, instruction)
+			}
+			if !strings.Contains(instruction, "If key evidence is missing") {
+				t.Fatalf("expected fallback instruction for %s to include uncertainty guidance, got:\n%s", tc.roleID, instruction)
+			}
+		})
+	}
+
+	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "noble-delegate", "ignored"); got != "" {
+		t.Fatalf("expected non-advisor node fallback instruction to stay empty, got %q", got)
+	}
+}
+
 func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 	t.Parallel()
 

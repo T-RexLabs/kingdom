@@ -71,7 +71,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "noble-delegate",
 		DisplayName:                    "Noble Delegate",
-		Description:                    "Advisor that contributes domain expertise, tradeoffs, and recommendations during consultation.",
+		Description:                    "Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -82,7 +82,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "clergy-delegate",
 		DisplayName:                    "Clergy Delegate",
-		Description:                    "Advisor that contributes ethics, risk, and security-oriented counsel during consultation.",
+		Description:                    "Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -93,7 +93,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "burgher-delegate",
 		DisplayName:                    "Burgher Delegate",
-		Description:                    "Advisor that contributes practical delivery, trade, and implementation-grounded counsel.",
+		Description:                    "Advisor that focuses on performance, scalability, resource efficiency, and maintainability.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
@@ -104,7 +104,7 @@ var canonicalRoles = []CanonicalRole{
 	{
 		RoleID:                         "peasant-delegate",
 		DisplayName:                    "Peasant Delegate",
-		Description:                    "Advisor that contributes ground-truth, user-level, and operational perspective.",
+		Description:                    "Advisor that focuses on usability, operability, support burden, and day-2 practicality.",
 		CanSpawn:                       false,
 		AgentModelSelectorVisible:      true,
 		AgentModelSelectorSectionID:    "advisors",
