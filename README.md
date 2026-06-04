@@ -13,9 +13,9 @@ In a world of rising token costs, raising your own Kingdom can help protect the 
 
 If you want to spend a few gold nuggets on hosted models, Kingdom supports that too through your local OpenCode setup.
 
-Plan with counsel. Issue a decree. Route execution through fixed authority, durable state, review, validation, and royal closure.
+Kingdom is built for governed AI work: plan with counsel, issue a decree, and route execution through fixed authority, durable state, review, validation, and royal closure.
 
-The contract is concrete:
+Kingdom consists of:
 
 - Go runtime
 - embedded React web UI
@@ -26,21 +26,16 @@ The contract is concrete:
 
 ## Why Kingdom
 
-Kingdom is built for cases where AI work should be inspectable, recoverable, and governed.
+Kingdom is built for peopl/teams that want AI work to stay under their control without giving up structure, visibility, or rigor.
 
-- Planning sessions are durable and separate from execution.
-- Decrees run through stored workflows, not ad-hoc agent chains.
-- Role authority is fixed in the runtime, not left to prompt convention.
-- Review, validation, approvals, artifacts, and mailbox traffic are stored for audit and recovery.
-- Operators can work through the web UI, the `kd` CLI, or the API.
-
-## What Kingdom Is Today
-
-- Single-host runtime with an embedded web UI and local API server.
-- Execution is host-launched against prepared workspaces.
-- OpenCode is currently the only supported provider engine today.
-- Builder output can publish directly into the project root or into a per-run git worktree.
-- SQLite stores workflow, planner, run, mailbox, artifact, and execution state.
+- Self-hosted by default, so you control the runtime, data, and operating boundary.
+- Open source, so the system can be inspected, adapted, and trusted on its merits.
+- Use planning sessions to turn rough intent into execution-ready decrees.
+- Route decrees through stored workflows instead of ad-hoc agent chains.
+- Enforce role authority in the runtime instead of relying on prompt convention.
+- Preserve review, validation, approvals, artifacts, and mailbox history for audit and recovery.
+- Operate through the web UI, the `kd` CLI, or the API.
+- Use hosted models through your local OpenCode setup when you want them.
 
 ## OpenCode Integration
 
@@ -51,9 +46,9 @@ What that means in practice:
 - Kingdom discovers selectable models from your local OpenCode installation.
   - If you have hosted or self-hosted providers configured in OpenCode, and OpenCode exposes them in its model catalog, those models will be available for selection in Kingdom.
 - `kd init` installs Kingdom-managed OpenCode profiles and tools into `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`.
-- Kingdom launches OpenCode with that overlay via `OPENCODE_CONFIG_DIR`, so Kingdom sees its managed profiles while your normal repo/global OpenCode setup still applies and standalone `opencode` sessions are not polluted by Kingdom assets.
+- Kingdom launches OpenCode with that overlay via `OPENCODE_CONFIG_DIR`, so Kingdom sees its managed profiles while your normal repo and global OpenCode setup still apply and standalone `opencode` sessions are not polluted by Kingdom assets.
 
-Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Hence, Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
+Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
 
 ## Quickstart Guide
 
@@ -103,7 +98,7 @@ This creates Kingdom's local workspace under `.kingdom/` and installs Kingdom-ma
 kd summon
 ```
 
-Open `http://127.0.0.1:8080`.
+Open `http://localhost:8080` (`http://127.0.0.1:8080`).
 
 ### 5. Use Kingdom
 
@@ -125,7 +120,7 @@ Open `http://127.0.0.1:8080`.
 
 The mental model is simple:
 
-1. A planning session explores the work.
+1. Planning sessions turn rough intent into execution-ready decrees.
 2. A decree captures what should be done.
 3. A run executes the decree through a stored workflow.
 4. Roles act in order, under fixed authority.
@@ -266,13 +261,13 @@ Terminal B, from the repository root:
 make dev-web
 ```
 
-Use `http://127.0.0.1:5173` during this loop.
+Use `http://localhost:5173` (`http://127.0.0.1:5173`) during this loop.
 
 Expected behavior:
 
 - edits under `web/` should hot reload through Vite
 - edits under `cmd/`, `internal/`, `.kingdom/config.yaml`, `.kingdom/policies/`, or `.kingdom/schemas/` require restarting `kd summon`
-- final verification should still happen against `http://127.0.0.1:8080` so you exercise the embedded UI path
+- final verification should still happen against `http://localhost:8080` so you exercise the embedded UI path
 
 ### What `kd init` and `kd summon` Do
 
