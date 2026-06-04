@@ -1,6 +1,18 @@
+<p align="center">
+  <picture>
+    <source srcset="web/public/t-rex-white.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="web/public/t-rex-black.svg" media="(prefers-color-scheme: light)">
+    <img src="web/public/t-rex-black.svg" alt="Kingdom logo" width="220">
+  </picture>
+</p>
+<p align="center"><strong>Self-hosted orchestration for governed AI work.</strong></p>
+<p align="center">Run the realm on your own hardware. Keep control of your gold.</p>
+
 # Kingdom
 
-Kingdom is a single-host orchestration runtime for work that should move like a governed realm instead of a pile of disconnected prompts.
+In a world of rising token costs, raising your own Kingdom can help protect the treasury. Kingdom is open source, self-hosted, and runs on your own hardware so planning, execution, and audit stay under your control.
+
+If you want to spend a few gold nuggets on hosted models, Kingdom supports that too through your local OpenCode setup.
 
 Plan with counsel. Issue a decree. Route execution through fixed authority, durable state, review, validation, and royal closure.
 
