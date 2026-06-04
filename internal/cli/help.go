@@ -14,6 +14,7 @@ type helpTopic struct {
 	summary            string
 	usage              []string
 	flags              flagBinder
+	flagOrder          []string
 	notes              []string
 	includeGlobalFlags bool
 	subcommands        [][]string
@@ -134,9 +135,11 @@ var helpTopics = []*helpTopic{
 		flags: func(flags *flag.FlagSet) {
 			bindCreateDecreeFlags(flags, &createDecreeOptions{})
 		},
+		flagOrder: []string{"title", "text", "global-model", "agent-model-overrides", "publish-mode", "autonomous-approvals", "metadata-json", "skip-reviews-and-validations", "run-until-all-approve", "max-execution-review-cycles", "max-validation-rework-cycles"},
 		notes: []string{
 			"`--global-model` is required when provider.engine=opencode and `--server` is omitted.",
-			"Loop overrides accept `0` or greater when provided; `0` defers to workflow defaults.",
+			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini`.",
+			"`--max-execution-review-cycles=0` and `--max-validation-rework-cycles=0` auto-succeed review or validation at the cap boundary.",
 		},
 		includeGlobalFlags: true,
 	},
@@ -154,9 +157,11 @@ var helpTopics = []*helpTopic{
 		flags: func(flags *flag.FlagSet) {
 			bindRunStartFlags(flags, &runStartOptions{})
 		},
+		flagOrder: []string{"decree-id", "global-model", "agent-model-overrides", "publish-mode", "autonomous-approvals", "skip-reviews-and-validations", "run-until-all-approve", "max-execution-review-cycles", "max-validation-rework-cycles"},
 		notes: []string{
 			"`--global-model` is required when provider.engine=opencode and `--server` is omitted.",
-			"Loop overrides accept `0` or greater when provided; `0` defers to workflow defaults.",
+			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini`.",
+			"`--max-execution-review-cycles=0` and `--max-validation-rework-cycles=0` auto-succeed review or validation at the cap boundary.",
 		},
 		includeGlobalFlags: true,
 	},
@@ -336,7 +341,7 @@ func writeHelpTopic(stdout io.Writer, topic *helpTopic) {
 		writeCommandSummaries(stdout, topic.subcommands)
 	}
 
-	writeBoundFlagsSection(stdout, topic.flags)
+	writeBoundFlagsSection(stdout, topic.flags, topic.flagOrder)
 	if topic.includeGlobalFlags {
 		writeGlobalFlagsSection(stdout)
 	}
@@ -423,13 +428,13 @@ func writeGlobalFlagsSection(stdout io.Writer) {
 	_, _ = io.WriteString(stdout, "  Server defaults come from `.kingdom/config.yaml` when `--server` is omitted.\n")
 }
 
-func writeBoundFlagsSection(stdout io.Writer, binder flagBinder) {
+func writeBoundFlagsSection(stdout io.Writer, binder flagBinder, order []string) {
 	if binder == nil {
 		return
 	}
 	flags := newFlagSet("help")
 	binder(flags)
-	rendered := renderFlagLines(flags)
+	rendered := renderFlagLines(flags, order)
 	if len(rendered) == 0 {
 		return
 	}
@@ -451,24 +456,40 @@ type renderedFlagLine struct {
 	description string
 }
 
-func renderFlagLines(flags *flag.FlagSet) []renderedFlagLine {
+func renderFlagLines(flags *flag.FlagSet, order []string) []renderedFlagLine {
 	if flags == nil {
 		return nil
 	}
 	lines := make([]renderedFlagLine, 0)
+	seen := make(map[string]struct{}, len(order))
+	for _, name := range order {
+		entry := flags.Lookup(name)
+		if entry == nil {
+			continue
+		}
+		lines = append(lines, renderFlagLine(entry))
+		seen[name] = struct{}{}
+	}
 	flags.VisitAll(func(f *flag.Flag) {
-		placeholder, usage := flag.UnquoteUsage(f)
-		syntax := "--" + f.Name
-		if placeholder != "" {
-			syntax += " <" + placeholder + ">"
+		if _, ok := seen[f.Name]; ok {
+			return
 		}
-		description := usage
-		if defaultValue, ok := flagDefaultValue(f); ok {
-			description += fmt.Sprintf(" (default: %s)", defaultValue)
-		}
-		lines = append(lines, renderedFlagLine{syntax: syntax, description: description})
+		lines = append(lines, renderFlagLine(f))
 	})
 	return lines
+}
+
+func renderFlagLine(f *flag.Flag) renderedFlagLine {
+	placeholder, usage := flag.UnquoteUsage(f)
+	syntax := "--" + f.Name
+	if placeholder != "" {
+		syntax += " <" + placeholder + ">"
+	}
+	description := usage
+	if defaultValue, ok := flagDefaultValue(f); ok {
+		description += fmt.Sprintf(" (default: %s)", defaultValue)
+	}
+	return renderedFlagLine{syntax: syntax, description: description}
 }
 
 func flagDefaultValue(f *flag.Flag) (string, bool) {
@@ -477,22 +498,20 @@ func flagDefaultValue(f *flag.Flag) (string, bool) {
 	}
 	getter, ok := f.Value.(flag.Getter)
 	if !ok {
-		value := f.DefValue
-		return value, value != ""
+		if f.DefValue == "" {
+			return `""`, true
+		}
+		return f.DefValue, true
 	}
 	value := getter.Get()
 	switch typed := value.(type) {
-	case bool:
-		if !typed {
-			return "", false
-		}
 	case string:
 		if typed == "" {
-			return "", false
+			return `""`, true
 		}
 	}
 	if f.DefValue == "" {
-		return "", false
+		return `""`, true
 	}
 	return f.DefValue, true
 }

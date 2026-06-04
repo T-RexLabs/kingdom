@@ -139,15 +139,15 @@ func bindCreateDecreeFlags(flags *flag.FlagSet, opts *createDecreeOptions) {
 	}
 	flags.StringVar(&opts.title, "title", "", "decree `title`")
 	flags.StringVar(&opts.text, "text", "", "decree `text`")
+	flags.StringVar(&opts.globalModel, "global-model", "", "global model `provider/model` (example: github-copilot/gpt-5.4-mini); required when provider.engine=opencode")
+	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini)")
+	flags.StringVar(&opts.publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish `mode`: direct or git_worktree")
+	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "true", "run autonomous approvals `value`: true or false")
 	flags.StringVar(&opts.metadataRaw, "metadata-json", "", "optional decree metadata JSON `object`")
 	flags.BoolVar(&opts.skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
-	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "inherit", "run approvals `mode`: inherit, true, or false")
 	flags.BoolVar(&opts.runUntilAllApprove, "run-until-all-approve", false, "continue reviewer and validator loops until pass")
-	flags.IntVar(&opts.maxExecutionReviewCycles, "max-execution-review-cycles", -1, "max execution review `cycles` (0 or greater when provided; 0 uses workflow defaults)")
-	flags.IntVar(&opts.maxValidationReworkCycles, "max-validation-rework-cycles", -1, "max validation rework `cycles` (0 or greater when provided; 0 uses workflow defaults)")
-	flags.StringVar(&opts.publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish `mode`: direct or git_worktree")
-	flags.StringVar(&opts.globalModel, "global-model", "", "global model override `provider/model`; required when provider.engine=opencode")
-	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (comma-separated)")
+	flags.IntVar(&opts.maxExecutionReviewCycles, "max-execution-review-cycles", 2, "max execution review `cycles`; `0` auto-succeeds review at the cap")
+	flags.IntVar(&opts.maxValidationReworkCycles, "max-validation-rework-cycles", 2, "max validation rework `cycles`; `0` auto-succeeds validation at the cap")
 }
 
 func bindRunStartFlags(flags *flag.FlagSet, opts *runStartOptions) {
@@ -155,14 +155,14 @@ func bindRunStartFlags(flags *flag.FlagSet, opts *runStartOptions) {
 		return
 	}
 	flags.StringVar(&opts.decreeID, "decree-id", "", "decree `id`")
-	flags.BoolVar(&opts.skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
-	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "inherit", "run approvals `mode`: inherit, true, or false")
-	flags.BoolVar(&opts.runUntilAllApprove, "run-until-all-approve", false, "continue reviewer and validator loops until pass")
-	flags.IntVar(&opts.maxExecutionReviewCycles, "max-execution-review-cycles", -1, "max execution review `cycles` (0 or greater when provided; 0 uses workflow defaults)")
-	flags.IntVar(&opts.maxValidationReworkCycles, "max-validation-rework-cycles", -1, "max validation rework `cycles` (0 or greater when provided; 0 uses workflow defaults)")
+	flags.StringVar(&opts.globalModel, "global-model", "", "global model `provider/model` (example: github-copilot/gpt-5.4-mini); required when provider.engine=opencode")
+	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini)")
 	flags.StringVar(&opts.publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish `mode`: direct or git_worktree")
-	flags.StringVar(&opts.globalModel, "global-model", "", "global model override `provider/model`; required when provider.engine=opencode")
-	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (comma-separated)")
+	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "true", "run autonomous approvals `value`: true or false")
+	flags.BoolVar(&opts.skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
+	flags.BoolVar(&opts.runUntilAllApprove, "run-until-all-approve", false, "continue reviewer and validator loops until pass")
+	flags.IntVar(&opts.maxExecutionReviewCycles, "max-execution-review-cycles", 2, "max execution review `cycles`; `0` auto-succeeds review at the cap")
+	flags.IntVar(&opts.maxValidationReworkCycles, "max-validation-rework-cycles", 2, "max validation rework `cycles`; `0` auto-succeeds validation at the cap")
 }
 
 func bindRunStatusFlags(flags *flag.FlagSet, opts *runStatusOptions) {

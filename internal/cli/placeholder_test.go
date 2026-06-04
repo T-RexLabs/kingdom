@@ -110,10 +110,24 @@ func TestExecuteCreateDecreeHelpIncludesPublishMode(t *testing.T) {
 	assertContainsAll(t, stdout.String(),
 		"Create a decree and immediately start a run.",
 		"kd create decree --title <title> --text <text> [flags]",
-		"--publish-mode <mode>",
 		"--global-model <provider/model>",
+		"example: github-copilot/gpt-5.4-mini",
+		"--agent-model-overrides <role=model>",
+		"builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini",
+		"--autonomous-approvals <value>",
+		"(default: true)",
+		"--max-execution-review-cycles <cycles>",
+		"(default: 2)",
+		"auto-succeeds review at the cap",
+		"--publish-mode <mode>",
 		"Global Flags For API Commands:",
 	)
+	if strings.Contains(stdout.String(), "inherit") {
+		t.Fatalf("expected create decree help to stop documenting inherit, got %q", stdout.String())
+	}
+	if strings.Index(stdout.String(), "--global-model <provider/model>") > strings.Index(stdout.String(), "--metadata-json <object>") {
+		t.Fatalf("expected global model help before metadata, got %q", stdout.String())
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
@@ -132,9 +146,21 @@ func TestExecuteRunStartHelpIncludesPublishMode(t *testing.T) {
 	assertContainsAll(t, stdout.String(),
 		"Start a run for an existing decree.",
 		"kd run start --decree-id <id> [flags]",
-		"--publish-mode <mode>",
 		"--global-model <provider/model>",
+		"example: github-copilot/gpt-5.4-mini",
+		"--agent-model-overrides <role=model>",
+		"(default: true)",
+		"--max-validation-rework-cycles <cycles>",
+		"(default: 2)",
+		"auto-succeeds validation at the cap",
+		"--publish-mode <mode>",
 	)
+	if strings.Contains(stdout.String(), "inherit") {
+		t.Fatalf("expected run start help to stop documenting inherit, got %q", stdout.String())
+	}
+	if strings.Index(stdout.String(), "--global-model <provider/model>") > strings.Index(stdout.String(), "--skip-reviews-and-validations") {
+		t.Fatalf("expected global model help before workflow toggles, got %q", stdout.String())
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
@@ -228,6 +254,15 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 			}
 			if _, ok := payload["skip_reviews_and_validations"]; ok {
 				t.Fatalf("did not expect skip_reviews_and_validations in default create run request, got %#v", payload["skip_reviews_and_validations"])
+			}
+			if got := payload["autonomous_approvals"]; got != true {
+				t.Fatalf("expected default autonomous_approvals=true, got %#v", got)
+			}
+			if got := payload["max_execution_review_cycles"]; got != float64(2) {
+				t.Fatalf("expected default max_execution_review_cycles=2, got %#v", got)
+			}
+			if got := payload["max_validation_rework_cycles"]; got != float64(2) {
+				t.Fatalf("expected default max_validation_rework_cycles=2, got %#v", got)
 			}
 			if got := payload["publish_mode"]; got != "direct" {
 				t.Fatalf("expected default publish mode direct, got %#v", got)

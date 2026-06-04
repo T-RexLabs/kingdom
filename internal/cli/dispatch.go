@@ -55,7 +55,7 @@ type Runtime struct {
 
 func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) int {
 	if len(args) == 0 {
-		writeUsageError(stderr, errors.New("missing command"))
+		writeUsageError(stderr, errors.New("missing command"), nil)
 		return ExitUsage
 	}
 
@@ -100,12 +100,12 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 
 	cfg, remaining, err := parseGlobalFlags(args)
 	if err != nil {
-		writeUsageError(stderr, err)
+		writeUsageError(stderr, err, nil)
 		return ExitUsage
 	}
 
 	if len(remaining) == 0 {
-		writeUsageError(stderr, errors.New("missing command"))
+		writeUsageError(stderr, errors.New("missing command"), nil)
 		return ExitUsage
 	}
 	if isHelpToken(remaining[0]) {
@@ -1206,7 +1206,7 @@ func parseAutonomousApprovalsOverride(raw string) (*bool, error) {
 		value := false
 		return &value, nil
 	default:
-		return nil, errors.New("--autonomous-approvals must be one of: inherit, true, false")
+		return nil, errors.New("--autonomous-approvals must be true or false")
 	}
 }
 
@@ -1352,7 +1352,7 @@ func unwrapAPIError(status int, badRequest *gen.ErrorResponse, fallback *gen.Err
 func (r *Runtime) writeError(err error) int {
 	switch typed := err.(type) {
 	case usageError:
-		writeUsageError(r.stderr, typed.err)
+		writeUsageError(r.stderr, typed.err, nil)
 		return ExitUsage
 	case *apiError:
 		r.writeStructuredError(typed)
@@ -1421,10 +1421,10 @@ func (r *Runtime) writeStructuredError(err *apiError) {
 	_, _ = fmt.Fprintf(r.stderr, "api error: %s\n", err.Error())
 }
 
-func writeUsageError(stderr io.Writer, err error) {
+func writeUsageError(stderr io.Writer, err error, topic []string) {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "usage error: %v\n", err)
 	}
 	_, _ = io.WriteString(stderr, "\n")
-	writeRootHelp(stderr)
+	writeCommandHelp(stderr, topic)
 }
