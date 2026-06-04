@@ -55,7 +55,7 @@ type Runtime struct {
 
 func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) int {
 	if len(args) == 0 {
-		writeUsageError(stderr, errors.New("missing command"))
+		writeUsageError(stderr, errors.New("missing command"), nil)
 		return ExitUsage
 	}
 
@@ -100,12 +100,12 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 
 	cfg, remaining, err := parseGlobalFlags(args)
 	if err != nil {
-		writeUsageError(stderr, err)
+		writeUsageError(stderr, err, nil)
 		return ExitUsage
 	}
 
 	if len(remaining) == 0 {
-		writeUsageError(stderr, errors.New("missing command"))
+		writeUsageError(stderr, errors.New("missing command"), nil)
 		return ExitUsage
 	}
 	if isHelpToken(remaining[0]) {
@@ -333,47 +333,50 @@ func (r *Runtime) currentPlanRevisionID(ctx context.Context, client *gen.ClientW
 
 func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 	opts := createDecreeOptions{}
+	commandUsage := func(err error) error {
+		return usageError{err: err, helpTopic: []string{"create", "decree"}}
+	}
 	flags := newFlagSet("create decree")
 	bindCreateDecreeFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if opts.title == "" || opts.text == "" {
-		return usageError{err: errors.New("--title and --text are required")}
+		return commandUsage(errors.New("--title and --text are required"))
 	}
 	if err := requireGlobalModelForInstallMode(opts.globalModel, r.config); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 
 	decreeRequest := gen.CreateDecreeRequest{DecreeTitle: opts.title, DecreeText: opts.text}
 	if strings.TrimSpace(opts.metadataRaw) != "" {
 		metadata, err := parseJSONObject(opts.metadataRaw, "--metadata-json")
 		if err != nil {
-			return usageError{err: err}
+			return commandUsage(err)
 		}
 		decreeRequest.Metadata = &metadata
 	}
 	publishMode, err := parsePublishModeFlag(opts.publishModeRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if err := requirePublishModeSupportForInstallMode(publishMode, r.config); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	runRequest := gen.CreateRunRequest{PublishMode: publishMode}
 	autonomousApprovals, err := parseAutonomousApprovalsOverride(opts.autonomousApprovalsRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if autonomousApprovals != nil {
 		runRequest.AutonomousApprovals = autonomousApprovals
 	}
 	if err := applyRunWorkflowOptions(&runRequest, opts.skipReviewsAndValidations, opts.runUntilAllApprove, opts.maxExecutionReviewCycles, opts.maxValidationReworkCycles); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	modelSelection, err := buildRunModelSelection(opts.globalModel, opts.agentModelOverridesRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if modelSelection != nil {
 		runRequest.ModelSelection = *modelSelection
@@ -447,39 +450,42 @@ func (r *Runtime) createRun(ctx context.Context, request gen.CreateRunRequest) (
 
 func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 	opts := runStartOptions{}
+	commandUsage := func(err error) error {
+		return usageError{err: err, helpTopic: []string{"run", "start"}}
+	}
 	flags := newFlagSet("run start")
 	bindRunStartFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if opts.decreeID == "" {
-		return usageError{err: errors.New("--decree-id is required")}
+		return commandUsage(errors.New("--decree-id is required"))
 	}
 	if err := requireGlobalModelForInstallMode(opts.globalModel, r.config); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 
 	publishMode, err := parsePublishModeFlag(opts.publishModeRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if err := requirePublishModeSupportForInstallMode(publishMode, r.config); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	request := gen.CreateRunRequest{DecreeId: opts.decreeID, PublishMode: publishMode}
 	autonomousApprovals, err := parseAutonomousApprovalsOverride(opts.autonomousApprovalsRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if autonomousApprovals != nil {
 		request.AutonomousApprovals = autonomousApprovals
 	}
 	if err := applyRunWorkflowOptions(&request, opts.skipReviewsAndValidations, opts.runUntilAllApprove, opts.maxExecutionReviewCycles, opts.maxValidationReworkCycles); err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	modelSelection, err := buildRunModelSelection(opts.globalModel, opts.agentModelOverridesRaw)
 	if err != nil {
-		return usageError{err: err}
+		return commandUsage(err)
 	}
 	if modelSelection != nil {
 		request.ModelSelection = *modelSelection
@@ -1206,7 +1212,7 @@ func parseAutonomousApprovalsOverride(raw string) (*bool, error) {
 		value := false
 		return &value, nil
 	default:
-		return nil, errors.New("--autonomous-approvals must be one of: inherit, true, false")
+		return nil, errors.New("--autonomous-approvals must be true or false")
 	}
 }
 
@@ -1294,7 +1300,8 @@ func writeJSON(writer io.Writer, value interface{}) error {
 }
 
 type usageError struct {
-	err error
+	err       error
+	helpTopic []string
 }
 
 func (e usageError) Error() string {
@@ -1352,7 +1359,7 @@ func unwrapAPIError(status int, badRequest *gen.ErrorResponse, fallback *gen.Err
 func (r *Runtime) writeError(err error) int {
 	switch typed := err.(type) {
 	case usageError:
-		writeUsageError(r.stderr, typed.err)
+		writeUsageError(r.stderr, typed.err, typed.helpTopic)
 		return ExitUsage
 	case *apiError:
 		r.writeStructuredError(typed)
@@ -1421,10 +1428,10 @@ func (r *Runtime) writeStructuredError(err *apiError) {
 	_, _ = fmt.Fprintf(r.stderr, "api error: %s\n", err.Error())
 }
 
-func writeUsageError(stderr io.Writer, err error) {
+func writeUsageError(stderr io.Writer, err error, topic []string) {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "usage error: %v\n", err)
 	}
 	_, _ = io.WriteString(stderr, "\n")
-	writeRootHelp(stderr)
+	writeCommandHelp(stderr, topic)
 }
