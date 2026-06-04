@@ -106,6 +106,264 @@ describe("timeline milestones", () => {
 		});
 	});
 
+	it("renders blocked recovery labels and milestones from live execution state", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-1",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "running",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-1",
+			node_run_id: "nr-builder-1",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "blocked",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+		const recovered: TimelineEvent = {
+			event_id: "evt-recovered-blocked",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.recovered",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
+		};
+
+		const lookups = buildTimelineLookups([recovered], nodes, executions);
+		expect(buildRawEventLabel(recovered, lookups)).toEqual({
+			label: "Delegated Execution Berserker blocked for retry",
+			detail: undefined,
+		});
+
+		const milestones = synthesizeMilestones([recovered], nodes, [], lookups);
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "blocked",
+				kind: "node_blocked",
+				detail: "Blocked",
+			}),
+		]));
+	});
+
+	it("keeps blocked recovery visible while still showing the queued retry handoff", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-1",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "blocked",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-1",
+			node_run_id: "nr-builder-1",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "blocked",
+			activity_at: "2026-03-18T11:42:00Z",
+			updated_at: "2026-03-18T11:42:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+		const events: TimelineEvent[] = [
+			{
+				event_id: "evt-recovered-blocked",
+				run_event_seq: 5,
+				attempt_seq: 3,
+				event_type: "attempt.recovered",
+				emitted_at: "2026-03-18T11:41:00Z",
+				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
+			},
+			{
+				event_id: "evt-retry-queued",
+				run_event_seq: 6,
+				attempt_seq: 1,
+				event_type: "attempt.retry_queued",
+				emitted_at: "2026-03-18T11:42:00Z",
+				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-2", attempt: 2 },
+			},
+		];
+
+		const lookups = buildTimelineLookups(events, nodes, executions);
+		const milestones = synthesizeMilestones(events, nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "blocked",
+				kind: "node_blocked",
+				detail: "Blocked",
+				events: expect.arrayContaining([
+					expect.objectContaining({ event_id: "evt-recovered-blocked" }),
+					expect.objectContaining({ event_id: "evt-retry-queued" }),
+				]),
+			}),
+		]));
+	});
+
+	it("keeps blocked lineage state when only the events know about recovery", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-1",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "running",
+		}];
+		const events: TimelineEvent[] = [
+			{
+				event_id: "evt-recovered-blocked-live-only",
+				run_event_seq: 5,
+				attempt_seq: 3,
+				event_type: "attempt.recovered",
+				emitted_at: "2026-03-18T11:41:00Z",
+				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
+			},
+			{
+				event_id: "evt-retry-queued-live-only",
+				run_event_seq: 6,
+				attempt_seq: 1,
+				event_type: "attempt.retry_queued",
+				emitted_at: "2026-03-18T11:42:00Z",
+				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-2", attempt: 2 },
+			},
+		];
+
+		const lookups = buildTimelineLookups(events, nodes, []);
+		const milestones = synthesizeMilestones(events, nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "blocked",
+				kind: "node_blocked",
+				detail: "Blocked",
+				events: expect.arrayContaining([
+					expect.objectContaining({ event_id: "evt-recovered-blocked-live-only" }),
+					expect.objectContaining({ event_id: "evt-retry-queued-live-only" }),
+				]),
+			}),
+		]));
+	});
+
+	it("anchors launching milestones to launch_started_at before started_at", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "advisor_consultation_burgher",
+			node_run_id: "nr-burgher-1",
+			required_role: "burgher-delegate",
+			execution_ownership: "provider_backed",
+			state: "starting",
+		}];
+		const events: TimelineEvent[] = [{
+			event_id: "evt-burgher-old-lineage",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.failed",
+			emitted_at: "2026-03-18T11:38:00Z",
+			reason_code: "provider_incomplete_turn",
+			payload_json: { node_id: "advisor_consultation_burgher", node_run_id: "nr-burgher-old" },
+		}, {
+			event_id: "evt-burgher-ready",
+			run_event_seq: 2,
+			attempt_seq: 1,
+			event_type: "node.state_changed",
+			emitted_at: "2026-03-18T11:39:00Z",
+			payload_json: { node_id: "advisor_consultation_burgher", node_run_id: "nr-burgher-1", state: "ready" },
+		}, {
+			event_id: "evt-burgher-starting",
+			run_event_seq: 3,
+			attempt_seq: 2,
+			event_type: "node.state_changed",
+			emitted_at: "2026-03-18T11:39:30Z",
+			payload_json: { node_id: "advisor_consultation_burgher", node_run_id: "nr-burgher-1", state: "starting" },
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-burgher-1",
+			node_run_id: "nr-burgher-1",
+			node_id: "advisor_consultation_burgher",
+			attempt: 1,
+			agent_id: "agent-burgher",
+			required_role: "burgher-delegate",
+			execution_mode: "provider_backed",
+			status: "starting",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+			started_at: "2026-03-18T11:40:15Z",
+		}];
+
+		const lookups = buildTimelineLookups(events, nodes, executions);
+		const milestones = synthesizeMilestones(events, nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-advisor_consultation_burgher",
+				status: "starting",
+				detail: "Launching",
+				timestamp: "2026-03-18T11:39:30Z",
+			}),
+		]));
+	});
+
+	it("anchors running milestones to provider invocation instead of launch start", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "advisor_consultation_burgher",
+			node_run_id: "nr-burgher-running",
+			required_role: "burgher-delegate",
+			execution_ownership: "provider_backed",
+			state: "running",
+		}];
+		const events: TimelineEvent[] = [{
+			event_id: "evt-burgher-starting",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "node.state_changed",
+			emitted_at: "2026-03-18T11:39:30Z",
+			payload_json: { node_id: "advisor_consultation_burgher", node_run_id: "nr-burgher-running", state: "starting" },
+		}, {
+			event_id: "evt-burgher-invoked",
+			run_event_seq: 2,
+			attempt_seq: 2,
+			event_type: "attempt.progress",
+			reason_code: "provider_invoked",
+			emitted_at: "2026-03-18T11:40:15Z",
+			payload_json: { node_id: "advisor_consultation_burgher", node_run_id: "nr-burgher-running" },
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-burgher-running",
+			node_run_id: "nr-burgher-running",
+			node_id: "advisor_consultation_burgher",
+			attempt: 1,
+			agent_id: "agent-burgher",
+			required_role: "burgher-delegate",
+			execution_mode: "provider_backed",
+			status: "running",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+			progress_at: "2026-03-18T11:40:15Z",
+		}];
+
+		const lookups = buildTimelineLookups(events, nodes, executions);
+		const milestones = synthesizeMilestones(events, nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-advisor_consultation_burgher",
+				status: "running",
+				timestamp: "2026-03-18T11:40:15Z",
+			}),
+		]));
+	});
+
   it("labels review fan-out cap auto-success with the review badge", () => {
     const nodes: RunGraphNode[] = [
       { node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", state: "succeeded" },

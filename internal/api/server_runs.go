@@ -356,7 +356,12 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 	         nr.node_status,
 	         ROW_NUMBER() OVER (
 	           PARTITION BY nr.node_id
-	           ORDER BY nr.attempt DESC, nr.node_run_id DESC
+	           ORDER BY CASE
+	             WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+	             ELSE 1
+	           END ASC,
+	           nr.attempt DESC,
+	           nr.node_run_id DESC
 	         ) AS node_rank
 	  FROM node_runs nr
 	  WHERE nr.run_id = ?
@@ -1029,7 +1034,7 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 		AgentID:       record.AgentID,
 		RequiredRole:  record.RequiredRole,
 		ExecutionMode: string(record.ExecutionMode),
-		Status:        runExecutionStatus(record.State),
+		Status:        runExecutionStatus(record),
 		ActivityAt:    mustParseRFC3339(record.ActivityAt),
 		UpdatedAt:     mustParseRFC3339(record.UpdatedAt),
 	}
@@ -1042,6 +1047,20 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.LastHeartbeatAt.Valid {
 		parsed := mustParseRFC3339(record.LastHeartbeatAt.String)
 		item.LastHeartbeatAt = &parsed
+	}
+	if record.ProgressEventType.Valid {
+		item.ProgressEventType = &record.ProgressEventType.String
+	}
+	if record.ProgressReasonCode.Valid {
+		item.ProgressReasonCode = &record.ProgressReasonCode.String
+	}
+	if record.ProgressAt.Valid {
+		parsed := mustParseRFC3339(record.ProgressAt.String)
+		item.ProgressAt = &parsed
+	}
+	if record.LaunchStartedAt.Valid {
+		parsed := mustParseRFC3339(record.LaunchStartedAt.String)
+		item.LaunchStartedAt = &parsed
 	}
 	if record.StartedAt.Valid {
 		parsed := mustParseRFC3339(record.StartedAt.String)
@@ -1094,9 +1113,15 @@ func buildRunExecutionDetailItem(record executionstore.RunExecutionDetailRecord)
 	return item
 }
 
-func runExecutionStatus(state string) string {
-	switch strings.TrimSpace(state) {
+func runExecutionStatus(record executionstore.RunExecutionRecord) string {
+	if strings.TrimSpace(record.NodeStatus) == "blocked" {
+		return "blocked"
+	}
+	switch strings.TrimSpace(record.State) {
 	case "starting":
+		if runExecutionLaunchObserved(record) {
+			return "running"
+		}
 		return "starting"
 	case "running":
 		return "running"
@@ -1111,6 +1136,13 @@ func runExecutionStatus(state string) string {
 	default:
 		return "queued"
 	}
+}
+
+func runExecutionLaunchObserved(record executionstore.RunExecutionRecord) bool {
+	if record.StartedAt.Valid && strings.TrimSpace(record.StartedAt.String) != "" {
+		return true
+	}
+	return record.ProgressReasonCode.Valid && strings.TrimSpace(record.ProgressReasonCode.String) == "provider_invoked"
 }
 
 func runExecutionSettlementStatus(record executionstore.RunExecutionDetailRecord) string {
@@ -1336,16 +1368,14 @@ func (s *Server) handleGetRunTimeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowDefinitionID string) ([]gen.RunGraphNode, error) {
-	rows, err := s.db.QueryContext(
-		ctx,
-		`WITH latest_node_runs AS (
+	query := fmt.Sprintf(`WITH latest_node_runs AS (
 		  SELECT nr.node_id,
 		         nr.node_run_id,
 		         nr.attempt,
 		         nr.node_status,
 		         ROW_NUMBER() OVER (
 		           PARTITION BY nr.node_id
-		           ORDER BY nr.attempt DESC, nr.node_run_id DESC
+		           ORDER BY %s
 		         ) AS node_rank
 		  FROM node_runs nr
 		  WHERE nr.run_id = ?
@@ -1399,7 +1429,11 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		  ON lfe.node_run_id = lnr.node_run_id
 		 AND lfe.failure_rank = 1
 		WHERE wn.workflow_definition_id = ?
-		ORDER BY wn.node_id ASC`,
+		ORDER BY wn.node_id ASC`, state.VisibleNodeAttemptOrderSQL("nr"))
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		query,
 		runID,
 		runID,
 		runID,

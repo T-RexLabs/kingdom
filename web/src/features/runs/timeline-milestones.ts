@@ -24,6 +24,7 @@ const LOOP_CAP_AUTO_SUCCEEDED_BADGE = "Cap Auto-Succeeded";
 const NOISE_REASON_CODES = new Set(["orchestration_progress"]);
 
 const NODE_LIFECYCLE_EVENT_TYPES = new Set(["node.state_changed"]);
+const RECOVERY_QUEUE_EVENT_TYPES = new Set(["attempt.retry_queued", "attempt.rerun_queued"]);
 
 interface FanOutGroup {
   parentNodeId: string;
@@ -109,11 +110,14 @@ export function buildRawEventLabel(
 
   const name = resolvedNodeId ? nodeLabel(resolvedNodeId) : "";
 
-  if (event.event_type === "node.state_changed") {
-    const state = typeof payload.state === "string" ? payload.state : "";
-    if (state === "ready") {
+	if (event.event_type === "node.state_changed") {
+		const state = typeof payload.state === "string" ? payload.state : "";
+		if (state === "starting") {
+			return { label: `${name || "Node"} launching` };
+		}
+		if (state === "ready") {
 		  return { label: `${name || "Node"} queued` };
-    }
+		}
     const humanState = state ? state.replace(/_/g, " ") : "updated";
 		return { label: `${name || "Node"} ${humanState}` };
   }
@@ -140,15 +144,15 @@ export function buildRawEventLabel(
     return { label: "Run state changed" };
   }
 
-  if (event.event_type === "attempt.started") {
-    const attempt = typeof payload.attempt === "number" ? payload.attempt : 0;
-    const parts: string[] = [];
-    if (attempt > 1) parts.push(`attempt ${attempt}`);
-    return {
-      label: `${name || "Node"} started`,
-      detail: parts.length > 0 ? parts.join(" · ") : undefined,
-    };
-  }
+	if (event.event_type === "attempt.started") {
+		const attempt = typeof payload.attempt === "number" ? payload.attempt : 0;
+		const parts: string[] = [];
+		if (attempt > 1) parts.push(`attempt ${attempt}`);
+		return {
+			label: `${name || "Node"} started`,
+			detail: parts.length > 0 ? parts.join(" · ") : undefined,
+		};
+	}
 
 	if (event.event_type === "attempt.succeeded") {
 		if (resolvedNodeId) {
@@ -268,7 +272,7 @@ export function synthesizeMilestones(
   const nodeEvents = new Map<string, TimelineEvent[]>();
   const runEvents: TimelineEvent[] = [];
   const orphanedAttempts: TimelineEvent[] = [];
-  const suppressedResponseMilestoneEventIDs = buildSuppressedResponseMilestoneEventIDs(events, lookups);
+	const suppressedResponseMilestoneEventIDs = buildSuppressedResponseMilestoneEventIDs(events);
 
   for (const event of events) {
     if (suppressedResponseMilestoneEventIDs.has(event.event_id)) {
@@ -308,14 +312,26 @@ export function synthesizeMilestones(
     const graphNode = lookups.nodeStateMap.get(nodeId);
     const currentNodeRunID = lookups.currentNodeRunIDMap.get(nodeId);
 		const execution = currentNodeRunID ? lookups.executionStateMap.get(currentNodeRunID) : undefined;
-		const sorted = [...selectMilestoneEventsForCurrentLineage(nodeEventList, currentNodeRunID)].sort(compareTimelineEventSequence);
-    const earliest = sorted[0]?.emitted_at ?? execution?.started_at ?? execution?.activity_at ?? "";
-    const latest = sorted[sorted.length - 1]?.emitted_at ?? execution?.activity_at ?? earliest;
 
     const graphState = graphNode?.state ?? "";
+		const visibleLineageState = executionLifecycleStatus(execution)
+			?? latestNodeLifecycleState(nodeEventList, currentNodeRunID)
+			?? graphNodeLifecycleStatus(graphState)
+			?? "neutral";
+		const sorted = [...selectMilestoneEventsForVisibleLineage(nodeEventList, currentNodeRunID, visibleLineageState)].sort(compareTimelineEventSequence);
     const latestSucceededEvent = latestNodeLifecycleEvent(sorted, "attempt.succeeded");
     const latestFailedEvent = latestNodeLifecycleEvent(sorted, "attempt.failed");
-    const effectiveState = executionLifecycleStatus(execution) ?? latestNodeLifecycleState(sorted) ?? graphNodeLifecycleStatus(graphState) ?? "neutral";
+		const effectiveState = executionLifecycleStatus(execution)
+			?? latestNodeLifecycleState(sorted, currentNodeRunID)
+			?? graphNodeLifecycleStatus(graphState)
+			?? "neutral";
+	    const earliest = milestoneStartTimestamp(sorted, execution, effectiveState)
+	      ?? sorted[0]?.emitted_at
+	      ?? execution?.launch_started_at
+	      ?? execution?.started_at
+	      ?? execution?.activity_at
+	      ?? "";
+	    const latest = sorted[sorted.length - 1]?.emitted_at ?? execution?.activity_at ?? earliest;
 
     let status: Milestone["status"];
     let kind: Milestone["kind"];
@@ -338,9 +354,12 @@ export function synthesizeMilestones(
       if (latestSucceededEvent) {
         badge = specialReasonLabel(latestSucceededEvent);
       }
-    } else if (effectiveState === "running") {
-      status = "running";
-      kind = "node_running";
+	} else if (effectiveState === "starting") {
+		status = "starting";
+		kind = "node_running";
+	} else if (effectiveState === "running") {
+		status = "running";
+		kind = "node_running";
     } else if (effectiveState === "ready" || effectiveState === "pending" || effectiveState === "neutral") {
       status = effectiveState;
       kind = "node_queued";
@@ -363,8 +382,12 @@ export function synthesizeMilestones(
 		} else if (kind === "node_completed") {
 		  detailText = "Succeeded";
 		} else if (kind === "node_running") {
-		  const lead = execution?.status === "verifying" ? "Verifying settlement" : "In progress";
-		  detailText = lead;
+			const lead = status === "starting"
+				? "Launching"
+				: execution?.status === "verifying"
+					? "Verifying settlement"
+					: "In progress";
+			detailText = lead;
     } else if (kind === "node_queued") {
 		  const lead = effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
 		  detailText = lead;
@@ -408,11 +431,13 @@ export function synthesizeMilestones(
       processedNodes.add(nodeId);
     }
 
-    const statusCounts = countMilestoneStatuses(childMilestones);
-    const succeeded = statusCounts.succeeded;
+	    const statusCounts = countMilestoneStatuses(childMilestones);
+	    const succeeded = statusCounts.succeeded;
 	    const failed = statusCounts.failed;
-    const running = statusCounts.running;
-    const ready = statusCounts.ready;
+	    const starting = statusCounts.starting;
+	    const running = statusCounts.running;
+	    const active = starting + running;
+	    const ready = statusCounts.ready;
     const pending = statusCounts.pending;
     const blocked = statusCounts.blocked;
     const cancelled = statusCounts.cancelled;
@@ -438,22 +463,28 @@ export function synthesizeMilestones(
 		childMilestones.sort(compareMilestoneDisplaySequence);
 
 	    let status: Milestone["status"];
-    let summaryDetail: string;
+	    let summaryDetail: string;
 	    let badge: string | undefined;
-    if (failed > 0) {
-      status = "failed";
-	      summaryDetail = `${succeeded} of ${total} succeeded, ${failed} failed${running > 0 ? `, ${running} running` : ""}`;
-    } else if (blocked > 0) {
-      status = "blocked";
+	    if (failed > 0) {
+	      status = "failed";
+	      summaryDetail = `${succeeded} of ${total} succeeded, ${failed} failed${active > 0 ? `, ${active} active` : ""}`;
+	    } else if (blocked > 0) {
+	      status = "blocked";
 	      summaryDetail = `${succeeded} of ${total} succeeded, ${blocked} blocked`;
 	    } else if (rework > 0) {
 	      status = "rework";
 	      summaryDetail = `${total - rework} of ${total} completed, ${rework} requested rework`;
-	    } else if (running > 0) {
-	      status = "running";
-	      summaryDetail = `${succeeded} of ${total} succeeded, ${running} running`;
-    } else if (ready > 0) {
-      status = "ready";
+	    } else if (active > 0) {
+	      status = running > 0 ? "running" : "starting";
+	      if (running > 0 && starting > 0) {
+	        summaryDetail = `${succeeded} of ${total} succeeded, ${running} running, ${starting} launching`;
+	      } else if (running > 0) {
+	        summaryDetail = `${succeeded} of ${total} succeeded, ${running} running`;
+	      } else {
+	        summaryDetail = `${succeeded} of ${total} succeeded, ${starting} launching`;
+	      }
+	    } else if (ready > 0) {
+	      status = "ready";
 	      summaryDetail = `${succeeded} of ${total} succeeded, ${ready} queued`;
     } else if (pending > 0) {
       status = "pending";
@@ -621,29 +652,139 @@ function latestNodeLifecycleEvent(events: TimelineEvent[], eventType: string): T
 	return undefined;
 }
 
-function selectMilestoneEventsForCurrentLineage(events: TimelineEvent[], currentNodeRunID?: string): TimelineEvent[] {
+function selectMilestoneEventsForVisibleLineage(events: TimelineEvent[], currentNodeRunID?: string, visibleLineageState?: string): TimelineEvent[] {
 	const trimmedNodeRunID = typeof currentNodeRunID === "string" ? currentNodeRunID.trim() : "";
 	if (trimmedNodeRunID === "") {
 		return events;
 	}
-	return events.filter((event) => eventNodeRunID(event) === trimmedNodeRunID);
+	const lineageEvents = events.filter((event) => eventNodeRunID(event) === trimmedNodeRunID);
+	if ((visibleLineageState ?? "").trim() !== "blocked") {
+		return lineageEvents;
+	}
+	const blockedRunEventSeq = latestBlockedRunEventSeq(lineageEvents);
+	if (blockedRunEventSeq === undefined) {
+		return lineageEvents;
+	}
+	return events.filter((event) => {
+		if (eventNodeRunID(event) === trimmedNodeRunID) {
+			return true;
+		}
+		return RECOVERY_QUEUE_EVENT_TYPES.has(event.event_type) && event.run_event_seq >= blockedRunEventSeq;
+	});
 }
 
-function eventNodeRunID(event: TimelineEvent): string {
-	const nodeRunID = event.payload_json?.node_run_id;
-	return typeof nodeRunID === "string" ? nodeRunID.trim() : "";
-}
-
-function latestNodeLifecycleState(events: TimelineEvent[]): RunStatusTone | undefined {
+function latestBlockedRunEventSeq(events: TimelineEvent[]): number | undefined {
 	for (let index = events.length - 1; index >= 0; index -= 1) {
 		const event = events[index];
 		if (!event) {
+			continue;
+		}
+		if (event.event_type === "attempt.recovered" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
+			return event.run_event_seq;
+		}
+		if (event.event_type === "node.state_changed" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
+			return event.run_event_seq;
+		}
+	}
+	return undefined;
+}
+
+function eventNodeRunID(event: TimelineEvent): string {
+  const nodeRunID = event.payload_json?.node_run_id;
+  return typeof nodeRunID === "string" ? nodeRunID.trim() : "";
+}
+
+function milestoneStartTimestamp(
+	events: TimelineEvent[],
+	execution: RunExecution | undefined,
+	status: RunStatusTone,
+): string | undefined {
+	switch (status) {
+		case "starting":
+			return firstNonEmptyTimestamp(
+				firstNodeStateTimestamp(events, "starting"),
+				execution?.launch_started_at,
+				execution?.started_at,
+				execution?.activity_at,
+			);
+		case "running":
+			return firstNonEmptyTimestamp(
+				firstAttemptEventTimestamp(events, "attempt.started"),
+				firstAttemptProgressReasonTimestamp(events, "provider_invoked"),
+				execution?.started_at,
+				execution?.progress_at,
+				execution?.activity_at,
+			);
+		default:
+			return undefined;
+	}
+}
+
+function firstAttemptProgressReasonTimestamp(events: TimelineEvent[], reasonCode: string): string {
+	for (const event of events) {
+		if (event.event_type !== "attempt.progress") {
+			continue;
+		}
+		if (event.reason_code === reasonCode) {
+			return event.emitted_at;
+		}
+	}
+	return "";
+}
+
+function firstNodeStateTimestamp(events: TimelineEvent[], state: string): string {
+	for (const event of events) {
+		if (event.event_type !== "node.state_changed") {
+			continue;
+		}
+		const eventState = event.payload_json?.state;
+		if (typeof eventState === "string" && eventState.trim() === state) {
+			return event.emitted_at;
+		}
+	}
+	return "";
+}
+
+function firstAttemptEventTimestamp(events: TimelineEvent[], eventType: string): string {
+	for (const event of events) {
+		if (event.event_type === eventType) {
+			return event.emitted_at;
+		}
+	}
+	return "";
+}
+
+function firstNonEmptyTimestamp(...values: Array<string | undefined>): string | undefined {
+	for (const value of values) {
+		if (typeof value === "string" && value.trim() !== "") {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function latestNodeLifecycleState(events: TimelineEvent[], currentNodeRunID?: string): RunStatusTone | undefined {
+	const trimmedNodeRunID = typeof currentNodeRunID === "string" ? currentNodeRunID.trim() : "";
+	for (let index = events.length - 1; index >= 0; index -= 1) {
+		const event = events[index];
+		if (!event) {
+			continue;
+		}
+		const eventNodeRun = eventNodeRunID(event);
+		if (trimmedNodeRunID && eventNodeRun && eventNodeRun !== trimmedNodeRunID) {
 			continue;
 		}
 			switch (event.event_type) {
 				case "attempt.retry_queued":
 				case "attempt.rerun_queued":
 					return "ready";
+				case "attempt.recovered": {
+					const recoveredState = normalizedRunStatusTone(event.payload_json?.state);
+					if (recoveredState === "blocked") {
+						return "blocked";
+					}
+					break;
+				}
 				case "attempt.started":
 					return "running";
 				case "attempt.succeeded":
@@ -675,13 +816,16 @@ function executionLifecycleStatus(execution?: RunExecution): RunStatusTone | und
 	if (isExecutionCompletionWorkPending(execution)) {
 		return "running";
 	}
-	switch (executionDisplayStatus(execution)) {
-		case "queued":
-			return "pending";
-		case "starting":
-		case "running":
-		case "verifying":
-			return "running";
+		switch (executionDisplayStatus(execution)) {
+			case "queued":
+				return "pending";
+			case "starting":
+				return "starting";
+			case "blocked":
+				return "blocked";
+			case "running":
+			case "verifying":
+				return "running";
 		case "succeeded":
 			return "succeeded";
 		case "rework":
@@ -706,6 +850,7 @@ function countMilestoneStatuses(milestones: Milestone[]): Record<RunStatusTone, 
 	const counts: Record<RunStatusTone, number> = {
 		succeeded: 0,
 		failed: 0,
+		starting: 0,
 		running: 0,
 		ready: 0,
 		pending: 0,
@@ -721,13 +866,13 @@ function countMilestoneStatuses(milestones: Milestone[]): Record<RunStatusTone, 
 	return counts;
 }
 
-function buildSuppressedResponseMilestoneEventIDs(events: TimelineEvent[], lookups: TimelineLookups): Set<string> {
+function buildSuppressedResponseMilestoneEventIDs(events: TimelineEvent[]): Set<string> {
 	const terminalAttemptKeys = new Set<string>();
 	for (const event of events) {
 		if (!isTerminalAttemptEventType(event.event_type)) {
 			continue;
 		}
-		for (const key of milestoneSuppressionKeys(event, lookups)) {
+		for (const key of milestoneSuppressionKeys(event)) {
 			terminalAttemptKeys.add(key);
 		}
 	}
@@ -737,7 +882,7 @@ function buildSuppressedResponseMilestoneEventIDs(events: TimelineEvent[], looku
 		if (!isResponseReceivedMailboxEvent(event)) {
 			continue;
 		}
-		if (milestoneSuppressionKeys(event, lookups).some((key) => terminalAttemptKeys.has(key))) {
+		if (milestoneSuppressionKeys(event).some((key) => terminalAttemptKeys.has(key))) {
 			suppressed.add(event.event_id);
 		}
 	}
@@ -755,7 +900,7 @@ function isResponseReceivedMailboxEvent(event: TimelineEvent): boolean {
 	return mailboxCommunicationType(event) === "response_received";
 }
 
-function milestoneSuppressionKeys(event: TimelineEvent, _lookups: TimelineLookups): string[] {
+function milestoneSuppressionKeys(event: TimelineEvent): string[] {
 	const payload = event.payload_json ?? {};
 	const reasonCode = typeof event.reason_code === "string" ? event.reason_code.trim() : "";
 	if (!reasonCode) {
