@@ -423,6 +423,10 @@ func TestExecuteCreateDecreeRequiresGlobalModelWhenInstallModeUsesOpenCode(t *te
 	if !strings.Contains(stderr.String(), "--global-model is required when provider.engine=opencode") {
 		t.Fatalf("expected missing global model message, got %q", stderr.String())
 	}
+	assertContainsAll(t, stderr.String(), "kd create decree --title <title> --text <text> [flags]", "--global-model <provider/model>")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected create decree usage help instead of root help, got %q", stderr.String())
+	}
 }
 
 func TestExecuteRunStartRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testing.T) {
@@ -446,6 +450,42 @@ func TestExecuteRunStartRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testin
 	}
 	if !strings.Contains(stderr.String(), "--global-model is required when provider.engine=opencode") {
 		t.Fatalf("expected missing global model message, got %q", stderr.String())
+	}
+	assertContainsAll(t, stderr.String(), "kd run start --decree-id <id> [flags]", "--global-model <provider/model>")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected run start usage help instead of root help, got %q", stderr.String())
+	}
+}
+
+func TestExecuteCreateDecreeBadFlagShowsSpecificHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "--bogus"})
+
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
+	}
+	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd create decree --title <title> --text <text> [flags]")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected command-specific help, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRunStartBadFlagShowsSpecificHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"run", "start", "--bogus"})
+
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
+	}
+	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd run start --decree-id <id> [flags]")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected command-specific help, got %q", stderr.String())
 	}
 }
 
