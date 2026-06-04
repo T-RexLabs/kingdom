@@ -6,7 +6,6 @@
   </picture>
 </p>
 <p align="center"><strong>Self-hosted orchestration for governed AI work.</strong></p>
-<p align="center">Run the realm on your own hardware. Keep control of your gold.</p>
 
 # Kingdom
 
