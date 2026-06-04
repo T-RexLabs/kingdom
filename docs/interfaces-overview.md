@@ -1,6 +1,8 @@
-# Operator Surfaces
+# Interfaces Overview
 
-This document describes the operator-facing web, CLI, API, health, metrics, and artifact access surfaces that exist today.
+This document gives a human-readable map of Kingdom's main interfaces: the web app, CLI, API, health endpoints, and streaming endpoints.
+
+It is an overview, not the canonical API reference. Route-level API truth lives in `contracts/openapi/openapi.yaml`.
 
 ## Authentication Model
 
@@ -49,6 +51,7 @@ Capabilities:
 - inspect a session transcript
 - submit planner replies
 - regenerate assistant responses
+- generate a session title
 - view and activate variants
 - formalize the current plan into a draft
 
@@ -109,86 +112,46 @@ Capabilities:
 
 The `kd` CLI is the supported installed-mode operator CLI.
 
-### Workspace and Runtime Lifecycle
+Use it for:
 
-- `kd init`
-- `kd clean`
-- `kd summon`
-- `kd summon status`
-- `kd summon stop`
+- local setup and runtime lifecycle
+- decree creation and run control
+- graph and timeline inspection
+- artifact export and approval decisions
 
-### Decree and Run Control
-
-- `kd create decree`
-- `kd run start`
-- `kd run status`
-- `kd graph show`
-- `kd node retry`
-- `kd node rerun-from`
-- `kd timeline follow`
-
-### Artifacts and Approvals
-
-- `kd run artifacts export`
-- `kd approvals list`
-- `kd approvals plan-decide`
-- `kd approvals decide`
-
-See [`docs/cli_kd.md`](cli_kd.md) for the full installed-mode contract.
+Use `kd --help` and `kd help <command>` for the CLI source of truth.
 
 ## API Surfaces
 
+Use this section as a guide to the major API areas, not as a complete route inventory.
+
 ### Health and Identity
 
-- `GET /healthz`
-- `GET /api/v1/health`
-- `GET /api/v1/roles`
-- `GET /api/v1/agents`
-- `GET /api/v1/provider/models`
+- health and runtime health checks
+- roles and agents
+- provider model discovery
 
 ### Planning
 
-- `POST /api/v1/planning-sessions`
-- `GET /api/v1/planning-sessions`
-- `GET /api/v1/planning-sessions/{id}`
-- `PATCH /api/v1/planning-sessions/{id}`
-- `DELETE /api/v1/planning-sessions/{id}`
-- `GET /api/v1/planning-sessions/{id}/messages`
-- `GET /api/v1/planning-sessions/{id}/messages/{messageId}/variants`
-- `PUT /api/v1/planning-sessions/{id}/messages/{messageId}/activate`
-- `POST /api/v1/planning-sessions/{id}/operations`
-- `GET /api/v1/planning-sessions/{id}/plan`
-- `GET /api/v1/planning-operations/{id}`
-- `GET /api/v1/planning-operations/{id}/events`
-- `POST /api/v1/planning-sessions/{id}/context/refresh`
-- `POST /api/v1/planning-sessions/{id}/generate-title`
+- planning sessions
+- planning messages and variants
+- planning operations and their event streams
+- plan drafts and context refresh
+- background title generation
 
 ### Decrees, Workflows, and Runs
 
-- `POST /api/v1/decrees`
-- `GET /api/v1/decrees/{id}`
-- `POST /api/v1/workflows/publish`
-- `POST /api/v1/runs`
-- `GET /api/v1/runs`
-- `GET /api/v1/runs/{id}`
-- `POST /api/v1/runs/{id}/cancel`
-- `GET /api/v1/runs/{id}/plan`
-- `GET /api/v1/runs/{id}/graph`
-- `GET /api/v1/runs/{id}/agents`
-- `GET /api/v1/runs/{id}/timeline`
-- `POST /api/v1/runs/{id}/nodes/{nodeKey}/retry`
-- `POST /api/v1/runs/{id}/rerun-from/{nodeKey}`
-- `POST /api/v1/runs/{id}/plan-approval`
-- `POST /api/v1/runs/{id}/final-approval`
-- `GET /api/v1/runs/{id}/governance-decisions`
-- `GET /api/v1/runs/{id}/executions`
-- `GET /api/v1/runs/{id}/executions/{attemptId}`
+- decree creation
+- workflow publishing
+- run creation, inspection, graph, timeline, and cancellation
+- retry and rerun-from controls
+- plan and final approval decisions
+- durable execution records
 
 ### Mailbox
 
-- `GET /api/v1/runs/{id}/mailbox/messages`
-- `GET /api/v1/runs/{id}/mailbox/messages/{messageId}`
-- `POST /api/v1/runs/{id}/mailbox/messages/{messageId}/read`
+- run mailbox listing and detail
+- read markers for mailbox messages
 
 Mailbox semantics:
 
@@ -197,20 +160,15 @@ Mailbox semantics:
 
 ### Artifacts and Preview
 
-- `GET /api/v1/runs/{id}/artifacts`
-- `GET /api/v1/runs/{id}/artifacts/archive`
-- `GET /api/v1/artifacts/{id}`
-- `GET /api/v1/artifacts/{id}/content`
-- `POST /api/v1/artifacts/{id}/preview-session`
-- `GET /api/v1/preview/{token}`
-- `GET /api/v1/preview/{token}/{assetPath...}`
+- artifact listing and download
+- archive export
+- preview-session creation and preview serving
 
 ### Metrics
 
-- `GET /api/v1/metrics/runtime`
-- `GET /api/v1/dashboard/snapshot`
-- `GET /api/v1/realm-analytics/snapshot`
-- `GET /api/v1/realm-analytics/execution-detail`
+- runtime metrics
+- dashboard snapshot data
+- realm analytics snapshot and execution detail
 
 Notes:
 
@@ -222,9 +180,9 @@ Notes:
 
 ### Run Events
 
-Endpoint:
+Endpoint family:
 
-- `GET /api/v1/events/stream`
+- run event streaming
 
 Use this for:
 
@@ -234,9 +192,9 @@ Use this for:
 
 ### Planner Events
 
-Endpoint:
+Endpoint family:
 
-- `GET /api/v1/planning-operations/{id}/events`
+- planning operation event streaming
 
 Use this for:
 
@@ -271,6 +229,4 @@ curl -H 'X-Actor-Id: allfather' -H 'X-Role-Id: king' \
 
 ## Related Docs
 
-- [`docs/runtime_flow.md`](runtime_flow.md)
-- [`docs/cli_kd.md`](cli_kd.md)
-- [`docs/runbooks/planner_operations.md`](runbooks/planner_operations.md)
+- [`docs/how-runs-work.md`](how-runs-work.md)

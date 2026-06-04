@@ -1,14 +1,11 @@
-# Kingdom Orchestrator Architecture RFC
+# System Architecture
+## What This Doc Is For
 
-Status: accepted
-Date: 2026-04-30
-Owners: core team (you + assistant)
+This is the main architecture document for Kingdom.
 
-## Objective
+It describes the accepted current-state architecture as it exists in this repository today.
 
-Describe the accepted current-state architecture for Kingdom as it is implemented in this repository today.
-
-This RFC is intentionally not aspirational. If the code does not do it, this document should not claim that it does.
+It is intentionally not aspirational. If the code does not do it, this document should not claim that it does.
 
 ## Product Summary
 
@@ -218,9 +215,3 @@ Important clarifications:
 - DB backends beyond SQLite remain deferred.
 - The web UI does not yet expose a dedicated artifact browser; artifact access is currently CLI/API-first.
 - The API supports planning context refresh, but the web planner does not yet expose a dedicated refresh control.
-
-## Acceptance and Sign-off
-
-- Accepted by: core team (you + assistant)
-- Sign-off date: 2026-04-30
-- Condition: tracked docs and implementation should stay aligned with this RFC.

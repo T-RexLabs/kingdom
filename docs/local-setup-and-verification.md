@@ -1,6 +1,6 @@
-# Bootstrap and Verification
+# Local Setup and Verification
 
-This repository uses the root `Makefile` as the shared developer entrypoint.
+This document explains how to install Kingdom locally, verify it, and run a realistic local development loop.
 
 ## Toolchain Setup
 

@@ -1,6 +1,6 @@
-# Runtime Flow
+# How Runs Work
 
-This document describes the end-to-end flow Kingdom follows today, from planning through decree closure.
+This document explains how work moves through Kingdom today, from optional planning through decree closure.
 
 ## Two Separate Lifecycles
 
@@ -289,7 +289,5 @@ Artifact existence does not decide whether the run succeeds.
 
 ## Related Docs
 
-- [`docs/architecture_rfc.md`](architecture_rfc.md)
-- [`docs/operator_surfaces.md`](operator_surfaces.md)
-- [`docs/opencode_provider_contract.md`](opencode_provider_contract.md)
-- [`docs/runbooks/planner_operations.md`](runbooks/planner_operations.md)
+- [`docs/system-architecture.md`](system-architecture.md)
+- [`docs/interfaces-overview.md`](interfaces-overview.md)

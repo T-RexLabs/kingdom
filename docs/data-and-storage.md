@@ -1,6 +1,8 @@
-# SQLite Storage Notes
+# Data and Storage
 
-The MVP control plane uses SQLite with explicit startup pragmas.
+This document explains what Kingdom stores durably and how that storage is used.
+
+The current control plane uses SQLite with explicit startup pragmas.
 
 ## Required Pragmas
 

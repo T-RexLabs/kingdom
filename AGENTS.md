@@ -2,7 +2,7 @@
 
 ### Source of truth and intent
 
-- `docs/architecture_rfc.md`: accepted architecture, invariants, and design boundaries.
+- `docs/system-architecture.md`: accepted architecture, invariants, and design boundaries.
 
 ### Operations and evidence
 
@@ -10,12 +10,12 @@
 
 ## Session Start Checklist
 
-1. Read `docs/architecture_rfc.md` for constraints and invariants.
+1. Read `docs/system-architecture.md` for constraints and invariants.
 2. Review current code/test state (`git status`, targeted tests) before implementation.
 
 ## Update Matrix (Where changes go)
 
-- Architecture or invariant changes: update `docs/architecture_rfc.md`.
+- Architecture or invariant changes: update `docs/system-architecture.md`.
 - Runtime/operator guidance changes: update `README.md` and relevant runbooks in `docs/`.
 - Verification evidence: include command output and artifacts in pull request notes and `kd-sandbox/` directories.
 
@@ -32,7 +32,7 @@
 
 ## Execution Rules
 
-- Preserve the accepted architecture and invariants from `docs/architecture_rfc.md`.
+- Preserve the accepted architecture and invariants from `docs/system-architecture.md`.
 - For correctness bugs, reproduce with a failing test first when practical.
 - Prefer fixing problems in the canonical layer instead of patching around the edges.
 - Delete unsupported or dead surfaces instead of keeping them around.

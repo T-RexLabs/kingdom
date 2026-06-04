@@ -141,7 +141,7 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 		PlanningContextSnapshotID: "pcs_1",
 		PlanningSessionID:         "ps_flow",
 		SummaryMarkdown:           "Scanned 2 files",
-		IncludedFilesJSON:         `["README.md","docs/architecture_rfc.md"]`,
+		IncludedFilesJSON:         `["README.md","docs/system-architecture.md"]`,
 		ExcludedFilesJSON:         `[{"path":".env","reason":"secret"}]`,
 		CreatedAt:                 "2026-04-21T16:14:00Z",
 	})
