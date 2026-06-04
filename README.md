@@ -148,7 +148,7 @@ Important boundaries:
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
 
-More detail lives in [`docs/runtime_flow.md`](docs/runtime_flow.md) and [`docs/architecture_rfc.md`](docs/architecture_rfc.md).
+More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 
 ## Cast of the Realm
 
@@ -320,7 +320,7 @@ When the migration baseline changes, `kd clean` followed by `kd init` is the sup
 | `kd timeline follow` | Follow run events over SSE |
 | `kd run artifacts export` | Export run artifacts |
 
-For deeper CLI detail, use [`docs/cli_kd.md`](docs/cli_kd.md).
+Use `kd --help` and `kd help <command>` for CLI usage details.
 
 ## Repository Map
 
@@ -343,11 +343,11 @@ For deeper CLI detail, use [`docs/cli_kd.md`](docs/cli_kd.md).
 
 Start here when you want more detail:
 
-- [`docs/architecture_rfc.md`](docs/architecture_rfc.md): accepted architecture and invariants
-- [`docs/bootstrap.md`](docs/bootstrap.md): local setup and verification workflow
-- [`docs/cli_kd.md`](docs/cli_kd.md): installed-mode CLI reference
-- [`docs/operator_surfaces.md`](docs/operator_surfaces.md): UI, API, health, and metrics surfaces
-- [`docs/opencode_provider_contract.md`](docs/opencode_provider_contract.md): provider integration contract
+- [`docs/README.md`](docs/README.md): docs map and source-of-truth guide
+- [`docs/system-architecture.md`](docs/system-architecture.md): accepted architecture and invariants
+- [`docs/local-setup-and-verification.md`](docs/local-setup-and-verification.md): local setup and verification workflow
+- `kd --help`: installed-mode CLI reference
+- [`docs/interfaces-overview.md`](docs/interfaces-overview.md): UI, CLI, API, health, and metrics overview
 
 ## Troubleshooting
 

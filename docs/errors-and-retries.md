@@ -1,4 +1,6 @@
-# Error Taxonomy and Retry Matrix (v1)
+# Errors and Retries
+
+This document explains the main runtime error categories and how retry policy treats them.
 
 Source references:
 
