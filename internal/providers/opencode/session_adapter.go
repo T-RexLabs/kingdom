@@ -816,6 +816,9 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	stderr := startedRun.stderr
 	startAt = time.Now().UTC()
 	a.setInFlight(req.AttemptID, cmd)
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
 	diagnostics.ProcessStartedAt = startAt.Format(time.RFC3339)
 	execDiag.CmdStartedAt = diagnostics.ProcessStartedAt
 

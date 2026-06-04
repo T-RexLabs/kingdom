@@ -196,11 +196,8 @@ func (o *orchestrationLoop) canAdvanceToKingDecision(ctx context.Context, runID 
 
 	for _, nodeID := range requiredNodeIDs {
 		var status sql.NullString
-		err := o.db.QueryRowContext(ctx,
-			`SELECT node_status FROM node_runs WHERE run_id = ? AND node_id = ? ORDER BY attempt DESC LIMIT 1`,
-			runID,
-			nodeID,
-		).Scan(&status)
+		query := fmt.Sprintf(`SELECT node_status FROM node_runs WHERE run_id = ? AND node_id = ? ORDER BY %s LIMIT 1`, state.CanonicalNodeAttemptOrderSQL("node_runs"))
+		err := o.db.QueryRowContext(ctx, query, runID, nodeID).Scan(&status)
 		if err != nil || !status.Valid || status.String != "succeeded" {
 			return false
 		}

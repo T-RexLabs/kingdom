@@ -23,6 +23,7 @@ import (
 )
 
 const DefaultDispatchInterval = 2 * time.Second
+const defaultCompletionProjectionInterval = 250 * time.Millisecond
 const instructionSectionSeparator = "----"
 
 var nonAlphaNumPattern = sync.OnceValue(func() *regexp.Regexp {
@@ -39,38 +40,40 @@ func isImplementationRole(roleID string) bool {
 }
 
 type orchestrationLoop struct {
-	db                  *sql.DB
-	transition          *state.TransitionService
-	registry            *state.AgentRegistry
-	mailbox             *state.MailboxStore
-	delegation          *state.DelegationPolicyEngine
-	scheduler           *workflow.Scheduler
-	sessions            *state.SessionManager
-	events              *state.AttemptEventIngestor
-	adapter             opencode.Adapter
-	workspace           *workspace.Manager
-	validator           *state.WorkerOutputValidator
-	tokenUsage          *state.TokenUsageStore
-	planningOutputs     *state.RunPlanningOutputStore
-	executionStore      *executionstore.Store
-	nodeTimeouts        map[string]time.Duration
-	cancelGrace         time.Duration
-	cancelForce         time.Duration
-	yoloRoot            string
-	publishMode         string
-	roleComm            rolecomm.Policy
-	providerPolicy      providerpolicy.Policy
-	governanceMode      string
-	autonomousApprovals bool
-	runWorktrees        *workspace.RunWorktreeStore
-	worktreeRetention   time.Duration
-	gitRunner           gitCommandRunner
-	now                 func() time.Time
-	sleep               func(time.Duration)
-	execMu              sync.Mutex
-	inflightExec        map[string]struct{}
-	asyncDrain          *executionDrainTracker
-	closeMode           *runtimeCloseMode
+	db                    *sql.DB
+	transition            *state.TransitionService
+	registry              *state.AgentRegistry
+	mailbox               *state.MailboxStore
+	delegation            *state.DelegationPolicyEngine
+	scheduler             *workflow.Scheduler
+	sessions              *state.SessionManager
+	events                *state.AttemptEventIngestor
+	adapter               opencode.Adapter
+	workspace             *workspace.Manager
+	validator             *state.WorkerOutputValidator
+	tokenUsage            *state.TokenUsageStore
+	planningOutputs       *state.RunPlanningOutputStore
+	executionStore        *executionstore.Store
+	nodeTimeouts          map[string]time.Duration
+	cancelGrace           time.Duration
+	cancelForce           time.Duration
+	yoloRoot              string
+	publishMode           string
+	roleComm              rolecomm.Policy
+	providerPolicy        providerpolicy.Policy
+	governanceMode        string
+	autonomousApprovals   bool
+	runWorktrees          *workspace.RunWorktreeStore
+	worktreeRetention     time.Duration
+	gitRunner             gitCommandRunner
+	now                   func() time.Time
+	sleep                 func(time.Duration)
+	execMu                sync.Mutex
+	eventSeqMu            sync.Mutex
+	inflightExec          map[string]struct{}
+	asyncDrain            *executionDrainTracker
+	notifyCompletionReady func()
+	closeMode             *runtimeCloseMode
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {
@@ -152,6 +155,7 @@ type asyncExecutionResult struct {
 	providerSessionID               string
 	providerInvocationID            string
 	providerInvocationAt            string
+	launchObservedAt                string
 	completionCapability            string
 	completionReceiptDir            string
 	completionReceiptEvidenceID     string
@@ -167,6 +171,7 @@ type asyncExecutionResult struct {
 	outputText                      string
 	tokens                          opencode.TokenUsage
 	outcome                         opencode.ExecutionOutcome
+	launchObserved                  bool
 	suppressEmptyOutputRetry        bool
 	err                             error
 }
@@ -287,10 +292,6 @@ func (o *orchestrationLoop) Tick(ctx context.Context) error {
 	if _, err := o.drainAttemptCancelOutbox(ctx); err != nil {
 		return err
 	}
-
-	if _, err := o.drainExecutionOutbox(ctx); err != nil {
-		return err
-	}
 	if err := o.scheduleRunWorktreeCleanup(ctx); err != nil {
 		return err
 	}
@@ -308,11 +309,6 @@ func (o *orchestrationLoop) Tick(ctx context.Context) error {
 			return fmt.Errorf("process run %q: %w", run.RunID, err)
 		}
 	}
-
-	if _, err := o.drainExecutionOutbox(ctx); err != nil {
-		return err
-	}
-
 	return nil
 }
 
@@ -751,6 +747,19 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 			FROM transitions t
 			WHERE t.run_id = ?
 			  AND t.entity_type = 'node'
+		), canonical_attempts AS (
+			SELECT nr.node_run_id,
+			       ROW_NUMBER() OVER (
+			         PARTITION BY nr.node_id
+			         ORDER BY CASE
+			           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+			           ELSE 1
+			         END ASC,
+			         nr.attempt DESC,
+			         nr.node_run_id DESC
+			       ) AS canonical_rank
+			FROM node_runs nr
+			WHERE nr.run_id = ?
 		)
 		SELECT nr.node_run_id, nr.node_id, nr.attempt, nr.wave, nr.node_status,
 		        COALESCE(lnt.reason_code, '') AS transition_reason_code,
@@ -762,12 +771,7 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 		        COALESCE(ae.provider_timeout_ms, 0) AS provider_timeout_ms,
 		        COALESCE(ae.session_ref, '') AS session_ref
 		 FROM node_runs nr
-		 JOIN (
-		 	SELECT node_id, MAX(attempt) AS latest_attempt
-		 	FROM node_runs
-		 	WHERE run_id = ?
-		 	GROUP BY node_id
-		 ) latest ON latest.node_id = nr.node_id AND latest.latest_attempt = nr.attempt
+		 JOIN canonical_attempts latest ON latest.node_run_id = nr.node_run_id AND latest.canonical_rank = 1
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = nr.run_id || ':' || nr.node_id || ':' || nr.attempt
 		 LEFT JOIN latest_node_transitions lnt ON lnt.node_run_id = nr.node_run_id AND lnt.rn = 1
 		 WHERE nr.run_id = ?`,

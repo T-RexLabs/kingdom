@@ -27,19 +27,24 @@ const ZOOM_MAX = 4;
 /** Step multiplier per zoom-button click (e.g. 1.4× in / out). */
 const ZOOM_STEP = 1.4;
 
-const STATUS_LEGEND_ORDER: Array<keyof typeof RUN_STATUS_HEX> = [
-  "succeeded",
-  "failed",
-  "running",
-  "pending",
-  "cancelled",
+const STATUS_LEGEND_ORDER: NodeState[] = [
+	"pending",
+	"ready",
+	"starting",
+	"running",
+	"blocked",
+	"succeeded",
+	"failed",
+	"cancelled",
+	"skipped",
 ];
 
 /** Human-readable labels for the status legend. */
 const STATUS_LABELS: Record<string, string> = {
   succeeded: "Succeeded",
-  failed: "Failed",
-  running: "Running",
+	failed: "Failed",
+	starting: "Launching",
+	running: "Running",
   pending: "Pending",
   cancelled: "Cancelled",
   ready: "Ready",
@@ -516,12 +521,12 @@ function renderDagNode(
     .attr("aria-pressed", "false")
     .style("cursor", "pointer");
 
-  const statusColor = RUN_STATUS_HEX[node.state as keyof typeof RUN_STATUS_HEX] ?? RUN_DETAIL_NEUTRAL_HEX.subtle;
-  const roleColor = RUN_ROLE_ACCENT_HEX[node.role] ?? RUN_DETAIL_NEUTRAL_HEX.subtle;
-  const semantics = nodeExecutionSemantics(node.ownership, node.role);
-  const isRunning = node.state === "running";
-  const isFailed = node.state === "failed";
-  const isSkipped = node.state === "skipped";
+	const statusColor = RUN_STATUS_HEX[node.state as keyof typeof RUN_STATUS_HEX] ?? RUN_DETAIL_NEUTRAL_HEX.subtle;
+	const roleColor = RUN_ROLE_ACCENT_HEX[node.role] ?? RUN_DETAIL_NEUTRAL_HEX.subtle;
+	const semantics = nodeExecutionSemantics(node.ownership, node.role);
+	const isActive = node.state === "starting" || node.state === "running";
+	const isFailed = node.state === "failed";
+	const isSkipped = node.state === "skipped";
 
   const bgRect = nodeG
     .selectAll<SVGRectElement, NodeLayout>('rect[data-part="bg"]')
@@ -531,19 +536,19 @@ function renderDagNode(
     .attr("x", node.x)
     .attr("y", node.y)
     .attr("width", NODE_WIDTH)
-    .attr("height", NODE_HEIGHT)
-    .attr("rx", 6)
-    .attr("ry", 6)
-    .attr("fill", RUN_DETAIL_NEUTRAL_HEX.surface)
-    .attr("stroke", statusColor)
-    .attr("stroke-width", isFailed ? 2 : isRunning ? 2 : 1)
-    .attr("opacity", isSkipped ? 0.5 : 1)
-    .classed("dag-node-failed-border", isFailed)
-    .classed("animate-glow-pulse", isRunning);
+		.attr("height", NODE_HEIGHT)
+		.attr("rx", 6)
+		.attr("ry", 6)
+		.attr("fill", RUN_DETAIL_NEUTRAL_HEX.surface)
+		.attr("stroke", statusColor)
+		.attr("stroke-width", isFailed ? 2 : isActive ? 2 : 1)
+		.attr("opacity", isSkipped ? 0.5 : 1)
+		.classed("dag-node-failed-border", isFailed)
+		.classed("animate-glow-pulse", isActive);
 
-  if (isRunning) {
-    bgRect.style("--glow-color", roleColor);
-  }
+	if (isActive) {
+		bgRect.style("--glow-color", roleColor);
+	}
 
   nodeG
     .selectAll<SVGRectElement, NodeLayout>('rect[data-part="role-stripe"]')
@@ -595,9 +600,9 @@ function renderDagNode(
     .attr("stroke-linejoin", "round")
     .attr("opacity", isSkipped ? 0.5 : 1);
 
-  if (isRunning) {
-    iconG.classed("animate-glow-pulse", true).style("--glow-color", roleColor);
-  } else {
+	if (isActive) {
+		iconG.classed("animate-glow-pulse", true).style("--glow-color", roleColor);
+	} else {
     iconG.classed("animate-glow-pulse", false).style("--glow-color", null);
   }
 
@@ -940,7 +945,7 @@ export function DAGVisualization({ graph }: { graph: RunGraphResponse }) {
     <div data-testid="dag-visualization-root" className="flex h-full min-h-0 w-full flex-col">
       {/* SVG container */}
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#0a0e17]">
-        <DAGLegend />
+        <DAGLegend statuses={legendStatusesForNodes(graph.nodes)} />
         <svg
           ref={svgRef}
           className="h-full w-full"
@@ -982,7 +987,12 @@ export function DAGVisualization({ graph }: { graph: RunGraphResponse }) {
   );
 }
 
-function DAGLegend() {
+function legendStatusesForNodes(nodes: RunGraphNode[]): NodeState[] {
+	const present = new Set(nodes.map((node) => node.state));
+	return STATUS_LEGEND_ORDER.filter((status) => present.has(status));
+}
+
+function DAGLegend({ statuses }: { statuses: NodeState[] }) {
   return (
     <div
       data-testid="dag-legend"
@@ -990,7 +1000,7 @@ function DAGLegend() {
       aria-label="DAG status legend"
     >
       <div className="space-y-1 sm:space-y-2">
-        {STATUS_LEGEND_ORDER.map((status) => (
+				{statuses.map((status) => (
           <div key={status} className="flex items-center gap-2 text-[11px] font-medium leading-none text-foreground sm:gap-3 sm:text-sm">
             <span
               className="h-1.5 w-1.5 shrink-0 rounded-full sm:h-2.5 sm:w-2.5"

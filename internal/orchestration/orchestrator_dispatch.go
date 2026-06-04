@@ -18,6 +18,9 @@ import (
 )
 
 const workspaceReleaseTimeout = 10 * time.Second
+const launchObservationTimeout = 5 * time.Second
+
+var launchObservationRetrySchedule = []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
 func (o *orchestrationLoop) dispatchReadyNodes(ctx context.Context, run runSnapshot, nodes []nodeDefinition, latest map[string]nodeAttempt, now string) error {
 	nodeByID := make(map[string]nodeDefinition, len(nodes))
@@ -183,34 +186,18 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	if payloadErr != nil {
 		return fmt.Errorf("marshal execution start payload: %w", payloadErr)
 	}
+	startingPayloadRaw, payloadErr := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "orchestration_progress", map[string]any{
+		"state":                    "starting",
+		"execution_mode":           string(executionSpec.Mode),
+		"resolved_model":           resolvedModel,
+		"resolved_thinking_effort": resolvedVariant,
+		"resolution_source":        modelSource,
+	})
+	if payloadErr != nil {
+		return fmt.Errorf("marshal execution starting payload: %w", payloadErr)
+	}
 	if executionSpec.Mode == executionstore.ExecutionModeRuntimeOwned && o.executionStore == nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "queue runtime-owned execution", fmt.Errorf("execution store is required for runtime-owned execution"), now)
-	}
-
-	runningSeq := o.nextEventSeq(ctx, attemptID)
-	if err := o.transition.RecordExecutionStart(ctx, state.ExecutionStartRecordRequest{Transition: state.TransitionRequest{
-		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
-		RunID:           run.RunID,
-		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
-		Entity:          state.EntityTypeNode,
-		FromState:       "ready",
-		ToState:         "running",
-		ActorID:         "runtime_orchestrator",
-		RoleID:          node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "orchestration_progress",
-		ReasonText:      "dispatch node attempt",
-		CorrelationID:   "corr_orch_" + run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_running", run.RunID, attempt.NodeRunID),
-		OccurredAt:      now,
-		AttemptID:       attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.started",
-		EventSeq:        runningSeq,
-		PayloadJSON:     string(startPayloadRaw),
-	}}); err != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node running", err, now)
 	}
 
 	if o.registry != nil {
@@ -225,6 +212,10 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	}
 
 	if executionSpec.Mode == executionstore.ExecutionModeRuntimeOwned {
+		if err := o.recordExecutionStart(ctx, run, node, attempt, attemptID, "execution started", startPayloadRaw, now); err != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node running", err, now)
+		}
+		attempt.NodeStatus = "running"
 		responseText, responseErr := o.runtimeOwnedNodeResponse(ctx, run, node, attempt)
 		if responseErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve runtime-owned response", responseErr, now)
@@ -307,6 +298,10 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		DelegatorScoped:   scopedDelegatorInstruction,
 		InstructionFull:   providerOutputPrompt,
 	})
+	if err := o.recordExecutionPreparation(ctx, run, node, attempt, attemptID, "execution launch prepared", startingPayloadRaw, now); err != nil {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node starting", err, now)
+	}
+	attempt.NodeStatus = "starting"
 
 	o.startAsyncExecution(ctx, asyncExecutionResult{
 		run:                  run,
@@ -330,6 +325,62 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	cleanupWorkspace = false
 
 	return nil
+}
+
+func (o *orchestrationLoop) recordExecutionPreparation(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, reasonText, payloadRaw, occurredAt string) error {
+	if o == nil || o.transition == nil {
+		return nil
+	}
+	return o.transition.RecordExecutionStart(ctx, state.ExecutionStartRecordRequest{Transition: state.TransitionRequest{
+		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_starting", run.RunID, attempt.NodeID, attempt.Attempt),
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_starting", run.RunID, attempt.NodeID, attempt.Attempt),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		Entity:          state.EntityTypeNode,
+		FromState:       "ready",
+		ToState:         "starting",
+		ActorID:         "runtime_orchestrator",
+		RoleID:          node.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "orchestration_progress",
+		ReasonText:      strings.TrimSpace(reasonText),
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_starting", run.RunID, attempt.NodeRunID),
+		OccurredAt:      occurredAt,
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "node.state_changed",
+		EventSeq:        o.nextEventSeq(ctx, attemptID),
+		PayloadJSON:     string(payloadRaw),
+	}})
+}
+
+func (o *orchestrationLoop) recordExecutionStart(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, reasonText, payloadRaw, occurredAt string) error {
+	if o == nil || o.transition == nil {
+		return nil
+	}
+	return o.transition.RecordExecutionStart(ctx, state.ExecutionStartRecordRequest{Transition: state.TransitionRequest{
+		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		Entity:          state.EntityTypeNode,
+		FromState:       "ready",
+		ToState:         "running",
+		ActorID:         "runtime_orchestrator",
+		RoleID:          node.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "orchestration_progress",
+		ReasonText:      strings.TrimSpace(reasonText),
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_running", run.RunID, attempt.NodeRunID),
+		OccurredAt:      occurredAt,
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.started",
+		EventSeq:        o.nextEventSeq(ctx, attemptID),
+		PayloadJSON:     string(payloadRaw),
+	}})
 }
 
 func (o *orchestrationLoop) maybeAutoSucceedLoopCappedReadyNode(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, now string) (bool, error) {
@@ -439,29 +490,20 @@ func (o *orchestrationLoop) maybeAutoSucceedLoopCappedReadyNode(ctx context.Cont
 	if err := o.transition.RecordLoopCapAutoSuccess(ctx, request); err != nil {
 		var conflict *state.StateConflictError
 		if errors.As(err, &conflict) {
-			if err := o.completeLoopCapAutoSuccessProjectionAfterConflict(ctx, request, result, now); err != nil {
+			if err := o.completeLoopCapAutoSuccessProjectionAfterConflict(ctx, request); err != nil {
 				return true, err
 			}
 			return true, nil
 		}
 		return false, err
 	}
-	if o.executionStore == nil {
-		if o.db == nil {
-			return true, fmt.Errorf("execution store is required for loop-cap auto-success projection handoff")
-		}
-		o.executionStore = executionstore.New(o.db)
-	}
-	if err := o.completeExecution(ctx, result); err != nil {
-		return true, err
-	}
-	if err := o.executionStore.MarkOutboxPublished(ctx, result.outboxID, now); err != nil {
-		return true, err
+	if o.notifyCompletionReady != nil {
+		o.notifyCompletionReady()
 	}
 	return true, nil
 }
 
-func (o *orchestrationLoop) completeLoopCapAutoSuccessProjectionAfterConflict(ctx context.Context, request state.LoopCapAutoSuccessRecordRequest, result asyncExecutionResult, now string) error {
+func (o *orchestrationLoop) completeLoopCapAutoSuccessProjectionAfterConflict(ctx context.Context, request state.LoopCapAutoSuccessRecordRequest) error {
 	projectionRequired, err := o.transition.RecoverLoopCapAutoSuccessConflict(ctx, request)
 	if err != nil {
 		return err
@@ -469,16 +511,10 @@ func (o *orchestrationLoop) completeLoopCapAutoSuccessProjectionAfterConflict(ct
 	if !projectionRequired {
 		return nil
 	}
-	if o.executionStore == nil {
-		if o.db == nil {
-			return fmt.Errorf("execution store is required for loop-cap auto-success conflict recovery")
-		}
-		o.executionStore = executionstore.New(o.db)
+	if o.notifyCompletionReady != nil {
+		o.notifyCompletionReady()
 	}
-	if err := o.completeExecution(ctx, result); err != nil {
-		return err
-	}
-	return o.executionStore.MarkOutboxPublished(ctx, result.outboxID, now)
+	return nil
 }
 
 func loopCapAutoSuccessResponse(nodeClass string) string {
@@ -499,11 +535,9 @@ func (o *orchestrationLoop) commitRuntimeOwnedCompletion(ctx context.Context, jo
 	if o == nil || o.executionStore == nil {
 		return nil
 	}
-	queueCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-	defer cancel()
-	if err := o.commitExecutionCompletion(queueCtx, job); err != nil {
+	if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
 		now := o.now().UTC().Format(time.RFC3339)
-		o.emitCompletionLifecycleObservation(context.WithoutCancel(queueCtx), job, "exec_outbox_enqueue_failed", now, map[string]any{"error": err.Error()})
+		o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", now, map[string]any{"error": err.Error()})
 		slog.Warn("failed to queue runtime-owned execution completion outbox", "attempt_id", job.attemptID, "error", err)
 		return o.failRuntimeOwnedCompletionHandoff(ctx, job, err, now)
 	}
@@ -519,16 +553,6 @@ func (o *orchestrationLoop) failRuntimeOwnedCompletionHandoff(ctx context.Contex
 	}
 	cleanupCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
-	if o.registry != nil && strings.TrimSpace(job.attempt.AgentID) != "" {
-		if err := o.registry.UpdateAgentStatus(cleanupCtx, state.UpdateAgentStatusRequest{
-			AgentID:    job.attempt.AgentID,
-			FromStatus: state.AgentStatusBusy,
-			ToStatus:   state.AgentStatusIdle,
-			UpdatedAt:  now,
-		}); err != nil {
-			slog.Warn("failed to transition agent to idle after runtime-owned handoff failure", "agent_id", job.attempt.AgentID, "error", err)
-		}
-	}
 	payloadRaw, err := marshalAsyncExecutionAttemptEventPayload(job, "internal_error", map[string]any{
 		"error": cause.Error(),
 		"step":  "runtime_owned_completion_handoff",
@@ -565,6 +589,11 @@ func (o *orchestrationLoop) failRuntimeOwnedCompletionHandoff(ctx context.Contex
 		}
 		return err
 	}
+	if o.registry != nil && strings.TrimSpace(job.attempt.AgentID) != "" {
+		if err := o.registry.SyncOperationalStatus(cleanupCtx, job.attempt.AgentID, now); err != nil {
+			slog.Warn("failed to sync agent operational status after runtime-owned handoff failure", "agent_id", job.attempt.AgentID, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -585,13 +614,17 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 			slog.Warn("failed to close session lease after setup failure", "session_id", sessionID, "error", closeErr)
 		}
 	}
+	fromState := strings.TrimSpace(attempt.NodeStatus)
+	if fromState == "" {
+		fromState = "ready"
+	}
 	return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
 		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_setup_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_setup_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		RunID:           run.RunID,
 		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
 		Entity:          state.EntityTypeNode,
-		FromState:       "ready",
+		FromState:       fromState,
 		ToState:         "failed",
 		ActorID:         "runtime_orchestrator",
 		RoleID:          node.RequiredRole,
@@ -617,8 +650,18 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 	go func() {
 		defer o.clearExecutionInflight(job.attemptID)
 
-		o.emitProviderInvokedEvent(ctx, job)
 		workspaceConfigDir := bootstrapassets.ManagedOpenCodeRoot(job.workspacePath)
+		launchObserved := false
+		launchObservedAt := ""
+		startPayloadRaw, startPayloadErr := marshalAsyncExecutionAttemptEventPayload(job, "orchestration_progress", map[string]any{
+			"execution_mode":           string(job.attempt.ExecutionMode),
+			"resolved_model":           strings.TrimSpace(job.model),
+			"resolved_thinking_effort": strings.TrimSpace(job.variant),
+		})
+		if startPayloadErr != nil {
+			slog.Warn("failed to marshal provider execution start payload", "attempt_id", job.attemptID, "error", startPayloadErr)
+			startPayloadRaw = "{}"
+		}
 		response, execErr := o.adapter.Execute(ctx, opencode.ExecuteRequest{
 			SessionID:                 job.sessionID,
 			AttemptID:                 job.attemptID,
@@ -636,6 +679,11 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			CompletionProtocolVersion: opencode.CompletionProtocolVersion,
 			CompletionCapability:      job.completionCapability,
 			CompletionReceiptDir:      job.completionReceiptDir,
+			OnProcessStarted: func() {
+				launchObserved = true
+				launchObservedAt = o.now().UTC().Format(time.RFC3339)
+				o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
+			},
 			OnProviderSession: func(providerSessionID string) {
 				o.observeProviderSessionForInvocation(ctx, job.attemptID, job.providerInvocationID, providerSessionID)
 			},
@@ -649,6 +697,8 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		job.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
 		job.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
 		job.outcome = response.Outcome
+		job.launchObserved = launchObserved
+		job.launchObservedAt = strings.TrimSpace(launchObservedAt)
 		job.suppressEmptyOutputRetry = response.SuppressEmptyOutputRetry
 		job.tokens = response.Tokens
 		job.err = execErr
@@ -656,7 +706,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		if o.executionStore != nil {
 			// Async completions must outlive the dispatch tick context because the
 			// execution store is the durable handoff into the canonical completion path.
-			if err := o.commitExecutionCompletionDetached(ctx, job); err != nil {
+			if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
 				if !o.forceCloseActive() {
 					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error()})
 				}
@@ -666,6 +716,274 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			}
 		}
 	}()
+}
+
+func (o *orchestrationLoop) observeExecutionLaunchAsync(ctx context.Context, job asyncExecutionResult, payloadRaw, occurredAt string) {
+	if o == nil {
+		return
+	}
+	if o.asyncDrain != nil {
+		o.asyncDrain.Start()
+	}
+	go func() {
+		defer func() {
+			if o.asyncDrain != nil {
+				o.asyncDrain.Done()
+			}
+		}()
+		if err := o.retryLaunchObservation(ctx, job, func(launchCtx context.Context) error {
+			if err := o.ensureExecutionLaunchPersisted(launchCtx, job, payloadRaw, occurredAt); err != nil {
+				return err
+			}
+			return o.ensureProviderInvokedEventRecorded(launchCtx, job)
+		}); err != nil {
+			slog.Warn("failed to record execution launch", "attempt_id", job.attemptID, "error", err)
+		}
+	}()
+}
+
+func (o *orchestrationLoop) retryLaunchObservation(ctx context.Context, job asyncExecutionResult, observe func(context.Context) error) error {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		if o.forceCloseActive() {
+			return nil
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		launchCtx, cancel := context.WithTimeout(ctx, launchObservationTimeout)
+		err := observe(launchCtx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt == 0 || (attempt+1)%5 == 0 {
+			slog.Warn("retrying execution launch persistence", "attempt_id", job.attemptID, "retry", attempt+1, "error", err)
+		}
+		backoff := launchObservationRetrySchedule[len(launchObservationRetrySchedule)-1]
+		if attempt < len(launchObservationRetrySchedule) {
+			backoff = launchObservationRetrySchedule[attempt]
+		}
+		if backoff <= 0 {
+			continue
+		}
+		if err := sleepWithContext(ctx, o.sleep, backoff); err != nil {
+			return err
+		}
+	}
+	return lastErr
+}
+
+func (o *orchestrationLoop) attemptEventRecorded(ctx context.Context, attemptID, eventType, reasonCode string) (bool, error) {
+	if o == nil || o.db == nil || strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	query := `SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = ?`
+	args := []any{strings.TrimSpace(attemptID), strings.TrimSpace(eventType)}
+	trimmedReasonCode := strings.TrimSpace(reasonCode)
+	if trimmedReasonCode != "" {
+		query += ` AND reason_code = ?`
+		args = append(args, trimmedReasonCode)
+	}
+	var count int
+	if err := o.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("query recorded attempt event for attempt %q: %w", strings.TrimSpace(attemptID), err)
+	}
+	return count > 0, nil
+}
+
+func (o *orchestrationLoop) executionLaunchRecorded(ctx context.Context, attemptID string) (bool, error) {
+	if recorded, err := o.attemptEventRecorded(ctx, attemptID, "attempt.started", ""); err != nil || recorded {
+		return recorded, err
+	}
+	if o == nil || o.db == nil || strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	var startedAt sql.NullString
+	err := o.db.QueryRowContext(ctx,
+		`SELECT started_at
+		 FROM attempt_executions
+		 WHERE attempt_id = ?`,
+		strings.TrimSpace(attemptID),
+	).Scan(&startedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query execution launch marker for attempt %q: %w", strings.TrimSpace(attemptID), err)
+	}
+	return startedAt.Valid && strings.TrimSpace(startedAt.String) != "", nil
+}
+
+func providerInvokedEventID(job asyncExecutionResult) string {
+	return fmt.Sprintf("evt_orch_%s_%s_%d_provider_invoked", sanitizeFileToken(job.run.RunID), sanitizeFileToken(job.node.NodeID), job.attempt.Attempt)
+}
+
+func (o *orchestrationLoop) providerInvokedRecorded(ctx context.Context, job asyncExecutionResult) (bool, error) {
+	if o == nil || o.db == nil {
+		return false, nil
+	}
+	var count int
+	if err := o.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM events WHERE event_id = ?`, providerInvokedEventID(job)).Scan(&count); err != nil {
+		return false, fmt.Errorf("query recorded provider invoked event for attempt %q: %w", strings.TrimSpace(job.attemptID), err)
+	}
+	return count > 0, nil
+}
+
+func (o *orchestrationLoop) ensureExecutionLaunchPersisted(ctx context.Context, job asyncExecutionResult, payloadRaw, occurredAt string) error {
+	if o == nil {
+		return nil
+	}
+	if strings.TrimSpace(occurredAt) == "" {
+		occurredAt = o.now().UTC().Format(time.RFC3339)
+	}
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
+	recorded, err := o.executionLaunchRecorded(ctx, job.attemptID)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	if err := o.recordExecutionLaunch(ctx, job.run, job.node, job.attempt, job.attemptID, payloadRaw, occurredAt); err != nil {
+		var stateConflict *state.StateConflictError
+		var illegalTransition *state.IllegalTransitionError
+		if errors.As(err, &stateConflict) || errors.As(err, &illegalTransition) {
+			return o.recordExecutionLaunchAfterTerminal(ctx, job.run, job.attempt, job.attemptID, occurredAt)
+		}
+		return err
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) ensureProviderInvokedEventRecorded(ctx context.Context, job asyncExecutionResult) error {
+	if o == nil || o.events == nil || strings.TrimSpace(job.attemptID) == "" {
+		return nil
+	}
+	terminal, err := o.executionTerminalized(ctx, job.attemptID)
+	if err != nil {
+		return err
+	}
+	if terminal {
+		return nil
+	}
+	payloadRaw, err := marshalAsyncExecutionAttemptEventPayload(job, "provider_invoked", map[string]any{
+		"model": job.model,
+		"agent": job.agent,
+		"role":  job.node.RequiredRole,
+	})
+	if err != nil {
+		return err
+	}
+	occurredAt := o.now().UTC().Format(time.RFC3339)
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
+	recorded, err := o.providerInvokedRecorded(ctx, job)
+	if err != nil {
+		return err
+	}
+	if recorded {
+		return nil
+	}
+	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
+		EventID:         providerInvokedEventID(job),
+		RunID:           job.run.RunID,
+		NodeRunID:       sql.NullString{String: job.attempt.NodeRunID, Valid: strings.TrimSpace(job.attempt.NodeRunID) != ""},
+		AttemptID:       job.attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.progress",
+		Seq:             o.nextEventSeq(ctx, job.attemptID),
+		PayloadJSON:     string(payloadRaw),
+		ActorID:         "runtime_orchestrator",
+		RoleID:          job.node.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "provider_invoked",
+		ReasonText:      "prompt dispatched to provider; awaiting response",
+		CorrelationID:   "corr_orch_" + job.run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_provider_invoked", job.run.RunID, job.attempt.NodeRunID),
+		CreatedAt:       occurredAt,
+	})
+	if err != nil {
+		return fmt.Errorf("record provider invoked event for attempt %q: %w", job.attemptID, err)
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) recordExecutionLaunch(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, payloadRaw, occurredAt string) error {
+	if o == nil || o.transition == nil || o.db == nil {
+		return nil
+	}
+	launchSeq := o.nextEventSeq(ctx, attemptID)
+	return o.transition.RecordExecutionLaunch(ctx, state.ExecutionLaunchRecordRequest{Transition: state.TransitionRequest{
+		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_running", run.RunID, attempt.NodeID, attempt.Attempt),
+		RunID:           run.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		Entity:          state.EntityTypeNode,
+		FromState:       "starting",
+		ToState:         "running",
+		ActorID:         "runtime_orchestrator",
+		RoleID:          node.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "orchestration_progress",
+		ReasonText:      "provider launch observed",
+		CorrelationID:   "corr_orch_" + run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_running", run.RunID, attempt.NodeRunID),
+		OccurredAt:      occurredAt,
+		AttemptID:       attemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.started",
+		EventSeq:        launchSeq,
+		PayloadJSON:     strings.TrimSpace(payloadRaw),
+	}})
+}
+
+func (o *orchestrationLoop) recordExecutionLaunchAfterTerminal(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, occurredAt string) error {
+	if o == nil || o.db == nil {
+		return nil
+	}
+	if _, err := o.db.ExecContext(ctx,
+		`UPDATE attempt_executions
+		 SET started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
+		     updated_at = ?
+		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
+		   AND state IN ('starting', 'running', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')`,
+		occurredAt,
+		occurredAt,
+		attemptID,
+		run.RunID,
+		attempt.NodeRunID,
+	); err != nil {
+		return fmt.Errorf("note observed execution launch after terminal projection: %w", err)
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) executionTerminalized(ctx context.Context, attemptID string) (bool, error) {
+	if o == nil || o.db == nil || strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	var stateValue sql.NullString
+	err := o.db.QueryRowContext(ctx,
+		`SELECT state
+		 FROM attempt_executions
+		 WHERE attempt_id = ?`,
+		strings.TrimSpace(attemptID),
+	).Scan(&stateValue)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query execution terminal state for attempt %q: %w", strings.TrimSpace(attemptID), err)
+	}
+	switch strings.TrimSpace(stateValue.String) {
+	case "terminal_observed", "committed_success", "committed_failure", "committed_cancelled":
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func (o *orchestrationLoop) emitWorkspacePreparedEvent(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, workspacePath string, workspaceCtx executionWorkspaceContext, occurredAt string) {
@@ -699,39 +1017,6 @@ func (o *orchestrationLoop) emitWorkspacePreparedEvent(ctx context.Context, run 
 		ReasonText:      "execution workspace prepared",
 		CorrelationID:   "corr_orch_" + run.RunID,
 		CausationID:     fmt.Sprintf("caus_orch_%s_%s_workspace_prepared", run.RunID, attempt.NodeRunID),
-		CreatedAt:       occurredAt,
-	})
-}
-
-func (o *orchestrationLoop) emitProviderInvokedEvent(ctx context.Context, job asyncExecutionResult) {
-	if o == nil || o.events == nil || strings.TrimSpace(job.attemptID) == "" {
-		return
-	}
-	payloadRaw, err := marshalAsyncExecutionAttemptEventPayload(job, "provider_invoked", map[string]any{
-		"model": job.model,
-		"agent": job.agent,
-		"role":  job.node.RequiredRole,
-	})
-	if err != nil {
-		return
-	}
-	occurredAt := o.now().UTC().Format(time.RFC3339)
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_provider_invoked", sanitizeFileToken(job.run.RunID), sanitizeFileToken(job.node.NodeID), job.attempt.Attempt),
-		RunID:           job.run.RunID,
-		NodeRunID:       sql.NullString{String: job.attempt.NodeRunID, Valid: strings.TrimSpace(job.attempt.NodeRunID) != ""},
-		AttemptID:       job.attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.progress",
-		Seq:             o.nextEventSeq(ctx, job.attemptID),
-		PayloadJSON:     string(payloadRaw),
-		ActorID:         "runtime_orchestrator",
-		RoleID:          job.node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_invoked",
-		ReasonText:      "prompt dispatched to provider; awaiting response",
-		CorrelationID:   "corr_orch_" + job.run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_provider_invoked", job.run.RunID, job.attempt.NodeRunID),
 		CreatedAt:       occurredAt,
 	})
 }

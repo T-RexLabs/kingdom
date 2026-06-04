@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { runStatusBannerClass } from "./run-detail-tones";
-import { isActiveExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorLiveExecutionLabel } from "./run-status-semantics";
+import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 
 type PresentedExecutionDetail = RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } };
 
@@ -155,6 +155,9 @@ function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ l
 	if (detail.failure_code) {
 		fields.push({ label: "Failure code", value: detail.failure_code });
 	}
+	if (detail.launch_started_at) {
+		fields.push({ label: "Launching", value: <RelativeTime iso={detail.launch_started_at} /> });
+	}
 	if (detail.started_at) {
 		fields.push({ label: "Started", value: <RelativeTime iso={detail.started_at} /> });
 	}
@@ -162,6 +165,12 @@ function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ l
 }
 
 function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: string } {
+	const progressLabel = executionProgressLabel(
+		detail.status,
+		detail.progress_reason_code,
+		detail.progress_event_type,
+		detail.live_signal?.live_label,
+	);
 	if (detail.output_verdict === "REWORK") {
 		return {
 			body: "Changes were requested for this step.",
@@ -169,22 +178,27 @@ function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: 
 		};
 	}
 	if (detail.settlement_status === "pending") {
-		const liveBody = operatorLiveExecutionLabel(detail.live_signal?.live_label);
 		return {
-			body: detail.output_text ? undefined : liveBody ?? "Kingdom is still confirming the final result for this step.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
 			note: detail.output_text ? "The output below may still change." : undefined,
 		};
 	}
 	if (isQueuedExecutionStatus(detail.status)) {
 		return {
-			body: operatorLiveExecutionLabel(detail.live_signal?.live_label) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is queued to start.",
 			note: undefined,
 		};
 	}
 	if (isActiveExecutionStatus(detail.status)) {
 		return {
-			body: detail.output_text ? undefined : operatorLiveExecutionLabel(detail.live_signal?.live_label) ?? "This step is still in progress.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is still running.",
 			note: detail.output_text ? "The output below may still change." : undefined,
+		};
+	}
+	if (isBlockedExecutionStatus(detail.status)) {
+		return {
+			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+			note: detail.output_text ? undefined : missingOutputNote(detail),
 		};
 	}
 	const failureText = operatorFacingFailureText(detail);

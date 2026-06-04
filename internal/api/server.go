@@ -85,6 +85,7 @@ type Server struct {
 	planningService   *planning.Service
 	workflowCompiler  *workflow.Compiler
 	cursors           *cursorSigner
+	idempotency       *IdempotencyMiddleware
 
 	// handler is the fully composed http handler tree (mux + middleware).
 	// We keep it on Server so *Server itself can satisfy http.Handler and
@@ -108,10 +109,14 @@ func (s *Server) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	var closeErr error
 	if s.planningService != nil {
-		return s.planningService.Close(ctx)
+		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
-	return nil
+	if s.idempotency != nil {
+		closeErr = errors.Join(closeErr, s.idempotency.Close(ctx))
+	}
+	return closeErr
 }
 
 // ForceClose is the hard-stop shutdown path used when summon is escalated
@@ -122,6 +127,9 @@ func (s *Server) ForceClose() {
 	}
 	if s.planningService != nil {
 		s.planningService.ForceClose()
+	}
+	if s.idempotency != nil {
+		s.idempotency.ForceClose()
 	}
 }
 
@@ -296,7 +304,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	wrapped := validator(NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB))(inner))
+	idempotency := NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB))
+	s.idempotency = idempotency
+	wrapped := validator(idempotency.Wrap(inner))
 
 	// SSE streaming endpoints bypass idempotency middleware (which buffers the full response)
 	// but still go through OpenAPI validation.
@@ -444,6 +454,10 @@ type runExecutionItem struct {
 	ProviderSessionID  *string    `json:"provider_session_id,omitempty"`
 	LastHeartbeatAt    *time.Time `json:"last_heartbeat_at,omitempty"`
 	ActivityAt         time.Time  `json:"activity_at"`
+	ProgressEventType  *string    `json:"progress_event_type,omitempty"`
+	ProgressReasonCode *string    `json:"progress_reason_code,omitempty"`
+	ProgressAt         *time.Time `json:"progress_at,omitempty"`
+	LaunchStartedAt    *time.Time `json:"launch_started_at,omitempty"`
 	StartedAt          *time.Time `json:"started_at,omitempty"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	TerminalObservedAt *time.Time `json:"terminal_observed_at,omitempty"`

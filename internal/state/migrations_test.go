@@ -734,7 +734,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	if got := strings.Join(canonicalNames, ","); got != "0001_initial_schema.up.sql" {
+	if got := strings.Join(canonicalNames, ","); got != "0001_initial_schema.up.sql,0002_expand_runtime_state_and_idempotency.up.sql,0003_attempt_execution_progress.up.sql" {
 		t.Fatalf("expected canonical migration set to contain only the collapsed baseline migration, got %v", canonicalNames)
 	}
 
@@ -810,9 +810,11 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 
 	t.Run("existing_database_does_not_duplicate_baseline", func(t *testing.T) {
 		db := openTestDB(t)
-		applyMigration(t, db, "0001_initial_schema.up.sql")
-		mustExec(t, db, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`)
-		mustExec(t, db, `INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_initial_schema.up.sql', '2026-04-21T12:04:00Z')`)
+		if err := ApplySQLMigrations(context.Background(), db, load(t,
+			"0001_initial_schema.up.sql",
+		), time.Date(2026, 4, 21, 12, 4, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
 
 		if err := ApplySQLMigrations(context.Background(), db, load(t,
 			"0001_initial_schema.up.sql",
@@ -870,6 +872,136 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		}
 		if got := strings.Join(names, ","); got != "0001_initial_schema.up.sql,0002_future_feature.up.sql" {
 			t.Fatalf("expected baseline and forward migration recorded, got %v", names)
+		}
+	})
+
+	t.Run("existing_database_upgrades_through_node_run_rebuild", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(context.Background(), db, load(t,
+			"0001_initial_schema.up.sql",
+		), time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
+
+		seedMinimumGraph(t, db)
+		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_migrate', 'wfdef_1', 'plan_drafting', 'king', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_migrate', 'run_1', 'plan_drafting', 1, 1, 'running', 'king', 'agent_king', 1, '2026-03-01T12:01:00Z', NULL)`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, active_provider_invocation_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, canonical_settlement_id, created_at, updated_at) VALUES ('run_1:plan_drafting:1', 'run_1', 'nr_plan_migrate', 'running', 'provider_backed', 0, '', NULL, 0, 'session_plan_migrate', '', NULL, '2026-03-01T12:01:00Z', NULL, NULL, '', '', NULL, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+		mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_plan_migrate', 'run_1', 'nr_plan_migrate', 'node', 'ready', 'running', 'runtime_orchestrator', 'king', 'runtime.orchestrator', 'orchestration_progress', 'provider launch observed', 'corr_plan_migrate', 'caus_plan_migrate', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+		mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_migrate', 'run_1', 'plan_drafting', 'nr_plan_migrate', 'run_1:plan_drafting:1', 'agent_king', '', 'plan_revision', 'migration safety', '2026-03-01T12:01:00Z')`)
+
+		if err := ApplySQLMigrations(context.Background(), db, load(t,
+			"0001_initial_schema.up.sql",
+			"0002_expand_runtime_state_and_idempotency.up.sql",
+			"0003_attempt_execution_progress.up.sql",
+		), time.Date(2026, 4, 21, 12, 5, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply upgrade migration: %v", err)
+		}
+
+		if !columnExists(t, db, "node_runs", "superseded_at") {
+			t.Fatal("expected node_runs.superseded_at after upgrade migration")
+		}
+		if !columnExists(t, db, "attempt_executions", "launch_started_at") {
+			t.Fatal("expected attempt_executions.launch_started_at after upgrade migration")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_event_type") {
+			t.Fatal("expected attempt_executions.progress_event_type after upgrade migration")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_reason_code") {
+			t.Fatal("expected attempt_executions.progress_reason_code after upgrade migration")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_at") {
+			t.Fatal("expected attempt_executions.progress_at after upgrade migration")
+		}
+		if !indexExists(t, db, "idx_attempt_executions_launch_started") {
+			t.Fatal("expected launch_started_at index after upgrade migration")
+		}
+		if !columnExists(t, db, "idempotency_keys", "status") {
+			t.Fatal("expected idempotency_keys.status after upgrade migration")
+		}
+		if !columnExists(t, db, "idempotency_keys", "updated_at") {
+			t.Fatal("expected idempotency_keys.updated_at after upgrade migration")
+		}
+
+		var launchStartedAt sql.NullString
+		if err := db.QueryRow(`SELECT launch_started_at FROM attempt_executions WHERE attempt_id = 'run_1:plan_drafting:1'`).Scan(&launchStartedAt); err != nil {
+			t.Fatalf("query upgraded launch_started_at: %v", err)
+		}
+		if !launchStartedAt.Valid || launchStartedAt.String != "2026-03-01T12:01:00Z" {
+			t.Fatalf("expected launch_started_at backfill from started_at, got %#v", launchStartedAt)
+		}
+
+		var idempotencyStatus string
+		var idempotencyUpdatedAt string
+		if err := db.QueryRow(`SELECT status, updated_at FROM idempotency_keys WHERE idempotency_key_id = 'idem_1'`).Scan(&idempotencyStatus, &idempotencyUpdatedAt); err != nil {
+			t.Fatalf("query upgraded idempotency key: %v", err)
+		}
+		if idempotencyStatus != "completed" {
+			t.Fatalf("expected idempotency status backfill to default completed, got %q", idempotencyStatus)
+		}
+		if idempotencyUpdatedAt != "2026-03-01T12:00:00Z" {
+			t.Fatalf("expected idempotency updated_at backfill from created_at, got %q", idempotencyUpdatedAt)
+		}
+
+		var planningOutputCount int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM run_planning_outputs WHERE node_run_id = 'nr_plan_migrate'`).Scan(&planningOutputCount); err != nil {
+			t.Fatalf("count upgraded planning outputs: %v", err)
+		}
+		if planningOutputCount != 1 {
+			t.Fatalf("expected planning output lineage to survive node_runs rebuild, got %d rows", planningOutputCount)
+		}
+
+		rows, err := db.Query(`PRAGMA foreign_key_check`)
+		if err != nil {
+			t.Fatalf("run foreign_key_check after upgrade: %v", err)
+		}
+		defer rows.Close()
+		if rows.Next() {
+			var tableName string
+			var rowID int64
+			var parentTable string
+			var fkIndex int64
+			if err := rows.Scan(&tableName, &rowID, &parentTable, &fkIndex); err != nil {
+				t.Fatalf("scan foreign_key_check row: %v", err)
+			}
+			t.Fatalf("expected no foreign key violations after upgrade, got table=%s rowid=%d parent=%s fk=%d", tableName, rowID, parentTable, fkIndex)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate foreign_key_check rows: %v", err)
+		}
+	})
+
+	t.Run("rejects foreign-key-off migration with broken references", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(context.Background(), db, load(t, "0001_initial_schema.up.sql"), time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
+		seedMinimumGraph(t, db)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+
+		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
+			Name: "0002_broken_fk_rebuild.up.sql",
+			SQL: []byte(`-- kingdom: foreign_keys=off
+DELETE FROM node_runs;`),
+		})
+
+		err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 4, 21, 12, 7, 0, 0, time.UTC))
+		if err == nil {
+			t.Fatal("expected broken foreign-key-off migration to fail")
+		}
+		if !strings.Contains(err.Error(), "validate foreign keys") {
+			t.Fatalf("expected foreign key validation failure, got %v", err)
+		}
+		if tableExists(t, db, "fk_bad_child") {
+			t.Fatal("expected broken migration table to roll back")
+		}
+
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE name = '0002_broken_fk_rebuild.up.sql'`).Scan(&count); err != nil {
+			t.Fatalf("query broken migration recording: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("expected broken migration to remain unrecorded, got %d rows", count)
 		}
 	})
 
@@ -999,14 +1131,16 @@ func applyMigration(t *testing.T, db *sql.DB, fileName string) {
 	}
 	sort.Strings(names)
 
+	migrations := make([]SQLMigration, 0, len(names))
 	for _, name := range names {
 		raw, err := dbmigrations.Read(name)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", name, err)
 		}
-		if _, err := db.Exec(string(raw)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply migrations from %s: %v", fileName, err)
 	}
 }
 

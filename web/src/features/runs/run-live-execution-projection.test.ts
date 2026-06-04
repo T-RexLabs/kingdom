@@ -158,6 +158,61 @@ describe("run-live-execution-projection", () => {
 		});
 	});
 
+	it("does not let stale live launch status override fresher api execution state", () => {
+		const execution = {
+			attempt_id: "attempt-2",
+			node_run_id: "nr-2",
+			node_id: "delegated_execution_berserker",
+			attempt: 2,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "verifying",
+			activity_at: "2026-03-01T10:08:10Z",
+			updated_at: "2026-03-01T10:08:10Z",
+			launch_started_at: "2026-03-01T10:08:00Z",
+			started_at: "2026-03-01T10:08:03Z",
+			provider_session_id: "ses-2",
+			provider_invocation_id: "inv-2",
+			settlement_status: "pending",
+			output_status: "none",
+		} as const;
+
+		expect(overlayExecutionItem({
+			attempt_id: execution.attempt_id,
+			node_run_id: execution.node_run_id,
+			node_id: execution.node_id,
+			attempt: execution.attempt,
+			agent_id: execution.agent_id,
+			required_role: execution.required_role,
+			execution_mode: execution.execution_mode,
+			status: execution.status,
+			activity_at: execution.activity_at,
+			updated_at: execution.updated_at,
+			launch_started_at: execution.launch_started_at,
+			started_at: execution.started_at,
+			provider_session_id: execution.provider_session_id,
+		}, {
+			node_run_id: "nr-2",
+			activity_at: "2026-03-01T10:08:05Z",
+			status: "starting",
+			live_label: "Launching provider",
+		})).toMatchObject({
+			status: "verifying",
+			activity_at: "2026-03-01T10:08:10Z",
+		});
+
+		expect(overlayExecutionDetail(execution, {
+			node_run_id: "nr-2",
+			activity_at: "2026-03-01T10:08:05Z",
+			status: "starting",
+			live_label: "Launching provider",
+		})).toMatchObject({
+			status: "verifying",
+			activity_at: "2026-03-01T10:08:10Z",
+		});
+	});
+
 	it("overlays completion observation as verifying detail while settlement is still pending", () => {
 		expect(overlayExecutionDetail({
 			attempt_id: "attempt-1",
@@ -221,5 +276,51 @@ describe("run-live-execution-projection", () => {
 				started_at: "2026-03-01T10:09:00Z",
 			},
 		]);
+	});
+
+	it("does not synthesize live-only execution rows without a trustworthy status", () => {
+		expect(mergeExecutionItems([], {
+			"nr-live-telemetry": {
+				node_run_id: "nr-live-telemetry",
+				attempt_id: "attempt-live-telemetry",
+				node_id: "delegated_execution_berserker",
+				attempt: 2,
+				required_role: "builder-berserker",
+				execution_mode: "provider_backed",
+				activity_at: "2026-03-01T10:09:00Z",
+				live_label: "Workspace prepared",
+			},
+		})).toEqual([]);
+	});
+
+	it("preserves earliest observed timestamps across newer live updates", () => {
+		const queryClient = makeClient();
+
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:09:00Z",
+			status: "starting",
+			launch_started_at: "2026-03-01T10:09:00Z",
+			started_at: "2026-03-01T10:10:00Z",
+		});
+		patchLiveExecutionProjection(queryClient, "run-1", {
+			node_run_id: "nr-1",
+			activity_at: "2026-03-01T10:10:02Z",
+			status: "running",
+			launch_started_at: "2026-03-01T10:09:02Z",
+			started_at: "2026-03-01T10:10:02Z",
+			terminal_observed_at: "2026-03-01T10:12:00Z",
+		});
+
+		expect(readLiveExecutionProjection(queryClient, "run-1")).toEqual({
+			"nr-1": {
+				node_run_id: "nr-1",
+				activity_at: "2026-03-01T10:10:02Z",
+				status: "running",
+				launch_started_at: "2026-03-01T10:09:00Z",
+				started_at: "2026-03-01T10:10:00Z",
+				terminal_observed_at: "2026-03-01T10:12:00Z",
+			},
+		});
 	});
 });

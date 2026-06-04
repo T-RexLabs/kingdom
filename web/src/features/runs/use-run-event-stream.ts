@@ -48,15 +48,20 @@ export function useRunEventStream(runId: string, enabled = true, markTimelineDir
   const hiddenSurfacesRef = useRef(hiddenSurfaces);
   const previousRunIdRef = useRef<string>("");
   const [restartNonce, setRestartNonce] = useState(0);
-  const [connectionState, setConnectionState] = useState<RunStreamConnectionState>(enabled ? "connecting" : "idle");
-  markTimelineDirtyRef.current = markTimelineDirty;
-  hiddenSurfacesRef.current = hiddenSurfaces;
+  const [streamConnectionState, setStreamConnectionState] = useState<RunStreamConnectionState>(enabled && runId ? "connecting" : "idle");
+	const connectionState: RunStreamConnectionState = !runId || !enabled
+		? "idle"
+		: (streamConnectionState === "idle" ? "connecting" : streamConnectionState);
+
+	useEffect(() => {
+		markTimelineDirtyRef.current = markTimelineDirty;
+		hiddenSurfacesRef.current = hiddenSurfaces;
+	}, [hiddenSurfaces, markTimelineDirty]);
 
 	useEffect(() => {
 		if (!runId) {
 			lastEventIdRef.current = null;
 			previousRunIdRef.current = "";
-			setConnectionState("idle");
 			return;
 		}
 		if (previousRunIdRef.current !== runId) {
@@ -64,11 +69,8 @@ export function useRunEventStream(runId: string, enabled = true, markTimelineDir
 			lastEventIdRef.current = readRunStreamBootstrapState(queryClient, runId).lastEventId;
 		}
 		if (!enabled) {
-			setConnectionState("idle");
 			return;
     }
-
-    setConnectionState("connecting");
 
     const controller = new AbortController();
     let restartTimer: number | null = null;
@@ -84,7 +86,7 @@ export function useRunEventStream(runId: string, enabled = true, markTimelineDir
 			isTerminalEventType: () => false,
 			signal: controller.signal,
 			onConnectionChange: (state) => {
-				setConnectionState(state.state);
+				setStreamConnectionState(state.state);
 				if (
 					state.state === "failed"
 					&& shouldResetRunStreamResumeCursor(state.lastError, lastEventIdRef.current)
@@ -222,19 +224,20 @@ function applyRunStreamSideEffects(
 		void queryClient.invalidateQueries({ queryKey: runQueryKeys.mailboxRoot(runId), exact: false });
 	};
 
-		switch (event.eventType) {
-			case "run.state_changed":
-				patchRunStateChange(queryClient, runId, event);
+			switch (event.eventType) {
+				case "run.state_changed":
+					patchRunStateChange(queryClient, runId, event);
 			invalidateSurfaces(["plan"]);
 			return;
 			case "approval.recorded":
 				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
 				invalidateSurfaces(["detail", "plan", "governanceSummary", "governanceHistory"]);
 				return;
-			case "node.state_changed":
-				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
-				invalidateSurfaces(["graph", "agents"]);
-				return;
+				case "node.state_changed":
+					patchExecutionLiveProjection(queryClient, runId, event);
+					patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
+					invalidateSurfaces(RUN_STREAM_EXECUTION_IMPACT_SURFACES);
+					return;
 			case "mailbox.message_recorded":
 				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
 				if (readBoolean(event.payload.visible_to_operator) === true) {
@@ -300,8 +303,10 @@ function patchExecutionLiveProjection(
 	if (shouldSkipLiveExecutionProjection(event.eventType, event.reasonCode)) {
 		return;
 	}
-	const liveStatus = executionStatusForEventType(event.eventType, event.reasonCode);
-	const liveLabel = liveExecutionLabel(event.reasonCode, event.eventType);
+	const executionMode = readExecutionMode(event.payload.execution_mode);
+	const nodeState = readString(event.payload.state);
+	const liveStatus = executionStatusForEventType(event.eventType, event.reasonCode, nodeState);
+	const liveLabel = liveExecutionLabel(event.reasonCode, event.eventType, nodeState);
 	patchLiveExecutionProjection(queryClient, runId, {
 		node_run_id: nodeRunId,
 		activity_at: event.createdAt,
@@ -312,9 +317,12 @@ function patchExecutionLiveProjection(
 		...(typeof readInt(event.payload.attempt) === "number" ? { attempt: readInt(event.payload.attempt) } : {}),
 		...(readString(event.payload.agent_id) ? { agent_id: readString(event.payload.agent_id) } : {}),
 		...(readString(event.payload.required_role) ? { required_role: readString(event.payload.required_role) } : {}),
-		...(readExecutionMode(event.payload.execution_mode) ? { execution_mode: readExecutionMode(event.payload.execution_mode) } : {}),
+		...(executionMode ? { execution_mode: executionMode } : {}),
 		...(liveStatus ? { status: liveStatus } : {}),
-		...(event.eventType === "attempt.started" ? { started_at: event.createdAt } : {}),
+		...(liveStatus === "starting" ? { launch_started_at: event.createdAt } : {}),
+		...(((event.eventType === "attempt.started") || (event.eventType === "node.state_changed" && nodeState === "running"))
+			? { started_at: event.createdAt }
+			: {}),
 		...(event.eventType === "attempt.succeeded" || event.eventType === "attempt.failed" || event.eventType === "attempt.cancelled"
 			? { terminal_observed_at: event.createdAt }
 			: {}),
@@ -323,18 +331,51 @@ function patchExecutionLiveProjection(
 	});
 }
 
-function executionStatusForEventType(eventType: string, reasonCode?: string): RunExecutionStatus | undefined {
-	switch (eventType) {
-		case "attempt.started":
+	function executionStatusForEventType(
+		eventType: string,
+		reasonCode?: string,
+		nodeState?: string,
+	): RunExecutionStatus | undefined {
+		switch (eventType) {
+			case "attempt.started":
+				return "running";
+		case "node.state_changed":
+			switch ((nodeState ?? "").trim()) {
+				case "starting":
+					return "starting";
+				case "running":
+					return "running";
+				case "blocked":
+					return "blocked";
+				case "succeeded":
+					return "succeeded";
+				case "failed":
+					return "failed";
+					case "cancelled":
+						return "cancelled";
+					default:
+						return undefined;
+				}
 		case "attempt.retrying":
 		case "attempt.retry_recovered":
+			return "running";
 		case "attempt.retry_exhausted":
+			return "blocked";
 		case "attempt.recovered":
+			if ((nodeState ?? "").trim() === "blocked") {
+				return "blocked";
+			}
+			return undefined;
 		case "attempt.progress":
 			if (isCompletionObservationReasonCode(reasonCode)) {
 				return "verifying";
 			}
-			return shouldSkipLiveExecutionProjection(eventType, reasonCode) ? undefined : "running";
+			switch ((reasonCode ?? "").trim()) {
+				case "provider_invoked":
+					return "running";
+				default:
+					return undefined;
+			}
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
 			return "queued";

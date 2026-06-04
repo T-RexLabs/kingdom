@@ -94,7 +94,8 @@ func TestNewRuntimeFailsWhenWorkflowRunsPublishModeColumnMissing(t *testing.T) {
 	db := openTestDB(t)
 	for _, statement := range []string{
 		`CREATE TABLE roles (role_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', can_spawn INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE attempt_executions (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_run_id TEXT NOT NULL, state TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'provider_backed', provider_timeout_ms INTEGER NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, lease_version INTEGER NOT NULL DEFAULT 0, session_ref TEXT NOT NULL DEFAULT '', provider_session_id TEXT NOT NULL DEFAULT '', active_provider_invocation_id TEXT, started_at TEXT, terminal_observed_at TEXT, committed_at TEXT, failure_code TEXT NOT NULL DEFAULT '', failure_text TEXT NOT NULL DEFAULT '', canonical_settlement_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE node_runs (node_run_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, attempt INTEGER NOT NULL, wave INTEGER NOT NULL, node_status TEXT NOT NULL, required_role TEXT NOT NULL, agent_id TEXT NOT NULL, row_version INTEGER NOT NULL DEFAULT 1, started_at TEXT, finished_at TEXT, superseded_at TEXT)`,
+		`CREATE TABLE attempt_executions (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_run_id TEXT NOT NULL, state TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'provider_backed', provider_timeout_ms INTEGER NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, lease_version INTEGER NOT NULL DEFAULT 0, session_ref TEXT NOT NULL DEFAULT '', provider_session_id TEXT NOT NULL DEFAULT '', active_provider_invocation_id TEXT, launch_started_at TEXT, started_at TEXT, terminal_observed_at TEXT, committed_at TEXT, failure_code TEXT NOT NULL DEFAULT '', failure_text TEXT NOT NULL DEFAULT '', progress_event_type TEXT NOT NULL DEFAULT '', progress_reason_code TEXT NOT NULL DEFAULT '', progress_at TEXT, canonical_settlement_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE attempt_event_log (id TEXT)`,
 		`CREATE TABLE attempt_outbox (id TEXT)`,
 		`CREATE TABLE attempt_cancel_outbox (id TEXT)`,
@@ -119,7 +120,8 @@ func TestNewRuntimeFailsWhenAttemptExecutionsProviderSessionIDColumnMissing(t *t
 	db := openTestDB(t)
 	for _, statement := range []string{
 		`CREATE TABLE roles (role_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', can_spawn INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE attempt_executions (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_run_id TEXT NOT NULL, state TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'provider_backed', provider_timeout_ms INTEGER NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, lease_version INTEGER NOT NULL DEFAULT 0, session_ref TEXT NOT NULL DEFAULT '', active_provider_invocation_id TEXT, started_at TEXT, terminal_observed_at TEXT, committed_at TEXT, failure_code TEXT NOT NULL DEFAULT '', failure_text TEXT NOT NULL DEFAULT '', canonical_settlement_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE node_runs (node_run_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, attempt INTEGER NOT NULL, wave INTEGER NOT NULL, node_status TEXT NOT NULL, required_role TEXT NOT NULL, agent_id TEXT NOT NULL, row_version INTEGER NOT NULL DEFAULT 1, started_at TEXT, finished_at TEXT, superseded_at TEXT)`,
+		`CREATE TABLE attempt_executions (attempt_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_run_id TEXT NOT NULL, state TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'provider_backed', provider_timeout_ms INTEGER NOT NULL DEFAULT 0, lease_owner TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, lease_version INTEGER NOT NULL DEFAULT 0, session_ref TEXT NOT NULL DEFAULT '', active_provider_invocation_id TEXT, launch_started_at TEXT, started_at TEXT, terminal_observed_at TEXT, committed_at TEXT, failure_code TEXT NOT NULL DEFAULT '', failure_text TEXT NOT NULL DEFAULT '', progress_event_type TEXT NOT NULL DEFAULT '', progress_reason_code TEXT NOT NULL DEFAULT '', progress_at TEXT, canonical_settlement_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE attempt_event_log (id TEXT)`,
 		`CREATE TABLE attempt_outbox (id TEXT)`,
 		`CREATE TABLE attempt_cancel_outbox (id TEXT)`,
@@ -1158,6 +1160,7 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	close(dispatchDone)
 	dispatchCtx, cancelDispatch := context.WithCancel(context.Background())
 	loop := &orchestrationLoop{
+		db:             db,
 		adapter:        adapter,
 		executionStore: execStore,
 		inflightExec:   make(map[string]struct{}),
@@ -1195,11 +1198,15 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	}
 
 	var outboxCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxCount); err != nil {
-		t.Fatalf("query attempt outbox count after graceful close: %v", err)
+	var outboxStatus string
+	if err := db.QueryRow(`SELECT COUNT(1), COALESCE(MAX(status), '') FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxCount, &outboxStatus); err != nil {
+		t.Fatalf("query attempt outbox state after graceful close: %v", err)
 	}
 	if outboxCount != 1 {
 		t.Fatalf("expected one durable completion outbox row after graceful close, got %d", outboxCount)
+	}
+	if outboxStatus != "published" {
+		t.Fatalf("expected graceful close to project and publish the durable completion outbox, got %q", outboxStatus)
 	}
 }
 
@@ -1451,6 +1458,125 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 	if outboxStatus != "published" {
 		t.Fatalf("expected startup recovery to publish pending outbox row, got %q", outboxStatus)
 	}
+}
+
+func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_startup_retry', 'noble-delegate', 'Noble', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_chancellor_startup_retry', 'chancellor', 'Chancellor', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_startup_retry', 'Runtime startup retry decree', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_startup_retry', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_startup_retry', NULL, 'decree_startup_retry', 'wfdef_startup_retry', 'running', 'approved', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_startup_retry', 'wfdef_startup_retry', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_startup_retry_1', 'run_startup_retry', 'advisor_consultation_noble', 1,1, 'running', 'noble-delegate', 'agent_noble_startup_retry', 1, '%s', NULL)`, now))
+
+	execStore := executionstore.New(db)
+	attemptID := "run_startup_retry:advisor_consultation_noble:1"
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:  attemptID,
+		RunID:      "run_startup_retry",
+		NodeRunID:  "nr_startup_retry_1",
+		SessionRef: sessionIDForAttempt(attemptID),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+
+	retryRoot := filepath.Join(t.TempDir(), "startup-retry-root")
+	if err := os.WriteFile(retryRoot, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write startup retry blocker: %v", err)
+	}
+	prepLoop := orchestrationLoop{
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: execStore,
+		yoloRoot:       retryRoot,
+		publishMode:    PublishModeDirect,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+	if err := prepLoop.commitExecutionCompletion(context.Background(), asyncExecutionResult{
+		run:           runSnapshot{RunID: "run_startup_retry", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
+		node:          nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
+		attempt:       nodeAttempt{NodeRunID: "nr_startup_retry_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_startup_retry", RequiredRole: "noble-delegate"},
+		attemptID:     attemptID,
+		sessionID:     sessionIDForAttempt(attemptID),
+		workspacePath: t.TempDir(),
+		delegator:     "agent_chancellor_startup_retry",
+		outputText:    "Noble guidance published after startup retry.",
+		occurredAt:    "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("commit execution completion: %v", err)
+	}
+
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: opencode.NewMemoryAdapter()})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.yoloRoot = retryRoot
+	rt.orchestrator.publishMode = PublishModeDirect
+	rt.completionEvery = 10 * time.Millisecond
+
+	repairErr := make(chan error, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := os.Remove(retryRoot); err != nil {
+			repairErr <- err
+			return
+		}
+		if err := os.Mkdir(retryRoot, 0o755); err != nil {
+			repairErr <- err
+			return
+		}
+		repairErr <- nil
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- rt.Start(ctx)
+	}()
+	select {
+	case err := <-startErr:
+		if err != nil {
+			t.Fatalf("start runtime: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		cancel()
+		t.Fatal("runtime start blocked on retryable pending execution outbox")
+	}
+	defer func() {
+		cancel()
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	if err := <-repairErr; err != nil {
+		t.Fatalf("repair startup retry root: %v", err)
+	}
+
+	testutil.Eventually(t, time.Second, 10*time.Millisecond, func() error {
+		var outboxStatus string
+		if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+			return err
+		}
+		if outboxStatus != "published" {
+			return fmt.Errorf("outbox status=%q", outboxStatus)
+		}
+		return nil
+	})
 }
 
 func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T) {
@@ -1710,6 +1836,64 @@ func TestDrainAttemptCancelOutboxTreatsAttemptNotFoundAsPublished(t *testing.T) 
 	}
 	if status != "published" {
 		t.Fatalf("expected published attempt cancel outbox status after attempt-not-found, got %q", status)
+	}
+}
+
+func TestDrainAttemptCancelOutboxProjectsBlockedSupersededRetryToCancelled(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:00:05Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_provider_blocked', 'run_1', 'decree_intake', 2, 2, 'blocked', 'king', 'agent_king', 1, '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_blocked', 'committed_cancelled', 'provider_backed', '', NULL, 0, 'session_retry_provider_blocked', 'ses_retry_provider_blocked', '2026-03-01T12:00:00Z', NULL, '`+now+`', '`+now+`', 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', '`+now+`', '`+now+`')`)
+
+	store := executionstore.New(db)
+	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_outbox_blocked_retry",
+		AttemptID:      "run_1:decree_intake:2",
+		RunID:          "run_1",
+		NodeRunID:      "nr_retry_provider_blocked",
+		SessionID:      "session_retry_provider_blocked",
+		ReasonCode:     "superseded_after_launch_handoff",
+		ReasonText:     "retry attempt superseded after launch handoff by an earlier successful attempt",
+		RequestedAt:    now,
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatalf("queue attempt cancel: %v", err)
+	}
+
+	adapter := &timeoutCancelObserverAdapter{}
+	loop := orchestrationLoop{
+		db:             db,
+		adapter:        adapter,
+		executionStore: store,
+		cancelGrace:    time.Second,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 6, 0, time.UTC)
+		},
+	}
+	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+		t.Fatalf("drain attempt cancel outbox: %v", err)
+	}
+
+	var nodeStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_retry_provider_blocked'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query blocked retry node status after cancel drain: %v", err)
+	}
+	if nodeStatus != "cancelled" {
+		t.Fatalf("expected blocked superseded retry to project to cancelled after cancel dispatch, got %q", nodeStatus)
+	}
+
+	var outboxStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&outboxStatus); err != nil {
+		t.Fatalf("query blocked retry cancel outbox status: %v", err)
+	}
+	if outboxStatus != "published" {
+		t.Fatalf("expected blocked retry cancel outbox to publish after projection, got %q", outboxStatus)
 	}
 }
 
@@ -1990,7 +2174,23 @@ func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
 			return fmt.Errorf("count durable executions missing attempt.started: %w", err)
 		}
 		if missingStartedEvents != 0 {
-			return fmt.Errorf("expected every durable attempt execution to append attempt.started into attempt_event_log, found %d missing", missingStartedEvents)
+			rows, queryErr := db.Query(`SELECT ae.attempt_id FROM attempt_executions ae WHERE ae.run_id = 'run_dispatch' AND NOT EXISTS (SELECT 1 FROM attempt_event_log ael WHERE ael.attempt_id = ae.attempt_id AND ael.event_type = 'attempt.started') ORDER BY ae.attempt_id`)
+			if queryErr != nil {
+				return fmt.Errorf("expected every durable attempt execution to append attempt.started into attempt_event_log, found %d missing (lookup failed: %v)", missingStartedEvents, queryErr)
+			}
+			defer rows.Close()
+			missing := make([]string, 0, missingStartedEvents)
+			for rows.Next() {
+				var attemptID string
+				if scanErr := rows.Scan(&attemptID); scanErr != nil {
+					return fmt.Errorf("scan missing attempt.started attempt id: %w", scanErr)
+				}
+				missing = append(missing, attemptID)
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("iterate missing attempt.started attempt ids: %w", err)
+			}
+			return fmt.Errorf("expected every durable attempt execution to append attempt.started into attempt_event_log, found %d missing: %v", missingStartedEvents, missing)
 		}
 
 		var missingTerminalEvents int
@@ -2124,6 +2324,9 @@ func TestOrchestrationTickPublishesDurableAttemptOutbox(t *testing.T) {
 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
 	}
 
 	var status string
@@ -4453,6 +4656,199 @@ func TestDrainExecutionOutboxRetainsReplayEnvelopeAcrossProjectionRetry(t *testi
 	}
 }
 
+func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_runtime_drain', 'noble-delegate', 'Noble', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_chancellor_runtime_drain', 'chancellor', 'Chancellor', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_runtime_drain', 'Runtime drain decree', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_runtime_drain', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_runtime_drain', NULL, 'decree_runtime_drain', 'wfdef_runtime_drain', 'running', 'approved', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_runtime_drain', 'wfdef_runtime_drain', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_runtime_drain_1', 'run_runtime_drain', 'advisor_consultation_noble', 1,1, 'running', 'noble-delegate', 'agent_noble_runtime_drain', 1, '%s', NULL)`, now))
+
+	execStore := executionstore.New(db)
+	attemptID := "run_runtime_drain:advisor_consultation_noble:1"
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:  attemptID,
+		RunID:      "run_runtime_drain",
+		NodeRunID:  "nr_runtime_drain_1",
+		SessionRef: sessionIDForAttempt(attemptID),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+
+	retryRoot := filepath.Join(t.TempDir(), "retry-root")
+	if err := os.WriteFile(retryRoot, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write retry root blocker: %v", err)
+	}
+	loop := orchestrationLoop{
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: execStore,
+		yoloRoot:       retryRoot,
+		publishMode:    PublishModeDirect,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+
+	job := asyncExecutionResult{
+		run:           runSnapshot{RunID: "run_runtime_drain", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
+		node:          nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
+		attempt:       nodeAttempt{NodeRunID: "nr_runtime_drain_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_runtime_drain", RequiredRole: "noble-delegate"},
+		attemptID:     attemptID,
+		sessionID:     sessionIDForAttempt(attemptID),
+		workspacePath: t.TempDir(),
+		delegator:     "agent_chancellor_runtime_drain",
+		outputText:    "Noble guidance published after strict drain retry.",
+		occurredAt:    "2026-03-01T12:00:02Z",
+	}
+	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit execution completion: %v", err)
+	}
+
+	repairErr := make(chan error, 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		if err := os.Remove(retryRoot); err != nil {
+			repairErr <- err
+			return
+		}
+		if err := os.Mkdir(retryRoot, 0o755); err != nil {
+			repairErr <- err
+			return
+		}
+		repairErr <- nil
+	}()
+
+	rt := &Runtime{orchestrator: &loop, completionEvery: 10 * time.Millisecond}
+	drainCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := rt.drainExecutionOutboxUntilDrained(drainCtx); err != nil {
+		t.Fatalf("strict drain execution outbox: %v", err)
+	}
+	if err := <-repairErr; err != nil {
+		t.Fatalf("repair retry root: %v", err)
+	}
+
+	var outboxStatus string
+	var publishAttempts int
+	if err := db.QueryRow(`SELECT status, publish_attempts FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus, &publishAttempts); err != nil {
+		t.Fatalf("query strict drain outbox status: %v", err)
+	}
+	if outboxStatus != "published" {
+		t.Fatalf("expected strict drain to wait for published outbox, got %q", outboxStatus)
+	}
+	if publishAttempts < 2 {
+		t.Fatalf("expected strict drain to retry projection before publish, got %d attempts", publishAttempts)
+	}
+}
+
+func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_close_timeout', 'noble-delegate', 'Noble', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_chancellor_close_timeout', 'chancellor', 'Chancellor', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_close_timeout', 'Close timeout decree', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_close_timeout', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_close_timeout', NULL, 'decree_close_timeout', 'wfdef_close_timeout', 'running', 'approved', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_close_timeout', 'wfdef_close_timeout', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close_timeout_1', 'run_close_timeout', 'advisor_consultation_noble', 1,1, 'running', 'noble-delegate', 'agent_noble_close_timeout', 1, '%s', NULL)`, now))
+
+	execStore := executionstore.New(db)
+	attemptID := "run_close_timeout:advisor_consultation_noble:1"
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:  attemptID,
+		RunID:      "run_close_timeout",
+		NodeRunID:  "nr_close_timeout_1",
+		SessionRef: sessionIDForAttempt(attemptID),
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+
+	blockingRoot := filepath.Join(t.TempDir(), "close-timeout-root")
+	if err := os.WriteFile(blockingRoot, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write close timeout root blocker: %v", err)
+	}
+	loop := &orchestrationLoop{
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: execStore,
+		yoloRoot:       blockingRoot,
+		publishMode:    PublishModeDirect,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+
+	job := asyncExecutionResult{
+		run:           runSnapshot{RunID: "run_close_timeout", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
+		node:          nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
+		attempt:       nodeAttempt{NodeRunID: "nr_close_timeout_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_close_timeout", RequiredRole: "noble-delegate"},
+		attemptID:     attemptID,
+		sessionID:     sessionIDForAttempt(attemptID),
+		workspacePath: t.TempDir(),
+		delegator:     "agent_chancellor_close_timeout",
+		outputText:    "Noble guidance that keeps failing projection during close.",
+		occurredAt:    "2026-03-01T12:00:02Z",
+	}
+	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit execution completion: %v", err)
+	}
+
+	periodicDone := make(chan error)
+	close(periodicDone)
+	dispatchDone := make(chan error)
+	close(dispatchDone)
+	completionDone := make(chan error)
+	close(completionDone)
+	rt := &Runtime{
+		orchestrator:     loop,
+		completionEvery:  10 * time.Millisecond,
+		started:          true,
+		periodicDone:     periodicDone,
+		dispatchDone:     dispatchDone,
+		completionDone:   completionDone,
+		cancelPeriodic:   func() {},
+		cancelDispatch:   func() {},
+		cancelCompletion: func() {},
+	}
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := rt.GracefulClose(closeCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected graceful close to return deadline exceeded while pending outbox remains, got %v", err)
+	}
+
+	var outboxStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+		t.Fatalf("query close-timeout outbox status: %v", err)
+	}
+	if outboxStatus != "pending" {
+		t.Fatalf("expected pending outbox to remain pending after close timeout, got %q", outboxStatus)
+	}
+}
+
 func TestDrainExecutionOutboxDeadLettersMalformedPayloadAndContinues(t *testing.T) {
 	t.Parallel()
 
@@ -4931,6 +5327,56 @@ func TestCommitExecutionCompletionDetachedSkipsDuringForceClose(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected no outbox row during force close, got %d", count)
+	}
+}
+
+func TestCommitExecutionCompletionDetachedNoOpsAfterCommittedCancellation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+
+	execStore := executionstore.New(db)
+	attemptID := "run_1:decree_intake:1"
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:  attemptID,
+		RunID:      "run_1",
+		NodeRunID:  "nr_1",
+		SessionRef: "session_run_1_decree_intake_1",
+		CreatedAt:  "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue durable attempt execution: %v", err)
+	}
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'cancelled', finished_at = '2026-03-01T12:00:02Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_cancelled', terminal_observed_at = '2026-03-01T12:00:02Z', committed_at = '2026-03-01T12:00:02Z', failure_code = 'run_terminalized', failure_text = 'run moved to failed', updated_at = '2026-03-01T12:00:02Z' WHERE attempt_id = 'run_1:decree_intake:1'`)
+
+	loop := orchestrationLoop{
+		executionStore: execStore,
+		asyncDrain:     newExecutionDrainTracker(),
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC)
+		},
+		sleep: func(time.Duration) {},
+	}
+
+	if err := loop.commitExecutionCompletionWithRetryDetached(context.Background(), asyncExecutionResult{
+		attemptID: attemptID,
+		run:       runSnapshot{RunID: "run_1", RunStatus: "failed", PlanState: "draft"},
+		attempt:   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1},
+	}); err != nil {
+		t.Fatalf("commit execution completion after committed cancellation: %v", err)
+	}
+	if err := loop.asyncDrain.Wait(context.Background()); err != nil {
+		t.Fatalf("expected async drain to stay clean after committed cancellation no-op: %v", err)
+	}
+
+	var outboxCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxCount); err != nil {
+		t.Fatalf("count attempt outbox rows: %v", err)
+	}
+	if outboxCount != 0 {
+		t.Fatalf("expected no new outbox rows for already committed cancellation, got %d", outboxCount)
 	}
 }
 
@@ -7612,11 +8058,12 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
 	attemptID := composeAttemptID("run_dispatch_review_cap", "custom_review_gate", 3)
 	loop := orchestrationLoop{
-		db:         db,
-		transition: state.NewTransitionService(db, nil),
-		mailbox:    state.NewMailboxStore(db, nil),
-		validator:  state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
-		adapter:    adapter,
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: executionstore.New(db),
+		adapter:        adapter,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -7625,6 +8072,9 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) 
 	err := loop.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_review_cap", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "custom_review_gate", RequiredRole: "reviewer-shieldmaiden", NodeClass: "execution_review"}, nodeAttempt{NodeRunID: "nr_dispatch_review_cap_3", NodeID: "custom_review_gate", Attempt: 3, Wave: 3, RequiredRole: "reviewer-shieldmaiden", AgentID: "agent_review_cap_reviewer"}, now)
 	if err != nil {
 		t.Fatalf("dispatch node attempt: %v", err)
+	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("drain execution outbox after review cap auto-success: %v", err)
 	}
 	if adapter.callsCount() != 0 {
 		t.Fatalf("expected adapter to be skipped at review cap, got %d calls", adapter.callsCount())
@@ -7802,6 +8252,9 @@ func TestDispatchNodeAttemptCompletesLoopCapAutoSuccessProjectionAfterConflict(t
 	if err != nil {
 		t.Fatalf("dispatch node attempt after auto-success conflict: %v", err)
 	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("drain execution outbox after loop-cap conflict recovery: %v", err)
+	}
 
 	var outboxStatus string
 	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE outbox_id = ?`, preRecorded.outboxID).Scan(&outboxStatus); err != nil {
@@ -7911,6 +8364,9 @@ func TestDispatchNodeAttemptRecreatesMissingLoopCapAutoSuccessOutboxAfterConflic
 	if err != nil {
 		t.Fatalf("dispatch node attempt after missing-outbox auto-success conflict: %v", err)
 	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("drain execution outbox after missing-outbox conflict recovery: %v", err)
+	}
 
 	var outboxStatus string
 	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE outbox_id = ?`, preRecorded.outboxID).Scan(&outboxStatus); err != nil {
@@ -7962,11 +8418,12 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCapAfterMixedHisto
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
 	attemptID := composeAttemptID("run_dispatch_review_mixed_cap", "custom_review_gate", 4)
 	loop := orchestrationLoop{
-		db:         db,
-		transition: state.NewTransitionService(db, nil),
-		mailbox:    state.NewMailboxStore(db, nil),
-		validator:  state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
-		adapter:    adapter,
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: executionstore.New(db),
+		adapter:        adapter,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -8021,11 +8478,12 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
 	attemptID := composeAttemptID("run_dispatch_validation_cap", "custom_validation_gate", 3)
 	loop := orchestrationLoop{
-		db:         db,
-		transition: state.NewTransitionService(db, nil),
-		mailbox:    state.NewMailboxStore(db, nil),
-		validator:  state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
-		adapter:    adapter,
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
+		executionStore: executionstore.New(db),
+		adapter:        adapter,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -8034,6 +8492,9 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 	err := loop.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_validation_cap", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "custom_validation_gate", RequiredRole: "intelligence-qa-scout", NodeClass: "validation_gates"}, nodeAttempt{NodeRunID: "nr_dispatch_validation_cap_3", NodeID: "custom_validation_gate", Attempt: 3, Wave: 3, RequiredRole: "intelligence-qa-scout", AgentID: "agent_validation_cap_validator"}, now)
 	if err != nil {
 		t.Fatalf("dispatch node attempt: %v", err)
+	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("drain execution outbox after validation cap auto-success: %v", err)
 	}
 	if adapter.callsCount() != 0 {
 		t.Fatalf("expected adapter to be skipped at validation cap, got %d calls", adapter.callsCount())
@@ -9388,6 +9849,9 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeIgnoresWorkspaceSeedSetup(t 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick with symlinked project root: %v", err)
 	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
+	}
 
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
 		var nodeStatus string
@@ -9456,6 +9920,9 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeSkipsProviderExecutionAndSes
 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick deterministic decree intake: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
 	}
 
 	if adapter.callsCount() != 0 {
@@ -9577,6 +10044,9 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeSucceedsWithoutWorkspaceMana
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick with missing workspace manager: %v", err)
 	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
+	}
 
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
 		var nodeStatus string
@@ -9622,6 +10092,9 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeIgnoresGitWorktreePublishMod
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick runtime-owned decree intake with git worktree publish mode: %v", err)
 	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
+	}
 
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
 		var nodeStatus string
@@ -9644,6 +10117,577 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeIgnoresGitWorktreePublishMod
 	}
 	if workspaceCount != 0 {
 		t.Fatalf("expected runtime-owned decree_intake to avoid workspace creation in git-worktree mode, got %d", workspaceCount)
+	}
+}
+
+func TestDispatchNodeAttemptProviderSetupFailureDoesNotEmitStarting(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedSimpleDispatchRun(t, db)
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick decree_intake: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain decree_intake completion outbox: %v", err)
+	}
+
+	rt.orchestrator.workspace = nil
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick plan_drafting setup failure: %v", err)
+	}
+
+	var nodeStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query plan_drafting node status: %v", err)
+	}
+	if nodeStatus != "failed" {
+		t.Fatalf("expected plan_drafting setup failure to terminalize directly from ready, got %q", nodeStatus)
+	}
+
+	var startedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedCount); err != nil {
+		t.Fatalf("count plan_drafting attempt.started events: %v", err)
+	}
+	if startedCount != 0 {
+		t.Fatalf("expected no attempt.started event for pre-launch setup failure, got %d", startedCount)
+	}
+
+	var launchStartedAt sql.NullString
+	if err := db.QueryRow(`SELECT launch_started_at FROM attempt_executions WHERE attempt_id = 'run_dispatch:plan_drafting:1'`).Scan(&launchStartedAt); err != nil {
+		t.Fatalf("query launch_started_at for failed setup attempt: %v", err)
+	}
+	if launchStartedAt.Valid {
+		t.Fatalf("expected launch_started_at to remain empty for pre-launch setup failure, got %q", launchStartedAt.String)
+	}
+}
+
+func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObservedStart(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedSimpleDispatchRun(t, db)
+
+	adapter := newDelayedProcessStartExecutionAdapter()
+	rt, err := NewRuntime(Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		GovernanceMode: "autonomous",
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick decree_intake: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain decree_intake completion outbox: %v", err)
+	}
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick provider-backed launch: %v", err)
+	}
+
+	var nodeStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query plan_drafting node status: %v", err)
+	}
+	if nodeStatus != "starting" {
+		t.Fatalf("expected provider-backed node to remain starting before process start is observed, got %q", nodeStatus)
+	}
+
+	var startingCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'node.state_changed' AND json_extract(payload_json, '$.state') = 'starting'`).Scan(&startingCount); err != nil {
+		t.Fatalf("count plan_drafting starting events: %v", err)
+	}
+	if startingCount != 1 {
+		t.Fatalf("expected one starting state event before process start, got %d", startingCount)
+	}
+
+	var startedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedCount); err != nil {
+		t.Fatalf("count plan_drafting attempt.started events before process start: %v", err)
+	}
+	if startedCount != 0 {
+		t.Fatalf("expected no attempt.started event before process start is observed, got %d", startedCount)
+	}
+
+	adapter.releaseProcessStart()
+
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		var startedEvents int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedEvents); err != nil {
+			return err
+		}
+		if startedEvents != 1 {
+			return fmt.Errorf("attempt.started count=%d", startedEvents)
+		}
+		return nil
+	})
+}
+
+func TestRetryLaunchObservationRetriesUntilPersistenceSucceeds(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	sleeps := make([]time.Duration, 0)
+	loop := orchestrationLoop{
+		sleep: func(delay time.Duration) {
+			sleeps = append(sleeps, delay)
+		},
+	}
+
+	err := loop.retryLaunchObservation(context.Background(), asyncExecutionResult{attemptID: "attempt_launch_retry"}, func(context.Context) error {
+		attempts++
+		if attempts < 3 {
+			return fmt.Errorf("database busy")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry launch observation: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected launch observation to retry until the third attempt, got %d attempts", attempts)
+	}
+	if len(sleeps) != 1 || sleeps[0] != launchObservationRetrySchedule[1] {
+		t.Fatalf("expected one backoff of %s after the second failed attempt, got %#v", launchObservationRetrySchedule[1], sleeps)
+	}
+}
+
+func TestRetryLaunchObservationStopsWhenContextIsCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := 0
+	loop := orchestrationLoop{}
+
+	err := loop.retryLaunchObservation(ctx, asyncExecutionResult{attemptID: "attempt_launch_cancel"}, func(context.Context) error {
+		attempts++
+		if attempts == 2 {
+			cancel()
+		}
+		return fmt.Errorf("database busy")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected cancellation before a third retry, got %d attempts", attempts)
+	}
+}
+
+func TestEnsureProviderInvokedEventRecordedSkipsTerminalAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
+
+	loop := orchestrationLoop{
+		db:     db,
+		events: state.NewAttemptEventIngestor(db, nil),
+	}
+	job := asyncExecutionResult{
+		run:       runSnapshot{RunID: "run_1"},
+		node:      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king"},
+		attempt:   nodeAttempt{NodeID: "decree_intake", NodeRunID: "nr_1", Attempt: 1},
+		attemptID: "run_1:decree_intake:1",
+		model:     "gpt-5.4",
+		agent:     "planner",
+	}
+
+	if err := loop.ensureProviderInvokedEventRecorded(context.Background(), job); err != nil {
+		t.Fatalf("ensure provider invoked event recorded: %v", err)
+	}
+
+	var providerInvokedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_1:decree_intake:1' AND reason_code = 'provider_invoked'`).Scan(&providerInvokedCount); err != nil {
+		t.Fatalf("count provider_invoked events: %v", err)
+	}
+	if providerInvokedCount != 0 {
+		t.Fatalf("expected no provider_invoked events for terminal attempt, got %d", providerInvokedCount)
+	}
+}
+
+func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+
+	attemptID := "run_1:decree_intake:1"
+	execStore := executionstore.New(db)
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		ExecutionMode: executionstore.ExecutionModeProviderBacked,
+		SessionRef:    sessionIDForAttempt(attemptID),
+		CreatedAt:     "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+
+	closedEventsDB := openTestDB(t)
+	if err := closedEventsDB.Close(); err != nil {
+		t.Fatalf("close event ingestor db: %v", err)
+	}
+
+	loop := orchestrationLoop{
+		db:             db,
+		events:         state.NewAttemptEventIngestor(closedEventsDB, nil),
+		executionStore: execStore,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 5, 0, time.UTC)
+		},
+	}
+	job := asyncExecutionResult{
+		run:              runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
+		node:             nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+		attempt:          nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:        attemptID,
+		launchObserved:   true,
+		launchObservedAt: "2026-03-01T12:00:04Z",
+		model:            "github-copilot/gpt-5.4-mini",
+		variant:          "low",
+		agent:            "king",
+		occurredAt:       "2026-03-01T12:00:05Z",
+		outputText:       "Decree intake completed despite telemetry failure.",
+	}
+
+	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit execution completion: %v", err)
+	}
+
+	var executionState string
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&executionState); err != nil {
+		t.Fatalf("query attempt execution state: %v", err)
+	}
+	if executionState != "terminal_observed" {
+		t.Fatalf("expected terminal_observed durable handoff, got %q", executionState)
+	}
+
+	var outboxStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+		t.Fatalf("query attempt outbox status: %v", err)
+	}
+	if outboxStatus != "pending" {
+		t.Fatalf("expected pending outbox handoff despite provider_invoked failure, got %q", outboxStatus)
+	}
+
+	var providerInvokedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = ? AND reason_code = 'provider_invoked'`, attemptID).Scan(&providerInvokedCount); err != nil {
+		t.Fatalf("count provider invoked events: %v", err)
+	}
+	if providerInvokedCount != 0 {
+		t.Fatalf("expected provider_invoked backfill to fail without blocking handoff, got %d persisted events", providerInvokedCount)
+	}
+}
+
+func TestRecordExecutionLaunchAfterTerminalDoesNotAppendLifecycleEvent(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal', 'run_1', 1, 'nr_1', 'run_1:decree_intake:1', 'v1', 'attempt.succeeded', 1, '{}', 'runtime', 'king', 'runtime', 'execution_completed', 'terminal', 'corr_terminal', 'caus_terminal', 'prev', 'entry', '2026-03-01T12:00:02Z')`)
+
+	loop := orchestrationLoop{db: db}
+	if err := loop.recordExecutionLaunchAfterTerminal(context.Background(), runSnapshot{RunID: "run_1"}, nodeAttempt{NodeID: "decree_intake", NodeRunID: "nr_1", Attempt: 1}, "run_1:decree_intake:1", "2026-03-01T12:00:01Z"); err != nil {
+		t.Fatalf("record execution launch after terminal: %v", err)
+	}
+
+	var startedAt sql.NullString
+	if err := db.QueryRow(`SELECT started_at FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&startedAt); err != nil {
+		t.Fatalf("query started_at after terminal backfill: %v", err)
+	}
+	if !startedAt.Valid || strings.TrimSpace(startedAt.String) == "" {
+		t.Fatal("expected started_at to be backfilled for observed terminal launch")
+	}
+	var latestEventType string
+	if err := db.QueryRow(`SELECT event_type FROM events WHERE attempt_id = 'run_1:decree_intake:1' ORDER BY seq DESC LIMIT 1`).Scan(&latestEventType); err != nil {
+		t.Fatalf("query latest event type: %v", err)
+	}
+	if latestEventType != "attempt.succeeded" {
+		t.Fatalf("expected terminal event to remain latest, got %q", latestEventType)
+	}
+}
+
+func TestCompleteExecutionAdoptsOlderAttemptWhenQueuedRetryNeverLaunched(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedSupersededPlanCompletionRun(t, db)
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	job := asyncExecutionResult{
+		run:        runSnapshot{RunID: "run_superseded_plan", RunStatus: "running", PlanState: "draft"},
+		node:       nodeDefinition{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"},
+		attempt:    nodeAttempt{NodeRunID: "nr_superseded_plan_1", NodeID: "plan_drafting", Attempt: 1, AgentID: "agent_council_plan", RequiredRole: "council-member", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
+		attemptID:  "run_superseded_plan:plan_drafting:1",
+		delegator:  "agent_king_plan",
+		outputText: "Late superseded council plan revision.",
+	}
+	if err := rt.orchestrator.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit superseded plan completion: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain superseded plan completion outbox: %v", err)
+	}
+
+	var planningOutputCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_planning_outputs WHERE attempt_id = 'run_superseded_plan:plan_drafting:1'`).Scan(&planningOutputCount); err != nil {
+		t.Fatalf("count superseded planning outputs: %v", err)
+	}
+	if planningOutputCount != 1 {
+		t.Fatalf("expected older successful attempt to publish one canonical planning output, got %d rows", planningOutputCount)
+	}
+
+	var responseCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_superseded_plan' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&responseCount); err != nil {
+		t.Fatalf("count superseded response messages: %v", err)
+	}
+	if responseCount != 1 {
+		t.Fatalf("expected older successful attempt to publish one canonical mailbox response, got %d rows", responseCount)
+	}
+
+	var retriedStatus string
+	var retriedSupersededAt sql.NullString
+	if err := db.QueryRow(`SELECT node_status, superseded_at FROM node_runs WHERE node_run_id = 'nr_superseded_plan_2'`).Scan(&retriedStatus, &retriedSupersededAt); err != nil {
+		t.Fatalf("query superseded retry node status: %v", err)
+	}
+	if retriedStatus != "cancelled" {
+		t.Fatalf("expected queued retry attempt to be cancelled after older success, got %q", retriedStatus)
+	}
+	if !retriedSupersededAt.Valid || strings.TrimSpace(retriedSupersededAt.String) == "" {
+		t.Fatalf("expected queued retry attempt to be marked superseded")
+	}
+
+	latestAttempts, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_superseded_plan")
+	if err != nil {
+		t.Fatalf("load canonical latest attempts: %v", err)
+	}
+	latestAttempt, ok := latestAttempts["plan_drafting"]
+	if !ok {
+		t.Fatal("expected canonical latest plan_drafting attempt to exist")
+	}
+	if latestAttempt.Attempt != 1 || latestAttempt.NodeStatus != "succeeded" {
+		t.Fatalf("expected canonical latest attempt to remain attempt 1 succeeded, got attempt=%d status=%q", latestAttempt.Attempt, latestAttempt.NodeStatus)
+	}
+}
+
+func TestCompleteExecutionAdoptsOlderAttemptWhenStartingRetryReachedLaunchHandoff(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedSupersededPlanStartingRetryRun(t, db)
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	job := asyncExecutionResult{
+		run:        runSnapshot{RunID: "run_superseded_plan_starting", RunStatus: "running", PlanState: "draft"},
+		node:       nodeDefinition{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"},
+		attempt:    nodeAttempt{NodeRunID: "nr_superseded_plan_starting_1", NodeID: "plan_drafting", Attempt: 1, AgentID: "agent_council_plan_starting", RequiredRole: "council-member", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
+		attemptID:  "run_superseded_plan_starting:plan_drafting:1",
+		delegator:  "agent_king_plan_starting",
+		outputText: "Late superseded council plan revision after launch handoff.",
+	}
+	if err := rt.orchestrator.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit superseded starting plan completion: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain superseded starting plan completion outbox: %v", err)
+	}
+
+	var retryStatus string
+	var retrySupersededAt sql.NullString
+	if err := db.QueryRow(`SELECT node_status, superseded_at FROM node_runs WHERE node_run_id = 'nr_superseded_plan_starting_2'`).Scan(&retryStatus, &retrySupersededAt); err != nil {
+		t.Fatalf("query superseded starting retry node status: %v", err)
+	}
+	if retryStatus != "blocked" {
+		t.Fatalf("expected launched starting retry attempt to remain blocked until cancel drain, got %q", retryStatus)
+	}
+	if !retrySupersededAt.Valid || strings.TrimSpace(retrySupersededAt.String) == "" {
+		t.Fatalf("expected starting retry attempt to be marked superseded")
+	}
+
+	latestAttempts, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_superseded_plan_starting")
+	if err != nil {
+		t.Fatalf("load canonical latest attempts for starting retry run: %v", err)
+	}
+	latestAttempt, ok := latestAttempts["plan_drafting"]
+	if !ok {
+		t.Fatal("expected canonical latest plan_drafting attempt to exist for starting retry run")
+	}
+	if latestAttempt.Attempt != 1 || latestAttempt.NodeStatus != "succeeded" {
+		t.Fatalf("expected canonical latest attempt to remain attempt 1 succeeded, got attempt=%d status=%q", latestAttempt.Attempt, latestAttempt.NodeStatus)
+	}
+
+	var agentStatus string
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_council_plan_starting'`).Scan(&agentStatus); err != nil {
+		t.Fatalf("query council agent status after starting retry supersession: %v", err)
+	}
+	if agentStatus != "idle" {
+		t.Fatalf("expected council agent to settle idle after older success resolves the node, got %q", agentStatus)
+	}
+}
+
+func TestCompleteExecutionPublishesCanonicalEffectsWhenBlockedWinnerBeatsQueuedRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedSupersededPlanBlockedRetryRun(t, db)
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	job := asyncExecutionResult{
+		run:        runSnapshot{RunID: "run_superseded_plan_blocked", RunStatus: "running", PlanState: "draft"},
+		node:       nodeDefinition{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"},
+		attempt:    nodeAttempt{NodeRunID: "nr_superseded_plan_blocked_1", NodeID: "plan_drafting", Attempt: 1, AgentID: "agent_council_plan_blocked", RequiredRole: "council-member", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
+		attemptID:  "run_superseded_plan_blocked:plan_drafting:1",
+		delegator:  "agent_king_plan_blocked",
+		outputText: "Late council plan revision from the blocked winner.",
+	}
+	if err := rt.orchestrator.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit blocked winner completion: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain blocked winner completion outbox: %v", err)
+	}
+
+	var planningOutputCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_planning_outputs WHERE attempt_id = 'run_superseded_plan_blocked:plan_drafting:1'`).Scan(&planningOutputCount); err != nil {
+		t.Fatalf("count blocked winner planning outputs: %v", err)
+	}
+	if planningOutputCount != 1 {
+		t.Fatalf("expected blocked winner to publish one canonical planning output, got %d rows", planningOutputCount)
+	}
+
+	var responseCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_superseded_plan_blocked' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&responseCount); err != nil {
+		t.Fatalf("count blocked winner mailbox responses: %v", err)
+	}
+	if responseCount != 1 {
+		t.Fatalf("expected blocked winner to publish one canonical mailbox response, got %d rows", responseCount)
+	}
+
+	if got := queryNodeStatus(t, db, "nr_superseded_plan_blocked_1"); got != "succeeded" {
+		t.Fatalf("expected blocked winner node to converge to succeeded, got %q", got)
+	}
+	if got := queryNodeStatus(t, db, "nr_superseded_plan_blocked_2"); got != "cancelled" {
+		t.Fatalf("expected queued retry to be cancelled after blocked winner succeeds, got %q", got)
+	}
+
+	latestAttempts, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_superseded_plan_blocked")
+	if err != nil {
+		t.Fatalf("load canonical latest attempts for blocked winner run: %v", err)
+	}
+	latestAttempt, ok := latestAttempts["plan_drafting"]
+	if !ok {
+		t.Fatal("expected canonical latest blocked winner attempt to exist")
+	}
+	if latestAttempt.Attempt != 1 || latestAttempt.NodeStatus != "succeeded" {
+		t.Fatalf("expected canonical latest blocked winner to remain attempt 1 succeeded, got attempt=%d status=%q", latestAttempt.Attempt, latestAttempt.NodeStatus)
+	}
+}
+
+func TestCompleteExecutionResyncsOlderAgentWhenLateSupersededAttemptFinishes(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedLateSupersededDifferentAgentRun(t, db)
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	job := asyncExecutionResult{
+		run:        runSnapshot{RunID: "run_superseded_agents", RunStatus: "running", PlanState: "draft"},
+		node:       nodeDefinition{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"},
+		attempt:    nodeAttempt{NodeRunID: "nr_superseded_agents_1", NodeID: "plan_drafting", Attempt: 1, AgentID: "agent_council_old", RequiredRole: "council-member", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
+		attemptID:  "run_superseded_agents:plan_drafting:1",
+		delegator:  "agent_king_superseded_agents",
+		outputText: "Late output from the older council agent.",
+	}
+	if err := rt.orchestrator.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("commit late superseded completion: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain late superseded completion outbox: %v", err)
+	}
+
+	var oldAgentStatus string
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_council_old'`).Scan(&oldAgentStatus); err != nil {
+		t.Fatalf("query older agent status: %v", err)
+	}
+	if oldAgentStatus != "idle" {
+		t.Fatalf("expected older agent to resync to idle after late completion, got %q", oldAgentStatus)
+	}
+
+	var newerAgentStatus string
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_council_new'`).Scan(&newerAgentStatus); err != nil {
+		t.Fatalf("query newer agent status: %v", err)
+	}
+	if newerAgentStatus != "busy" {
+		t.Fatalf("expected launched retry agent to remain busy, got %q", newerAgentStatus)
+	}
+
+	var responseCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_superseded_agents' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&responseCount); err != nil {
+		t.Fatalf("count late superseded mailbox responses: %v", err)
+	}
+	if responseCount != 0 {
+		t.Fatalf("expected no canonical mailbox response from late superseded attempt, got %d", responseCount)
 	}
 }
 
@@ -10428,6 +11472,9 @@ func TestRuntimeDispatchLoopAutoCompletesKingPlanDecisionWithoutProviderExecutio
 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick autonomous king plan decision: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
 	}
 	if adapter.callsCount() != 0 {
 		t.Fatalf("expected autonomous king_plan_decision to avoid provider execution, got %d adapter calls", adapter.callsCount())
@@ -11393,6 +12440,79 @@ func seedSimpleDispatchRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_dispatch', NULL, 'decree_dispatch', 'wfdef_dispatch', 'pending', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 }
 
+func seedSupersededPlanCompletionRun(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_plan', 'king', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_plan', 'council-member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_superseded_plan', 'superseded plan', 'superseded plan', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_superseded_plan', 'superseded-plan-flow', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_superseded_plan', 'wfdef_superseded_plan', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan', NULL, 'decree_superseded_plan', 'wfdef_superseded_plan', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_1', 'run_superseded_plan', 'plan_drafting', 1,1, 'running', 'council-member', 'agent_council_plan', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_2', 'run_superseded_plan', 'plan_drafting', 2,2, 'ready', 'council-member', 'agent_council_plan', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:1', 'run_superseded_plan', 'nr_superseded_plan_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:2', 'run_superseded_plan', 'nr_superseded_plan_2', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+}
+
+func seedSupersededPlanStartingRetryRun(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_plan_starting', 'king', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_plan_starting', 'council-member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_superseded_plan_starting', 'superseded plan starting', 'superseded plan starting', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_superseded_plan_starting', 'superseded-plan-starting-flow', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_superseded_plan_starting', 'wfdef_superseded_plan_starting', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan_starting', NULL, 'decree_superseded_plan_starting', 'wfdef_superseded_plan_starting', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_starting_1', 'run_superseded_plan_starting', 'plan_drafting', 1,1, 'running', 'council-member', 'agent_council_plan_starting', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_starting_2', 'run_superseded_plan_starting', 'plan_drafting', 2,2, 'starting', 'council-member', 'agent_council_plan_starting', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:1', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:2', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_2', 'starting', 'runtime_owned', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+}
+
+func seedSupersededPlanBlockedRetryRun(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_plan_blocked', 'king', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_plan_blocked', 'council-member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_superseded_plan_blocked', 'superseded plan blocked', 'superseded plan blocked', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_superseded_plan_blocked', 'superseded-plan-blocked-flow', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_superseded_plan_blocked', 'wfdef_superseded_plan_blocked', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan_blocked', NULL, 'decree_superseded_plan_blocked', 'wfdef_superseded_plan_blocked', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_blocked_1', 'run_superseded_plan_blocked', 'plan_drafting', 1,1, 'blocked', 'council-member', 'agent_council_plan_blocked', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_blocked_2', 'run_superseded_plan_blocked', 'plan_drafting', 2,2, 'ready', 'council-member', 'agent_council_plan_blocked', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:1', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:2', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_2', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+}
+
+func seedLateSupersededDifferentAgentRun(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_superseded_agents', 'king', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_old', 'council-member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_new', 'council-member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_superseded_agents', 'superseded agents', 'superseded agents', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_superseded_agents', 'superseded-agents-flow', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_superseded_agents', 'wfdef_superseded_agents', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_agents', NULL, 'decree_superseded_agents', 'wfdef_superseded_agents', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_agents_1', 'run_superseded_agents', 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_council_old', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_agents_2', 'run_superseded_agents', 'plan_drafting', 2, 2, 'running', 'council-member', 'agent_council_new', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:1', 'run_superseded_agents', 'nr_superseded_agents_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:2', 'run_superseded_agents', 'nr_superseded_agents_2', 'running', 'runtime_owned', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', '2026-03-01T12:00:06Z', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+}
+
 func seedCanonicalRoleCoverageRun(t *testing.T, db *sql.DB) {
 	t.Helper()
 
@@ -11447,6 +12567,10 @@ type blockingFirstExecutionAdapter struct {
 	secondExecuteStarted chan struct{}
 }
 
+type delayedProcessStartExecutionAdapter struct {
+	processStart chan struct{}
+}
+
 type timeoutCancelObserverAdapter struct {
 	mu             sync.Mutex
 	cancelCount    int
@@ -11478,7 +12602,14 @@ type errorMetadataExecutionAdapter struct {
 	err      error
 }
 
-func (a *timeoutCancelObserverAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+func callOnProcessStarted(req opencode.ExecuteRequest) {
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+}
+
+func (a *timeoutCancelObserverAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"noop"}`}, nil
 }
 
@@ -11527,6 +12658,7 @@ func (a *timeoutCancelObserverAdapter) cancelRequestsSnapshot() []opencode.Cance
 }
 
 func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
@@ -11578,6 +12710,7 @@ func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest 
 }
 
 func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
@@ -11618,6 +12751,7 @@ func (a *outcomeSequenceExecutionAdapter) Stream(context.Context, opencode.Strea
 }
 
 func (a *lifecycleObservationExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	if req.OnLifecycle != nil {
 		req.OnLifecycle(opencode.ExecuteLifecycleObservation{
 			Phase:             opencode.ExecuteLifecyclePhaseProviderExportReconciliationStarted,
@@ -11702,7 +12836,8 @@ func (a *lifecycleObservationExecutionAdapter) Stream(context.Context, opencode.
 	return eventCh, errCh, nil
 }
 
-func (a *errorMetadataExecutionAdapter) Execute(_ context.Context, _ opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+func (a *errorMetadataExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	return a.response, a.err
 }
 
@@ -11725,7 +12860,12 @@ func newBlockingFirstExecutionAdapter() *blockingFirstExecutionAdapter {
 	}
 }
 
+func newDelayedProcessStartExecutionAdapter() *delayedProcessStartExecutionAdapter {
+	return &delayedProcessStartExecutionAdapter{processStart: make(chan struct{})}
+}
+
 func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.callCount++
 	call := a.callCount
@@ -11747,11 +12887,45 @@ func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencod
 	return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
 }
 
+func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	select {
+	case <-a.processStart:
+	case <-ctx.Done():
+		return opencode.ExecuteResponse{}, ctx.Err()
+	}
+	callOnProcessStarted(req)
+	accepted, err := maybeAcceptTestCompletionReceipt(req, `{"summary":"ok"}`)
+	if err != nil {
+		return opencode.ExecuteResponse{}, err
+	}
+	return opencode.ExecuteResponse{
+		Accepted:                        true,
+		OutputText:                      `{"summary":"ok"}`,
+		CompletionReceiptAccepted:       true,
+		CompletionReceiptEvidenceID:     accepted.EvidenceID,
+		CompletionStructuredPayloadJSON: accepted.StructuredPayloadJSON,
+		ProviderInvocationID:            strings.TrimSpace(req.InvocationID),
+		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
+	}, nil
+}
+
 func (a *blockingFirstExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
 	return nil
 }
 
+func (a *delayedProcessStartExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
+	return nil
+}
+
 func (a *blockingFirstExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
+	eventCh := make(chan opencode.AttemptStreamEvent)
+	errCh := make(chan error)
+	close(eventCh)
+	close(errCh)
+	return eventCh, errCh, nil
+}
+
+func (a *delayedProcessStartExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
 	eventCh := make(chan opencode.AttemptStreamEvent)
 	errCh := make(chan error)
 	close(eventCh)
@@ -11765,6 +12939,15 @@ func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {
 		return
 	default:
 		close(a.blockFirst)
+	}
+}
+
+func (a *delayedProcessStartExecutionAdapter) releaseProcessStart() {
+	select {
+	case <-a.processStart:
+		return
+	default:
+		close(a.processStart)
 	}
 }
 

@@ -582,7 +582,7 @@ describe("useRunEventStream", () => {
     expect(queryClient.getQueryState(governanceHistoryKey)?.isInvalidated).toBe(true);
   });
 
-  it("patches timeline activity while invalidating only graph and agents for node state changes", async () => {
+	it("patches timeline activity while invalidating execution surfaces for node state changes", async () => {
     const invocations: Array<{
       onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
     }> = [];
@@ -641,12 +641,13 @@ describe("useRunEventStream", () => {
       }))
       .filter((call): call is { queryKey: readonly unknown[]; exact: boolean | undefined } => Array.isArray(call.queryKey));
 
-    expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
-    expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
-    expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
-    expect(invalidatedKeys).not.toContainEqual({ queryKey: ["runs", "run-1", "timeline"], exact: undefined });
-    expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.plan("run-1"), exact: true });
-    expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.governanceSummary("run-1"), exact: true });
+		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
+		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.executions("run-1"), exact: false });
+		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
+		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
+		expect(invalidatedKeys).not.toContainEqual({ queryKey: ["runs", "run-1", "timeline"], exact: undefined });
+		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.plan("run-1"), exact: true });
+		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.governanceSummary("run-1"), exact: true });
   });
 
   it("invalidates graph and agents when execution starts running", async () => {
@@ -1227,7 +1228,226 @@ describe("useRunEventStream", () => {
 				node_run_id: "nr-rerun-queued",
 				activity_at: "2026-03-01T10:10:00Z",
 				status: "running",
+				started_at: "2026-03-01T10:10:00Z",
 				live_label: "Execution started",
+			},
+		});
+
+		await expect(
+			invocations[0].onEvent({
+				id: "evt-rerun-running",
+				type: "message",
+				data: JSON.stringify({
+					event_id: "evt-rerun-running",
+					event_type: "node.state_changed",
+					run_event_seq: 3,
+					attempt_seq: 11,
+					node_run_id: "nr-rerun-queued",
+					created_at: "2026-03-01T10:10:02Z",
+					payload_json: { state: "running" },
+					state: "running",
+				}),
+			}),
+		).resolves.toBe(true);
+
+		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
+			"nr-rerun-queued": {
+				node_run_id: "nr-rerun-queued",
+				activity_at: "2026-03-01T10:10:02Z",
+				status: "running",
+				started_at: "2026-03-01T10:10:00Z",
+				live_label: "Execution started",
+			},
+		});
+	});
+
+	it("keeps workspace preparation progress out of the running state", async () => {
+		const invocations: Array<{
+			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
+		}> = [];
+
+		subscribeSSEMock.mockImplementation((args) => {
+			invocations.push(args);
+			return new Promise<void>(() => undefined);
+		});
+
+		renderHook(() => useRunEventStream("run-1"), {
+			wrapper: makeWrapper(),
+		});
+		await flush();
+
+		await expect(
+			invocations[0].onEvent({
+				id: "evt-workspace-prepared",
+				type: "message",
+				data: JSON.stringify({
+					event_id: "evt-workspace-prepared",
+					event_type: "attempt.progress",
+					reason_code: "workspace_prepared",
+					run_event_seq: 1,
+					attempt_seq: 1,
+					node_run_id: "nr-workspace-prepared",
+					created_at: "2026-03-01T10:09:00Z",
+					node_id: "plan_drafting",
+					attempt_id: "run-1:plan_drafting:1",
+					attempt: 1,
+				}),
+			}),
+		).resolves.toBe(true);
+
+		const projection = queryClient.getQueryData<Record<string, { status?: string; live_label?: string }>>(liveExecutionProjectionKey("run-1"));
+		expect(projection?.["nr-workspace-prepared"]?.status).toBeUndefined();
+		expect(projection?.["nr-workspace-prepared"]?.live_label).toBe("Workspace prepared");
+	});
+
+	it("projects provider retry activity as running instead of queued", async () => {
+		const invocations: Array<{
+			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
+		}> = [];
+
+		subscribeSSEMock.mockImplementation((args) => {
+			invocations.push(args);
+			return new Promise<void>(() => undefined);
+		});
+
+		renderHook(() => useRunEventStream("run-1"), {
+			wrapper: makeWrapper(),
+		});
+		await flush();
+
+		await expect(
+			invocations[0].onEvent({
+				id: "evt-attempt-retrying",
+				type: "message",
+				data: JSON.stringify({
+					event_id: "evt-attempt-retrying",
+					event_type: "attempt.retrying",
+					reason_code: "provider_empty_output_retry",
+					run_event_seq: 1,
+					attempt_seq: 4,
+					node_run_id: "nr-attempt-retrying",
+					created_at: "2026-03-01T10:11:00Z",
+					payload_json: {
+						node_id: "delegated_execution_berserker",
+						node_run_id: "nr-attempt-retrying",
+						attempt_id: "run-1:delegated_execution_berserker:1",
+						attempt: 1,
+						retry_index: 2,
+						retry_max: 3,
+					},
+				}),
+			}),
+		).resolves.toBe(true);
+
+		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
+			"nr-attempt-retrying": {
+				node_run_id: "nr-attempt-retrying",
+				activity_at: "2026-03-01T10:11:00Z",
+				status: "running",
+				live_label: "Retrying provider",
+			},
+		});
+	});
+
+	it("projects stale recovery as blocked instead of running", async () => {
+		const invocations: Array<{
+			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
+		}> = [];
+
+		subscribeSSEMock.mockImplementation((args) => {
+			invocations.push(args);
+			return new Promise<void>(() => undefined);
+		});
+
+		renderHook(() => useRunEventStream("run-1"), {
+			wrapper: makeWrapper(),
+		});
+		await flush();
+
+		await expect(
+			invocations[0].onEvent({
+				id: "evt-attempt-blocked",
+				type: "message",
+				data: JSON.stringify({
+					event_id: "evt-attempt-blocked",
+					event_type: "attempt.recovered",
+					reason_code: "agent_unresponsive",
+					run_event_seq: 1,
+					attempt_seq: 4,
+					node_run_id: "nr-attempt-blocked",
+					created_at: "2026-03-01T10:12:00Z",
+					payload_json: {
+						state: "blocked",
+						node_id: "plan_drafting",
+						node_run_id: "nr-attempt-blocked",
+						attempt_id: "run-1:plan_drafting:1",
+						attempt: 1,
+					},
+					state: "blocked",
+					node_id: "plan_drafting",
+					attempt_id: "run-1:plan_drafting:1",
+					attempt: 1,
+				}),
+			}),
+		).resolves.toBe(true);
+
+		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
+			"nr-attempt-blocked": {
+				node_run_id: "nr-attempt-blocked",
+				activity_at: "2026-03-01T10:12:00Z",
+				status: "blocked",
+				live_label: "Blocked for retry",
+			},
+		});
+	});
+
+	it("projects retry exhausted as blocked after execution stops", async () => {
+		const invocations: Array<{
+			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
+		}> = [];
+
+		subscribeSSEMock.mockImplementation((args) => {
+			invocations.push(args);
+			return new Promise<void>(() => undefined);
+		});
+
+		renderHook(() => useRunEventStream("run-1"), {
+			wrapper: makeWrapper(),
+		});
+		await flush();
+
+		await expect(
+			invocations[0].onEvent({
+				id: "evt-attempt-retry-exhausted",
+				type: "message",
+				data: JSON.stringify({
+					event_id: "evt-attempt-retry-exhausted",
+					event_type: "attempt.retry_exhausted",
+					reason_code: "provider_empty_output_exhausted",
+					run_event_seq: 1,
+					attempt_seq: 5,
+					node_run_id: "nr-attempt-retry-exhausted",
+					created_at: "2026-03-01T10:13:00Z",
+					payload_json: {
+						node_id: "delegated_execution_berserker",
+						node_run_id: "nr-attempt-retry-exhausted",
+						attempt_id: "run-1:delegated_execution_berserker:1",
+						attempt: 1,
+						retry_max: 2,
+					},
+					node_id: "delegated_execution_berserker",
+					attempt_id: "run-1:delegated_execution_berserker:1",
+					attempt: 1,
+				}),
+			}),
+		).resolves.toBe(true);
+
+		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
+			"nr-attempt-retry-exhausted": {
+				node_run_id: "nr-attempt-retry-exhausted",
+				activity_at: "2026-03-01T10:13:00Z",
+				status: "blocked",
+				live_label: "Retry exhausted",
 			},
 		});
 	});

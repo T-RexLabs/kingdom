@@ -10,6 +10,7 @@ import (
 
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
 )
 
 const attemptCancelOutboxWriteTimeout = 5 * time.Second
@@ -43,7 +44,7 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		}
 
 		if rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
-			if err := o.markAttemptCancelPublished(ctx, rec.CancelOutboxID, publishedAt); err != nil {
+			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
 				return processed, err
 			}
 			processed++
@@ -57,7 +58,7 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 
 		var missing *opencode.AttemptNotFoundError
 		if err == nil || errors.As(err, &missing) {
-			if err := o.markAttemptCancelPublished(ctx, rec.CancelOutboxID, publishedAt); err != nil {
+			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
 				return processed, err
 			}
 			processed++
@@ -74,6 +75,21 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 	}
 
 	return processed, nil
+}
+
+func (o *orchestrationLoop) publishAttemptCancelAfterProjection(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) error {
+	if o != nil && o.db != nil && strings.TrimSpace(rec.RunID) != "" && strings.TrimSpace(rec.NodeRunID) != "" {
+		if _, err := o.transitionService().ProjectNodeTerminalFromDurableAttempt(ctx, state.DurableAttemptNodeProjectionRequest{
+			RunID:      rec.RunID,
+			NodeRunID:  rec.NodeRunID,
+			AttemptID:  rec.AttemptID,
+			ActorID:    "runtime_orchestrator",
+			OccurredAt: publishedAt,
+		}); err != nil {
+			return err
+		}
+	}
+	return o.markAttemptCancelPublished(ctx, rec.CancelOutboxID, publishedAt)
 }
 
 func attemptCancelRequest(rec executionstore.AttemptCancelRecord, fallbackOccurredAt string) opencode.CancelRequest {

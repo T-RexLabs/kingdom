@@ -19,6 +19,10 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		provider_session_id: overrides.provider_session_id,
 		logical_session_id: overrides.logical_session_id,
 		last_heartbeat_at: overrides.last_heartbeat_at,
+		progress_event_type: overrides.progress_event_type,
+		progress_reason_code: overrides.progress_reason_code,
+		progress_at: overrides.progress_at,
+		launch_started_at: overrides.launch_started_at,
 		started_at: overrides.started_at,
 		terminal_observed_at: overrides.terminal_observed_at,
 		committed_at: overrides.committed_at,
@@ -120,6 +124,55 @@ describe("run executions panel", () => {
 		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
 	});
 
+	it("shows launching copy for steps that are still in starting", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "starting",
+			launch_started_at: "2026-03-06T10:00:30.000Z",
+			started_at: undefined,
+			settlement_status: "not_started",
+			output_status: "none",
+			output_text: undefined,
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("This step is launching now.")).toBeInTheDocument();
+	});
+
+	it("shows blocked copy instead of completed copy", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "blocked",
+			settlement_status: "failed",
+			output_status: "none",
+			output_text: undefined,
+			failure_code: "dependency_blocked",
+			failure_text: "validator blocked",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
+		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
+	});
+
 	it("shows provider incomplete turn as a receipt-backed failure", async () => {
 		const user = userEvent.setup();
 		const detail = makeExecutionDetail({
@@ -216,6 +269,54 @@ describe("run executions panel", () => {
 		expect(screen.queryByText("Attempt ID")).not.toBeInTheDocument();
 		expect(screen.queryByText("Session ID")).not.toBeInTheDocument();
 		expect(screen.queryByText("Invocation ID")).not.toBeInTheDocument();
+	});
+
+	it("shows both launch and start timestamps once execution becomes observable", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			attempt_id: "attempt-launch-start",
+			launch_started_at: "2026-03-06T10:00:30.000Z",
+			started_at: "2026-03-06T10:01:00.000Z",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Diagnostics/i }));
+		expect(screen.getByText("Launching")).toBeInTheDocument();
+		expect(screen.getByText((_, element) => element?.tagName === "TIME" && element.getAttribute("datetime") === "2026-03-06T10:00:30.000Z")).toBeInTheDocument();
+		expect(screen.getByText("Started")).toBeInTheDocument();
+		expect(screen.getByText((_, element) => element?.tagName === "TIME" && element.getAttribute("datetime") === "2026-03-06T10:01:00.000Z")).toBeInTheDocument();
+	});
+
+	it("shows durable progress messaging after a refetch without live signal state", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "blocked",
+			output_status: "none",
+			output_text: undefined,
+			progress_event_type: "attempt.retry_exhausted",
+			progress_reason_code: undefined,
+			progress_at: "2026-03-06T10:02:00.000Z",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("Kingdom exhausted provider retries for this step.")).toBeInTheDocument();
 	});
 
 	it("exposes disclosure state to assistive tech", async () => {

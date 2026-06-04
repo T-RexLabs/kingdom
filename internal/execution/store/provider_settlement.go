@@ -1562,6 +1562,27 @@ func loadAttemptInvocationRefsTx(ctx context.Context, tx *sql.Tx, attemptID stri
 	return active.String, canonical.String, true, nil
 }
 
+func loadAttemptExecutionStateTx(ctx context.Context, tx *sql.Tx, attemptID string) (string, bool, error) {
+	var state sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("load attempt execution state for %q: %w", attemptID, err)
+	}
+	return strings.TrimSpace(state.String), true, nil
+}
+
+func attemptExecutionCanAcceptReceipt(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "queued", "starting", "running":
+		return true
+	default:
+		return false
+	}
+}
+
 func insertProviderCompletionEvidenceTx(ctx context.Context, tx *sql.Tx, req AppendProviderCompletionEvidenceRequest) (ProviderCompletionEvidence, error) {
 	normalized, err := normalizeProviderCompletionEvidenceRequest(req, true)
 	if err != nil {
@@ -1955,6 +1976,16 @@ func validateProviderInvocationReceiptEligibilityTx(ctx context.Context, tx *sql
 	}
 	if !foundAttempt {
 		return providerSettlementError("accept_provider_completion_receipt", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	attemptState, foundState, err := loadAttemptExecutionStateTx(ctx, tx, invocation.AttemptID)
+	if err != nil {
+		return err
+	}
+	if !foundState {
+		return providerSettlementError("accept_provider_completion_receipt", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if !attemptExecutionCanAcceptReceipt(attemptState) {
+		return providerSettlementError("accept_provider_completion_receipt", "attempt_not_active", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
 	if activeInvocationID != invocation.ProviderInvocationID {
 		return providerSettlementError("accept_provider_completion_receipt", "invocation_not_active", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))

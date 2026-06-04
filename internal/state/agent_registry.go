@@ -5,12 +5,22 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 type agentRegistryReadQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type agentRegistryRowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+type agentRegistryExecQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 type AgentStatus string
@@ -242,6 +252,74 @@ func (r *AgentRegistry) UpdateAgentStatus(ctx context.Context, req UpdateAgentSt
 	return &AgentStatusConflictError{AgentID: req.AgentID, ExpectedStatus: req.FromStatus, ObservedStatus: observedStatus}
 }
 
+func projectedAgentStatusFromLiveNodeRunsWithQuerier(ctx context.Context, q agentRegistryRowQuerier, agentID string) (AgentStatus, error) {
+	return projectedAgentStatusFromLiveNodeRunsWithQuerierExcludingNode(ctx, q, agentID, "")
+}
+
+func projectedAgentStatusFromLiveNodeRunsWithQuerierExcludingNode(ctx context.Context, q agentRegistryRowQuerier, agentID string, excludeNodeRunID string) (AgentStatus, error) {
+	trimmedAgentID := strings.TrimSpace(agentID)
+	if trimmedAgentID == "" {
+		return AgentStatusIdle, nil
+	}
+	trimmedExcludeNodeRunID := strings.TrimSpace(excludeNodeRunID)
+	var status AgentStatus
+	err := q.QueryRowContext(ctx, `
+SELECT CASE
+	WHEN EXISTS (
+		SELECT 1
+		FROM node_runs
+		WHERE agent_id = ?
+		  AND (? = '' OR node_run_id <> ?)
+		  AND COALESCE(TRIM(superseded_at), '') = ''
+		  AND node_status IN ('pending', 'ready', 'starting', 'running')
+	) THEN 'busy'
+	WHEN EXISTS (
+		SELECT 1
+		FROM node_runs
+		WHERE agent_id = ?
+		  AND (? = '' OR node_run_id <> ?)
+		  AND COALESCE(TRIM(superseded_at), '') = ''
+		  AND node_status = 'blocked'
+	) THEN 'blocked'
+	ELSE 'idle'
+END`, trimmedAgentID, trimmedExcludeNodeRunID, trimmedExcludeNodeRunID, trimmedAgentID, trimmedExcludeNodeRunID, trimmedExcludeNodeRunID).Scan(&status)
+	if err != nil {
+		return "", fmt.Errorf("project live agent status for %q: %w", trimmedAgentID, err)
+	}
+	return status, nil
+}
+
+func syncAgentOperationalStatusWithQuerier(ctx context.Context, q agentRegistryExecQuerier, agentID, updatedAt string) error {
+	trimmedAgentID := strings.TrimSpace(agentID)
+	if trimmedAgentID == "" {
+		return nil
+	}
+	desiredStatus, err := projectedAgentStatusFromLiveNodeRunsWithQuerier(ctx, q, trimmedAgentID)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx,
+		`UPDATE agents
+		 SET status = ?,
+		     updated_at = ?
+		 WHERE agent_id = ?
+		   AND status NOT IN ('offline', 'failed')`,
+		desiredStatus,
+		updatedAt,
+		trimmedAgentID,
+	); err != nil {
+		return fmt.Errorf("sync agent operational status for %q: %w", trimmedAgentID, err)
+	}
+	return nil
+}
+
+func (r *AgentRegistry) SyncOperationalStatus(ctx context.Context, agentID, updatedAt string) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	return syncAgentOperationalStatusWithQuerier(ctx, r.db, agentID, updatedAt)
+}
+
 func (r *AgentRegistry) ReassignAgent(ctx context.Context, req ReassignAgentRequest) error {
 	if req.MaxSpawnDepth < 0 {
 		return fmt.Errorf("max spawn depth must be non-negative")
@@ -364,14 +442,19 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 			       nr.node_status,
 			       ROW_NUMBER() OVER (
 			         PARTITION BY nr.agent_id, nr.node_id
-			         ORDER BY nr.attempt DESC, nr.node_run_id DESC
+			         ORDER BY CASE
+			           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+			           ELSE 1
+			         END ASC,
+			         nr.attempt DESC,
+			         nr.node_run_id DESC
 			       ) AS node_rank
 			FROM node_runs nr
 			WHERE nr.run_id = ?
 		), run_participant_status AS (
 			SELECT agent_id,
 			       CASE
-			         WHEN SUM(CASE WHEN node_rank = 1 AND node_status = 'running' THEN 1 ELSE 0 END) > 0 THEN 'busy'
+			         WHEN SUM(CASE WHEN node_rank = 1 AND node_status IN ('starting', 'running') THEN 1 ELSE 0 END) > 0 THEN 'busy'
 			         WHEN SUM(CASE WHEN node_rank = 1 AND node_status = 'blocked' THEN 1 ELSE 0 END) > 0 THEN 'blocked'
 			         WHEN SUM(CASE WHEN node_rank = 1 AND node_status = 'failed' THEN 1 ELSE 0 END) > 0 THEN 'failed'
 			         ELSE NULL
@@ -386,7 +469,11 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 			         PARTITION BY nr.agent_id
 			         ORDER BY
 			           CASE
-			             WHEN nr.node_status = 'running' THEN 0
+			             WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+			             ELSE 1
+			           END,
+			           CASE
+			             WHEN nr.node_status IN ('starting', 'running') THEN 0
 			             WHEN nr.node_status = 'blocked' THEN 1
 			             ELSE 2
 			           END,

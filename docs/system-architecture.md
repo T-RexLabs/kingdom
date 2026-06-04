@@ -182,8 +182,13 @@ Important clarifications:
 - Every attempt and artifact has accountable role/agent lineage.
 - `provider.engine` accepts only `opencode` for supported runtime use.
 - Missing global model selection blocks new OpenCode runs.
-- Node `running` means setup is complete and provider dispatch can begin immediately.
+- Node `starting` means runtime setup is complete and provider launch is in progress but not yet observed.
+- Runtime-owned nodes do not use the provider launch phase; they transition directly from `ready` to `running`.
+- Node `running` means provider launch has been observed and execution is actively in flight.
+- Node `blocked` is the canonical stale-retry quarantine state for a live attempt that runtime has stopped treating as actively executing.
+- Operator-visible node surfaces keep a `starting`, `running`, or `blocked` lineage visible until a replacement attempt actually reaches `starting` or `running`; queued retries do not hide the older live lineage.
 - Setup failures terminate from setup states and must not emit fake execution-start telemetry.
+- `attempt_executions.launch_started_at` records the durable start of the provider launch handoff, while `started_at` records only observed `running` execution.
 - Worker outputs must satisfy the runtime output schema before persistence.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles remain response-first and publish markdown snapshots rather than arbitrary deliverables.
@@ -199,6 +204,10 @@ Important clarifications:
 - Provider-backed decree execution success must never be inferred from process exit, `step_finish.reason`, non-empty output text, mailbox projections, artifact presence, or export output.
 - Provider-backed planning success must never be inferred from process exit, stream text, non-empty output text, or export output without accepted runtime receipt settlement for the active planner invocation.
 - Latest node state must converge to durable `attempt_executions` terminal truth; a durably terminal attempt cannot leave its latest node run live.
+- Superseded attempts remain audit evidence only; they must not publish canonical planning output, mailbox responses, or canonical response artifacts.
+- Superseded provider-backed attempts that already have a launch/session handoff must still flow through durable cancel dispatch and session-lease closure before they disappear from live execution.
+- If an older attempt settles successfully before a queued retry ever launches, runtime cancels that queued retry as superseded-before-launch and excludes it from canonical latest-attempt lineage while preserving it in audit history.
+- Graceful shutdown must wait for durable async completion handoff and drain pending execution outbox projection before returning.
 - `run_status=succeeded` requires final authority acceptance:
   - automatically when `governance.autonomous_approvals=true`
   - explicit allfather confirmation when `governance.autonomous_approvals=false`

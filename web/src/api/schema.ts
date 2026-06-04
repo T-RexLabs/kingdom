@@ -1723,7 +1723,7 @@ export interface components {
         RunGraphNode: {
             node_id: string;
             /** @enum {string} */
-            state: "pending" | "ready" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped";
+            state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped";
             required_role: string;
             /** @enum {string} */
             execution_ownership: "provider_backed" | "runtime_owned";
@@ -1777,13 +1777,19 @@ export interface components {
             /** @enum {string} */
             execution_mode: "provider_backed" | "runtime_owned";
             /** @enum {string} */
-            status: "queued" | "starting" | "running" | "verifying" | "succeeded" | "failed" | "cancelled";
+            status: "queued" | "starting" | "running" | "blocked" | "verifying" | "succeeded" | "failed" | "cancelled";
             logical_session_id?: string;
             provider_session_id?: string;
             /** Format: date-time */
             last_heartbeat_at?: string;
             /** Format: date-time */
             activity_at: string;
+            progress_event_type?: string;
+            progress_reason_code?: string;
+            /** Format: date-time */
+            progress_at?: string;
+            /** Format: date-time */
+            launch_started_at?: string;
             /** Format: date-time */
             started_at?: string;
             /** Format: date-time */

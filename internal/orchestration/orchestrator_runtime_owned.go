@@ -80,7 +80,7 @@ func (o *orchestrationLoop) ensureDecisionNodeAttempts(ctx context.Context, run 
 		attempt, ok := latest[node.NodeID]
 		if ok {
 			switch attempt.NodeStatus {
-			case "pending", "ready", "running", "blocked":
+			case "pending", "ready", "starting", "running", "blocked":
 				continue
 			}
 		}

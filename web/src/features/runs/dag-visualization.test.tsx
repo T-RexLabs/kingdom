@@ -2,11 +2,11 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { DAGVisualization } from "./dag-visualization";
 
-function providerNode(node_id: string, required_role: string, state: "pending" | "ready" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
+function providerNode(node_id: string, required_role: string, state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
   return { node_id, required_role, execution_ownership: "provider_backed" as const, state };
 }
 
-function runtimeNode(node_id: string, required_role: string, state: "pending" | "ready" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
+function runtimeNode(node_id: string, required_role: string, state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
   return { node_id, required_role, execution_ownership: "runtime_owned" as const, state };
 }
 
@@ -99,18 +99,37 @@ describe("dag visualization", () => {
     const legend = screen.getByTestId("dag-legend");
 
     expect(legend).toHaveClass("absolute");
-    expect(legend).toHaveClass("bottom-3");
-    expect(legend).toHaveClass("right-3");
-    expect(legend).toHaveClass("sm:bottom-4");
-    expect(legend).toHaveClass("sm:right-4");
-		expect(legend).toHaveTextContent("Succeeded");
-		expect(legend).toHaveTextContent("Failed");
+		expect(legend).toHaveClass("bottom-3");
+		expect(legend).toHaveClass("right-3");
+		expect(legend).toHaveClass("sm:bottom-4");
+		expect(legend).toHaveClass("sm:right-4");
 		expect(legend).toHaveTextContent("Running");
 		expect(legend).toHaveTextContent("Pending");
-		expect(legend).toHaveTextContent("Cancelled");
 		expect(legend).not.toHaveTextContent("Ready");
 		expect(legend).not.toHaveTextContent("Blocked");
 		expect(legend).not.toHaveTextContent("Skipped");
+	});
+
+	it("shows blocked and ready when those states are present in the graph", () => {
+		render(
+			<DAGVisualization
+				graph={{
+					run_id: "run-1",
+					nodes: [
+						providerNode("launch", "chancellor", "starting"),
+						providerNode("recover", "builder-berserker", "blocked"),
+						runtimeNode("handoff", "council-member", "ready"),
+					],
+					edges: [],
+				}}
+			/>,
+		);
+
+		const legend = screen.getByTestId("dag-legend");
+
+		expect(legend).toHaveTextContent("Launching");
+		expect(legend).toHaveTextContent("Blocked");
+		expect(legend).toHaveTextContent("Ready");
 	});
 
   it("preserves the selected node across graph refreshes when the node still exists", () => {

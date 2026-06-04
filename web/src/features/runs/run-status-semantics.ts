@@ -16,6 +16,7 @@ const CAP_AUTO_SUCCEEDED_LABELS = new Set([
 
 export function normalizedRunStatusTone(state: unknown): RunStatusTone | undefined {
 	switch (normalizedToken(state)) {
+		case "starting":
 		case "running":
 		case "failed":
 		case "succeeded":
@@ -60,6 +61,10 @@ export function isQueuedExecutionStatus(status?: string | null): boolean {
 	}
 }
 
+export function isBlockedExecutionStatus(status?: string | null): boolean {
+	return normalizedToken(status) === "blocked";
+}
+
 export function isActiveExecutionStatus(status?: string | null): boolean {
 	switch (normalizedToken(status)) {
 		case "starting":
@@ -72,16 +77,21 @@ export function isActiveExecutionStatus(status?: string | null): boolean {
 }
 
 export function isCurrentActivityExecutionStatus(status?: string | null): boolean {
-	return isQueuedExecutionStatus(status) || isActiveExecutionStatus(status);
+	return isQueuedExecutionStatus(status) || isActiveExecutionStatus(status) || isBlockedExecutionStatus(status);
 }
 
 export function operatorLiveExecutionLabel(label?: string | null): string | null {
-	switch ((label ?? "").trim()) {
-		case "Workspace prepared":
-			return "This step is getting ready.";
-		case "Provider running":
-		case "Execution started":
-			return "This step is still running.";
+		switch ((label ?? "").trim()) {
+			case "Workspace prepared":
+				return "This step is getting ready.";
+			case "Launching":
+				return "This step is launching now.";
+			case "Blocked":
+			case "Blocked for retry":
+				return "This step is blocked while Kingdom decides or performs recovery.";
+			case "Provider running":
+			case "Execution started":
+				return "This step is still running.";
 		case "Completion observed":
 			return "This step is finishing up.";
 		case "Retry queued":
@@ -90,8 +100,12 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 			return "This step is queued to rerun.";
 		case "Retrying provider":
 			return "This step is retrying after a provider issue.";
+		case "Recovered for retry":
+			return "This step recovered and is continuing through retry handling.";
 		case "Provider recovered":
 			return "This step recovered and is continuing.";
+		case "Retry exhausted":
+			return "Kingdom exhausted provider retries for this step.";
 		default: {
 			const trimmed = (label ?? "").trim();
 			return trimmed === "" ? null : trimmed;
@@ -99,10 +113,61 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 	}
 }
 
-export function liveExecutionLabel(reasonCode?: string, eventType?: string): string | undefined {
+export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null): string | null {
+	const liveBody = operatorLiveExecutionLabel(liveLabel);
+	if (liveBody) {
+		return liveBody;
+	}
+		switch (normalizedToken(status)) {
+			case "starting":
+				return "This step is launching now.";
+			case "running":
+				return "This step is still running.";
+			case "blocked":
+				return "This step is blocked while Kingdom decides or performs recovery.";
+			case "verifying":
+				return "Kingdom is still confirming the final result for this step.";
+		case "queued":
+		case "pending":
+			return "This step is queued to start.";
+		default:
+			return null;
+	}
+}
+
+export function executionProgressLabel(
+	status?: string | null,
+	progressReasonCode?: string | null,
+	progressEventType?: string | null,
+	liveLabel?: string | null,
+): string | undefined {
+	const trimmedLiveLabel = typeof liveLabel === "string" ? liveLabel.trim() : "";
+	if (trimmedLiveLabel !== "") {
+		return trimmedLiveLabel;
+	}
+	return liveExecutionLabel(progressReasonCode ?? undefined, progressEventType ?? undefined, status ?? undefined);
+}
+
+function isPreLaunchProgressReasonCode(reasonCode?: string | null): boolean {
+	switch (normalizedToken(reasonCode)) {
+		case "workspace_prepared":
+		case "provider_launching":
+			return true;
+		default:
+			return false;
+	}
+}
+
+export function liveExecutionLabel(
+	reasonCode?: string,
+	eventType?: string,
+	nodeState?: string,
+): string | undefined {
 	switch ((reasonCode ?? "").trim()) {
 		case "workspace_prepared":
 			return "Workspace prepared";
+		case "provider_launching":
+			return "Launching";
 		case "provider_invoked":
 			return "Provider running";
 		case "runtime_completion_observation":
@@ -114,9 +179,20 @@ export function liveExecutionLabel(reasonCode?: string, eventType?: string): str
 		case "provider_output_recovered":
 			return "Provider recovered";
 	}
-	switch ((eventType ?? "").trim()) {
-		case "attempt.started":
-			return "Execution started";
+		switch ((eventType ?? "").trim()) {
+			case "attempt.started":
+				return "Execution started";
+			case "node.state_changed":
+				switch ((nodeState ?? "").trim()) {
+					case "starting":
+						return "Launching";
+					case "running":
+						return "Execution started";
+					case "blocked":
+						return "Blocked";
+					default:
+						return undefined;
+				}
 		case "attempt.retry_queued":
 			return "Retry queued";
 		case "attempt.rerun_queued":
@@ -124,6 +200,9 @@ export function liveExecutionLabel(reasonCode?: string, eventType?: string): str
 		case "attempt.retry_exhausted":
 			return "Retry exhausted";
 		case "attempt.recovered":
+			if ((nodeState ?? "").trim() === "blocked") {
+				return "Blocked for retry";
+			}
 			return "Recovered for retry";
 		case "attempt.failed":
 			return "Execution failed";
@@ -142,9 +221,9 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 	if (isReworkTimelineEvent(event)) {
 		return "rotate";
 	}
-	switch (normalizedToken(event.event_type)) {
-		case "attempt.started":
-			return "play";
+		switch (normalizedToken(event.event_type)) {
+			case "attempt.started":
+				return "play";
 		case "attempt.succeeded":
 		case "attempt.retry_recovered":
 			return "check";
@@ -156,24 +235,29 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 		case "attempt.rerun_queued":
 		case "attempt.recovered":
 			return "rotate";
-		case "attempt.retry_exhausted":
-		case "attempt.timeout_warning":
-			return "alert";
-		case "attempt.progress":
-			return "activity";
-		default:
-			return undefined;
-	}
+			case "attempt.retry_exhausted":
+			case "attempt.timeout_warning":
+				return "alert";
+			case "attempt.progress":
+				return isPreLaunchProgressReasonCode(event.reason_code) ? "play" : "activity";
+			default:
+				return undefined;
+		}
 }
 
 export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type" | "reason_code" | "payload_json">): string | undefined {
 	if (isReworkTimelineEvent(event)) {
 		return undefined;
 	}
-	const liveLabel = liveExecutionLabel(event.reason_code, event.event_type);
-	switch (normalizedToken(event.event_type)) {
-		case "attempt.started":
-			return "started";
+	const nodeState = readPayloadField(event.payload_json, "state");
+	const liveLabel = liveExecutionLabel(
+		event.reason_code,
+		event.event_type,
+		typeof nodeState === "string" ? nodeState : undefined,
+	);
+		switch (normalizedToken(event.event_type)) {
+			case "attempt.started":
+				return "started";
 		case "attempt.succeeded":
 			return "succeeded";
 		case "attempt.failed":
@@ -191,7 +275,7 @@ export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type
 		case "attempt.retry_exhausted":
 			return "retry exhausted";
 		case "attempt.recovered":
-			return "recovered for retry";
+			return liveLabel ? liveLabel.toLowerCase() : "recovered for retry";
 		case "attempt.progress":
 			return liveLabel ?? "execution update";
 		case "attempt.timeout_warning":
@@ -220,9 +304,12 @@ export function badgeToneForLabel(label: string | undefined, fallbackTone: RunSt
 	return isCapAutoSucceededLabel(label) ? "running" : fallbackTone;
 }
 
-export function timelineEventTone(event: Pick<TimelineEvent, "event_type" | "reason_code" | "payload_json">): RunStatusTone {
+	export function timelineEventTone(event: Pick<TimelineEvent, "event_type" | "reason_code" | "payload_json">): RunStatusTone {
 	if (isReworkTimelineEvent(event)) {
 		return "rework";
+	}
+	if (normalizedToken(event.event_type) === "attempt.progress" && isPreLaunchProgressReasonCode(event.reason_code)) {
+		return "starting";
 	}
 	const attemptIcon = attemptEventIconKey(event);
 	if (attemptIcon) {

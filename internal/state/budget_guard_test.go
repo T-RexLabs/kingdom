@@ -10,8 +10,6 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
-
-	"kingdom/internal/dbmigrations"
 )
 
 func TestBudgetGuardAllowsBoundaryValues(t *testing.T) {
@@ -296,14 +294,7 @@ func openBudgetTestDB(t *testing.T) *sql.DB {
 
 func applyBudgetMigration(t *testing.T, db *sql.DB) {
 	t.Helper()
-
-	raw, err := dbmigrations.Read("0001_initial_schema.up.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	if _, err := db.Exec(string(raw)); err != nil {
-		t.Fatalf("apply migration: %v", err)
-	}
+	applyMigration(t, db, "0001_initial_schema.up.sql")
 }
 
 type seedBudgetRunRequest struct {

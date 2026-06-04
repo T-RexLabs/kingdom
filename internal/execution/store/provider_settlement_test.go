@@ -927,6 +927,84 @@ func TestStoreSupersedeProviderInvocationRejectsStaleReceipt(t *testing.T) {
 	}
 }
 
+func TestStoreAcceptProviderCompletionReceiptRejectsTerminalSupersededAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:2"
+	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_retry_provider_2', 'run_1', 'decree_intake', 2, 2, 'blocked', 'king', 'agent_king', 1)`); err != nil {
+		t.Fatalf("insert superseded retry node run: %v", err)
+	}
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_retry_provider_2",
+		ExecutionMode: ExecutionModeProviderBacked,
+		SessionRef:    "session_run_1_decree_intake_2",
+		CreatedAt:     "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_retry_2",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_retry_provider_2",
+		LogicalSessionID:     "session_run_1_decree_intake_2",
+		CompletionCapability: "capability-retry-2",
+		IssuedAt:             "2026-03-01T12:00:02Z",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_retry_2",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_retry_2",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions
+		SET state = 'committed_cancelled',
+		    terminal_observed_at = '2026-03-01T12:00:04Z',
+		    committed_at = '2026-03-01T12:00:04Z',
+		    failure_code = 'superseded_after_launch_handoff',
+		    failure_text = 'retry attempt superseded after launch handoff by an earlier successful attempt',
+		    updated_at = '2026-03-01T12:00:04Z'
+		WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatalf("terminalize superseded attempt: %v", err)
+	}
+
+	_, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+		EvidenceID:            "stale_terminal_receipt_evidence",
+		ProviderInvocationID:  "invocation_retry_2",
+		AttemptID:             attemptID,
+		RunID:                 "run_1",
+		NodeRunID:             "nr_retry_provider_2",
+		ProtocolVersion:       "v1",
+		CompletionCapability:  "capability-retry-2",
+		FinalText:             "stale receipt",
+		StructuredPayloadJSON: `{}`,
+		ReceivedAt:            "2026-03-01T12:00:05Z",
+	})
+	if err == nil {
+		t.Fatal("expected stale receipt for terminal superseded attempt to fail")
+	}
+	var settlementErr *ProviderSettlementError
+	if !errors.As(err, &settlementErr) {
+		t.Fatalf("expected provider settlement error, got %T: %v", err, err)
+	}
+	if settlementErr.Reason != "attempt_not_active" {
+		t.Fatalf("expected attempt_not_active reason, got %q", settlementErr.Reason)
+	}
+}
+
 func TestStoreFinalizeProviderCompletionSettlementSuccessLinksCanonicalAttempt(t *testing.T) {
 	t.Parallel()
 

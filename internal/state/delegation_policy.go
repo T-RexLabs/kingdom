@@ -506,7 +506,7 @@ func (e *DelegationPolicyEngine) activeAgentCountForRun(ctx context.Context, run
 		`SELECT COUNT(DISTINCT agent_id)
 		 FROM node_runs
 		 WHERE run_id = ?
-		   AND node_status IN ('pending', 'ready', 'running', 'blocked')`,
+		   AND node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')`,
 		runID,
 	).Scan(&count)
 	if err != nil {
@@ -522,7 +522,7 @@ func (e *DelegationPolicyEngine) agentIsActiveInRun(ctx context.Context, runID, 
 		 FROM node_runs
 		 WHERE run_id = ?
 		   AND agent_id = ?
-		   AND node_status IN ('pending', 'ready', 'running', 'blocked')
+		   AND node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')
 		 LIMIT 1`,
 		runID,
 		agentID,
@@ -544,7 +544,7 @@ func (e *DelegationPolicyEngine) activeAgentCountForRoleInRun(ctx context.Contex
 		 JOIN agents a ON a.agent_id = nr.agent_id
 		 WHERE nr.run_id = ?
 		   AND a.role_id = ?
-		   AND nr.node_status IN ('pending', 'ready', 'running', 'blocked')`,
+		   AND nr.node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')`,
 		runID,
 		roleID,
 	).Scan(&count)

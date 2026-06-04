@@ -104,6 +104,10 @@ type ExecuteRequest struct {
 	// It may be called more than once if the provider session rotates during retries.
 	OnProviderSession func(sessionID string) `json:"-"`
 
+	// OnProcessStarted is called after the provider command successfully starts
+	// but before stream decoding begins.
+	OnProcessStarted func() `json:"-"`
+
 	// OnLifecycle is called for structured provider execution lifecycle observations
 	// that are not plain text progress, such as export-based reconciliation phases.
 	OnLifecycle func(observation ExecuteLifecycleObservation) `json:"-"`
@@ -235,6 +239,9 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	}
 	if strings.TrimSpace(req.WorkspacePath) == "" {
 		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
 	}
 
 	a.mu.Lock()

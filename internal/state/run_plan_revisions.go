@@ -428,15 +428,12 @@ func scanRunPlanRevision(scanner interface{ Scan(dest ...any) error }, target *R
 func latestNodeRunForPlanRevisionTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, string, error) {
 	var nodeRunID string
 	var status string
-	err := tx.QueryRowContext(ctx,
-		`SELECT node_run_id, node_status
+	query := fmt.Sprintf(`SELECT node_run_id, node_status
 		 FROM node_runs
 		 WHERE run_id = ? AND node_id = ?
-		 ORDER BY attempt DESC, node_run_id DESC
-		 LIMIT 1`,
-		runID,
-		nodeID,
-	).Scan(&nodeRunID, &status)
+		 ORDER BY %s
+		 LIMIT 1`, CanonicalNodeAttemptOrderSQL("node_runs"))
+	err := tx.QueryRowContext(ctx, query, runID, nodeID).Scan(&nodeRunID, &status)
 	if err == sql.ErrNoRows {
 		return "", "", nil
 	}

@@ -19,6 +19,7 @@ export interface LiveExecutionProjectionEntry {
 	status?: RunExecution["status"];
 	live_label?: string;
 	live_reason_code?: string;
+	launch_started_at?: string;
 	started_at?: string;
 	terminal_observed_at?: string;
 }
@@ -59,9 +60,25 @@ export function patchLiveExecutionProjection(
 			[entry.node_run_id]: {
 				...existing,
 				...entry,
+				launch_started_at: earliestObservedTimestamp(existing?.launch_started_at, entry.launch_started_at),
+				started_at: earliestObservedTimestamp(existing?.started_at, entry.started_at),
+				terminal_observed_at: earliestObservedTimestamp(existing?.terminal_observed_at, entry.terminal_observed_at),
 			},
 		};
 	});
+}
+
+function earliestObservedTimestamp(existing?: string, incoming?: string): string | undefined {
+	if (typeof existing === "string" && existing.trim() !== "") {
+		if (typeof incoming === "string" && incoming.trim() !== "") {
+			return incoming < existing ? incoming : existing;
+		}
+		return existing;
+	}
+	if (typeof incoming === "string" && incoming.trim() !== "") {
+		return incoming;
+	}
+	return undefined;
 }
 
 function liveExecutionStatusIsTerminal(status?: RunExecution["status"]): boolean {
@@ -129,6 +146,23 @@ function shouldIgnoreLiveExecutionOverlay(baseStatus: RunExecution["status"], li
 	return liveExecutionStatusIsTerminal(baseStatus) && !liveExecutionStatusIsTerminal(liveStatus);
 }
 
+function apiExecutionIsAtLeastAsFresh(apiActivityAt: string, apiUpdatedAt: string, liveActivityAt: string): boolean {
+	const apiFreshness = apiExecutionFreshness(apiActivityAt, apiUpdatedAt);
+	return apiFreshness >= liveActivityAt;
+}
+
+function apiExecutionFreshness(activityAt?: string, updatedAt?: string): string {
+	const activity = typeof activityAt === "string" ? activityAt.trim() : "";
+	const updated = typeof updatedAt === "string" ? updatedAt.trim() : "";
+	if (activity === "") {
+		return updated;
+	}
+	if (updated === "") {
+		return activity;
+	}
+	return updated > activity ? updated : activity;
+}
+
 export function overlayExecutionItem(item: RunExecution, live: LiveExecutionProjectionEntry | undefined): RunExecution {
 	if (!live) {
 		return item;
@@ -136,10 +170,33 @@ export function overlayExecutionItem(item: RunExecution, live: LiveExecutionProj
 	if (shouldIgnoreLiveExecutionOverlay(item.status, live.status)) {
 		return item;
 	}
+	if (apiExecutionIsAtLeastAsFresh(item.activity_at, item.updated_at, live.activity_at)) {
+		return {
+			...item,
+			...(earliestObservedTimestamp(item.launch_started_at, live.launch_started_at)
+				? { launch_started_at: earliestObservedTimestamp(item.launch_started_at, live.launch_started_at) }
+				: {}),
+			...(earliestObservedTimestamp(item.started_at, live.started_at)
+				? { started_at: earliestObservedTimestamp(item.started_at, live.started_at) }
+				: {}),
+			...(earliestObservedTimestamp(item.terminal_observed_at, live.terminal_observed_at)
+				? { terminal_observed_at: earliestObservedTimestamp(item.terminal_observed_at, live.terminal_observed_at) }
+				: {}),
+		};
+	}
 	return {
 		...item,
 		activity_at: live.activity_at > item.activity_at ? live.activity_at : item.activity_at,
 		...(live.status ? { status: live.status } : {}),
+		...(earliestObservedTimestamp(item.launch_started_at, live.launch_started_at)
+			? { launch_started_at: earliestObservedTimestamp(item.launch_started_at, live.launch_started_at) }
+			: {}),
+		...(earliestObservedTimestamp(item.started_at, live.started_at)
+			? { started_at: earliestObservedTimestamp(item.started_at, live.started_at) }
+			: {}),
+		...(earliestObservedTimestamp(item.terminal_observed_at, live.terminal_observed_at)
+			? { terminal_observed_at: earliestObservedTimestamp(item.terminal_observed_at, live.terminal_observed_at) }
+			: {}),
 	};
 }
 
@@ -173,20 +230,39 @@ export function overlayExecutionDetail(
 	if (shouldIgnoreLiveExecutionOverlay(detail.status, live.status)) {
 		return detail;
 	}
+	if (apiExecutionIsAtLeastAsFresh(detail.activity_at, detail.updated_at, live.activity_at)) {
+		return {
+			...detail,
+			...(earliestObservedTimestamp(detail.launch_started_at, live.launch_started_at)
+				? { launch_started_at: earliestObservedTimestamp(detail.launch_started_at, live.launch_started_at) }
+				: {}),
+			...(earliestObservedTimestamp(detail.started_at, live.started_at)
+				? { started_at: earliestObservedTimestamp(detail.started_at, live.started_at) }
+				: {}),
+			...(earliestObservedTimestamp(detail.terminal_observed_at, live.terminal_observed_at)
+				? { terminal_observed_at: earliestObservedTimestamp(detail.terminal_observed_at, live.terminal_observed_at) }
+				: {}),
+		};
+	}
 	return {
 		...detail,
 		activity_at: live.activity_at > detail.activity_at ? live.activity_at : detail.activity_at,
 		...(live.status ? { status: live.status } : {}),
-		...(live.started_at && (!detail.started_at || live.started_at > detail.started_at) ? { started_at: live.started_at } : {}),
-		...(live.terminal_observed_at && (!detail.terminal_observed_at || live.terminal_observed_at > detail.terminal_observed_at)
-			? { terminal_observed_at: live.terminal_observed_at }
+		...(earliestObservedTimestamp(detail.launch_started_at, live.launch_started_at)
+			? { launch_started_at: earliestObservedTimestamp(detail.launch_started_at, live.launch_started_at) }
+			: {}),
+		...(earliestObservedTimestamp(detail.started_at, live.started_at)
+			? { started_at: earliestObservedTimestamp(detail.started_at, live.started_at) }
+			: {}),
+		...(earliestObservedTimestamp(detail.terminal_observed_at, live.terminal_observed_at)
+			? { terminal_observed_at: earliestObservedTimestamp(detail.terminal_observed_at, live.terminal_observed_at) }
 			: {}),
 		live_signal: live,
 	};
 }
 
 function syntheticExecutionItem(live: LiveExecutionProjectionEntry): RunExecution | null {
-	if (!live.attempt_id || !live.node_id || typeof live.attempt !== "number") {
+	if (!live.attempt_id || !live.node_id || typeof live.attempt !== "number" || !live.status) {
 		return null;
 	}
 	return {
@@ -197,9 +273,10 @@ function syntheticExecutionItem(live: LiveExecutionProjectionEntry): RunExecutio
 		agent_id: live.agent_id ?? "",
 		required_role: live.required_role ?? "",
 		execution_mode: live.execution_mode ?? "provider_backed",
-		status: live.status ?? "queued",
+		status: live.status,
 		activity_at: live.activity_at,
 		updated_at: live.activity_at,
+		...(live.launch_started_at ? { launch_started_at: live.launch_started_at } : {}),
 		...(live.started_at ? { started_at: live.started_at } : {}),
 		...(live.terminal_observed_at ? { terminal_observed_at: live.terminal_observed_at } : {}),
 	};

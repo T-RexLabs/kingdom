@@ -10,6 +10,7 @@ import {
 export type RunStatusTone =
   | "succeeded"
   | "failed"
+  | "starting"
   | "running"
   | "ready"
   | "pending"
@@ -32,6 +33,7 @@ export const RUN_DETAIL_NEUTRAL_HEX = {
 export const RUN_STATUS_HEX: Record<Exclude<RunStatusTone, "neutral">, string> = {
 	succeeded: STATUS_TONE_HEX.succeeded,
 	failed: STATUS_TONE_HEX.failed,
+	starting: STATUS_TONE_HEX.running,
 	running: STATUS_TONE_HEX.running,
 	ready: STATUS_TONE_HEX.attention,
 	pending: STATUS_TONE_HEX.neutral,

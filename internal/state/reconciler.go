@@ -98,7 +98,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 		return ReconcileResult{}, err
 	}
 
-	staleAttempts, err := r.findStaleRunningAttempts(ctx, nowTime, reassignThreshold)
+	staleAttempts, err := r.findStaleAttempts(ctx, nowTime, reassignThreshold)
 	if err != nil {
 		return ReconcileResult{}, err
 	}
@@ -159,11 +159,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 			continue
 		}
 
-		attemptState, foundAttempt, stateErr := r.sessionLeaseAttemptState(ctx, lease.SessionID)
+		attemptState, launchStartedAt, startedAt, foundAttempt, stateErr := r.sessionLeaseAttemptState(ctx, lease.SessionID)
 		if stateErr != nil {
 			return ReconcileResult{}, stateErr
 		}
-		if !foundAttempt || !isSessionLeaseRenewableAttemptState(attemptState) {
+		if !foundAttempt || !executionstore.AttemptRetainsSessionLease(attemptState, launchStartedAt, startedAt) {
 			_, closeErr := r.sessionManager.CloseLease(ctx, CloseSessionLeaseRequest{
 				SessionID: lease.SessionID,
 				UpdatedAt: nowTime.UTC().Format(time.RFC3339),
@@ -176,6 +176,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 			} else {
 				result.SessionsClosed++
 			}
+			continue
+		}
+		if !executionstore.AttemptRenewsSessionLease(attemptState, launchStartedAt, startedAt) {
 			continue
 		}
 
@@ -209,7 +212,15 @@ func (r *Reconciler) projectDurableTerminalNodes(ctx context.Context, nowTime ti
 		       ae.attempt_id,
 		       nr.node_status,
 		       ae.state,
-		       ROW_NUMBER() OVER (PARTITION BY nr.run_id, nr.node_id ORDER BY nr.attempt DESC, nr.node_run_id DESC) AS rn
+		       ROW_NUMBER() OVER (
+		         PARTITION BY nr.run_id, nr.node_id
+		         ORDER BY CASE
+		           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+		           ELSE 1
+		         END ASC,
+		         nr.attempt DESC,
+		         nr.node_run_id DESC
+		       ) AS rn
 		FROM node_runs nr
 		JOIN attempt_executions ae ON ae.run_id = nr.run_id AND ae.node_run_id = nr.node_run_id
 		WHERE ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
@@ -483,13 +494,17 @@ func providerSettlementDiagnosticState(attemptState string) string {
 	}
 }
 
-func (r *Reconciler) sessionLeaseAttemptState(ctx context.Context, sessionID string) (string, bool, error) {
+func (r *Reconciler) sessionLeaseAttemptState(ctx context.Context, sessionID string) (string, string, string, bool, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(sessionID) == "" {
-		return "", false, nil
+		return "", "", "", false, nil
 	}
 	var state sql.NullString
+	var launchStartedAt sql.NullString
+	var startedAt sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-SELECT state
+SELECT state,
+	   launch_started_at,
+       started_at
 FROM attempt_executions
 WHERE session_ref = ?
 ORDER BY CASE state
@@ -500,23 +515,14 @@ ORDER BY CASE state
 END,
 updated_at DESC,
 attempt_id DESC
-LIMIT 1`, strings.TrimSpace(sessionID)).Scan(&state)
+LIMIT 1`, strings.TrimSpace(sessionID)).Scan(&state, &launchStartedAt, &startedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("load session lease attempt state: %w", err)
+		return "", "", "", false, fmt.Errorf("load session lease attempt state: %w", err)
 	}
-	return strings.TrimSpace(state.String), true, nil
-}
-
-func isSessionLeaseRenewableAttemptState(state string) bool {
-	switch strings.TrimSpace(state) {
-	case "queued", "starting", "running":
-		return true
-	default:
-		return false
-	}
+	return strings.TrimSpace(state.String), strings.TrimSpace(launchStartedAt.String), strings.TrimSpace(startedAt.String), true, nil
 }
 
 type staleAttempt struct {
@@ -527,6 +533,8 @@ type staleAttempt struct {
 	Wave          int
 	RequiredRole  string
 	AgentID       string
+	SessionRef    string
+	AttemptState  string
 	CurrentStatus string
 	StartedAt     string
 }
@@ -535,6 +543,11 @@ type recoveryOutcome struct {
 	reassigned   bool
 	failed       bool
 	agentBlocked bool
+}
+
+type staleAttemptQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 type providerSettlementRecoveryCandidate struct {
@@ -1132,27 +1145,76 @@ func (r *Reconciler) latestAttemptProgressDiagnostics(ctx context.Context, attem
 	return result, nil
 }
 
-func (r *Reconciler) findStaleRunningAttempts(ctx context.Context, nowTime time.Time, threshold time.Duration) ([]staleAttempt, error) {
+func CountStaleAttemptsForMetrics(ctx context.Context, q staleAttemptQuerier, nowTime time.Time, threshold time.Duration) (int, error) {
+	if q == nil {
+		return 0, fmt.Errorf("stale attempt querier is required")
+	}
+	stale, err := findStaleAttemptsWithQuerier(ctx, q, nowTime, threshold)
+	if err != nil {
+		return 0, err
+	}
+	return len(stale), nil
+}
+
+func (r *Reconciler) findStaleAttempts(ctx context.Context, nowTime time.Time, threshold time.Duration) ([]staleAttempt, error) {
+	return findStaleAttemptsWithQuerier(ctx, r.db, nowTime, threshold)
+}
+
+func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, nowTime time.Time, threshold time.Duration) ([]staleAttempt, error) {
+	if q == nil {
+		return nil, fmt.Errorf("stale attempt querier is required")
+	}
 	if threshold <= 0 {
 		threshold = DefaultReassignCandidateThreshold
 	}
 	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339)
-
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT n.node_run_id, n.run_id, n.node_id, n.attempt, n.wave, n.required_role, n.agent_id, n.node_status, n.started_at
+	query := fmt.Sprintf(`SELECT n.node_run_id,
+		        n.run_id,
+		        n.node_id,
+		        n.attempt,
+		        n.wave,
+		        n.required_role,
+		        n.agent_id,
+		        COALESCE(ae.session_ref, ''),
+		        COALESCE(ae.state, ''),
+		        n.node_status,
+		        CASE
+		          WHEN n.node_status = 'starting' THEN COALESCE(ae.launch_started_at, '')
+		          ELSE COALESCE(n.started_at, '')
+		        END AS candidate_started_at
 		 FROM node_runs n
 		 JOIN agents a ON a.agent_id = n.agent_id
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = n.run_id || ':' || n.node_id || ':' || n.attempt
-		 WHERE n.node_status = 'running'
-		   AND a.status = 'busy'
-		   AND n.started_at IS NOT NULL
-		   AND COALESCE(ae.state, '') NOT IN ('terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')
-		   AND n.started_at <= ?
-		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`,
+		 LEFT JOIN session_leases sl ON sl.session_id = ae.session_ref AND sl.status = 'active'
+		 WHERE n.node_status IN ('starting', 'running')
+		   AND (
+		     (
+		       n.node_status = 'starting'
+		       AND COALESCE(ae.state, '') = 'starting'
+		       AND COALESCE(ae.launch_started_at, '') != ''
+		       AND ae.launch_started_at <= ?
+		       AND (
+		         sl.session_id IS NULL OR
+		         %s
+		       )
+		     ) OR (
+		       n.node_status = 'running'
+		       AND n.started_at IS NOT NULL
+		       AND COALESCE(ae.state, '') NOT IN ('starting', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')
+		       AND n.started_at <= ?
+		     )
+		   )
+		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`, staleActiveSessionLeaseConditionSQL("sl"))
+
+	rows, err := q.QueryContext(ctx,
+		query,
+		cutoff,
+		cutoff,
+		nowTime.UTC().Format(time.RFC3339),
 		cutoff,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("query stale running attempts: %w", err)
+		return nil, fmt.Errorf("query stale attempts: %w", err)
 	}
 	defer rows.Close()
 
@@ -1167,16 +1229,18 @@ func (r *Reconciler) findStaleRunningAttempts(ctx context.Context, nowTime time.
 			&candidate.Wave,
 			&candidate.RequiredRole,
 			&candidate.AgentID,
+			&candidate.SessionRef,
+			&candidate.AttemptState,
 			&candidate.CurrentStatus,
 			&candidate.StartedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan stale running attempt: %w", err)
+			return nil, fmt.Errorf("scan stale attempt: %w", err)
 		}
 		candidates = append(candidates, candidate)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate stale running attempts: %w", err)
+		return nil, fmt.Errorf("iterate stale attempts: %w", err)
 	}
 
 	stale := make([]staleAttempt, 0, len(candidates))
@@ -1189,7 +1253,7 @@ func (r *Reconciler) findStaleRunningAttempts(ctx context.Context, nowTime time.
 				}
 			}
 		}
-		skip, err := r.hasRecentProgressHeartbeat(ctx, candidate.NodeRunID, nowTime, threshold)
+		skip, err := hasRecentProgressHeartbeatWithQuerier(ctx, q, candidate.NodeRunID, nowTime, threshold)
 		if err != nil {
 			return nil, err
 		}
@@ -1203,6 +1267,13 @@ func (r *Reconciler) findStaleRunningAttempts(ctx context.Context, nowTime time.
 }
 
 func (r *Reconciler) hasRecentProgressHeartbeat(ctx context.Context, nodeRunID string, nowTime time.Time, threshold time.Duration) (bool, error) {
+	return hasRecentProgressHeartbeatWithQuerier(ctx, r.db, nodeRunID, nowTime, threshold)
+}
+
+func hasRecentProgressHeartbeatWithQuerier(ctx context.Context, q staleAttemptQuerier, nodeRunID string, nowTime time.Time, threshold time.Duration) (bool, error) {
+	if q == nil {
+		return false, fmt.Errorf("stale attempt querier is required")
+	}
 	nodeRunID = strings.TrimSpace(nodeRunID)
 	if nodeRunID == "" {
 		return false, nil
@@ -1212,7 +1283,7 @@ func (r *Reconciler) hasRecentProgressHeartbeat(ctx context.Context, nodeRunID s
 		grace = defaultProgressStaleGrace
 	}
 
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := q.QueryContext(ctx,
 		`SELECT created_at, reason_code, payload_json
 		 FROM events
 		 WHERE node_run_id = ?
@@ -1363,9 +1434,24 @@ func (r *Reconciler) findReplacementAgent(ctx context.Context, roleID string, ex
 	var agentID string
 	err := r.db.QueryRowContext(ctx,
 		`SELECT agent_id
-		 FROM agents
-		 WHERE role_id = ? AND status = 'idle' AND agent_id <> ?
-		 ORDER BY agent_id ASC
+		 FROM agents a
+		 WHERE a.role_id = ?
+		   AND a.agent_id <> ?
+		   AND a.status NOT IN ('offline', 'failed')
+		   AND NOT EXISTS (
+		     SELECT 1
+		     FROM node_runs nr
+		     WHERE nr.agent_id = a.agent_id
+		       AND COALESCE(TRIM(nr.superseded_at), '') = ''
+		       AND nr.node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')
+		   )
+		 ORDER BY CASE a.status
+		   WHEN 'idle' THEN 0
+		   WHEN 'busy' THEN 1
+		   WHEN 'blocked' THEN 2
+		   ELSE 3
+		 END,
+		 a.agent_id ASC
 		 LIMIT 1`,
 		roleID,
 		excludedAgentID,

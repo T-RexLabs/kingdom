@@ -368,6 +368,28 @@ func appendAttemptEventTx(ctx context.Context, tx *sql.Tx, schemaSet *schemas.Se
 	if err != nil {
 		return fmt.Errorf("insert attempt event %q: %w", req.EventID, err)
 	}
+	canonicalProjectionAllowed, err := shouldAppendCanonicalAttemptEventLogTx(ctx, tx, req)
+	if err != nil {
+		return err
+	}
+	if canonicalProjectionAllowed {
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			fmt.Sprintf("attempt_event:%s:%d", req.AttemptID, req.Seq),
+			req.AttemptID,
+			req.RunID,
+			req.NodeRunID,
+			req.Seq,
+			req.EventType,
+			req.ReasonCode,
+			req.PayloadJSON,
+			req.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("insert canonical attempt event log %q: %w", req.EventID, err)
+		}
+	}
 	runActivityChanged, err := AdvanceRunActivityTx(ctx, tx, RunActivityUpdateRequest{
 		EventID:     req.EventID,
 		EventType:   req.EventType,
@@ -393,7 +415,11 @@ func appendAttemptEventTx(ctx context.Context, tx *sql.Tx, schemaSet *schemas.Se
 		}
 	}
 
-	if options.mirrorToMailbox && shouldMirrorAttemptEventToMailbox(req) {
+	mailboxProjectionAllowed, err := shouldProjectAttemptEventToMailboxTx(ctx, tx, req)
+	if err != nil {
+		return err
+	}
+	if options.mirrorToMailbox && mailboxProjectionAllowed && shouldMirrorAttemptEventToMailbox(req) {
 		_ = MirrorEventToMailbox(ctx, tx, policy, EventMailboxMirrorRequest{
 			EventID:     req.EventID,
 			RunID:       req.RunID,
@@ -407,8 +433,53 @@ func appendAttemptEventTx(ctx context.Context, tx *sql.Tx, schemaSet *schemas.Se
 			CreatedAt:   req.CreatedAt,
 		})
 	}
+	if err := persistAttemptExecutionProgressTx(ctx, tx, req.AttemptID, req.RunID, req.NodeRunID.String, req.EventType, req.ReasonCode, "", req.CreatedAt); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func shouldAppendCanonicalAttemptEventLogTx(ctx context.Context, tx *sql.Tx, req AttemptEventIngestionRequest) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("attempt event transaction is required")
+	}
+	if !req.NodeRunID.Valid || strings.TrimSpace(req.NodeRunID.String) == "" {
+		return false, nil
+	}
+	projectionAllowed, err := canonicalAttemptProjectionAllowedTx(ctx, tx, req.NodeRunID.String)
+	if err != nil {
+		return false, err
+	}
+	if !projectionAllowed {
+		return false, nil
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(1)
+		 FROM attempt_executions
+		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?`,
+		req.AttemptID,
+		req.RunID,
+		strings.TrimSpace(req.NodeRunID.String),
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("query canonical attempt_event_log eligibility for %q: %w", req.EventID, err)
+	}
+	return count > 0, nil
+}
+
+func shouldProjectAttemptEventToMailboxTx(ctx context.Context, tx *sql.Tx, req AttemptEventIngestionRequest) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("attempt event transaction is required")
+	}
+	if !req.NodeRunID.Valid || strings.TrimSpace(req.NodeRunID.String) == "" {
+		return true, nil
+	}
+	allowed, err := nodeRunMailboxProjectionAllowedTx(ctx, tx, req.NodeRunID.String)
+	if err != nil {
+		return false, fmt.Errorf("query mailbox projection eligibility for %q: %w", req.EventID, err)
+	}
+	return allowed, nil
 }
 
 func shouldMirrorAttemptEventToMailbox(req AttemptEventIngestionRequest) bool {

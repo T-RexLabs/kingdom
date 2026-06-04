@@ -190,7 +190,7 @@ func summarizeRunClosure(run runSnapshot, nodes []nodeDefinition, edges []edgeDe
 			if !isRunTerminalizedCancelledAttempt(attempt) {
 				summary.HasFailed = true
 			}
-		case "pending", "ready", "running", "blocked":
+		case "pending", "ready", "starting", "running", "blocked":
 			if effectiveStatus == "pending" && isNodeTerminallyUnreachableWithReplay(run, node.NodeID, latest, edges, replayNeeded) {
 				continue
 			}
@@ -451,7 +451,7 @@ func nodeCanBecomeReachable(run runSnapshot, nodeID string, latest map[string]no
 			hasResolvableDependency = true
 		}
 		switch attempt.NodeStatus {
-		case "pending", "ready", "running", "blocked":
+		case "pending", "ready", "starting", "running", "blocked":
 			hasResolvableDependency = true
 		}
 	}
@@ -487,7 +487,7 @@ func isNodeTerminallyUnreachableWithReplay(run runSnapshot, nodeID string, lates
 			hasNonTerminalDependency = true
 		}
 		switch attempt.NodeStatus {
-		case "pending", "ready", "running", "blocked":
+		case "pending", "ready", "starting", "running", "blocked":
 			hasNonTerminalDependency = true
 		}
 	}

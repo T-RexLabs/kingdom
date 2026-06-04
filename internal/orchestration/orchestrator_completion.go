@@ -44,6 +44,14 @@ type executionOutboxPayload struct {
 	SuppressEmptyOutputRetry        bool                      `json:"suppress_empty_output_retry,omitempty"`
 }
 
+type completionProjectionDecision struct {
+	LatestAttempt           bool
+	AllowPlanningOutput     bool
+	AllowDownstreamEffects  bool
+	AllowCanonicalArtifacts bool
+	AllowCanonicalMailbox   bool
+}
+
 func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, error) {
 	if o == nil || o.executionStore == nil {
 		return 0, nil
@@ -141,6 +149,11 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 	if o == nil || o.executionStore == nil {
 		return fmt.Errorf("execution store is not configured")
 	}
+	if job.launchObserved {
+		if err := o.persistObservedExecutionLaunch(ctx, job); err != nil {
+			return err
+		}
+	}
 	job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
 	raw, err := marshalExecutionOutboxPayload(job)
 	if err != nil {
@@ -178,6 +191,32 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 			return err
 		}
 	}
+	if o.notifyCompletionReady != nil {
+		o.notifyCompletionReady()
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) persistObservedExecutionLaunch(ctx context.Context, job asyncExecutionResult) error {
+	payloadRaw, err := marshalAsyncExecutionAttemptEventPayload(job, "orchestration_progress", map[string]any{
+		"execution_mode":           string(job.attempt.ExecutionMode),
+		"resolved_model":           strings.TrimSpace(job.model),
+		"resolved_thinking_effort": strings.TrimSpace(job.variant),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal execution launch payload for attempt %q: %w", job.attemptID, err)
+	}
+	if err := o.ensureExecutionLaunchPersisted(ctx, job, payloadRaw, job.launchObservedAt); err != nil {
+		return fmt.Errorf("persist observed execution launch for attempt %q: %w", job.attemptID, err)
+	}
+	if err := o.ensureProviderInvokedEventRecorded(ctx, job); err != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if o != nil && o.now != nil {
+			now = o.now().UTC().Format(time.RFC3339)
+		}
+		o.emitCompletionLifecycleObservation(ctx, job, "provider_invoked_backfill_failed", now, map[string]any{"error": err.Error()})
+		slog.Warn("failed to record provider invoked event during completion handoff", "attempt_id", job.attemptID, "error", err)
+	}
 	return nil
 }
 
@@ -188,6 +227,39 @@ func (o *orchestrationLoop) commitExecutionCompletionDetached(ctx context.Contex
 	queueCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
 	return o.commitExecutionCompletion(queueCtx, job)
+}
+
+var completionHandoffRetrySchedule = []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond}
+
+func (o *orchestrationLoop) commitExecutionCompletionWithRetryDetached(ctx context.Context, job asyncExecutionResult) error {
+	return o.retryDetachedCompletionHandoff(job, func() error {
+		return o.commitExecutionCompletionDetached(ctx, job)
+	})
+}
+
+func (o *orchestrationLoop) retryDetachedCompletionHandoff(job asyncExecutionResult, commit func() error) error {
+	var lastErr error
+	for attempt, backoff := range completionHandoffRetrySchedule {
+		if o.forceCloseActive() {
+			return nil
+		}
+		if attempt > 0 && backoff > 0 {
+			if o.sleep != nil {
+				o.sleep(backoff)
+			} else {
+				time.Sleep(backoff)
+			}
+		}
+		if err := commit(); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil && o.asyncDrain != nil {
+		o.asyncDrain.RecordError(fmt.Errorf("durable completion handoff failed for attempt %q: %w", strings.TrimSpace(job.attemptID), lastErr))
+	}
+	return lastErr
 }
 
 func detachedTimeoutContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -638,9 +710,15 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		EventSeq:        terminalSeq,
 		PayloadJSON:     terminalPayload,
 	}
+	decision, err := o.completionProjectionDecision(ctx, result)
+	if err != nil {
+		return err
+	}
 	var planningOutput *state.CreateRunPlanningOutputRequest
-	if req, ok := buildRunPlanningOutputRequest(result, now, responseText, execErr); ok {
-		planningOutput = &req
+	if decision.AllowPlanningOutput {
+		if req, ok := buildRunPlanningOutputRequest(result, now, responseText, execErr); ok {
+			planningOutput = &req
+		}
 	}
 	fence, guardErr := o.loadExecutionCompletionFence(ctx, result.run.RunID, result.attempt.NodeRunID)
 	if guardErr != nil {
@@ -658,7 +736,11 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		projectionAllowed = true
 		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_retry", now, map[string]any{"terminal_state": terminalState})
 	case runStatus != "running" || nodeStatus != "running":
-		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_skipped_terminalized", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		if !runTerminalized && decision.LatestAttempt && isDurableExecutionTerminalState(actualAttemptState) && nodeStatus != projectedNodeTerminalState(currentOutcome) {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_deferred_to_durable_projection", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		} else {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_skipped_terminalized", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		}
 	default:
 		err := o.transitionService().RecordNodeCompletion(ctx, state.NodeCompletionRecordRequest{
 			Transition:     transitionReq,
@@ -683,35 +765,39 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		}
 	}
 	if (transitionCommitted || projectionAllowed) && o.registry != nil {
-		if statusErr := o.registry.UpdateAgentStatus(ctx, state.UpdateAgentStatusRequest{
-			AgentID:    result.attempt.AgentID,
-			FromStatus: state.AgentStatusBusy,
-			ToStatus:   state.AgentStatusIdle,
-			UpdatedAt:  now,
-		}); statusErr != nil {
-			slog.Warn("failed to transition agent to idle", "agent_id", result.attempt.AgentID, "error", statusErr)
+		if statusErr := o.registry.SyncOperationalStatus(ctx, result.attempt.AgentID, now); statusErr != nil {
+			slog.Warn("failed to sync agent operational status after completion", "agent_id", result.attempt.AgentID, "error", statusErr)
 		}
 	}
 	evaluateReviewReworkAfterProjection := currentNodeClass == workflow.NodeClassExecutionReview && !alreadyAutoSucceededAtLoopCap
 	evaluateValidationReworkAfterProjection := currentNodeClass == workflow.NodeClassValidationGates && !alreadyAutoSucceededAtLoopCap
 
 	if isDurableExecutionTerminalState(actualAttemptState) && (runTerminalized || nodeStatus != projectedNodeTerminalState(currentOutcome)) {
+		durablePlanningOutput := (*state.CreateRunPlanningOutputRequest)(nil)
+		if !runTerminalized && decision.LatestAttempt && !projectionAllowed && !transitionCommitted {
+			durablePlanningOutput = planningOutput
+		}
 		projected, projectErr := o.transitionService().ProjectNodeTerminalFromDurableAttempt(ctx, state.DurableAttemptNodeProjectionRequest{
-			RunID:      result.run.RunID,
-			NodeRunID:  result.attempt.NodeRunID,
-			AttemptID:  result.attemptID,
-			ActorID:    "runtime_orchestrator",
-			OccurredAt: now,
+			RunID:          result.run.RunID,
+			NodeRunID:      result.attempt.NodeRunID,
+			AttemptID:      result.attemptID,
+			ActorID:        "runtime_orchestrator",
+			OccurredAt:     now,
+			PlanningOutput: durablePlanningOutput,
 		})
 		if projectErr != nil {
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_durable_node_projection_error", now, map[string]any{"error": projectErr.Error(), "attempt_state": actualAttemptState})
 			return projectErr
 		}
 		if projected {
+			if !runTerminalized && decision.LatestAttempt {
+				transitionCommitted = true
+				projectionAllowed = true
+			}
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_durable_node_projected", now, map[string]any{"attempt_state": actualAttemptState})
 		}
 	}
-	if transitionCommitted || projectionAllowed {
+	if (transitionCommitted || projectionAllowed) && decision.AllowDownstreamEffects {
 		if evaluateReviewReworkAfterProjection {
 			queued, _, queueErr := o.queueExecutionReviewReworkIfEligibleForClass(ctx, result.run, now, result.node.NodeID, result.node.NodeClass)
 			if queueErr != nil {
@@ -733,8 +819,13 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			}
 		}
 	}
+	canonicalArtifactProjectionAllowed := projectionAllowed && decision.AllowCanonicalArtifacts
+	canonicalMailboxProjectionAllowed := projectionAllowed && decision.AllowCanonicalMailbox
+	if projectionAllowed && !decision.LatestAttempt {
+		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_suppressed_superseded", now, map[string]any{"attempt": result.attempt.Attempt})
+	}
 	var projectionErr error
-	if projectionAllowed {
+	if canonicalArtifactProjectionAllowed {
 		if execErr == nil || isImplementationRole(result.node.RequiredRole) {
 			artifactErr := error(nil)
 			if workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), responseReasonCode) && strings.TrimSpace(result.workspacePath) == "" {
@@ -747,6 +838,8 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 				o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_artifact_projection_error", now, map[string]any{"error": artifactErr.Error()})
 			}
 		}
+	}
+	if canonicalMailboxProjectionAllowed {
 		if mailboxErr := o.emitCommunicationMessage(ctx, communicationMessageRequest{
 			MessageID:         responseMessageID,
 			RunID:             result.run.RunID,
@@ -803,6 +896,90 @@ func (o *orchestrationLoop) loadAttemptExecutionMetadata(ctx context.Context, at
 	return o.executionStore.GetAttempt(ctx, attemptID)
 }
 
+func (o *orchestrationLoop) hasNewerNodeAttempt(ctx context.Context, runID, nodeID string, attempt int) (bool, error) {
+	if o == nil || o.db == nil {
+		return false, nil
+	}
+	var newerAttempt int
+	err := o.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(attempt), 0)
+		 FROM node_runs
+		 WHERE run_id = ? AND node_id = ? AND attempt > ? AND COALESCE(TRIM(superseded_at), '') = ''`,
+		strings.TrimSpace(runID),
+		strings.TrimSpace(nodeID),
+		attempt,
+	).Scan(&newerAttempt)
+	if err != nil {
+		return false, fmt.Errorf("load newer node attempt for run %q node %q: %w", strings.TrimSpace(runID), strings.TrimSpace(nodeID), err)
+	}
+	return newerAttempt > 0, nil
+}
+
+func (o *orchestrationLoop) completionProjectionDecision(ctx context.Context, result asyncExecutionResult) (completionProjectionDecision, error) {
+	hasNewerAttempt, err := o.hasNewerNodeAttempt(ctx, result.run.RunID, result.node.NodeID, result.attempt.Attempt)
+	if err != nil {
+		return completionProjectionDecision{}, err
+	}
+	if !hasNewerAttempt {
+		return completionProjectionDecision{
+			LatestAttempt:           true,
+			AllowPlanningOutput:     true,
+			AllowDownstreamEffects:  true,
+			AllowCanonicalArtifacts: true,
+			AllowCanonicalMailbox:   true,
+		}, nil
+	}
+	if durableExecutionTerminalState(result.outcome) == "committed_success" {
+		adopted, err := o.adoptOlderSuccessfulAttemptBeforeLaunch(ctx, result, o.now().UTC().Format(time.RFC3339))
+		if err != nil {
+			return completionProjectionDecision{}, err
+		}
+		if adopted {
+			return completionProjectionDecision{
+				LatestAttempt:           true,
+				AllowPlanningOutput:     true,
+				AllowDownstreamEffects:  true,
+				AllowCanonicalArtifacts: true,
+				AllowCanonicalMailbox:   true,
+			}, nil
+		}
+	}
+	return completionProjectionDecision{
+		LatestAttempt:           false,
+		AllowPlanningOutput:     false,
+		AllowDownstreamEffects:  false,
+		AllowCanonicalArtifacts: false,
+		AllowCanonicalMailbox:   false,
+	}, nil
+}
+
+func (o *orchestrationLoop) adoptOlderSuccessfulAttemptBeforeLaunch(ctx context.Context, result asyncExecutionResult, occurredAt string) (bool, error) {
+	if o == nil {
+		return false, nil
+	}
+	resolveCtx := ctx
+	if resolveCtx == nil {
+		resolveCtx = context.Background()
+	}
+	resolveCtx = context.WithoutCancel(resolveCtx)
+	supersedeResult, err := o.transitionService().SupersedeQueuedAttemptsBeforeLaunch(resolveCtx, state.SupersedeQueuedAttemptsRequest{
+		RunID:       result.run.RunID,
+		NodeID:      result.node.NodeID,
+		KeepAttempt: result.attempt.Attempt,
+		OccurredAt:  occurredAt,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		var stateConflict *state.StateConflictError
+		var illegalTransition *state.IllegalTransitionError
+		if errors.As(err, &stateConflict) || errors.As(err, &illegalTransition) {
+			return false, nil
+		}
+		return false, err
+	}
+	return supersedeResult.AllowsCanonicalAdoption(), nil
+}
+
 func buildRunPlanningOutputRequest(result asyncExecutionResult, occurredAt, responseText string, execErr error) (state.CreateRunPlanningOutputRequest, bool) {
 	if execErr != nil {
 		return state.CreateRunPlanningOutputRequest{}, false
@@ -852,6 +1029,8 @@ func (o *orchestrationLoop) emitCompletionLifecycleObservation(ctx context.Conte
 	if err != nil {
 		return
 	}
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
 	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_completion_%s", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt, sanitizeFileToken(phase)),
 		RunID:           result.run.RunID,
