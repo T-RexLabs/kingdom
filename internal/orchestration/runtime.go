@@ -1170,6 +1170,12 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"cleaned_at",
 			"failure_reason",
 		},
+		"provider_invocations": {
+			"receipt_seen_count",
+			"first_receipt_seen_at",
+			"last_receipt_seen_at",
+			"last_receipt_disposition",
+		},
 	}
 	tableNames := []string{
 		"workflow_runs",
@@ -1178,6 +1184,7 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"attempt_event_log",
 		"attempt_outbox",
 		"attempt_cancel_outbox",
+		"provider_invocations",
 		"run_worktrees",
 		"run_execution_targets",
 		"filesystem_snapshots",

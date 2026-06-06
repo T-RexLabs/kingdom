@@ -3260,11 +3260,14 @@ func TestProviderCompletionReceiptAcceptorPersistsValidatedReceipt(t *testing.T)
 	if err != nil {
 		t.Fatalf("list provider completion evidence: %v", err)
 	}
-	if len(evidence) != 1 {
-		t.Fatalf("expected one provider completion evidence row, got %d", len(evidence))
+	if len(evidence) != 2 {
+		t.Fatalf("expected two provider completion evidence rows, got %d", len(evidence))
 	}
 	if evidence[0].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceipt {
-		t.Fatalf("expected completion receipt evidence, got %q", evidence[0].EvidenceKind)
+		t.Fatalf("expected first evidence row to be completion receipt, got %q", evidence[0].EvidenceKind)
+	}
+	if evidence[1].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceiptAttempt {
+		t.Fatalf("expected second evidence row to be completion receipt attempt telemetry, got %q", evidence[1].EvidenceKind)
 	}
 	var payload struct {
 		AttemptID string `json:"attempt_id"`
@@ -3348,8 +3351,24 @@ func TestProviderCompletionReceiptAcceptorRejectsAttemptMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list provider completion evidence: %v", err)
 	}
-	if len(evidence) != 0 {
-		t.Fatalf("expected no provider completion evidence rows, got %d", len(evidence))
+	if len(evidence) != 1 {
+		t.Fatalf("expected one provider completion evidence row, got %d", len(evidence))
+	}
+	if evidence[0].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceiptAttempt {
+		t.Fatalf("expected receipt attempt telemetry row, got %q", evidence[0].EvidenceKind)
+	}
+	var payload struct {
+		Disposition string `json:"disposition"`
+		ReasonCode  string `json:"reason_code"`
+	}
+	if err := json.Unmarshal([]byte(evidence[0].PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode completion receipt attempt payload: %v", err)
+	}
+	if payload.Disposition != string(executionstore.ProviderCompletionReceiptDispositionInvalidated) {
+		t.Fatalf("expected invalidated disposition, got %q", payload.Disposition)
+	}
+	if payload.ReasonCode != "attempt_lineage_mismatch" {
+		t.Fatalf("expected attempt_lineage_mismatch reason code, got %q", payload.ReasonCode)
 	}
 }
 

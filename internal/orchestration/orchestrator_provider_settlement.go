@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -85,6 +86,7 @@ func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Contex
 		}
 		structuredPayloadJSON, err := validateProviderCompletionReceiptForNode(job.node, receipt.FinalText, receipt.StructuredPayloadJSON)
 		if err != nil {
+			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionRejected, "validation_failed", err.Error(), "")
 			return opencode.CompletionReceiptAcceptance{Rejected: true, RejectedReason: err.Error()}, nil
 		}
 		acceptCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
@@ -103,16 +105,57 @@ func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Contex
 		})
 		if err != nil {
 			if executionstore.IsTerminalProviderReceiptError(err) {
+				reasonCode := "accept_provider_completion_receipt_failed"
+				var settlementErr *executionstore.ProviderSettlementError
+				if errors.As(err, &settlementErr) && settlementErr != nil && strings.TrimSpace(settlementErr.Reason) != "" {
+					reasonCode = strings.TrimSpace(settlementErr.Reason)
+				}
+				o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionInvalidated, reasonCode, err.Error(), "")
 				return opencode.CompletionReceiptAcceptance{Rejected: true, InvalidatesInvocation: true, RejectedReason: err.Error()}, nil
 			}
+			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionError, "accept_error", err.Error(), "")
 			return opencode.CompletionReceiptAcceptance{}, err
 		}
+		disposition := executionstore.ProviderCompletionReceiptDispositionAccepted
+		if accepted.Idempotent {
+			disposition = executionstore.ProviderCompletionReceiptDispositionIdempotentDuplicate
+		}
+		o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, disposition, string(disposition), "", accepted.Evidence.EvidenceID)
 		return opencode.CompletionReceiptAcceptance{
 			EvidenceID:            accepted.Evidence.EvidenceID,
 			FinalText:             strings.TrimSpace(receipt.FinalText),
 			StructuredPayloadJSON: structuredPayloadJSON,
 			Idempotent:            accepted.Idempotent,
 		}, nil
+	}
+}
+
+func (o *orchestrationLoop) observeProviderCompletionReceiptAttempt(ctx context.Context, job asyncExecutionResult, receipt opencode.CompletionReceipt, structuredPayloadJSON string, disposition executionstore.ProviderCompletionReceiptDisposition, reasonCode, reasonText, acceptedEvidenceID string) {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(job.providerInvocationID) == "" {
+		return
+	}
+	observeCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	_, err := o.executionStore.ObserveProviderCompletionReceiptAttempt(observeCtx, executionstore.ObserveProviderCompletionReceiptAttemptRequest{
+		EvidenceID:            fmt.Sprintf("receipt_attempt_%s_%d", sanitizeFileToken(job.attemptID), time.Now().UTC().UnixNano()),
+		ProviderInvocationID:  strings.TrimSpace(job.providerInvocationID),
+		AttemptID:             strings.TrimSpace(job.attemptID),
+		RunID:                 strings.TrimSpace(job.run.RunID),
+		NodeRunID:             strings.TrimSpace(job.attempt.NodeRunID),
+		ProtocolVersion:       firstNonEmptyString(strings.TrimSpace(receipt.ProtocolVersion), opencode.CompletionProtocolVersion),
+		ObservedAttemptID:     strings.TrimSpace(receipt.AttemptID),
+		ObservedInvocationID:  strings.TrimSpace(receipt.InvocationID),
+		CompletionCapability:  strings.TrimSpace(receipt.CompletionCapability),
+		FinalText:             strings.TrimSpace(receipt.FinalText),
+		StructuredPayloadJSON: firstNonEmptyString(strings.TrimSpace(structuredPayloadJSON), strings.TrimSpace(receipt.StructuredPayloadJSON), "{}"),
+		Disposition:           disposition,
+		ReasonCode:            strings.TrimSpace(reasonCode),
+		ReasonText:            strings.TrimSpace(reasonText),
+		AcceptedEvidenceID:    strings.TrimSpace(acceptedEvidenceID),
+		ObservedAt:            o.now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		o.emitCompletionLifecycleObservation(ctx, job, "completion_receipt_observation_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error(), "disposition": string(disposition)})
 	}
 }
 
