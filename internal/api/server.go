@@ -85,8 +85,6 @@ type Server struct {
 	planningService   *planning.Service
 	workflowCompiler  *workflow.Compiler
 	cursors           *cursorSigner
-	idempotency       *IdempotencyMiddleware
-
 	// handler is the fully composed http handler tree (mux + middleware).
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
@@ -113,9 +111,6 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.planningService != nil {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
-	if s.idempotency != nil {
-		closeErr = errors.Join(closeErr, s.idempotency.Close(ctx))
-	}
 	return closeErr
 }
 
@@ -127,9 +122,6 @@ func (s *Server) ForceClose() {
 	}
 	if s.planningService != nil {
 		s.planningService.ForceClose()
-	}
-	if s.idempotency != nil {
-		s.idempotency.ForceClose()
 	}
 }
 
@@ -305,8 +297,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	idempotency := NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB))
-	s.idempotency = idempotency
-	wrapped := validator(idempotency.Wrap(inner))
+	wrapped := validator(idempotency(inner))
 
 	// SSE streaming endpoints bypass idempotency middleware (which buffers the full response)
 	// but still go through OpenAPI validation.
