@@ -18,6 +18,7 @@ import (
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 )
@@ -49,7 +50,7 @@ type orchestrationLoop struct {
 	sessions              *state.SessionManager
 	events                *state.AttemptEventIngestor
 	adapter               opencode.Adapter
-	workspace             *workspace.Manager
+	fsStore               *runtimefs.Store
 	validator             *state.WorkerOutputValidator
 	tokenUsage            *state.TokenUsageStore
 	planningOutputs       *state.RunPlanningOutputStore
@@ -160,6 +161,8 @@ type asyncExecutionResult struct {
 	completionReceiptDir            string
 	completionReceiptEvidenceID     string
 	completionStructuredPayloadJSON string
+	baseSnapshotID                  string
+	resultSnapshotID                string
 	workspaceID                     string
 	workspacePath                   string
 	delegator                       string
@@ -220,7 +223,7 @@ func marshalAsyncExecutionAttemptEventPayload(result asyncExecutionResult, reaso
 	return marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 }
 
-func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, workspaceManager *workspace.Manager, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
+func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
@@ -233,7 +236,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		sessions:            sessionManager,
 		events:              state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
 		adapter:             adapter,
-		workspace:           workspaceManager,
+		fsStore:             fsStore,
 		validator:           outputValidator,
 		tokenUsage:          state.NewTokenUsageStore(db),
 		planningOutputs:     state.NewRunPlanningOutputStore(db),

@@ -184,31 +184,35 @@ Successful workflow progression is not enough for terminal success on its own.
 
 ## Workspace Lifecycle
 
-Before execution, the runtime resolves an execution workspace.
+Before execution, the runtime resolves one shared execution target for the run.
 
 ### `publish.mode=direct`
 
-- the current project root is the seed root
-- if the project root is empty, the workspace starts empty
-- if the project root is not empty, regular files are copied into the execution workspace and fingerprinted as the baseline
+- the current project root is the source root and publish target
+- Kingdom captures tracked source files into one runtime-owned run-scoped execution target
+- retries and non-canonical side effects are reset from trusted runtime-owned snapshot state instead of from per-attempt seeded copies
 
 ### `publish.mode=git_worktree`
 
 - the project root must be a valid non-bare git working tree
 - Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<decree-title-slug>-<run_id>/` next to the repository's main worktree root
 - if the configured project root is nested inside the repository, execution is scoped back to that same relative subdirectory inside the linked worktree
-- that scoped project directory becomes both the execution seed root and publish target
+- that scoped project directory becomes the shared execution and publish target for the run
 
-### Baseline Tracking
+### Snapshot Tracking
 
-Kingdom writes `.kingdom/workspace-baseline.json` into the execution workspace.
+Kingdom captures runtime-owned filesystem snapshots for tracked files in the execution target.
 
-That baseline records the seed files and fingerprints so the runtime can later identify which builder files are newly created or modified.
+Those snapshots record the trusted builder baseline and later attempt deltas so the runtime can restore, diff, and publish without per-attempt seeded copies.
 
-The seeding process ignores:
+Tracked snapshot capture ignores:
 
 - `.git`
+- `.hg`
+- `.svn`
+- `.jj`
 - `.kingdom`
+- `kingdom-artifacts`
 - symlinks
 - non-regular filesystem entries
 
@@ -244,10 +248,10 @@ Artifact bytes are written to `artifact_contents`.
 
 ### Builder Output
 
-- builder output is discovered from the execution workspace
-- only files changed relative to the baseline are treated as `deliverable` artifacts
+- builder output is derived from runtime-owned snapshot diffs
+- only files changed or deleted relative to the trusted snapshot baseline are treated as canonical builder artifacts
 - noisy dependency, cache, and package-management files are excluded from reviewer-facing deliverable manifests
-- review and validation nodes still inspect a self-contained `hydrated/` snapshot materialized from the current prepared workspace, so unchanged baseline assets remain visible even though durable builder persistence is delta-only
+- review and validation nodes inspect the shared execution target directly; runtime no longer materializes a separate `hydrated/` tree
 
 ### Non-Builder Output
 
@@ -258,6 +262,8 @@ Artifact bytes are written to `artifact_contents`.
 ### Publication
 
 After persistence, Kingdom may publish artifacts into the operator-visible output root.
+
+For `publish_mode=direct`, publication is per-path and best-effort. If a destination path changed outside Kingdom during the run, Kingdom records a path conflict with a simple reason and leaves that external change untouched while still publishing non-conflicting paths.
 
 - builder deliverables publish into the project root in `direct` mode
 - builder deliverables publish into the run worktree in `git_worktree` mode

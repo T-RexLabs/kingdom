@@ -61,10 +61,10 @@ Kingdom is a single-host, role-governed orchestration runtime.
   - advisors, reviewer, builder, and validators do not spawn
 - Advisory and execution escalation targets route first to `chancellor`.
 - Workspace execution is runtime-resolved before dispatch from the run's selected publish mode:
-  - `publish_mode=direct` seeds execution from the current project root
-  - `publish_mode=git_worktree` requires a valid non-bare git working tree, creates a per-run sibling worktree named from the decree title slug plus `run_id` next to the repository's main worktree root, and scopes execution/publication back to the configured project root inside that worktree
-- Workspace seeding ignores `.git`, `.kingdom`, symlinks, and other non-regular files when copying the baseline.
-- Builder deliverables are delta-based: only files created or changed relative to the seeded workspace baseline are persisted as `deliverable` artifacts.
+  - `publish_mode=direct` captures the configured project root into one runtime-owned run-scoped execution target and publishes changes back to the configured project root as a projection step
+  - `publish_mode=git_worktree` requires a valid non-bare git working tree, creates a per-run sibling worktree named from the decree title slug plus `run_id` next to the repository's main worktree root, and uses that scoped worktree project root as the shared execution/publication target for the run
+- Runtime-owned filesystem snapshots ignore `.git`, `.hg`, `.svn`, `.jj`, `.kingdom`, `kingdom-artifacts`, symlinks, and other non-regular files.
+- Builder deliverables are delta-based: only files created, changed, or deleted relative to the trusted runtime-owned snapshot are persisted as canonical builder artifacts.
 - Non-builder roles are response-first; runtime materializes markdown response snapshots for them.
 - Durable decree execution completion flows through `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_event_log`, `attempt_executions`, and `attempt_outbox`.
 - Planning is a first-class subsystem under `/planning-sessions` and `/planning-operations`, separate from decree execution runs.
@@ -120,7 +120,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 ### Execution Plane
 
-- Runtime resolves a prepared execution workspace for each attempt.
+- Runtime resolves one shared execution target per run and restores trusted runtime-owned snapshot state before mutating attempts.
 - OpenCode sessions run on the host against that workspace for provider-backed decree execution nodes.
 - Session identity is stable per run/node lineage and reused where the runtime contract requires it.
 - Runtime issues one invocation-scoped completion capability per provider-backed decree execution attempt and validates receipt usage server-side.
@@ -192,9 +192,9 @@ Important clarifications:
 - Worker outputs must satisfy the runtime output schema before persistence.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles remain response-first and publish markdown snapshots rather than arbitrary deliverables.
-- Builder `deliverable` artifacts represent changed output only relative to the seeded workspace baseline.
+- Builder `deliverable` artifacts represent changed output only relative to the trusted runtime-owned snapshot baseline, and deletion actions are first-class.
 - Failed builder attempts may still persist changed files as audit artifacts, but only the latest successful builder attempt per delegated-execution node contributes canonical persisted deliverable lineage for downstream publication.
-- Review and validation inspect `hydrated/` as a self-contained prepared-workspace snapshot; unchanged baseline files remain visible there even though durable builder deliverables are persisted delta-only.
+- Review and validation inspect the shared execution target directly; runtime no longer materializes a separate `hydrated/` tree.
 - A settled review or validation `REWORK` at the configured cap boundary still queues the next downstream execution wave.
 - Once a queued review or validation node becomes `ready` at or beyond the configured cap, runtime auto-succeeds that node from `ready` without provider dispatch; explicit stored cap `0` means the first ready review/validation attempt auto-succeeds immediately.
 - Review attempts and settled validation-wave outcomes remain as executed; review and validation rework are keyed by explicit persisted wave lineage across the relevant node class, and loop-cap auto-success applies only to queued ready review/validation nodes that are skipped instead of dispatching another provider-backed loop, never by rewriting the current executed outcome.

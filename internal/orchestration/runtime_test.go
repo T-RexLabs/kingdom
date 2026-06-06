@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,9 +24,9 @@ import (
 	"kingdom/internal/dbmigrations"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
-	"kingdom/internal/workspace"
 
 	_ "modernc.org/sqlite"
 )
@@ -66,8 +67,8 @@ func TestNewRuntimeFailsWhenDurableExecutionTablesMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected runtime creation to fail when durable execution tables are missing")
 	}
-	if !strings.Contains(err.Error(), "attempt_cancel_outbox") {
-		t.Fatalf("expected missing attempt_cancel_outbox table error, got %v", err)
+	if !strings.Contains(err.Error(), "runtime table") {
+		t.Fatalf("expected missing runtime schema error, got %v", err)
 	}
 }
 
@@ -1964,7 +1965,7 @@ func TestRuntimeStartFailsWithoutDeadlockWhenStartupReconcileErrors(t *testing.T
 	if err == nil {
 		t.Fatal("expected runtime bootstrap to fail without required schema")
 	}
-	if !strings.Contains(err.Error(), "attempt_cancel_outbox") {
+	if !strings.Contains(err.Error(), "runtime table") {
 		t.Fatalf("expected missing durable execution table error, got %v", err)
 	}
 	if rt != nil {
@@ -2888,7 +2889,6 @@ func TestPersistExecutionArtifactAllowsEmptyWorkspace(t *testing.T) {
 	t.Parallel()
 
 	o := &orchestrationLoop{
-		workspace: &workspace.Manager{},
 		validator: &state.WorkerOutputValidator{},
 	}
 
@@ -2933,6 +2933,34 @@ func TestPersistExecutionArtifactBuilderCleanSlatePersistsAllCreatedFiles(t *tes
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "src", "main.js"), []byte("console.log('hi')\n"), 0o644); err != nil {
 		t.Fatalf("write main.js: %v", err)
 	}
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_clean', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	rt.orchestrator.fsStore = fsStore
+	baseRoot := t.TempDir()
+	baseSnapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   "snap_builder_clean_base",
+		RunID:        "run_1",
+		SnapshotKind: "baseline",
+		RootPath:     baseRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture base snapshot: %v", err)
+	}
+	if _, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:       "snap_builder_clean_result",
+		RunID:            "run_1",
+		ParentSnapshotID: baseSnapshot.SnapshotID,
+		SnapshotKind:     "attempt_result",
+		RootPath:         workspaceRoot,
+		CreatedAt:        "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("capture result snapshot: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_builder_clean_base', result_snapshot_id = 'snap_builder_clean_result' WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`)
 
 	err = rt.orchestrator.persistExecutionArtifact(
 		context.Background(),
@@ -2990,14 +3018,41 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesDirectMode(t
 	if err := os.WriteFile(filepath.Join(seedRoot, "src", "main.js"), []byte("console.log('seed')\n"), 0o644); err != nil {
 		t.Fatalf("write seed main.js: %v", err)
 	}
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_seed', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	workspaceRoot := t.TempDir()
-	if err := rt.orchestrator.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot}); err != nil {
-		t.Fatalf("prepare execution workspace: %v", err)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	rt.orchestrator.fsStore = fsStore
+	baseSnapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   "snap_builder_seed_base",
+		RunID:        "run_1",
+		SnapshotKind: "baseline",
+		RootPath:     seedRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture base snapshot: %v", err)
+	}
+	if err := fsStore.RestoreSnapshot(context.Background(), baseSnapshot.SnapshotID, workspaceRoot); err != nil {
+		t.Fatalf("restore base snapshot: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "src", "main.js"), []byte("console.log('updated')\n"), 0o644); err != nil {
 		t.Fatalf("update workspace main.js: %v", err)
 	}
+	if _, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:       "snap_builder_seed_result",
+		RunID:            "run_1",
+		ParentSnapshotID: baseSnapshot.SnapshotID,
+		SnapshotKind:     "attempt_result",
+		RootPath:         workspaceRoot,
+		CreatedAt:        "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("capture result snapshot: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_builder_seed_base', result_snapshot_id = 'snap_builder_seed_result' WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`)
 
 	err = rt.orchestrator.persistExecutionArtifact(
 		context.Background(),
@@ -3020,8 +3075,17 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesDirectMode(t
 	}
 }
 
-func TestPrepareExecutionWorkspaceSkipsSymlinkedSeedEntries(t *testing.T) {
+func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntries(t *testing.T) {
 	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	seedBuilderAttemptForRunOne(t, db)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 
 	seedRoot := t.TempDir()
 	sharedRoot := t.TempDir()
@@ -3034,10 +3098,20 @@ func TestPrepareExecutionWorkspaceSkipsSymlinkedSeedEntries(t *testing.T) {
 	if err := os.Symlink(sharedRoot, filepath.Join(seedRoot, "skills")); err != nil {
 		t.Fatalf("create seed symlink: %v", err)
 	}
+	snapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   "snap_prepare_workspace_seed",
+		RunID:        "run_1",
+		SnapshotKind: "baseline",
+		RootPath:     seedRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture seed snapshot: %v", err)
+	}
 
 	workspaceRoot := t.TempDir()
-	loop := orchestrationLoop{}
-	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot}); err != nil {
+	loop := orchestrationLoop{fsStore: fsStore}
+	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{TrustedSnapshotID: snapshot.SnapshotID}); err != nil {
 		t.Fatalf("prepare execution workspace with symlink seed: %v", err)
 	}
 
@@ -3047,27 +3121,20 @@ func TestPrepareExecutionWorkspaceSkipsSymlinkedSeedEntries(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workspaceRoot, "skills")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected symlinked seed entry to be skipped, stat err=%v", err)
 	}
-
-	baseline, err := loadWorkspaceArtifactBaseline(workspaceRoot)
-	if err != nil {
-		t.Fatalf("load workspace artifact baseline: %v", err)
-	}
-	if len(baseline.Files) != 1 {
-		t.Fatalf("expected exactly one baseline file after skipping symlink, got %d (%v)", len(baseline.Files), baseline.Files)
-	}
-	if _, ok := baseline.Files["README.md"]; !ok {
-		t.Fatalf("expected README.md in workspace baseline, got %v", baseline.Files)
-	}
-	if _, ok := baseline.Files["skills"]; ok {
-		t.Fatalf("expected symlinked seed entry to be absent from baseline, got %v", baseline.Files)
-	}
 }
 
 func TestPrepareExecutionWorkspaceInstallsManagedOpenCodeOverlay(t *testing.T) {
 	t.Parallel()
 
+	db := openTestDB(t)
+	applyMigration(t, db)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+
 	workspaceRoot := t.TempDir()
-	loop := orchestrationLoop{}
+	loop := orchestrationLoop{fsStore: fsStore}
 	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{}); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
@@ -3391,7 +3458,7 @@ func TestPersistExecutionArtifactRuntimeOwnedDecreeIntakeDoesNotNeedWorkspacePat
 	}
 }
 
-func TestPersistExecutionArtifactCanonicalizesHydratedPrefixedBuilderPaths(t *testing.T) {
+func TestPersistExecutionArtifactUsesCanonicalSnapshotPaths(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -3408,15 +3475,39 @@ func TestPersistExecutionArtifactCanonicalizesHydratedPrefixedBuilderPaths(t *te
 	mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_norm', 'builder-berserker', 'Builder', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_1', 'run_1', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_builder_norm', 1, '2026-03-01T12:00:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_canonical', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	rt.orchestrator.fsStore = fsStore
 
 	workspaceRoot := t.TempDir()
-	hydratedSource := filepath.Join(workspaceRoot, "hydrated", "closure-note.md")
-	if err := os.MkdirAll(filepath.Dir(hydratedSource), 0o755); err != nil {
-		t.Fatalf("create hydrated source directory: %v", err)
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "closure-note.md"), []byte("# Closure\n"), 0o644); err != nil {
+		t.Fatalf("write source artifact: %v", err)
 	}
-	if err := os.WriteFile(hydratedSource, []byte("# Closure\n"), 0o644); err != nil {
-		t.Fatalf("write hydrated source artifact: %v", err)
+	baseRoot := t.TempDir()
+	baseSnapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   "snap_builder_canonical_base",
+		RunID:        "run_1",
+		SnapshotKind: "baseline",
+		RootPath:     baseRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture base snapshot: %v", err)
 	}
+	if _, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:       "snap_builder_canonical_result",
+		RunID:            "run_1",
+		ParentSnapshotID: baseSnapshot.SnapshotID,
+		SnapshotKind:     "attempt_result",
+		RootPath:         workspaceRoot,
+		CreatedAt:        "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("capture result snapshot: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_builder_canonical_base', result_snapshot_id = 'snap_builder_canonical_result' WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`)
 
 	err = rt.orchestrator.persistExecutionArtifact(
 		context.Background(),
@@ -3730,10 +3821,18 @@ func TestPublishArtifactsToProjectRootGitWorktreeRejectsInvalidRepo(t *testing.T
 func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 	t.Parallel()
 
-	projectRoot := t.TempDir()
-	loop := orchestrationLoop{yoloRoot: projectRoot, publishMode: PublishModeDirect}
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 
-	ctxInfo, err := loop.resolveExecutionWorkspaceContext(context.Background(), "run_direct")
+	projectRoot := t.TempDir()
+	loop := orchestrationLoop{db: db, fsStore: fsStore, yoloRoot: projectRoot, publishMode: PublishModeDirect, now: time.Now}
+
+	ctxInfo, err := loop.resolveExecutionWorkspaceContext(context.Background(), "run_1")
 	if err != nil {
 		t.Fatalf("resolve direct workspace context: %v", err)
 	}
@@ -3747,7 +3846,7 @@ func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed"), 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
 	}
-	ctxInfo, err = loop.resolveExecutionWorkspaceContext(context.Background(), "run_direct")
+	ctxInfo, err = loop.resolveExecutionWorkspaceContext(context.Background(), "run_1")
 	if err != nil {
 		t.Fatalf("resolve direct workspace context with seed file: %v", err)
 	}
@@ -3759,8 +3858,15 @@ func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 func TestResolveExecutionWorkspaceContextGitWorktreeRejectsNonRepo(t *testing.T) {
 	t.Parallel()
 
-	loop := orchestrationLoop{yoloRoot: t.TempDir(), publishMode: PublishModeGitWorktree}
-	_, err := loop.resolveExecutionWorkspaceContext(context.Background(), "run_invalid")
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	loop := orchestrationLoop{db: db, fsStore: fsStore, yoloRoot: t.TempDir(), publishMode: PublishModeGitWorktree, now: time.Now}
+	_, err = loop.resolveExecutionWorkspaceContext(context.Background(), "run_1")
 	if err == nil {
 		t.Fatal("expected git worktree context resolution to fail for non-git project root")
 	}
@@ -6152,7 +6258,7 @@ func TestExecutionOutcomeStateFromErrorTreatsDeadlineAsFailure(t *testing.T) {
 	}
 }
 
-func TestHydrateInspectionWorkspaceMirrorsCurrentWorkspaceSnapshot(t *testing.T) {
+func TestDiscoverWorkspaceArtifactsUsesTrackedFilesystemPolicy(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
@@ -6175,113 +6281,64 @@ func TestHydrateInspectionWorkspaceMirrorsCurrentWorkspaceSnapshot(t *testing.T)
 		}
 	}
 
-	loop := orchestrationLoop{}
-	if err := loop.hydrateInspectionWorkspace(workspaceRoot); err != nil {
-		t.Fatalf("hydrate inspection workspace: %v", err)
+	artifacts, err := discoverWorkspaceArtifacts(workspaceRoot)
+	if err != nil {
+		t.Fatalf("discover workspace artifacts: %v", err)
 	}
-
+	paths := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		paths = append(paths, artifact.Path)
+	}
 	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "docs/merge-gate-checklist.md", ".playwright-mcp/console.log"} {
-		if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", filepath.FromSlash(relativePath))); err != nil {
-			t.Fatalf("expected hydrated workspace snapshot to include %s: %v", relativePath, err)
+		if !slices.Contains(paths, relativePath) {
+			t.Fatalf("expected artifact list to include %s, got %v", relativePath, paths)
 		}
 	}
 	for _, relativePath := range []string{".kingdom/ignored.txt", "kingdom-artifacts/ignored.txt"} {
-		if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", filepath.FromSlash(relativePath))); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("expected hydrated workspace snapshot to exclude %s, stat err=%v", relativePath, err)
+		if slices.Contains(paths, relativePath) {
+			t.Fatalf("expected artifact list to exclude %s, got %v", relativePath, paths)
 		}
 	}
 }
 
-func TestHydrateInspectionWorkspaceResetsExistingHydratedTree(t *testing.T) {
+func TestBuildNodePromptExecutionReviewOmitsHydratedPathMetadata(t *testing.T) {
 	t.Parallel()
 
-	workspaceRoot := t.TempDir()
-	staleHydratedPath := filepath.Join(workspaceRoot, "hydrated", "stale.txt")
-	if err := os.MkdirAll(filepath.Dir(staleHydratedPath), 0o755); err != nil {
-		t.Fatalf("create stale hydrated fixture: %v", err)
-	}
-	if err := os.WriteFile(staleHydratedPath, []byte("stale"), 0o644); err != nil {
-		t.Fatalf("write stale hydrated fixture: %v", err)
-	}
-	currentPath := filepath.Join(workspaceRoot, "closure-note.md")
-	if err := os.WriteFile(currentPath, []byte("fresh"), 0o644); err != nil {
-		t.Fatalf("write current workspace fixture: %v", err)
-	}
-
-	loop := orchestrationLoop{}
-	if err := loop.hydrateInspectionWorkspace(workspaceRoot); err != nil {
-		t.Fatalf("hydrate inspection workspace: %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", "closure-note.md")); err != nil {
-		t.Fatalf("expected fresh workspace file to be mirrored into hydrated root: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", "hydrated", "stale.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected stale nested hydrated content to be absent, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", "stale.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected stale hydrated-only file to be removed, stat err=%v", err)
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_prompt_no_hydrated', 'Prompt decree', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_prompt_no_hydrated', 'royal-decree-v1', '1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_prompt_no_hydrated', NULL, 'decree_prompt_no_hydrated', 'wfdef_prompt_no_hydrated', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	loop := orchestrationLoop{db: db}
+	prompt := loop.buildNodePrompt(context.Background(), "run_prompt_no_hydrated", "execution_review_shieldmaiden", "nr_execution_review_no_hydrated_1", "reviewer-shieldmaiden", "execution_review", "decree", "council-member", "plan", "review", "")
+	if strings.Contains(prompt, "HydratedArtifactsPath:") {
+		t.Fatalf("expected hydrated metadata to be removed from execution review prompt, got:\n%s", prompt)
 	}
 }
 
-func TestHydrateInspectionWorkspaceMirrorsUnchangedReferencedAssets(t *testing.T) {
+func TestBuilderEvidenceManifestUsesCanonicalPathsWithoutHydratedPrefix(t *testing.T) {
 	t.Parallel()
 
-	workspaceRoot := t.TempDir()
-	files := map[string]string{
-		"index.html":          `<link rel="stylesheet" href="./styles.css"><script src="./script.js"></script><img src="./images/fallback.svg">`,
-		"styles.css":          "body { background: #f5f1ea; }",
-		"script.js":           "document.body.dataset.ready = 'true'",
-		"images/fallback.svg": "<svg></svg>",
-		"builder-report.md":   "latest builder changed only index.html",
+	db := openTestDB(t)
+	applyMigration(t, db)
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_manifest_no_hydrated', 'Manifest decree', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_manifest_no_hydrated', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_manifest_no_hydrated', NULL, 'decree_manifest_no_hydrated', 'wfdef_manifest_no_hydrated', 'running', 'approved', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_manifest_no_hydrated_builder', 'wfdef_manifest_no_hydrated', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_manifest_no_hydrated_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_manifest_no_hydrated_builder_1', 'run_manifest_no_hydrated', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_manifest_no_hydrated_builder', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_no_hydrated:delegated_execution_berserker:1', 'run_manifest_no_hydrated', 'nr_manifest_no_hydrated_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_no_hydrated_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_no_hydrated_new', 'run_manifest_no_hydrated', 'nr_manifest_no_hydrated_builder_1', 'run_manifest_no_hydrated:delegated_execution_berserker:1', 'deliverable', 'write', 'bar.txt', 'text/plain', 'bar.txt', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 3, 'builder-berserker', '%s')`, now))
+	loop := orchestrationLoop{db: db}
+	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest_no_hydrated")
+	if !strings.Contains(manifest, "  - bar.txt") {
+		t.Fatalf("expected manifest to include canonical artifact path, got:\n%s", manifest)
 	}
-	for relativePath, body := range files {
-		resolved := filepath.Join(workspaceRoot, filepath.FromSlash(relativePath))
-		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
-			t.Fatalf("create fixture %s: %v", relativePath, err)
-		}
-		if err := os.WriteFile(resolved, []byte(body), 0o644); err != nil {
-			t.Fatalf("write fixture %s: %v", relativePath, err)
-		}
-	}
-
-	loop := orchestrationLoop{}
-	if err := loop.hydrateInspectionWorkspace(workspaceRoot); err != nil {
-		t.Fatalf("hydrate inspection workspace: %v", err)
-	}
-
-	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "images/fallback.svg"} {
-		if _, err := os.Stat(filepath.Join(workspaceRoot, "hydrated", filepath.FromSlash(relativePath))); err != nil {
-			t.Fatalf("expected hydrated inspection root to remain self-contained for %s: %v", relativePath, err)
-		}
-	}
-}
-
-func TestEnsureCanonicalImplementationArtifactPathCopiesHydratedPrefixedFile(t *testing.T) {
-	t.Parallel()
-
-	workspaceRoot := t.TempDir()
-	sourcePath := filepath.Join(workspaceRoot, "hydrated", "closure-note.md")
-	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
-		t.Fatalf("create source directory: %v", err)
-	}
-	if err := os.WriteFile(sourcePath, []byte("canonical body"), 0o644); err != nil {
-		t.Fatalf("write source artifact: %v", err)
-	}
-
-	normalized, err := ensureCanonicalImplementationArtifactPath(workspaceRoot, "hydrated/closure-note.md")
-	if err != nil {
-		t.Fatalf("canonicalize implementation artifact path: %v", err)
-	}
-	if normalized != "closure-note.md" {
-		t.Fatalf("expected normalized path closure-note.md, got %q", normalized)
-	}
-	raw, err := os.ReadFile(filepath.Join(workspaceRoot, normalized))
-	if err != nil {
-		t.Fatalf("read normalized artifact: %v", err)
-	}
-	if string(raw) != "canonical body" {
-		t.Fatalf("expected normalized artifact content to match source, got %q", string(raw))
+	if strings.Contains(manifest, "hydrated/") {
+		t.Fatalf("expected manifest to omit hydrated prefixes, got:\n%s", manifest)
 	}
 }
 
@@ -6452,8 +6509,8 @@ func TestBuildNodePromptIncludesBuilderEvidenceManifestForExecutionReview(t *tes
 	if !strings.Contains(prompt, "\n\n----\n\nBuilderEvidenceManifest:") {
 		t.Fatalf("expected separator block before builder evidence manifest, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "HydratedArtifactsPath: hydrated/") {
-		t.Fatalf("expected execution review prompt to include hydrated path metadata, got:\n%s", prompt)
+	if strings.Contains(prompt, "HydratedArtifactsPath:") {
+		t.Fatalf("expected execution review prompt to omit hydrated path metadata, got:\n%s", prompt)
 	}
 }
 
@@ -6493,7 +6550,7 @@ func TestBuilderEvidenceManifestForRunCapsKeyFilesAtTenWithEllipsis(t *testing.T
 	if strings.Contains(manifest, "KeyDeliverableFiles:") {
 		t.Fatalf("expected legacy key deliverable list label to be removed, got:\n%s", manifest)
 	}
-	if strings.Count(manifest, "  - hydrated/") != 10 {
+	if strings.Count(manifest, "  - docs/") != 10 {
 		t.Fatalf("expected 10 key deliverable entries, got:\n%s", manifest)
 	}
 	if !strings.Contains(manifest, "  - ...") {
@@ -6522,7 +6579,7 @@ func TestBuilderEvidenceManifestForRunUsesLatestSuccessfulBuilderAttemptOnly(t *
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:1', 'run_manifest_latest', 'nr_manifest_latest_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_latest_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:2', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_latest_builder_2', '2026-03-01T12:10:00Z', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z', '', '', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z')`)
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_latest_old', 'run_manifest_latest', 'nr_manifest_latest_builder_1', 'run_manifest_latest:delegated_execution_berserker:1', 'deliverable', 'foo.txt', 'text/plain', 'foo.txt', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3, 'builder-berserker', '%s')`, now))
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_latest_new', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'run_manifest_latest:delegated_execution_berserker:2', 'deliverable', 'bar.txt', 'text/plain', 'hydrated/bar.txt', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 3, 'builder-berserker', '2026-03-01T12:11:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_latest_new', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'run_manifest_latest:delegated_execution_berserker:2', 'deliverable', 'write', 'bar.txt', 'text/plain', 'bar.txt', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 3, 'builder-berserker', '2026-03-01T12:11:00Z')`)
 
 	loop := orchestrationLoop{db: db}
 	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest_latest")
@@ -6533,14 +6590,14 @@ func TestBuilderEvidenceManifestForRunUsesLatestSuccessfulBuilderAttemptOnly(t *
 	if !strings.Contains(manifest, "DeliverableArtifactCount: 1") {
 		t.Fatalf("expected manifest to count only latest successful builder deliverables, got:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "  - hydrated/bar.txt") {
+	if !strings.Contains(manifest, "  - bar.txt") {
 		t.Fatalf("expected manifest to include latest canonical artifact path, got:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "foo.txt") {
 		t.Fatalf("expected manifest to exclude stale builder artifacts, got:\n%s", manifest)
 	}
-	if strings.Contains(manifest, "hydrated/hydrated/bar.txt") {
-		t.Fatalf("expected manifest to normalize legacy hydrated prefixes, got:\n%s", manifest)
+	if strings.Contains(manifest, "hydrated/") {
+		t.Fatalf("expected manifest to omit hydrated prefixes, got:\n%s", manifest)
 	}
 }
 
@@ -10039,7 +10096,7 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeSucceedsWithoutWorkspaceMana
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	rt.orchestrator.workspace = nil
+	rt.orchestrator.fsStore = nil
 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick with missing workspace manager: %v", err)
@@ -10143,7 +10200,7 @@ func TestDispatchNodeAttemptProviderSetupFailureDoesNotEmitStarting(t *testing.T
 		t.Fatalf("drain decree_intake completion outbox: %v", err)
 	}
 
-	rt.orchestrator.workspace = nil
+	rt.orchestrator.fsStore = nil
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick plan_drafting setup failure: %v", err)
 	}

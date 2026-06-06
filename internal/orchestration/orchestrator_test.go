@@ -65,7 +65,7 @@ func TestBuildNodePromptIsRoleAwareAndMetadataFirst(t *testing.T) {
 	}
 }
 
-func TestBuildNodePromptValidationGateIncludesHydratedMetadataAndDelegatorInstruction(t *testing.T) {
+func TestBuildNodePromptValidationGateIncludesDelegatorInstructionWithoutHydratedMetadata(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
@@ -73,8 +73,8 @@ func TestBuildNodePromptValidationGateIncludesHydratedMetadataAndDelegatorInstru
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "validation_gates_qa_scout", "nr_1", "intelligence-qa-scout", "validation_gates", "Build a homepage", "chancellor", "Approved plan content", "Check the delivered homepage end-to-end and report verdict.", "")
 
-	if !strings.Contains(prompt, "HydratedArtifactsPath: hydrated/") {
-		t.Fatalf("expected hydrated artifacts metadata path in validation prompt, got:\n%s", prompt)
+	if strings.Contains(prompt, "HydratedArtifactsPath:") {
+		t.Fatalf("expected hydrated artifacts metadata to be removed from validation prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "DelegatorInstruction:") || !strings.Contains(prompt, "Check the delivered homepage end-to-end and report verdict.") {
 		t.Fatalf("expected delegator instruction body in validation prompt, got:\n%s", prompt)

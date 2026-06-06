@@ -472,6 +472,17 @@ type runExecutionDetailItem struct {
 	OutputText           *string                           `json:"output_text,omitempty"`
 	OutputVerdict        *string                           `json:"output_verdict,omitempty"`
 	OutputVerdictStatus  *string                           `json:"output_verdict_status,omitempty"`
+	PublicationStatus    *string                           `json:"publication_status,omitempty"`
+	PublicationSummary   *string                           `json:"publication_summary,omitempty"`
+	PublicationEntries   []runExecutionPublicationEntryItem `json:"publication_entries,omitempty"`
+}
+
+type runExecutionPublicationEntryItem struct {
+	Path       string `json:"path"`
+	Action     string `json:"action"`
+	Status     string `json:"status"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	ReasonText string `json:"reason_text,omitempty"`
 }
 
 func (s *Server) handleGetHealth(w http.ResponseWriter, _ *http.Request) {

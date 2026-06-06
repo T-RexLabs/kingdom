@@ -157,12 +157,13 @@ CREATE TABLE node_runs (
   node_id TEXT NOT NULL,
   attempt INTEGER NOT NULL CHECK (attempt >= 1),
   wave INTEGER NOT NULL CHECK (wave >= 1),
-  node_status TEXT NOT NULL CHECK (node_status IN ('pending', 'ready', 'running', 'succeeded', 'failed', 'blocked', 'cancelled', 'skipped')),
+  node_status TEXT NOT NULL CHECK (node_status IN ('pending', 'ready', 'starting', 'running', 'succeeded', 'failed', 'blocked', 'cancelled', 'skipped')),
   required_role TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
   started_at TEXT,
   finished_at TEXT,
+  superseded_at TEXT,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (required_role) REFERENCES roles(role_id),
   FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
@@ -448,12 +449,18 @@ CREATE TABLE attempt_executions (
   session_ref TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
   active_provider_invocation_id TEXT,
+  launch_started_at TEXT,
   started_at TEXT,
   terminal_observed_at TEXT,
   committed_at TEXT,
   failure_code TEXT NOT NULL DEFAULT '',
   failure_text TEXT NOT NULL DEFAULT '',
   canonical_settlement_id TEXT,
+  progress_event_type TEXT NOT NULL DEFAULT '',
+  progress_reason_code TEXT NOT NULL DEFAULT '',
+  progress_at TEXT,
+  base_snapshot_id TEXT NOT NULL DEFAULT '',
+  result_snapshot_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
@@ -465,6 +472,10 @@ CREATE TABLE attempt_executions (
 
 CREATE INDEX idx_attempt_executions_state_lease
 ON attempt_executions (state, lease_expires_at, updated_at);
+
+CREATE INDEX idx_attempt_executions_launch_started
+ON attempt_executions (launch_started_at, state, updated_at)
+WHERE launch_started_at IS NOT NULL;
 
 CREATE INDEX idx_attempt_executions_node_run
 ON attempt_executions (node_run_id);
@@ -632,6 +643,7 @@ CREATE TABLE artifacts (
   node_run_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL,
   artifact_kind TEXT NOT NULL DEFAULT 'orchestration_meta' CHECK (artifact_kind IN ('deliverable', 'verification', 'orchestration_meta')),
+  artifact_action TEXT NOT NULL DEFAULT 'write' CHECK (artifact_action IN ('write', 'delete')),
   name TEXT NOT NULL,
   mime TEXT NOT NULL,
   path TEXT NOT NULL,
@@ -659,10 +671,12 @@ CREATE TABLE idempotency_keys (
   actor_id TEXT NOT NULL,
   client_key TEXT NOT NULL,
   request_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed')),
   response_status INTEGER NOT NULL,
   response_headers_json TEXT NOT NULL,
   response_body_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT '',
   expires_at TEXT,
   UNIQUE (route, actor_id, client_key)
 );
@@ -709,6 +723,102 @@ CREATE TABLE run_worktrees (
 
 CREATE INDEX idx_run_worktrees_state_cleanup_after
 ON run_worktrees (state, cleanup_after, run_id);
+
+CREATE TABLE run_execution_targets (
+  run_id TEXT PRIMARY KEY,
+  target_mode TEXT NOT NULL CHECK (target_mode IN ('direct', 'git_worktree')),
+  source_root TEXT NOT NULL,
+  execution_root TEXT NOT NULL,
+  publish_root TEXT NOT NULL,
+  source_snapshot_id TEXT NOT NULL DEFAULT '',
+  trusted_snapshot_id TEXT NOT NULL DEFAULT '',
+  published_snapshot_id TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL CHECK (state IN ('trusted', 'attempt_dirty', 'unknown')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id)
+);
+
+CREATE TABLE filesystem_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  parent_snapshot_id TEXT,
+  snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('baseline', 'attempt_result', 'trusted_promotion')),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
+  FOREIGN KEY (parent_snapshot_id) REFERENCES filesystem_snapshots(snapshot_id)
+);
+
+CREATE TABLE filesystem_snapshot_entries (
+  snapshot_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('file', 'delete')),
+  blob_id TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+  mode_bits INTEGER NOT NULL DEFAULT 0 CHECK (mode_bits >= 0),
+  mtime_ns INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (snapshot_id, path),
+  FOREIGN KEY (snapshot_id) REFERENCES filesystem_snapshots(snapshot_id)
+);
+
+CREATE TABLE filesystem_blobs (
+  blob_id TEXT PRIMARY KEY,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_filesystem_snapshots_run_created
+ON filesystem_snapshots (run_id, created_at DESC, snapshot_id);
+
+CREATE INDEX idx_filesystem_snapshot_entries_path
+ON filesystem_snapshot_entries (path, snapshot_id);
+
+CREATE TABLE run_publication_batches (
+  publication_batch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  target_mode TEXT NOT NULL CHECK (target_mode IN ('direct', 'git_worktree')),
+  status TEXT NOT NULL CHECK (status IN ('succeeded', 'partial_conflict', 'partial_failure', 'failed')),
+  published_count INTEGER NOT NULL DEFAULT 0 CHECK (published_count >= 0),
+  conflicted_count INTEGER NOT NULL DEFAULT 0 CHECK (conflicted_count >= 0),
+  failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
+  FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
+);
+
+CREATE TABLE run_publication_entries (
+  publication_entry_id TEXT PRIMARY KEY,
+  publication_batch_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('write', 'delete')),
+  status TEXT NOT NULL CHECK (status IN ('published', 'conflicted', 'failed')),
+  reason_code TEXT NOT NULL DEFAULT '',
+  reason_text TEXT NOT NULL DEFAULT '',
+  blob_id TEXT NOT NULL DEFAULT '',
+  expected_sha256 TEXT NOT NULL DEFAULT '',
+  observed_sha256 TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (publication_batch_id) REFERENCES run_publication_batches(publication_batch_id),
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
+  FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
+);
+
+CREATE INDEX idx_run_publication_entries_attempt_created
+ON run_publication_entries (attempt_id, created_at DESC, publication_entry_id);
+
+CREATE TABLE run_publication_paths (
+  run_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  artifact_action TEXT NOT NULL CHECK (artifact_action IN ('write', 'delete')),
+  blob_id TEXT NOT NULL DEFAULT '',
+  sha256 TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, path),
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id)
+);
 
 CREATE TABLE mailbox_messages (
   message_id TEXT PRIMARY KEY,

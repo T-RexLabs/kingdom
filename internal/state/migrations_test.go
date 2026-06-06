@@ -74,6 +74,27 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !tableExists(t, db, "run_worktrees") {
 		t.Fatal("expected run_worktrees table to exist after up migration")
 	}
+	if !tableExists(t, db, "run_execution_targets") {
+		t.Fatal("expected run_execution_targets table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_snapshots") {
+		t.Fatal("expected filesystem_snapshots table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_snapshot_entries") {
+		t.Fatal("expected filesystem_snapshot_entries table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_blobs") {
+		t.Fatal("expected filesystem_blobs table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_batches") {
+		t.Fatal("expected run_publication_batches table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_entries") {
+		t.Fatal("expected run_publication_entries table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_paths") {
+		t.Fatal("expected run_publication_paths table to exist after up migration")
+	}
 	if !tableExists(t, db, "run_search_documents") {
 		t.Fatal("expected run_search_documents table to exist after up migration")
 	}
@@ -92,6 +113,12 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "attempt_executions", "canonical_settlement_id") {
 		t.Fatal("expected attempt_executions.canonical_settlement_id column to exist after up migration")
 	}
+	if !columnExists(t, db, "attempt_executions", "base_snapshot_id") {
+		t.Fatal("expected attempt_executions.base_snapshot_id column to exist after up migration")
+	}
+	if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
+		t.Fatal("expected attempt_executions.result_snapshot_id column to exist after up migration")
+	}
 	if !columnExists(t, db, "provider_invocations", "completion_capability_hash") {
 		t.Fatal("expected provider_invocations.completion_capability_hash column to exist after up migration")
 	}
@@ -100,6 +127,9 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	}
 	if !columnExists(t, db, "provider_completion_settlements", "primary_evidence_id") {
 		t.Fatal("expected provider_completion_settlements.primary_evidence_id column to exist after up migration")
+	}
+	if !columnExists(t, db, "artifacts", "artifact_action") {
+		t.Fatal("expected artifacts.artifact_action column to exist after up migration")
 	}
 	if !indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
 		t.Fatal("expected planner receipt uniqueness index to exist after up migration")
@@ -734,7 +764,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	if got := strings.Join(canonicalNames, ","); got != "0001_initial_schema.up.sql,0002_expand_runtime_state_and_idempotency.up.sql,0003_attempt_execution_progress.up.sql" {
+	if got := strings.Join(canonicalNames, ","); got != "0001_initial_schema.up.sql" {
 		t.Fatalf("expected canonical migration set to contain only the collapsed baseline migration, got %v", canonicalNames)
 	}
 
@@ -875,7 +905,7 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("existing_database_upgrades_through_node_run_rebuild", func(t *testing.T) {
+	t.Run("baseline_contains_final_runtime_execution_schema", func(t *testing.T) {
 		db := openTestDB(t)
 		if err := ApplySQLMigrations(context.Background(), db, load(t,
 			"0001_initial_schema.up.sql",
@@ -884,76 +914,48 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		}
 
 		seedMinimumGraph(t, db)
-		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_migrate', 'wfdef_1', 'plan_drafting', 'king', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_migrate', 'run_1', 'plan_drafting', 1, 1, 'running', 'king', 'agent_king', 1, '2026-03-01T12:01:00Z', NULL)`)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, active_provider_invocation_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, canonical_settlement_id, created_at, updated_at) VALUES ('run_1:plan_drafting:1', 'run_1', 'nr_plan_migrate', 'running', 'provider_backed', 0, '', NULL, 0, 'session_plan_migrate', '', NULL, '2026-03-01T12:01:00Z', NULL, NULL, '', '', NULL, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
-		mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_plan_migrate', 'run_1', 'nr_plan_migrate', 'node', 'ready', 'running', 'runtime_orchestrator', 'king', 'runtime.orchestrator', 'orchestration_progress', 'provider launch observed', 'corr_plan_migrate', 'caus_plan_migrate', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
-		mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_migrate', 'run_1', 'plan_drafting', 'nr_plan_migrate', 'run_1:plan_drafting:1', 'agent_king', '', 'plan_revision', 'migration safety', '2026-03-01T12:01:00Z')`)
-
-		if err := ApplySQLMigrations(context.Background(), db, load(t,
-			"0001_initial_schema.up.sql",
-			"0002_expand_runtime_state_and_idempotency.up.sql",
-			"0003_attempt_execution_progress.up.sql",
-		), time.Date(2026, 4, 21, 12, 5, 0, 0, time.UTC)); err != nil {
-			t.Fatalf("apply upgrade migration: %v", err)
-		}
-
 		if !columnExists(t, db, "node_runs", "superseded_at") {
-			t.Fatal("expected node_runs.superseded_at after upgrade migration")
+			t.Fatal("expected node_runs.superseded_at in baseline schema")
 		}
 		if !columnExists(t, db, "attempt_executions", "launch_started_at") {
-			t.Fatal("expected attempt_executions.launch_started_at after upgrade migration")
+			t.Fatal("expected attempt_executions.launch_started_at in baseline schema")
 		}
 		if !columnExists(t, db, "attempt_executions", "progress_event_type") {
-			t.Fatal("expected attempt_executions.progress_event_type after upgrade migration")
+			t.Fatal("expected attempt_executions.progress_event_type in baseline schema")
 		}
 		if !columnExists(t, db, "attempt_executions", "progress_reason_code") {
-			t.Fatal("expected attempt_executions.progress_reason_code after upgrade migration")
+			t.Fatal("expected attempt_executions.progress_reason_code in baseline schema")
 		}
 		if !columnExists(t, db, "attempt_executions", "progress_at") {
-			t.Fatal("expected attempt_executions.progress_at after upgrade migration")
+			t.Fatal("expected attempt_executions.progress_at in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "base_snapshot_id") {
+			t.Fatal("expected attempt_executions.base_snapshot_id in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
+			t.Fatal("expected attempt_executions.result_snapshot_id in baseline schema")
 		}
 		if !indexExists(t, db, "idx_attempt_executions_launch_started") {
-			t.Fatal("expected launch_started_at index after upgrade migration")
+			t.Fatal("expected launch_started_at index in baseline schema")
 		}
 		if !columnExists(t, db, "idempotency_keys", "status") {
-			t.Fatal("expected idempotency_keys.status after upgrade migration")
+			t.Fatal("expected idempotency_keys.status in baseline schema")
 		}
 		if !columnExists(t, db, "idempotency_keys", "updated_at") {
-			t.Fatal("expected idempotency_keys.updated_at after upgrade migration")
+			t.Fatal("expected idempotency_keys.updated_at in baseline schema")
 		}
-
-		var launchStartedAt sql.NullString
-		if err := db.QueryRow(`SELECT launch_started_at FROM attempt_executions WHERE attempt_id = 'run_1:plan_drafting:1'`).Scan(&launchStartedAt); err != nil {
-			t.Fatalf("query upgraded launch_started_at: %v", err)
+		if !columnExists(t, db, "artifacts", "artifact_action") {
+			t.Fatal("expected artifacts.artifact_action in baseline schema")
 		}
-		if !launchStartedAt.Valid || launchStartedAt.String != "2026-03-01T12:01:00Z" {
-			t.Fatalf("expected launch_started_at backfill from started_at, got %#v", launchStartedAt)
-		}
-
-		var idempotencyStatus string
-		var idempotencyUpdatedAt string
-		if err := db.QueryRow(`SELECT status, updated_at FROM idempotency_keys WHERE idempotency_key_id = 'idem_1'`).Scan(&idempotencyStatus, &idempotencyUpdatedAt); err != nil {
-			t.Fatalf("query upgraded idempotency key: %v", err)
-		}
-		if idempotencyStatus != "completed" {
-			t.Fatalf("expected idempotency status backfill to default completed, got %q", idempotencyStatus)
-		}
-		if idempotencyUpdatedAt != "2026-03-01T12:00:00Z" {
-			t.Fatalf("expected idempotency updated_at backfill from created_at, got %q", idempotencyUpdatedAt)
-		}
-
-		var planningOutputCount int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM run_planning_outputs WHERE node_run_id = 'nr_plan_migrate'`).Scan(&planningOutputCount); err != nil {
-			t.Fatalf("count upgraded planning outputs: %v", err)
-		}
-		if planningOutputCount != 1 {
-			t.Fatalf("expected planning output lineage to survive node_runs rebuild, got %d rows", planningOutputCount)
+		for _, tableName := range []string{"run_execution_targets", "filesystem_snapshots", "filesystem_snapshot_entries", "filesystem_blobs", "run_publication_batches", "run_publication_entries", "run_publication_paths"} {
+			if !tableExists(t, db, tableName) {
+				t.Fatalf("expected %s table in baseline schema", tableName)
+			}
 		}
 
 		rows, err := db.Query(`PRAGMA foreign_key_check`)
 		if err != nil {
-			t.Fatalf("run foreign_key_check after upgrade: %v", err)
+			t.Fatalf("run foreign_key_check after baseline apply: %v", err)
 		}
 		defer rows.Close()
 		if rows.Next() {

@@ -1022,7 +1022,53 @@ func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildRunExecutionDetailItem(record))
+	item := buildRunExecutionDetailItem(record)
+	if status, summary, entries, err := s.loadRunExecutionPublication(r.Context(), attemptID); err == nil {
+		if strings.TrimSpace(status) != "" {
+			item.PublicationStatus = &status
+		}
+		if strings.TrimSpace(summary) != "" {
+			item.PublicationSummary = &summary
+		}
+		item.PublicationEntries = entries
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) loadRunExecutionPublication(ctx context.Context, attemptID string) (string, string, []runExecutionPublicationEntryItem, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(attemptID) == "" {
+		return "", "", nil, nil
+	}
+	var batchID string
+	var status string
+	var publishedCount int
+	var conflictedCount int
+	var failedCount int
+	err := s.db.QueryRowContext(ctx, `SELECT publication_batch_id, status, published_count, conflicted_count, failed_count FROM run_publication_batches WHERE attempt_id = ? ORDER BY created_at DESC LIMIT 1`, strings.TrimSpace(attemptID)).Scan(&batchID, &status, &publishedCount, &conflictedCount, &failedCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil, nil
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT path, action, status, reason_code, reason_text FROM run_publication_entries WHERE publication_batch_id = ? ORDER BY publication_entry_id ASC`, batchID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer rows.Close()
+	entries := make([]runExecutionPublicationEntryItem, 0)
+	for rows.Next() {
+		var entry runExecutionPublicationEntryItem
+		if err := rows.Scan(&entry.Path, &entry.Action, &entry.Status, &entry.ReasonCode, &entry.ReasonText); err != nil {
+			return "", "", nil, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", nil, err
+	}
+	summary := fmt.Sprintf("Published %d path(s); %d conflicted; %d failed.", publishedCount, conflictedCount, failedCount)
+	return status, summary, entries, nil
 }
 
 func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutionItem {

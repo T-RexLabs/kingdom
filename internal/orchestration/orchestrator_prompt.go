@@ -52,14 +52,7 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	approvedPlan = stripControlCommandLines(approvedPlan)
 	delegatorInstruction = stripControlCommandLines(delegatorInstruction)
 	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID, projectedDecree)
-	hydratedPath := ""
 	planningGuardrail := ""
-	if classID == "validation_gates" {
-		hydratedPath = "hydrated/"
-	}
-	if classID == "execution_review" {
-		hydratedPath = "hydrated/"
-	}
 	if classID == "plan_drafting" {
 		planningGuardrail = "Planning guardrail: return planning deltas, acceptance criteria, and verification scope only. Do not claim completed implementation work."
 	}
@@ -74,9 +67,6 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 		fmt.Sprintf("NodeRunID: %s", nodeRunID),
 		fmt.Sprintf("RoleID: %s", roleID),
 		fmt.Sprintf("NodeClass: %s", classID),
-	}
-	if strings.TrimSpace(hydratedPath) != "" {
-		groupOne = append(groupOne, fmt.Sprintf("HydratedArtifactsPath: %s", hydratedPath))
 	}
 	if trimmedDelegatorRole := strings.TrimSpace(delegatorRoleID); trimmedDelegatorRole != "" {
 		groupOne = append(groupOne, fmt.Sprintf("DelegatorRoleID: %s", trimmedDelegatorRole))

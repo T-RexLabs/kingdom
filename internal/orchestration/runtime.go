@@ -27,6 +27,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 )
@@ -102,7 +103,7 @@ type Runtime struct {
 	orchestrator    *orchestrationLoop
 	dispatchEvery   time.Duration
 	completionEvery time.Duration
-	workspace       *workspace.Manager
+	fsStore         *runtimefs.Store
 	closeMode       *runtimeCloseMode
 
 	mu               sync.Mutex
@@ -198,9 +199,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		workspaceRoot = filepath.Join(os.TempDir(), "kingdom-workspaces")
 	}
 
-	workspaceManager, err := workspace.NewManager(cfg.DB, workspaceRoot)
+	fsStore, err := runtimefs.NewStore(cfg.DB, workspaceRoot)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap workspace manager: %w", err)
+		return nil, fmt.Errorf("bootstrap runtime filesystem store: %w", err)
 	}
 
 	outputValidator := state.NewWorkerOutputValidator(cfg.DB, schemaSet)
@@ -280,8 +281,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		outputValidator: outputValidator,
 		adapter:         adapter,
 		providerEngine:  providerEngine,
-		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, workspaceManager, outputValidator, schemaSet, nodeTimeouts, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
-		workspace:       workspaceManager,
+		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
+		fsStore:         fsStore,
 		closeMode:       closeMode,
 		completionWake:  make(chan struct{}, 1),
 	}
@@ -1140,12 +1141,21 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"progress_event_type",
 			"progress_reason_code",
 			"progress_at",
+			"base_snapshot_id",
+			"result_snapshot_id",
 			"created_at",
 			"updated_at",
 		},
 		"attempt_event_log":     nil,
 		"attempt_outbox":        nil,
 		"attempt_cancel_outbox": nil,
+		"run_execution_targets": nil,
+		"filesystem_snapshots":  nil,
+		"filesystem_snapshot_entries": nil,
+		"filesystem_blobs":      nil,
+		"run_publication_batches": nil,
+		"run_publication_entries": nil,
+		"run_publication_paths": nil,
 		"workflow_runs":         {"publish_mode"},
 		"run_worktrees": {
 			"repo_common_dir",
@@ -1161,11 +1171,22 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"failure_reason",
 		},
 	}
-	tableNames := make([]string, 0, len(tableRequirements))
-	for tableName := range tableRequirements {
-		tableNames = append(tableNames, tableName)
+	tableNames := []string{
+		"workflow_runs",
+		"node_runs",
+		"attempt_executions",
+		"attempt_event_log",
+		"attempt_outbox",
+		"attempt_cancel_outbox",
+		"run_worktrees",
+		"run_execution_targets",
+		"filesystem_snapshots",
+		"filesystem_snapshot_entries",
+		"filesystem_blobs",
+		"run_publication_batches",
+		"run_publication_entries",
+		"run_publication_paths",
 	}
-	sort.Strings(tableNames)
 	for _, tableName := range tableNames {
 		if err := requireRuntimeTableColumns(db, tableName, tableRequirements[tableName]); err != nil {
 			return err

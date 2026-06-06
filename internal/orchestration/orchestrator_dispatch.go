@@ -14,10 +14,8 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
-	"kingdom/internal/workspace"
 )
 
-const workspaceReleaseTimeout = 10 * time.Second
 const launchObservationTimeout = 5 * time.Second
 
 var launchObservationRetrySchedule = []time.Duration{0, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second}
@@ -238,49 +236,24 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	if workspaceCtxErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve execution workspace context", workspaceCtxErr, now)
 	}
-	if o.workspace == nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", fmt.Errorf("workspace manager is required for execution"), now)
+	if strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", fmt.Errorf("execution root is required for execution"), now)
 	}
-	workspaceRecord, wsErr := o.workspace.CreateWorkspace(ctx, workspace.CreateWorkspaceRequest{
-		RunID:       run.RunID,
-		NodeRunID:   attempt.NodeRunID,
-		WorkspaceID: fmt.Sprintf("ws_%s_%s_%d", run.RunID, attempt.NodeID, attempt.Attempt),
-		CreatedAt:   now,
-	})
-	if wsErr != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create execution workspace", wsErr, now)
-	}
-	cleanupWorkspace := true
-	defer func() {
-		if !cleanupWorkspace || o.forceCloseActive() {
-			return
-		}
-		releaseBaseCtx := ctx
-		if releaseBaseCtx == nil {
-			releaseBaseCtx = context.Background()
-		}
-		releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(releaseBaseCtx), workspaceReleaseTimeout)
-		defer cancelRelease()
-		_ = o.workspace.ReleaseWorkspace(releaseCtx, workspace.ReleaseWorkspaceRequest{
-			WorkspaceID: workspaceRecord.WorkspaceID,
-			ReleasedAt:  o.now().UTC().Format(time.RFC3339),
-			Cleanup:     true,
-		})
-	}()
-	if err := o.prepareExecutionWorkspace(workspaceRecord.WorkspacePath, workspaceCtx); err != nil {
+	if err := o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", err, now)
 	}
-	if classID := resolvedNodeClass(node.NodeID, node.NodeClass); classID == "validation_gates" || classID == "execution_review" {
-		if err := o.hydrateInspectionWorkspace(workspaceRecord.WorkspacePath); err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "hydrate inspection workspace", err, now)
-		}
+	if err := o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID); err != nil {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record attempt base snapshot", err, now)
 	}
-	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspaceRecord.WorkspacePath, now, "")
+	if err := o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now); err != nil {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark execution target dirty", err, now)
+	}
+	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspaceCtx.ExecutionRoot, now, "")
 	if invocationErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
 	}
 
-	o.emitWorkspacePreparedEvent(ctx, run, node, attempt, attemptID, workspaceRecord.WorkspacePath, workspaceCtx, now)
+	o.emitWorkspacePreparedEvent(ctx, run, node, attempt, attemptID, workspaceCtx.ExecutionRoot, workspaceCtx, now)
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 		MessageID:         fmt.Sprintf("msg_comm_%s_%s_%d_instruction", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
 		RunID:             run.RunID,
@@ -313,8 +286,9 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		providerInvocationAt: providerInvocationAt,
 		completionCapability: completionCapability,
 		completionReceiptDir: completionReceiptDir,
-		workspaceID:          workspaceRecord.WorkspaceID,
-		workspacePath:        workspaceRecord.WorkspacePath,
+		baseSnapshotID:       workspaceCtx.TrustedSnapshotID,
+		workspaceID:          run.RunID,
+		workspacePath:        workspaceCtx.ExecutionRoot,
 		delegator:            delegatorID,
 		prompt:               providerOutputPrompt,
 		model:                resolvedModel,
@@ -322,7 +296,6 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		agent:                agentForRole,
 		occurredAt:           now,
 	})
-	cleanupWorkspace = false
 
 	return nil
 }

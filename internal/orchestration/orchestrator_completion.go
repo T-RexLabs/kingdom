@@ -16,7 +16,6 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
-	"kingdom/internal/workspace"
 )
 
 type executionOutboxPayload struct {
@@ -30,6 +29,8 @@ type executionOutboxPayload struct {
 	ProviderInvocationAt            string                    `json:"provider_invocation_at,omitempty"`
 	CompletionReceiptEvidenceID     string                    `json:"completion_receipt_evidence_id,omitempty"`
 	CompletionStructuredPayloadJSON string                    `json:"completion_structured_payload_json,omitempty"`
+	BaseSnapshotID                  string                    `json:"base_snapshot_id,omitempty"`
+	ResultSnapshotID                string                    `json:"result_snapshot_id,omitempty"`
 	WorkspaceID                     string                    `json:"workspace_id"`
 	Workspace                       string                    `json:"workspace_path"`
 	Delegator                       string                    `json:"delegator"`
@@ -122,6 +123,8 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ProviderInvocationAt:            strings.TrimSpace(result.providerInvocationAt),
 		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
+		BaseSnapshotID:                  strings.TrimSpace(result.baseSnapshotID),
+		ResultSnapshotID:                strings.TrimSpace(result.resultSnapshotID),
 		WorkspaceID:                     result.workspaceID,
 		Workspace:                       result.workspacePath,
 		Delegator:                       result.delegator,
@@ -293,6 +296,8 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		providerInvocationAt:            payload.ProviderInvocationAt,
 		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
 		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
+		baseSnapshotID:                  payload.BaseSnapshotID,
+		resultSnapshotID:                payload.ResultSnapshotID,
 		workspaceID:                     payload.WorkspaceID,
 		workspacePath:                   payload.Workspace,
 		delegator:                       payload.Delegator,
@@ -476,20 +481,6 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	now := o.now().UTC().Format(time.RFC3339)
 	o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_entered", now, nil)
 	originalOutputText := strings.TrimSpace(result.outputText)
-	if strings.TrimSpace(result.workspaceID) != "" {
-		defer func() {
-			if o.forceCloseActive() {
-				return
-			}
-			releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancelRelease()
-			_ = o.workspace.ReleaseWorkspace(releaseCtx, workspace.ReleaseWorkspaceRequest{
-				WorkspaceID: result.workspaceID,
-				ReleasedAt:  o.now().UTC().Format(time.RFC3339),
-				Cleanup:     false,
-			})
-		}()
-	}
 
 	persistedAttemptExecution := executionstore.AttemptExecution{}
 	hasPersistedAttemptExecution := false
@@ -517,7 +508,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	currentOutcome := normalizeExecutionOutcome(result.outcome, execErr)
 	hasCanonicalSettlement := hasPersistedAttemptExecution && strings.TrimSpace(persistedAttemptExecution.CanonicalSettlementID) != ""
 	if execErr == nil {
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath)
+		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
 		if countErr != nil {
 			execErr = countErr
 			currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, execErr)
@@ -819,6 +810,14 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			}
 		}
 	}
+	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+		snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, result, now)
+		if snapshotErr != nil {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_snapshot_capture_error", now, map[string]any{"error": snapshotErr.Error()})
+			return snapshotErr
+		}
+		result.resultSnapshotID = snapshot.SnapshotID
+	}
 	canonicalArtifactProjectionAllowed := projectionAllowed && decision.AllowCanonicalArtifacts
 	canonicalMailboxProjectionAllowed := projectionAllowed && decision.AllowCanonicalMailbox
 	if projectionAllowed && !decision.LatestAttempt {
@@ -879,6 +878,21 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			CreatedAt:        now,
 		}); insertErr != nil {
 			slog.Warn("failed to persist token usage", "run_id", result.run.RunID, "attempt_id", result.attemptID, "error", insertErr)
+		}
+	}
+	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+		if projectionErr == nil && execErr == nil && canonicalArtifactProjectionAllowed && isImplementationRole(result.node.RequiredRole) {
+			if promoteErr := o.promoteExecutionTargetSnapshot(ctx, result.run.RunID, result.resultSnapshotID, now); promoteErr != nil {
+				return promoteErr
+			}
+		} else {
+			trustedSnapshotID := strings.TrimSpace(result.baseSnapshotID)
+			if target, err := o.fsStore.GetExecutionTarget(ctx, result.run.RunID); err == nil && strings.TrimSpace(target.TrustedSnapshotID) != "" {
+				trustedSnapshotID = strings.TrimSpace(target.TrustedSnapshotID)
+			}
+			if restoreErr := o.restoreExecutionTarget(ctx, result.run.RunID, result.workspacePath, trustedSnapshotID, now); restoreErr != nil {
+				return restoreErr
+			}
 		}
 	}
 	if projectionErr != nil {
@@ -1108,20 +1122,19 @@ func isDurableExecutionTerminalState(state string) bool {
 	}
 }
 
-func (o *orchestrationLoop) retryArtifactCountForExecution(ctx context.Context, node nodeDefinition, workspacePath string) (int, error) {
+func (o *orchestrationLoop) retryArtifactCountForExecution(ctx context.Context, node nodeDefinition, workspacePath, baseSnapshotID string) (int, error) {
 	if isImplementationRole(node.RequiredRole) {
 		if strings.TrimSpace(workspacePath) == "" {
 			return 0, fmt.Errorf("workspace path is required for implementation artifact retry evaluation")
 		}
-		discoveredArtifacts, err := discoverWorkspaceArtifacts(workspacePath)
-		if err != nil {
-			return 0, err
+		if o == nil || o.fsStore == nil || strings.TrimSpace(baseSnapshotID) == "" {
+			discoveredArtifacts, err := discoverWorkspaceArtifacts(workspacePath)
+			if err != nil {
+				return 0, err
+			}
+			return len(discoveredArtifacts), nil
 		}
-		filteredArtifacts, err := filterImplementationArtifactsAgainstBaseline(workspacePath, discoveredArtifacts)
-		if err != nil {
-			return 0, err
-		}
-		return len(filteredArtifacts), nil
+		return o.fsStore.CountChangesAgainstSnapshot(ctx, workspacePath, baseSnapshotID)
 	}
 	return 0, nil
 }
@@ -1217,7 +1230,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 		result.completionStructuredPayloadJSON = strings.TrimSpace(retryResponse.CompletionStructuredPayloadJSON)
 		result.suppressEmptyOutputRetry = retryResponse.SuppressEmptyOutputRetry
 		result.outputText = strings.TrimSpace(retryResponse.OutputText)
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath)
+			artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
 		if countErr != nil {
 			return result, countErr
 		}

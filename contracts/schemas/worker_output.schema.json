@@ -77,6 +77,10 @@
           "type": "string",
           "enum": ["deliverable", "verification", "orchestration_meta"]
         },
+        "action": {
+          "type": "string",
+          "enum": ["write", "delete"]
+        },
         "name": {
           "type": "string",
           "minLength": 1
