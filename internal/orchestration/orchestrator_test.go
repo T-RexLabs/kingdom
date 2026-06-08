@@ -101,11 +101,33 @@ func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 	if !strings.Contains(prompt, "Do not claim completed implementation work.") {
 		t.Fatalf("expected planning guardrail instruction text, got:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "ResponseFirstWorkspaceGuardrail:") {
+		t.Fatalf("expected response-first workspace guardrail section in planning prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "do not create, edit, rename, or delete project files for this node") {
+		t.Fatalf("expected response-first workspace guardrail text, got:\n%s", prompt)
+	}
 	if strings.Contains(prompt, "PriorWithholdContext:") {
 		t.Fatalf("expected planning prompt to omit legacy withhold context section, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "\n\n----\n\n") {
 		t.Fatalf("expected grouped section separator in planning prompt, got:\n%s", prompt)
+	}
+}
+
+func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "advisor_consultation_noble", "nr_1", "noble-delegate", "advisor_consultation", "Build a homepage", "king", "Approved plan content", "Advise on scope and risk.", "")
+
+	if !strings.Contains(prompt, "ResponseFirstWorkspaceGuardrail:") {
+		t.Fatalf("expected advisor prompt to include response-first workspace guardrail, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "PlanningGuardrail:") {
+		t.Fatalf("expected advisor prompt to omit planning guardrail section, got:\n%s", prompt)
 	}
 }
 

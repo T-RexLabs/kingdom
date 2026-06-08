@@ -56,6 +56,13 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	if classID == "plan_drafting" {
 		planningGuardrail = "Planning guardrail: return planning deltas, acceptance criteria, and verification scope only. Do not claim completed implementation work."
 	}
+	responseFirstWorkspaceGuardrail := ""
+	if classID == workflow.NodeClassAdvisorConsultation || classID == workflow.NodeClassAdvisorySynthesis || classID == workflow.NodeClassPlanDrafting {
+		responseFirstWorkspaceGuardrail = strings.Join([]string{
+			"- Inspect current project files as needed, but do not create, edit, rename, or delete project files for this node.",
+			"- Return counsel/planning output only; implementation changes belong to delegated execution after plan approval.",
+		}, "\n")
+	}
 	runtimeManagedPathGuardrail := ""
 	if classID == workflow.NodeClassDelegatedExecution || classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
 		runtimeManagedPathGuardrail = strings.Join([]string{
@@ -99,6 +106,9 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	}
 	if trimmedGuardrail := strings.TrimSpace(planningGuardrail); trimmedGuardrail != "" {
 		groupTwo = append(groupTwo, fmt.Sprintf("PlanningGuardrail:\n%s", trimmedGuardrail))
+	}
+	if trimmedGuardrail := strings.TrimSpace(responseFirstWorkspaceGuardrail); trimmedGuardrail != "" {
+		groupTwo = append(groupTwo, fmt.Sprintf("ResponseFirstWorkspaceGuardrail:\n%s", trimmedGuardrail))
 	}
 	if trimmedGuardrail := strings.TrimSpace(runtimeManagedPathGuardrail); trimmedGuardrail != "" {
 		groupTwo = append(groupTwo, fmt.Sprintf("RuntimeManagedPathGuardrail:\n%s", trimmedGuardrail))

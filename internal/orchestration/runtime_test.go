@@ -10329,17 +10329,23 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeIgnoresGitWorktreePublishMod
 	}
 }
 
-func TestDispatchNodeAttemptProviderSetupFailureDoesNotEmitStarting(t *testing.T) {
+func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedSimpleDispatchRun(t, db)
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write project seed file: %v", err)
+	}
+	adapter := &sequenceExecutionAdapter{outputs: []string{"Council plan revision"}}
 
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
+		Adapter:        adapter,
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		YoloOutputRoot: t.TempDir(),
+		YoloOutputRoot: projectRoot,
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
@@ -10354,31 +10360,156 @@ func TestDispatchNodeAttemptProviderSetupFailureDoesNotEmitStarting(t *testing.T
 
 	rt.orchestrator.fsStore = nil
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
-		t.Fatalf("tick plan_drafting setup failure: %v", err)
+		t.Fatalf("tick response-first plan_drafting: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return fmt.Errorf("drain plan_drafting completion outbox: %w", err)
+		}
+		var nodeStatus string
+		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
+			return fmt.Errorf("query plan_drafting node status: %w", err)
+		}
+		if nodeStatus != "succeeded" {
+			return fmt.Errorf("node_status=%s", nodeStatus)
+		}
+		return nil
+	})
+
+	var workspacePreparedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND reason_code = 'workspace_prepared'`).Scan(&workspacePreparedCount); err != nil {
+		t.Fatalf("count plan_drafting workspace_prepared events: %v", err)
+	}
+	if workspacePreparedCount != 0 {
+		t.Fatalf("expected response-first plan_drafting to skip workspace_prepared events, got %d", workspacePreparedCount)
 	}
 
-	var nodeStatus string
-	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
-		t.Fatalf("query plan_drafting node status: %v", err)
+	var executionTargetCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_execution_targets WHERE run_id = 'run_dispatch'`).Scan(&executionTargetCount); err != nil {
+		t.Fatalf("count response-first run execution targets: %v", err)
 	}
-	if nodeStatus != "failed" {
-		t.Fatalf("expected plan_drafting setup failure to terminalize directly from ready, got %q", nodeStatus)
-	}
-
-	var startedCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedCount); err != nil {
-		t.Fatalf("count plan_drafting attempt.started events: %v", err)
-	}
-	if startedCount != 0 {
-		t.Fatalf("expected no attempt.started event for pre-launch setup failure, got %d", startedCount)
+	if executionTargetCount != 0 {
+		t.Fatalf("expected response-first plan_drafting to avoid execution target creation, got %d", executionTargetCount)
 	}
 
-	var launchStartedAt sql.NullString
-	if err := db.QueryRow(`SELECT launch_started_at FROM attempt_executions WHERE attempt_id = 'run_dispatch:plan_drafting:1'`).Scan(&launchStartedAt); err != nil {
-		t.Fatalf("query launch_started_at for failed setup attempt: %v", err)
+	var snapshotCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = 'run_dispatch'`).Scan(&snapshotCount); err != nil {
+		t.Fatalf("count response-first filesystem snapshots: %v", err)
 	}
-	if launchStartedAt.Valid {
-		t.Fatalf("expected launch_started_at to remain empty for pre-launch setup failure, got %q", launchStartedAt.String)
+	if snapshotCount != 0 {
+		t.Fatalf("expected response-first plan_drafting to avoid filesystem snapshots, got %d", snapshotCount)
+	}
+
+	var baseSnapshotID string
+	var resultSnapshotID string
+	if err := db.QueryRow(`SELECT COALESCE(base_snapshot_id, ''), COALESCE(result_snapshot_id, '') FROM attempt_executions WHERE attempt_id = 'run_dispatch:plan_drafting:1'`).Scan(&baseSnapshotID, &resultSnapshotID); err != nil {
+		t.Fatalf("query plan_drafting snapshot ids: %v", err)
+	}
+	if strings.TrimSpace(baseSnapshotID) != "" || strings.TrimSpace(resultSnapshotID) != "" {
+		t.Fatalf("expected response-first plan_drafting to leave snapshot ids empty, got base=%q result=%q", baseSnapshotID, resultSnapshotID)
+	}
+
+	var responseSnapshotCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM artifacts WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND path = 'plan_drafting_response.md'`).Scan(&responseSnapshotCount); err != nil {
+		t.Fatalf("count plan_drafting response snapshot artifacts: %v", err)
+	}
+	if responseSnapshotCount != 1 {
+		t.Fatalf("expected one plan_drafting response snapshot artifact, got %d", responseSnapshotCount)
+	}
+
+	requests := adapter.requestsSnapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected one provider request for plan_drafting, got %d", len(requests))
+	}
+	if requests[0].WorkspacePath != projectRoot {
+		t.Fatalf("expected response-first plan_drafting workspace path %q, got %q", projectRoot, requests[0].WorkspacePath)
+	}
+}
+
+func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_builder",
+		DecreeID:     "decree_dispatch_builder",
+		WorkflowID:   "wfdef_dispatch_builder",
+		NodeRunID:    "nr_dispatch_builder_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_dispatch_builder",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_dispatch_builder",
+			RoleID:  "council-member",
+		}},
+	})
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write builder project seed file: %v", err)
+	}
+	adapter := &sequenceExecutionAdapter{outputs: []string{"Implemented builder changes"}}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	now := "2026-03-01T12:00:00Z"
+	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, RequiredRole: "builder-berserker", AgentID: "agent_dispatch_builder", NodeStatus: "ready"}, now); err != nil {
+		t.Fatalf("dispatch builder node attempt: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return fmt.Errorf("drain builder completion outbox: %w", err)
+		}
+		var nodeStatus string
+		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_1'`).Scan(&nodeStatus); err != nil {
+			return fmt.Errorf("query builder node status: %w", err)
+		}
+		if nodeStatus != "succeeded" {
+			return fmt.Errorf("node_status=%s", nodeStatus)
+		}
+		return nil
+	})
+
+	var workspacePreparedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch_builder:delegated_execution_berserker:1' AND reason_code = 'workspace_prepared'`).Scan(&workspacePreparedCount); err != nil {
+		t.Fatalf("count builder workspace_prepared events: %v", err)
+	}
+	if workspacePreparedCount != 1 {
+		t.Fatalf("expected delegated execution to keep workspace preparation, got %d events", workspacePreparedCount)
+	}
+
+	var executionTargetCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_execution_targets WHERE run_id = 'run_dispatch_builder'`).Scan(&executionTargetCount); err != nil {
+		t.Fatalf("count builder execution targets: %v", err)
+	}
+	if executionTargetCount != 1 {
+		t.Fatalf("expected delegated execution to create one execution target, got %d", executionTargetCount)
+	}
+
+	var snapshotCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = 'run_dispatch_builder'`).Scan(&snapshotCount); err != nil {
+		t.Fatalf("count builder filesystem snapshots: %v", err)
+	}
+	if snapshotCount == 0 {
+		t.Fatal("expected delegated execution to keep snapshot-backed execution")
+	}
+
+	var baseSnapshotID sql.NullString
+	if err := db.QueryRow(`SELECT base_snapshot_id FROM attempt_executions WHERE attempt_id = 'run_dispatch_builder:delegated_execution_berserker:1'`).Scan(&baseSnapshotID); err != nil {
+		t.Fatalf("query builder base snapshot id: %v", err)
+	}
+	if !baseSnapshotID.Valid || strings.TrimSpace(baseSnapshotID.String) == "" {
+		t.Fatalf("expected delegated execution to persist a base snapshot id, got %#v", baseSnapshotID)
 	}
 }
 
@@ -12647,6 +12778,42 @@ func seedSimpleDispatchRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_dispatch_2', 'wfdef_dispatch', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_dispatch_1', 'wfdef_dispatch', 'decree_intake', 'plan_drafting', 'always', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_dispatch', NULL, 'decree_dispatch', 'wfdef_dispatch', 'pending', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+}
+
+type readyDispatchAgentSeed struct {
+	AgentID string
+	RoleID  string
+}
+
+type readyDispatchNodeRunSeed struct {
+	RunID        string
+	DecreeID     string
+	WorkflowID   string
+	NodeRunID    string
+	NodeID       string
+	NodeClass    string
+	RequiredRole string
+	AgentID      string
+	RoleIDs      []string
+	ExtraAgents  []readyDispatchAgentSeed
+}
+
+func seedReadyDispatchNodeRun(t *testing.T, db *sql.DB, seed readyDispatchNodeRunSeed) {
+	t.Helper()
+
+	now := "2026-03-01T12:00:00Z"
+	for _, roleID := range seed.RoleIDs {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES (%q, %q, 1, %q)`, roleID, roleID, now))
+	}
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (%q, %q, 'idle', NULL, 0, %q, %q)`, seed.AgentID, seed.RequiredRole, now, now))
+	for _, agent := range seed.ExtraAgents {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (%q, %q, 'idle', NULL, 0, %q, %q)`, agent.AgentID, agent.RoleID, now, now))
+	}
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES (%q, %q, 'dispatch run', '{}', %q)`, seed.DecreeID, seed.DecreeID, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES (%q, %q, 'v1', '{}', %q)`, seed.WorkflowID, seed.WorkflowID, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (%q, %q, %q, %q, %q, %q)`, seed.WorkflowID+"_node", seed.WorkflowID, seed.NodeID, seed.RequiredRole, seed.NodeClass, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES (%q, NULL, %q, %q, 'running', 'approved', 1, %q, %q)`, seed.RunID, seed.DecreeID, seed.WorkflowID, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (%q, %q, %q, 1, 1, 'ready', %q, %q, 1, NULL, NULL)`, seed.NodeRunID, seed.RunID, seed.NodeID, seed.RequiredRole, seed.AgentID))
 }
 
 func seedSupersededPlanCompletionRun(t *testing.T, db *sql.DB) {

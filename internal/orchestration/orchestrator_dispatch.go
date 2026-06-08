@@ -232,28 +232,43 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		return nil
 	}
 
-	workspaceCtx, workspaceCtxErr := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
-	if workspaceCtxErr != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve execution workspace context", workspaceCtxErr, now)
+	workspaceCtx := executionWorkspaceContext{}
+	workspacePath := ""
+	baseSnapshotID := ""
+	if executionSpec.RequiresWorkspace {
+		workspaceCtx, workspaceCtxErr := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
+		if workspaceCtxErr != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve execution workspace context", workspaceCtxErr, now)
+		}
+		if strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", fmt.Errorf("execution root is required for execution"), now)
+		}
+		if err := o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", err, now)
+		}
+		if err := o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID); err != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record attempt base snapshot", err, now)
+		}
+		if err := o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now); err != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark execution target dirty", err, now)
+		}
+		workspacePath = strings.TrimSpace(workspaceCtx.ExecutionRoot)
+		baseSnapshotID = strings.TrimSpace(workspaceCtx.TrustedSnapshotID)
+	} else {
+		responseWorkspacePath, responseWorkspaceErr := o.resolveResponseOnlyWorkspacePath(ctx, run.RunID, run.PublishMode)
+		if responseWorkspaceErr != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve response-only workspace", responseWorkspaceErr, now)
+		}
+		workspacePath = strings.TrimSpace(responseWorkspacePath)
 	}
-	if strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", fmt.Errorf("execution root is required for execution"), now)
-	}
-	if err := o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", err, now)
-	}
-	if err := o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID); err != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record attempt base snapshot", err, now)
-	}
-	if err := o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now); err != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark execution target dirty", err, now)
-	}
-	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspaceCtx.ExecutionRoot, now, "")
+	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspacePath, now, "")
 	if invocationErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
 	}
 
-	o.emitWorkspacePreparedEvent(ctx, run, node, attempt, attemptID, workspaceCtx.ExecutionRoot, workspaceCtx, now)
+	if executionSpec.RequiresWorkspace {
+		o.emitWorkspacePreparedEvent(ctx, run, node, attempt, attemptID, workspacePath, workspaceCtx, now)
+	}
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 		MessageID:         fmt.Sprintf("msg_comm_%s_%s_%d_instruction", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
 		RunID:             run.RunID,
@@ -286,9 +301,9 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		providerInvocationAt: providerInvocationAt,
 		completionCapability: completionCapability,
 		completionReceiptDir: completionReceiptDir,
-		baseSnapshotID:       workspaceCtx.TrustedSnapshotID,
+		baseSnapshotID:       baseSnapshotID,
 		workspaceID:          run.RunID,
-		workspacePath:        workspaceCtx.ExecutionRoot,
+		workspacePath:        workspacePath,
 		delegator:            delegatorID,
 		prompt:               providerOutputPrompt,
 		model:                resolvedModel,

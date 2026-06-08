@@ -28,14 +28,14 @@ func (o *orchestrationLoop) git() gitCommandRunner {
 }
 
 type executionWorkspaceContext struct {
-	SeedRoot       string
-	ExecutionRoot  string
+	SeedRoot          string
+	ExecutionRoot     string
 	SourceSnapshotID  string
 	TrustedSnapshotID string
-	PublishRoot    string
-	IsGitRepo      bool
-	WorkspaceEmpty bool
-	UseGitWorktree bool
+	PublishRoot       string
+	IsGitRepo         bool
+	WorkspaceEmpty    bool
+	UseGitWorktree    bool
 }
 
 type executionArtifact struct {
@@ -112,14 +112,14 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 	}
 	if o == nil || o.fsStore == nil {
 		return executionWorkspaceContext{
-			SeedRoot:         sourceRoot,
-			ExecutionRoot:    firstNonEmptyString(executionRoot, sourceRoot),
-			SourceSnapshotID: "",
+			SeedRoot:          sourceRoot,
+			ExecutionRoot:     firstNonEmptyString(executionRoot, sourceRoot),
+			SourceSnapshotID:  "",
 			TrustedSnapshotID: "",
-			PublishRoot:      publishRoot,
-			IsGitRepo:        isGitRepo,
-			WorkspaceEmpty:   workspaceEmpty,
-			UseGitWorktree:   useGitWorktree,
+			PublishRoot:       publishRoot,
+			IsGitRepo:         isGitRepo,
+			WorkspaceEmpty:    workspaceEmpty,
+			UseGitWorktree:    useGitWorktree,
 		}, nil
 	}
 
@@ -167,14 +167,14 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 	}
 
 	return executionWorkspaceContext{
-		SeedRoot:         sourceRoot,
-		ExecutionRoot:    record.ExecutionRoot,
-		SourceSnapshotID: record.SourceSnapshotID,
+		SeedRoot:          sourceRoot,
+		ExecutionRoot:     record.ExecutionRoot,
+		SourceSnapshotID:  record.SourceSnapshotID,
 		TrustedSnapshotID: record.TrustedSnapshotID,
-		PublishRoot:      publishRoot,
-		IsGitRepo:        isGitRepo,
-		WorkspaceEmpty:   workspaceEmpty,
-		UseGitWorktree:   useGitWorktree,
+		PublishRoot:       publishRoot,
+		IsGitRepo:         isGitRepo,
+		WorkspaceEmpty:    workspaceEmpty,
+		UseGitWorktree:    useGitWorktree,
 	}, nil
 }
 
@@ -217,6 +217,33 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
 	}
 	return nil
+}
+
+func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context, runID, publishMode string) (string, error) {
+	projectRoot := strings.TrimSpace(o.yoloRoot)
+	workspacePath := projectRoot
+	if normalizePublishMode(publishMode) == PublishModeGitWorktree {
+		if projectRoot == "" {
+			return "", fmt.Errorf("project root is required for git worktree publish mode")
+		}
+		worktreeCtx, err := o.ensureRunWorktree(ctx, projectRoot, runID)
+		if err != nil {
+			return "", err
+		}
+		workspacePath = strings.TrimSpace(worktreeCtx.ProjectRoot)
+	} else if workspacePath == "" && o != nil && o.fsStore != nil {
+		workspacePath = strings.TrimSpace(o.fsStore.RunTargetRoot(runID))
+	}
+	if workspacePath == "" {
+		return "", fmt.Errorf("response-only workspace path is required")
+	}
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		return "", fmt.Errorf("prepare response-only workspace root: %w", err)
+	}
+	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(workspacePath), true); err != nil {
+		return "", fmt.Errorf("install managed opencode overlay into response-only workspace: %w", err)
+	}
+	return workspacePath, nil
 }
 
 func directoryIsEmpty(path string) (bool, error) {
