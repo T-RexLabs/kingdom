@@ -223,7 +223,7 @@ func TestIntegrationReconcilerFailurePathPersistsEscalationAuditEvent(t *testing
 	}
 }
 
-func TestIntegrationRuntimeDispatchPersistsWorkspaceAndArtifacts(t *testing.T) {
+func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTargets(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
@@ -253,16 +253,16 @@ func TestIntegrationRuntimeDispatchPersistsWorkspaceAndArtifacts(t *testing.T) {
 		}
 	}()
 
-		testutil.Eventually(t, 3*time.Second, 25*time.Millisecond, func() error {
-			if got := queryString(t, db, `SELECT run_status FROM workflow_runs WHERE run_id = ?`, "run_dispatch"); got == "succeeded" {
-				if artifacts := queryInt(t, db, `SELECT COUNT(1) FROM artifacts WHERE run_id = ?`, "run_dispatch"); artifacts < 2 {
-					return fmt.Errorf("expected persisted artifacts for dispatch run, got %d", artifacts)
-				}
-				if targets := queryInt(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch"); targets < 1 {
-					return fmt.Errorf("expected execution target records for provider-backed nodes, got %d", targets)
-				}
-				return nil
+	testutil.Eventually(t, 3*time.Second, 25*time.Millisecond, func() error {
+		if got := queryString(t, db, `SELECT run_status FROM workflow_runs WHERE run_id = ?`, "run_dispatch"); got == "succeeded" {
+			if artifacts := queryInt(t, db, `SELECT COUNT(1) FROM artifacts WHERE run_id = ?`, "run_dispatch"); artifacts < 2 {
+				return fmt.Errorf("expected persisted artifacts for dispatch run, got %d", artifacts)
 			}
+			if targets := queryInt(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch"); targets != 0 {
+				return fmt.Errorf("expected response-first dispatch run to avoid execution targets, got %d", targets)
+			}
+			return nil
+		}
 		return fmt.Errorf("run_dispatch not yet succeeded")
 	})
 }

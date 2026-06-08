@@ -191,21 +191,21 @@ func (o *orchestrationLoop) persistDiscoveredArtifacts(ctx context.Context, run 
 		artifactID := fmt.Sprintf("%s_artifact_%d", attemptID, idx+1)
 		artifactKind := determineArtifactKind(node.NodeID, node.NodeClass, node.RequiredRole, artifactPath)
 		persistedArtifacts = append(persistedArtifacts, artifactOutputRecord{
-			ArtifactID:   artifactID,
-			ArtifactKind: artifactKind,
+			ArtifactID:     artifactID,
+			ArtifactKind:   artifactKind,
 			ArtifactAction: firstNonEmptyString(strings.TrimSpace(artifact.Action), "write"),
-			RelativePath: artifactPath,
-			ProducerRole: node.RequiredRole,
-			NodeID:       node.NodeID,
-			Attempt:      attempt.Attempt,
+			RelativePath:   artifactPath,
+			ProducerRole:   node.RequiredRole,
+			NodeID:         node.NodeID,
+			Attempt:        attempt.Attempt,
 		})
 
 		validatedArtifacts = append(validatedArtifacts, map[string]any{
-			"kind": artifactKind,
+			"kind":   artifactKind,
 			"action": firstNonEmptyString(strings.TrimSpace(artifact.Action), "write"),
-			"name": artifact.Name,
-			"mime": artifact.MIME,
-			"path": artifactPath,
+			"name":   artifact.Name,
+			"mime":   artifact.MIME,
+			"path":   artifactPath,
 		})
 	}
 
@@ -276,24 +276,24 @@ func (o *orchestrationLoop) loadPersistedArtifactsForProjection(ctx context.Cont
 	artifactContentByPath := make(map[string][]byte)
 	for rows.Next() {
 		var (
-			artifactID   string
-			artifactKind string
+			artifactID     string
+			artifactKind   string
 			artifactAction string
-			artifactPath string
-			producerRole string
-			rawContent   []byte
+			artifactPath   string
+			producerRole   string
+			rawContent     []byte
 		)
 		if err := rows.Scan(&artifactID, &artifactKind, &artifactAction, &artifactPath, &producerRole, &rawContent); err != nil {
 			return nil, nil, fmt.Errorf("scan persisted artifact for attempt %q: %w", attemptID, err)
 		}
 		persistedArtifacts = append(persistedArtifacts, artifactOutputRecord{
-			ArtifactID:   artifactID,
-			ArtifactKind: artifactKind,
+			ArtifactID:     artifactID,
+			ArtifactKind:   artifactKind,
 			ArtifactAction: artifactAction,
-			RelativePath: artifactPath,
-			ProducerRole: producerRole,
-			NodeID:       node.NodeID,
-			Attempt:      attempt.Attempt,
+			RelativePath:   artifactPath,
+			ProducerRole:   producerRole,
+			NodeID:         node.NodeID,
+			Attempt:        attempt.Attempt,
 		})
 		if len(rawContent) > 0 {
 			artifactContentByPath[artifactPath] = append([]byte(nil), rawContent...)
@@ -323,13 +323,13 @@ func buildNonBuilderResponseSnapshot(nodeID, outputText string) (executionArtifa
 }
 
 type artifactOutputRecord struct {
-	ArtifactID   string
-	ArtifactKind string
+	ArtifactID     string
+	ArtifactKind   string
 	ArtifactAction string
-	RelativePath string
-	ProducerRole string
-	NodeID       string
-	Attempt      int
+	RelativePath   string
+	ProducerRole   string
+	NodeID         string
+	Attempt        int
 }
 
 func (o *orchestrationLoop) publishArtifactsToProjectRoot(ctx context.Context, workspacePath, runID string, artifacts []artifactOutputRecord) error {
@@ -673,16 +673,15 @@ func (o *orchestrationLoop) builderEvidenceManifestForRun(ctx context.Context, r
 	}
 
 	b := strings.Builder{}
-	b.WriteString("BuilderEvidenceManifest:\n")
 	if trimmedNodeID := strings.TrimSpace(latestRecord.NodeID); trimmedNodeID != "" {
-		b.WriteString(fmt.Sprintf("- LatestBuilderNode: %s\n", trimmedNodeID))
+		b.WriteString(fmt.Sprintf("Latest Builder Node: %s\n", trimmedNodeID))
 	}
 	if trimmedAttemptID := strings.TrimSpace(latestRecord.AttemptID); trimmedAttemptID != "" {
-		b.WriteString(fmt.Sprintf("- LatestBuilderAttemptID: %s\n", trimmedAttemptID))
+		b.WriteString(fmt.Sprintf("Latest Builder Attempt: %s\n", trimmedAttemptID))
 	}
-	b.WriteString(fmt.Sprintf("- DeliverableArtifactCount: %d\n", uniqueDeliverableCount))
+	b.WriteString(fmt.Sprintf("Deliverable Artifact Count: %d\n", uniqueDeliverableCount))
 	if len(previewPaths) > 0 {
-		b.WriteString("- TruncatedDeliverableFileList:\n")
+		b.WriteString("Deliverable Files (up to 10):\n")
 		for _, artifactPath := range previewPaths {
 			b.WriteString(fmt.Sprintf("  - %s\n", artifactPath))
 		}
@@ -690,7 +689,7 @@ func (o *orchestrationLoop) builderEvidenceManifestForRun(ctx context.Context, r
 			b.WriteString("  - ...\n")
 		}
 	} else {
-		b.WriteString("- TruncatedDeliverableFileList:\n")
+		b.WriteString("Deliverable Files (up to 10):\n")
 		b.WriteString("  - (non-noisy deliverables not found)\n")
 	}
 

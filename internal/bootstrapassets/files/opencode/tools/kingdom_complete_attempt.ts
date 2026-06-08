@@ -10,22 +10,14 @@ const defaultInvocationID = process.env.KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID ?
 const defaultCompletionCapability = process.env.KINGDOM_COMPLETE_ATTEMPT_CAPABILITY ?? ""
 const receiptDir = process.env.KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR ?? ""
 
-function buildStructuredPayload(verdict?: string) {
-  if (!verdict) {
-    return {}
-  }
-  return { verdict }
-}
-
 export default tool({
-  description: "Request canonical Kingdom completion settlement for the active provider invocation.",
+  description: "Finalize the current Kingdom attempt for the active invocation. Call exactly once, only after your final response is complete. Use the prefilled `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided for this invocation.",
   args: {
-    protocol_version: tool.schema.string().default(defaultProtocolVersion).describe("Completion protocol version."),
-    attempt_id: tool.schema.string().default(defaultAttemptID).describe("Active Kingdom attempt id."),
-    invocation_id: tool.schema.string().default(defaultInvocationID).describe("Active Kingdom provider invocation id."),
-    completion_capability: tool.schema.string().default(defaultCompletionCapability).describe("Single-use completion capability for the active invocation."),
-    final_text: tool.schema.string().describe("The final canonical response text for this attempt."),
-    verdict: tool.schema.enum(["PASS", "REWORK"]).optional().describe("Required for review and validation roles."),
+    protocol_version: tool.schema.string().default(defaultProtocolVersion).describe("Completion protocol version. Use the default unless runtime explicitly instructs otherwise."),
+    attempt_id: tool.schema.string().default(defaultAttemptID).describe("Prefilled current attempt id. Do not change it unless runtime explicitly instructs you to do so."),
+    invocation_id: tool.schema.string().default(defaultInvocationID).describe("Prefilled current invocation id. It must match this active invocation."),
+    completion_capability: tool.schema.string().default(defaultCompletionCapability).describe("Prefilled single-use capability for this invocation only. Never reuse or copy a capability from another node, attempt, retry, or prior message."),
+    final_text: tool.schema.string().describe("The full final canonical response text for this attempt."),
   },
   async execute(args) {
     if (!receiptDir) {
@@ -38,7 +30,7 @@ export default tool({
       invocation_id: args.invocation_id,
       completion_capability: args.completion_capability,
       final_text: args.final_text,
-      structured_payload: buildStructuredPayload(args.verdict),
+      structured_payload: {},
     }
 
     await mkdir(receiptDir, { recursive: true })

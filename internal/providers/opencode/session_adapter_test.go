@@ -119,6 +119,51 @@ func TestSessionAdapterSetsConfiguredOpencodeConfigDir(t *testing.T) {
 	}
 }
 
+func TestSessionAdapterPassesWorkspaceDirFlagForRunExecution(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	workspacePath := t.TempDir()
+	fallbackWorkDir := t.TempDir()
+	relativePath := filepath.Join("deliverables", "index.html")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath, WorkDir: fallbackWorkDir})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_WRITE_RELATIVE_PATH", relativePath)
+	t.Setenv("FAKE_OPENCODE_WRITE_CONTENT", "<html>ok</html>\n")
+
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_workspace_dir",
+		AttemptID:     "attempt_workspace_dir",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: workspacePath,
+		Prompt:        "write deliverable",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	argsLogRaw, err := os.ReadFile(argsLogPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	argsLog := string(argsLogRaw)
+	if !strings.Contains(argsLog, "--dir "+workspacePath) {
+		t.Fatalf("expected workspace dir flag in args log, got %q", argsLog)
+	}
+
+	workspaceArtifactPath := filepath.Join(workspacePath, relativePath)
+	if _, err := os.Stat(workspaceArtifactPath); err != nil {
+		t.Fatalf("expected fake run to write artifact under workspace path %q: %v", workspaceArtifactPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(fallbackWorkDir, relativePath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected configured fallback work dir to stay untouched, stat err=%v", err)
+	}
+}
+
 func TestSessionAdapterRequestConfigDirOverridesDefault(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	envLogPath := filepath.Join(t.TempDir(), "env.log")
@@ -3613,11 +3658,15 @@ if [ "$1" != "run" ]; then
 fi
 
 SESSION=""
+DIR=""
 PREV=""
 PROMPT_ARG=""
 for ARG in "$@"; do
   if [ "$PREV" = "--session" ]; then
     SESSION="$ARG"
+  fi
+  if [ "$PREV" = "--dir" ]; then
+    DIR="$ARG"
   fi
   PREV="$ARG"
   PROMPT_ARG="$ARG"
@@ -3629,6 +3678,12 @@ fi
 
 if [ -n "$FAKE_OPENCODE_ARGS_LOG" ]; then
   printf '%s' "$PROMPT_ARG" > "$FAKE_OPENCODE_ARGS_LOG.$SESSION.prompt"
+fi
+
+if [ -n "$FAKE_OPENCODE_WRITE_RELATIVE_PATH" ] && [ -n "$DIR" ]; then
+  TARGET_PATH="$DIR/$FAKE_OPENCODE_WRITE_RELATIVE_PATH"
+  mkdir -p "$(dirname "$TARGET_PATH")"
+  printf '%s' "$FAKE_OPENCODE_WRITE_CONTENT" > "$TARGET_PATH"
 fi
 
 SESSION_FIELD=",\"sessionID\":\"$SESSION\""

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	coreverdict "kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
@@ -229,24 +230,14 @@ func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, st
 	if trimmedFinalText == "" {
 		return "", fmt.Errorf("completion receipt final_text is required")
 	}
-	trimmedStructured := strings.TrimSpace(structuredPayloadJSON)
-	if trimmedStructured == "" {
-		trimmedStructured = "{}"
-	}
-	var structured map[string]any
-	if err := json.Unmarshal([]byte(trimmedStructured), &structured); err != nil {
-		return "", fmt.Errorf("decode completion receipt structured payload: %w", err)
-	}
-	if structured == nil {
-		structured = map[string]any{}
-	}
+	structured := map[string]any{}
 	switch resolvedNodeClass(node.NodeID, node.NodeClass) {
 	case workflow.NodeClassExecutionReview:
-		if err := validateReceiptVerdict(structured, trimmedFinalText, "execution review"); err != nil {
+		if err := canonicalizeReceiptVerdict(structured, trimmedFinalText, "execution review", "invalid_execution_review_verdict"); err != nil {
 			return "", err
 		}
 	case workflow.NodeClassValidationGates:
-		if err := validateReceiptVerdict(structured, trimmedFinalText, "validation"); err != nil {
+		if err := canonicalizeReceiptVerdict(structured, trimmedFinalText, "validation", "invalid_validation_verdict"); err != nil {
 			return "", err
 		}
 	}
@@ -257,27 +248,12 @@ func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, st
 	return string(raw), nil
 }
 
-func validateReceiptVerdict(structured map[string]any, finalText, ownerLabel string) error {
-	rawVerdict, ok := structured["verdict"]
-	if !ok {
-		return fmt.Errorf("%s completion receipt missing structured verdict", ownerLabel)
-	}
-	verdict, ok := rawVerdict.(string)
-	if !ok {
-		return fmt.Errorf("%s completion receipt verdict must be a string", ownerLabel)
-	}
-	verdict = strings.ToUpper(strings.TrimSpace(verdict))
-	if verdict != "PASS" && verdict != "REWORK" {
-		return fmt.Errorf("%s completion receipt verdict must be PASS or REWORK", ownerLabel)
-	}
-	parsedVerdict, err := parseNodeVerdict(finalText, ownerLabel)
+func canonicalizeReceiptVerdict(structured map[string]any, finalText, ownerLabel, invalidReasonCode string) error {
+	parsedVerdict, err := coreverdict.ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
 	if err != nil {
 		return err
 	}
-	if parsedVerdict != verdict {
-		return fmt.Errorf("%s completion receipt verdict does not match final_text verdict", ownerLabel)
-	}
-	structured["verdict"] = verdict
+	structured["verdict"] = parsedVerdict
 	return nil
 }
 

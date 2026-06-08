@@ -147,7 +147,7 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		t.Fatalf("read managed completion tool: %v", err)
 	}
 	content := string(raw)
-	for _, token := range []string{"completion_capability", "KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", "Request canonical Kingdom completion settlement"} {
+	for _, token := range []string{"completion_capability", "KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", "Finalize the current Kingdom attempt for the active invocation"} {
 		if !strings.Contains(content, token) {
 			t.Fatalf("expected managed completion tool to include %q", token)
 		}

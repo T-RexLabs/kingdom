@@ -431,11 +431,11 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	if agent != "" {
 		args = append(args, "--agent", agent)
 	}
+	if strings.TrimSpace(req.WorkspacePath) != "" {
+		args = append(args, "--dir", strings.TrimSpace(req.WorkspacePath))
+	}
 	if a.attachURL != "" {
 		args = append(args, "--attach", a.attachURL)
-		if strings.TrimSpace(req.WorkspacePath) != "" {
-			args = append(args, "--dir", strings.TrimSpace(req.WorkspacePath))
-		}
 	}
 	args = append(args, prompt)
 

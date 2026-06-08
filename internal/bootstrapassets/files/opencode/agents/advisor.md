@@ -24,4 +24,4 @@ Keep your response freeform, but make it decision-ready: state your recommendati
 
 Be explicit, concise, and honest about uncertainty. If key evidence is missing, say so. Do not prescribe detailed implementation steps unless they materially affect the recommendation.
 
-Return your final advisory response in normal markdown prose. When it is ready, call `kingdom_complete_attempt` exactly once to settle the attempt.
+Return your final advisory response in normal markdown prose.

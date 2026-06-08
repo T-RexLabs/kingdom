@@ -3760,6 +3760,133 @@ func TestPublishArtifactsToProjectRootSkipsVerificationOverwrite(t *testing.T) {
 	}
 }
 
+func TestPublishArtifactsDirectWithTrackingPreservesExternalChanges(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_conflict_builder', 'builder-berserker', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_conflict', 'conflict', 'conflict', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_conflict', 'conflict', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_conflict_builder', 'wfdef_conflict', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_conflict', NULL, 'decree_conflict', 'wfdef_conflict', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_conflict_builder_1', 'run_conflict', 'delegated_execution_berserker', 1, 1, 'succeeded', 'builder-berserker', 'agent_conflict_builder', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_conflict_builder_2', 'run_conflict', 'delegated_execution_berserker', 2, 2, 'succeeded', 'builder-berserker', 'agent_conflict_builder', 1, '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:1', 'run_conflict', 'nr_conflict_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_conflict_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:2', 'run_conflict', 'nr_conflict_builder_2', 'committed_success', 'provider_backed', '', NULL, 1, 'session_conflict_2', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '', '', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`)
+
+	projectRoot := t.TempDir()
+	destinationPath := filepath.Join(projectRoot, "deliverables", "index.html")
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		t.Fatalf("create project destination directory: %v", err)
+	}
+	if err := os.WriteFile(destinationPath, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("write initial published file: %v", err)
+	}
+
+	baselineRoot := t.TempDir()
+	baselinePath := filepath.Join(baselineRoot, "deliverables", "index.html")
+	if err := os.MkdirAll(filepath.Dir(baselinePath), 0o755); err != nil {
+		t.Fatalf("create baseline directory: %v", err)
+	}
+	if err := os.WriteFile(baselinePath, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("write baseline file: %v", err)
+	}
+
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	baseSnapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   "snap_conflict_base",
+		RunID:        "run_conflict",
+		SnapshotKind: "baseline",
+		RootPath:     baselineRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture baseline snapshot: %v", err)
+	}
+	if _, err := fsStore.EnsureExecutionTarget(context.Background(), runtimefs.EnsureExecutionTargetRequest{
+		RunID:               "run_conflict",
+		TargetMode:          PublishModeDirect,
+		SourceRoot:          baselineRoot,
+		ExecutionRoot:       fsStore.RunTargetRoot("run_conflict"),
+		PublishRoot:         projectRoot,
+		SourceSnapshotID:    baseSnapshot.SnapshotID,
+		TrustedSnapshotID:   baseSnapshot.SnapshotID,
+		PublishedSnapshotID: baseSnapshot.SnapshotID,
+		State:               "trusted",
+		CreatedAt:           "2026-03-01T12:00:00Z",
+		UpdatedAt:           "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("ensure execution target: %v", err)
+	}
+
+	currentNow := time.Date(2026, time.March, 1, 12, 0, 0, 0, time.UTC)
+	loop := orchestrationLoop{
+		db:          db,
+		fsStore:     fsStore,
+		yoloRoot:    projectRoot,
+		publishMode: PublishModeDirect,
+		now: func() time.Time {
+			return currentNow
+		},
+	}
+	artifacts := []artifactOutputRecord{{
+		ArtifactID:     "run_conflict:delegated_execution_berserker:1_artifact_1",
+		ArtifactKind:   "deliverable",
+		ArtifactAction: "write",
+		RelativePath:   "deliverables/index.html",
+		ProducerRole:   "builder-berserker",
+		NodeID:         "delegated_execution_berserker",
+		Attempt:        1,
+	}}
+	if err := loop.publishArtifactsDirectWithTracking(context.Background(), "", map[string][]byte{"deliverables/index.html": []byte("kingdom-v1")}, "run_conflict", projectRoot, filepath.Join("kingdom-artifacts", "run_conflict"), artifacts); err != nil {
+		t.Fatalf("publish initial tracked artifact: %v", err)
+	}
+
+	if err := os.WriteFile(destinationPath, []byte("EXTERNAL CHANGE\n"), 0o644); err != nil {
+		t.Fatalf("write external change: %v", err)
+	}
+	currentNow = currentNow.Add(time.Second)
+	artifacts[0].ArtifactID = "run_conflict:delegated_execution_berserker:2_artifact_1"
+	artifacts[0].Attempt = 2
+	if err := loop.publishArtifactsDirectWithTracking(context.Background(), "", map[string][]byte{"deliverables/index.html": []byte("kingdom-v2")}, "run_conflict", projectRoot, filepath.Join("kingdom-artifacts", "run_conflict"), artifacts); err != nil {
+		t.Fatalf("publish conflicting tracked artifact: %v", err)
+	}
+
+	raw, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatalf("read final published file: %v", err)
+	}
+	if got := string(raw); got != "EXTERNAL CHANGE\n" {
+		t.Fatalf("expected external change to remain authoritative, got %q", got)
+	}
+
+	var batchStatus string
+	if err := db.QueryRow(`SELECT status FROM run_publication_batches WHERE run_id = 'run_conflict' ORDER BY created_at DESC, publication_batch_id DESC LIMIT 1`).Scan(&batchStatus); err != nil {
+		t.Fatalf("query publication batch status: %v", err)
+	}
+	if batchStatus != "partial_conflict" {
+		t.Fatalf("expected partial_conflict batch status, got %q", batchStatus)
+	}
+
+	var entryStatus string
+	var reasonCode string
+	if err := db.QueryRow(`SELECT status, reason_code FROM run_publication_entries WHERE run_id = 'run_conflict' ORDER BY created_at DESC, publication_entry_id DESC LIMIT 1`).Scan(&entryStatus, &reasonCode); err != nil {
+		t.Fatalf("query publication entry status: %v", err)
+	}
+	if entryStatus != "conflicted" {
+		t.Fatalf("expected conflicted publication entry, got %q", entryStatus)
+	}
+	if reasonCode != "changed_outside_kingdom" {
+		t.Fatalf("expected changed_outside_kingdom reason code, got %q", reasonCode)
+	}
+}
+
 func TestPublishArtifactsToProjectRootRoutesNonBuilderArtifactsToKingdomArtifactsDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -6456,7 +6583,7 @@ func TestBuildNodePromptExecutionRolesIgnoreRuntimeManagedPaths(t *testing.T) {
 			t.Parallel()
 			prompt := loop.buildNodePrompt(context.Background(), "run_prompt_runtime_paths", tc.nodeID, tc.nodeRunID, tc.roleID, tc.nodeClass, "decree", "council-member", "plan", "review", "")
 			for _, expected := range []string{
-				"RuntimeManagedPathGuardrail:",
+				"Protected Runtime Paths:",
 				"Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state",
 				"Ignore those paths when checking whether only the intended project files changed",
 				"Never delete, modify, or \"clean up\" those runtime-managed paths",
@@ -6591,10 +6718,7 @@ func TestBuilderEvidenceManifestForRunIncludesLatestBuilderEvidence(t *testing.T
 	loop := orchestrationLoop{db: db}
 	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest")
 
-	if !strings.Contains(manifest, "BuilderEvidenceManifest:") {
-		t.Fatalf("expected builder evidence manifest heading, got:\n%s", manifest)
-	}
-	if !strings.Contains(manifest, "LatestBuilderNode: delegated_execution_berserker") {
+	if !strings.Contains(manifest, "Latest Builder Node: delegated_execution_berserker") {
 		t.Fatalf("expected latest builder node metadata, got:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "LatestBuilderResponseExcerpt:") {
@@ -6603,10 +6727,10 @@ func TestBuilderEvidenceManifestForRunIncludesLatestBuilderEvidence(t *testing.T
 	if !strings.Contains(manifest, "src/server.js") || !strings.Contains(manifest, "test/auth-dashboard.test.js") {
 		t.Fatalf("expected manifest to include artifact paths, got:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "DeliverableArtifactCount: 2") {
+	if !strings.Contains(manifest, "Deliverable Artifact Count: 2") {
 		t.Fatalf("expected manifest to count unique non-noisy deliverables, got:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "TruncatedDeliverableFileList:") {
+	if !strings.Contains(manifest, "Deliverable Files (up to 10):") {
 		t.Fatalf("expected manifest to use truncated deliverable list label, got:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "KeyDeliverableFiles:") {
@@ -6655,11 +6779,11 @@ func TestBuildNodePromptIncludesBuilderEvidenceManifestForExecutionReview(t *tes
 	loop := orchestrationLoop{db: db}
 	prompt := loop.buildNodePrompt(context.Background(), "run_prompt_manifest", "execution_review_shieldmaiden", "nr_execution_review_prompt_manifest_1", "reviewer-shieldmaiden", "execution_review", "decree", "council-member", "plan", "review", "")
 
-	if !strings.Contains(prompt, "BuilderEvidenceManifest:") {
+	if !strings.Contains(prompt, "Builder Evidence Summary:") {
 		t.Fatalf("expected execution review prompt to include builder evidence manifest, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "\n\n----\n\nBuilderEvidenceManifest:") {
-		t.Fatalf("expected separator block before builder evidence manifest, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Builder Evidence Summary:\nLatest Builder Node:") {
+		t.Fatalf("expected prompt to include plain-language builder evidence summary block, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "HydratedArtifactsPath:") {
 		t.Fatalf("expected execution review prompt to omit hydrated path metadata, got:\n%s", prompt)
@@ -6693,10 +6817,10 @@ func TestBuilderEvidenceManifestForRunCapsKeyFilesAtTenWithEllipsis(t *testing.T
 	loop := orchestrationLoop{db: db}
 	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest_cap")
 
-	if !strings.Contains(manifest, "DeliverableArtifactCount: 12") {
+	if !strings.Contains(manifest, "Deliverable Artifact Count: 12") {
 		t.Fatalf("expected manifest to count unique non-noisy deliverables, got:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "TruncatedDeliverableFileList:") {
+	if !strings.Contains(manifest, "Deliverable Files (up to 10):") {
 		t.Fatalf("expected manifest to use truncated deliverable list label, got:\n%s", manifest)
 	}
 	if strings.Contains(manifest, "KeyDeliverableFiles:") {
@@ -6736,10 +6860,10 @@ func TestBuilderEvidenceManifestForRunUsesLatestSuccessfulBuilderAttemptOnly(t *
 	loop := orchestrationLoop{db: db}
 	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest_latest")
 
-	if !strings.Contains(manifest, "LatestBuilderAttemptID: run_manifest_latest:delegated_execution_berserker:2") {
+	if !strings.Contains(manifest, "Latest Builder Attempt: run_manifest_latest:delegated_execution_berserker:2") {
 		t.Fatalf("expected manifest to identify latest successful builder attempt, got:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "DeliverableArtifactCount: 1") {
+	if !strings.Contains(manifest, "Deliverable Artifact Count: 1") {
 		t.Fatalf("expected manifest to count only latest successful builder deliverables, got:\n%s", manifest)
 	}
 	if !strings.Contains(manifest, "  - bar.txt") {
@@ -6798,7 +6922,7 @@ func TestAdvisorSynthesisInstructionUsesAdviceHeadersWithoutNumbering(t *testing
 	loop := orchestrationLoop{db: db}
 	instruction := loop.advisorSynthesisInstructionForRun(context.Background(), "run_advice_format")
 
-	if !strings.Contains(instruction, "Burgher Delegate - Advice") || !strings.Contains(instruction, "Clergy Delegate - Advice") {
+	if !strings.Contains(instruction, "Advisor Responses:") || !strings.Contains(instruction, "Burgher Delegate:") || !strings.Contains(instruction, "Clergy Delegate:") {
 		t.Fatalf("expected advisor advice headers, got:\n%s", instruction)
 	}
 	if strings.Contains(instruction, "1)") || strings.Contains(instruction, "2)") {
@@ -9384,14 +9508,14 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorRespon
 	if !strings.Contains(instruction, "Synthesize all advisor counsel") {
 		t.Fatalf("expected synthesis directive in advisory instruction, got %q", instruction)
 	}
-	if !strings.Contains(instruction, "Advisor Inputs:") {
+	if !strings.Contains(instruction, "Advisor Responses:") {
 		t.Fatalf("expected advisor input packet heading, got %q", instruction)
 	}
 	for _, expected := range []string{
-		"Noble Delegate - Advice",
-		"Clergy Delegate - Advice",
-		"Burgher Delegate - Advice",
-		"Peasant Delegate - Advice",
+		"Noble Delegate:",
+		"Clergy Delegate:",
+		"Burgher Delegate:",
+		"Peasant Delegate:",
 		"Noble: prioritize diplomatic polish.",
 		"Clergy: tighten trust boundaries.",
 		"Burgher: keep MVP lean for quick value.",
@@ -9408,10 +9532,10 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorRespon
 		t.Fatalf("expected latest advisor response per node, got %q", instruction)
 	}
 
-	burgherIndex := strings.Index(instruction, "Burgher Delegate - Advice")
-	clergyIndex := strings.Index(instruction, "Clergy Delegate - Advice")
-	nobleIndex := strings.Index(instruction, "Noble Delegate - Advice")
-	peasantIndex := strings.Index(instruction, "Peasant Delegate - Advice")
+	burgherIndex := strings.Index(instruction, "Burgher Delegate:")
+	clergyIndex := strings.Index(instruction, "Clergy Delegate:")
+	nobleIndex := strings.Index(instruction, "Noble Delegate:")
+	peasantIndex := strings.Index(instruction, "Peasant Delegate:")
 	if !(burgherIndex >= 0 && clergyIndex > burgherIndex && nobleIndex > clergyIndex && peasantIndex > nobleIndex) {
 		t.Fatalf("expected deterministic node ordering in advisory packet, got %q", instruction)
 	}
@@ -9445,7 +9569,7 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisPreservesScopedInstruct
 	if !strings.Contains(instruction, "Royal synthesis directive: merge counsel into three strategic options.") {
 		t.Fatalf("expected scoped instruction to remain in synthesis prompt, got %q", instruction)
 	}
-	if !strings.Contains(instruction, "Advisor Inputs:") || !strings.Contains(instruction, "Noble keep: preserve ceremony and governance fit.") {
+	if !strings.Contains(instruction, "Advisor Responses:") || !strings.Contains(instruction, "Noble keep: preserve ceremony and governance fit.") {
 		t.Fatalf("expected advisor packet appended to scoped synthesis instruction, got %q", instruction)
 	}
 }
@@ -10510,6 +10634,114 @@ func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots
 	}
 	if !baseSnapshotID.Valid || strings.TrimSpace(baseSnapshotID.String) == "" {
 		t.Fatalf("expected delegated execution to persist a base snapshot id, got %#v", baseSnapshotID)
+	}
+}
+
+func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWorkspaceTarget(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_builder_publish",
+		DecreeID:     "decree_dispatch_builder_publish",
+		WorkflowID:   "wfdef_dispatch_builder_publish",
+		NodeRunID:    "nr_dispatch_builder_publish_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_dispatch_builder_publish",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_dispatch_builder_publish",
+			RoleID:  "council-member",
+		}},
+	})
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write builder project seed file: %v", err)
+	}
+	adapter := &workspaceWritingExecutionAdapter{
+		outputs: []string{"Implemented builder changes"},
+		writes: map[string]string{
+			"deliverables/index.html": "<html>ok</html>\n",
+		},
+	}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	now := "2026-03-01T12:00:00Z"
+	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, RequiredRole: "builder-berserker", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
+		t.Fatalf("dispatch builder publication node attempt: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return fmt.Errorf("drain builder completion outbox: %w", err)
+		}
+		var nodeStatus string
+		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_publish_1'`).Scan(&nodeStatus); err != nil {
+			return fmt.Errorf("query builder publication node status: %w", err)
+		}
+		if nodeStatus != "succeeded" {
+			return fmt.Errorf("node_status=%s", nodeStatus)
+		}
+		return nil
+	})
+
+	requests := adapter.requestsSnapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected one provider request for delegated execution, got %d", len(requests))
+	}
+
+	var executionRoot string
+	if err := db.QueryRow(`SELECT execution_root FROM run_execution_targets WHERE run_id = 'run_dispatch_builder_publish'`).Scan(&executionRoot); err != nil {
+		t.Fatalf("query builder execution root: %v", err)
+	}
+	if requests[0].WorkspacePath != executionRoot {
+		t.Fatalf("expected builder workspace path %q, got %q", executionRoot, requests[0].WorkspacePath)
+	}
+
+	for _, path := range []string{
+		filepath.Join(executionRoot, "deliverables", "index.html"),
+		filepath.Join(projectRoot, "deliverables", "index.html"),
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read builder deliverable %q: %v", path, err)
+		}
+		if got := string(raw); got != "<html>ok</html>\n" {
+			t.Fatalf("expected deliverable contents at %q, got %q", path, got)
+		}
+	}
+
+	paths := persistedArtifactPathsForAttempt(t, db, "run_dispatch_builder_publish:delegated_execution_berserker:1")
+	if len(paths) != 1 || paths[0] != "deliverables/index.html" {
+		t.Fatalf("expected one persisted builder deliverable, got %v", paths)
+	}
+
+	var batchStatus string
+	if err := db.QueryRow(`SELECT status FROM run_publication_batches WHERE run_id = 'run_dispatch_builder_publish' ORDER BY created_at DESC, publication_batch_id DESC LIMIT 1`).Scan(&batchStatus); err != nil {
+		t.Fatalf("query builder publication batch status: %v", err)
+	}
+	if batchStatus != "succeeded" {
+		t.Fatalf("expected succeeded builder publication batch, got %q", batchStatus)
+	}
+
+	var entryPath string
+	var entryStatus string
+	if err := db.QueryRow(`SELECT path, status FROM run_publication_entries WHERE run_id = 'run_dispatch_builder_publish' ORDER BY created_at DESC, publication_entry_id DESC LIMIT 1`).Scan(&entryPath, &entryStatus); err != nil {
+		t.Fatalf("query builder publication entry: %v", err)
+	}
+	if entryPath != "deliverables/index.html" || entryStatus != "published" {
+		t.Fatalf("expected published builder entry for deliverables/index.html, got path=%q status=%q", entryPath, entryStatus)
 	}
 }
 
@@ -12964,6 +13196,14 @@ type sequenceExecutionAdapter struct {
 	requests []opencode.ExecuteRequest
 }
 
+type workspaceWritingExecutionAdapter struct {
+	mu       sync.Mutex
+	outputs  []string
+	writes   map[string]string
+	calls    int
+	requests []opencode.ExecuteRequest
+}
+
 type outcomeSequenceExecutionAdapter struct {
 	mu        sync.Mutex
 	responses []opencode.ExecuteResponse
@@ -13078,6 +13318,62 @@ func (a *sequenceExecutionAdapter) callsCount() int {
 }
 
 func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]opencode.ExecuteRequest, len(a.requests))
+	copy(out, a.requests)
+	return out
+}
+
+func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
+	for relativePath, content := range a.writes {
+		absolutePath := filepath.Join(req.WorkspacePath, relativePath)
+		if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+		if err := os.WriteFile(absolutePath, []byte(content), 0o644); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+	idx := a.calls
+	a.calls++
+	outputText := ""
+	if idx < len(a.outputs) {
+		outputText = a.outputs[idx]
+	}
+	accepted, err := maybeAcceptTestCompletionReceipt(req, outputText)
+	if err != nil {
+		return opencode.ExecuteResponse{}, err
+	}
+	return opencode.ExecuteResponse{
+		Accepted:                        true,
+		OutputText:                      outputText,
+		ProviderInvocationID:            firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
+		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
+		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
+		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
+		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
+	}, nil
+}
+
+func (a *workspaceWritingExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
+	return nil
+}
+
+func (a *workspaceWritingExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
+	eventCh := make(chan opencode.AttemptStreamEvent)
+	errCh := make(chan error)
+	close(eventCh)
+	close(errCh)
+	return eventCh, errCh, nil
+}
+
+func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]opencode.ExecuteRequest, len(a.requests))
