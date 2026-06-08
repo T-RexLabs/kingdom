@@ -1,0 +1,285 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"kingdom/internal/api"
+	"kingdom/internal/dbmigrations"
+	kingdom "kingdom/internal/orchestration"
+	"kingdom/internal/providers/opencode"
+	"kingdom/internal/shutdown"
+	"kingdom/internal/state"
+	webui "kingdom/web"
+)
+
+// Exit codes. Operators / supervisors / CI scripts can distinguish
+// "clean shutdown" from "shutdown drain failed" via the exit code,
+// not log scraping.
+const (
+	exitOK           = 0
+	exitFatalStartup = 1
+	exitDrainFailure = 2
+	exitServeFailure = 3
+)
+
+func main() {
+	os.Exit(run())
+}
+
+// run owns the daemon lifecycle and returns a non-zero exit code on
+// any failure that operators need to act on. Defers fire on natural
+// return, which is critical so db.Close runs after the planner drain
+// (otherwise the planner's decoupled-ctx terminal writes would hit a
+// closed DB).
+//
+// The named exitCode return lets the deferred shutdown safety-net
+// (set up further down, after apiServer/server are constructed)
+// surface a non-clean drain via exit code on routes that don't
+// already do so themselves — most importantly the bind-failure /
+// serve-error paths, where the safety-net is the only Coordinator.Run
+// invocation. The SIGINT path captures CloseResult and sets exitCode
+// directly, so the safety-net's identical observation (cached via
+// sync.Once) is a no-op there. exitCode == exitOK guard preserves
+// any earlier exitFatalStartup so a successful drain after a
+// construction failure doesn't downgrade the exit code.
+func run() (exitCode int) {
+	var (
+		dbPath              string
+		listen              string
+		basePath            string
+		providerEngine      string
+		providerStrict      bool
+		governanceMode      string
+		autonomousApprovals bool
+		providerBinary      string
+		providerModel       string
+		providerAgent       string
+		providerAttach      string
+	)
+
+	flag.StringVar(&dbPath, "db-path", "./.kingdom/kingdom.db", "sqlite database path")
+	flag.StringVar(&listen, "listen", "127.0.0.1:8080", "HTTP listen address")
+	flag.StringVar(&basePath, "base-path", "/api/v1", "API base path")
+	flag.StringVar(&providerEngine, "provider-engine", envOrDefault("KINGDOM_PROVIDER_ENGINE", "opencode"), "provider engine: opencode or mock_engine")
+	flag.BoolVar(&providerStrict, "provider-strict", envBoolOrDefault("KINGDOM_PROVIDER_STRICT", true), "fail startup when selected provider engine cannot initialize")
+	flag.StringVar(&governanceMode, "governance-mode", envOrDefault("KINGDOM_GOVERNANCE_MODE", "autonomous"), "governance mode (MVP): autonomous")
+	flag.BoolVar(&autonomousApprovals, "autonomous-approvals", envBoolOrDefault("KINGDOM_AUTONOMOUS_APPROVALS", true), "autonomous governance approvals for plan and final closure")
+	flag.StringVar(&providerBinary, "provider-binary", envOrDefault("KINGDOM_PROVIDER_BINARY", "opencode"), "opencode binary path")
+	flag.StringVar(&providerModel, "provider-model", envOrDefault("KINGDOM_PROVIDER_MODEL", ""), "optional model override for opencode")
+	flag.StringVar(&providerAgent, "provider-agent", envOrDefault("KINGDOM_PROVIDER_AGENT", ""), "optional agent override for opencode")
+	flag.StringVar(&providerAttach, "provider-attach-url", envOrDefault("KINGDOM_PROVIDER_ATTACH_URL", ""), "optional attach URL for opencode")
+	flag.Parse()
+
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		log.Printf("create database directory: %v", err)
+		return exitFatalStartup
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Printf("open sqlite database: %v", err)
+		return exitFatalStartup
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		log.Printf("enable foreign keys: %v", err)
+		return exitFatalStartup
+	}
+
+	if err := ensureSchema(db); err != nil {
+		log.Printf("ensure schema: %v", err)
+		return exitFatalStartup
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		log.Printf("resolve working directory: %v", err)
+		return exitFatalStartup
+	}
+
+	runtime, err := kingdom.NewRuntime(kingdom.Config{
+		DB:                  db,
+		Paths:               kingdom.DefaultBootstrapPaths(repoRoot),
+		ProviderEngine:      providerEngine,
+		ProviderStrict:      providerStrict,
+		GovernanceMode:      governanceMode,
+		AutonomousApprovals: &autonomousApprovals,
+		ProviderSession: opencode.SessionAdapterConfig{
+			BinaryPath: providerBinary,
+			WorkDir:    repoRoot,
+			Model:      providerModel,
+			Agent:      providerAgent,
+			AttachURL:  providerAttach,
+		},
+	})
+	if err != nil {
+		log.Printf("bootstrap runtime: %v", err)
+		return exitFatalStartup
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	if err := runtime.Start(ctx); err != nil {
+		log.Printf("start runtime: %v", err)
+		return exitFatalStartup
+	}
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			log.Printf("runtime close error: %v", err)
+		}
+	}()
+
+	// Normalize once via the shared helper. NewHandler does the same
+	// internally so its registered routes use the canonical form;
+	// hoisting it here means the mux closure below sees the exact
+	// same string and there's no chance of drift on inputs like
+	// "/v1/" vs "/v1".
+	basePath = api.NormalizeBasePath(basePath)
+	apiServer, err := api.NewHandler(api.ServerConfig{DB: db, BasePath: basePath, AutonomousApprovalsDefault: &autonomousApprovals, ProjectRoot: repoRoot})
+	if err != nil {
+		log.Printf("build api handler: %v", err)
+		return exitFatalStartup
+	}
+	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
+		apiServer,
+		shutdown.CloseFunc(runtime.GracefulClose),
+	}}
+
+	// Concurrent shutdown coordinator: cancel the planning service in
+	// parallel with HTTP server shutdown so a long-lived SSE/planner
+	// request cannot consume the entire HTTP grace window before the
+	// planner is ever cancelled. The Coordinator's sync.Once means a
+	// follow-up call (e.g. an unexpected serveErr path) is a true
+	// no-op — no second wg.Wait, no double-paid drain.
+	var shutdownCoord shutdown.Coordinator
+
+	// API paths go to the handler, everything else falls through to the
+	// embedded SPA (so deep-link refreshes keep working). The mux is
+	// constructed by api.NewSPAMux so both kingdomd and the install_mode
+	// summon flow route via the same predicate — no chance of drifting
+	// trailing-slash semantics between the two front doors.
+	mux := api.NewSPAMux(apiServer, webui.Handler(), basePath)
+
+	server := &http.Server{
+		Addr:              listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	// Safety-net drain. Every exit path from run() — SIGINT (which
+	// also calls shutdownCoord.Run explicitly to capture the result
+	// for the exit code), serve-error, ErrServerClosed, panic — fires
+	// this deferred call. The Coordinator's sync.Once guarantees the
+	// underlying teardowns run at most once: an explicit SIGINT call
+	// observes the result; the deferred call is a real no-op via the
+	// cached CloseResult. Without this, a bind-failure ListenAndServe
+	// returns past the planning service's recovery loop with db.Close
+	// firing seconds later — leaving runner goroutines mutating a
+	// closed DB.
+	defer func() {
+		// Coordinator's once-guard means this call returns the cached
+		// CloseResult when the explicit graceful path already invoked
+		// Run (SIGINT case). On bind-failure / serve-error paths where
+		// the safety-net is the only call, this is the actual drain.
+		// Either way, surface a non-clean drain via exit code on routes
+		// that don't already do so. Coordinator.Run already logs each
+		// subsystem error per-call (api server close error, server
+		// shutdown error) so we don't double-log here.
+		result := shutdownCoord.Run(10*time.Second, runtimeCloser, server, log.Printf)
+		if (result.Closer != nil || result.Shutdowner != nil) && exitCode == exitOK {
+			exitCode = exitDrainFailure
+		}
+	}()
+
+	errCh := make(chan error, 1)
+	go func() {
+		if serveErr := server.ListenAndServe(); serveErr != nil {
+			errCh <- serveErr
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Drive both teardowns concurrently. apiServer.Close cancels
+		// the recovery loop and waits for in-flight runner goroutines
+		// to finalize (each as `cancelled` rather than `failed` via
+		// the decoupled-ctx terminal write); server.Shutdown stops
+		// accepting new requests and waits for in-flight HTTP
+		// connections (including SSE) to finish. Running in parallel
+		// means SSE handlers see the planner's `cancelled` events and
+		// exit promptly rather than holding HTTP shutdown open until
+		// its own deadline.
+		result := shutdownCoord.Run(10*time.Second, runtimeCloser, server, log.Printf)
+		// Operators / supervisors need to know on the wire — not via
+		// log scraping — when shutdown didn't drain cleanly. Either
+		// side erroring is enough for a non-zero exit.
+		if result.Closer != nil || result.Shutdowner != nil {
+			return exitDrainFailure
+		}
+		return exitOK
+	case serveErr := <-errCh:
+		if errors.Is(serveErr, http.ErrServerClosed) {
+			return exitOK
+		}
+		log.Printf("serve http: %v", serveErr)
+		return exitServeFailure
+	}
+}
+
+func envOrDefault(key, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func envBoolOrDefault(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func ensureSchema(db *sql.DB) error {
+	migrationNames, err := dbmigrations.List()
+	if err != nil {
+		return fmt.Errorf("list canonical migrations: %w", err)
+	}
+	migrations := make([]state.SQLMigration, 0, len(migrationNames))
+	for _, name := range migrationNames {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			return fmt.Errorf("read canonical migration %s: %w", name, err)
+		}
+		migrations = append(migrations, state.SQLMigration{Name: name, SQL: raw})
+	}
+
+	if err := state.ApplySQLMigrations(context.Background(), db, migrations, time.Now().UTC()); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
+
+	return nil
+}

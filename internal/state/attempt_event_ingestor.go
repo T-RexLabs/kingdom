@@ -96,6 +96,16 @@ func (i *AttemptEventIngestor) WithRoleCommunicationPolicy(policy rolecomm.Polic
 }
 
 func (i *AttemptEventIngestor) Ingest(ctx context.Context, req AttemptEventIngestionRequest) (AttemptEventIngestionResult, error) {
+	result := AttemptEventIngestionResult{}
+	err := retrySQLiteBusy(ctx, func() error {
+		current, err := i.ingestOnce(ctx, req)
+		result = current
+		return err
+	})
+	return result, err
+}
+
+func (i *AttemptEventIngestor) ingestOnce(ctx context.Context, req AttemptEventIngestionRequest) (AttemptEventIngestionResult, error) {
 	if err := validateAttemptEventIngestionRequest(req); err != nil {
 		return AttemptEventIngestionResult{}, err
 	}

@@ -223,8 +223,9 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 }
 
 func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) error {
+	args = normalizeSummonCommandArgs(args)
 	if len(args) == 0 {
-		return runSummonServe(ctx, stdout, stderr, []string{})
+		return runSummonServe(ctx, stdout, stderr, []string{"--detach"})
 	}
 
 	switch args[0] {
@@ -237,6 +238,24 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 	default:
 		return runSummonServe(ctx, stdout, stderr, args)
 	}
+}
+
+func normalizeSummonCommandArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "serve", "status", "stop":
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--detach" || strings.HasPrefix(arg, "--detach=") {
+			return args
+		}
+	}
+	normalized := make([]string, 0, len(args)+1)
+	normalized = append(normalized, "--detach")
+	return append(normalized, args...)
 }
 
 func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {

@@ -218,6 +218,11 @@ func withExecuteExportChecks(resp ExecuteResponse, checks []ExportCheck) Execute
 	return resp
 }
 
+func withExecuteProviderDiagnostics(resp ExecuteResponse, diagnosticsJSON string) ExecuteResponse {
+	resp.ProviderDiagnosticsJSON = firstNonEmpty(strings.TrimSpace(diagnosticsJSON), "{}")
+	return resp
+}
+
 func appendPhasedExportChecks(dst []ExportCheck, phase ExportCheckPhase, outcome sessionCompletionReconcileOutcome, err error) []ExportCheck {
 	checks := append([]ExportCheck(nil), outcome.Checks...)
 	var wrapped *sessionCompletionReconcileError
@@ -841,8 +846,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	textChunks := make([]string, 0)
 	var accumulatedTokens TokenUsage
 	exportChecks := make([]ExportCheck, 0)
+	stderrSnapshot := stderrCapture{}
 	finish := func(resp ExecuteResponse) ExecuteResponse {
-		return withExecuteExportChecks(resp, exportChecks)
+		resp = withExecuteExportChecks(resp, exportChecks)
+		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, exportChecks))
 	}
 	lastStepFinish := buildStepFinishReasonEvidence("", false)
 	upstreamErrorText := ""
@@ -975,7 +982,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	diagnostics.ProcessExitedAt = time.Now().UTC().Format(time.RFC3339)
 	watchdog.Stop()
 	a.clearInFlight(req.AttemptID)
-	stderrSnapshot := <-stderrDone
+	stderrSnapshot = <-stderrDone
 	execDiag.StderrLineCount = stderrSnapshot.lineCount
 	execDiag.LastStderrLineAt = stderrSnapshot.lastLineAt
 	execDiag.StderrEOFSeen = stderrSnapshot.eofSeen
@@ -1514,6 +1521,76 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	})
 
 	return finish(executeResponseForCompletionResult(result)), nil
+}
+
+func buildProviderDiagnosticsJSON(req ExecuteRequest, diagnostics streamDiagnostics, execDiagnostics executionPathDiagnostics, stderr stderrCapture, exportChecks []ExportCheck) string {
+	payload := map[string]any{
+		"completion_receipt_mode_enabled": completionReceiptModeEnabled(req),
+		"stream_diagnostics":              diagnostics.toMap(),
+		"execution_path_diagnostics":      execDiagnostics.toMap(),
+	}
+	if stderr.lineCount > 0 {
+		payload["stderr_line_count"] = stderr.lineCount
+	}
+	if strings.TrimSpace(stderr.lastLineAt) != "" {
+		payload["stderr_last_line_at"] = strings.TrimSpace(stderr.lastLineAt)
+	}
+	if stderr.eofSeen {
+		payload["stderr_eof_seen"] = true
+	}
+	if tail := tailString(string(stderr.raw), 4096); tail != "" {
+		payload["stderr_tail"] = tail
+	}
+	if strings.TrimSpace(stderr.scannerError) != "" {
+		payload["stderr_scan_error"] = strings.TrimSpace(stderr.scannerError)
+	}
+	if checks := providerDiagnosticsExportChecks(exportChecks); len(checks) > 0 {
+		payload["export_checks"] = checks
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+func providerDiagnosticsExportChecks(checks []ExportCheck) []map[string]any {
+	if len(checks) == 0 {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(checks))
+	for _, check := range checks {
+		result = append(result, map[string]any{
+			"provider_session_id":           strings.TrimSpace(check.ProviderSessionID),
+			"provider_invocation_id":        strings.TrimSpace(check.ProviderInvocationID),
+			"phase":                         strings.TrimSpace(string(check.Phase)),
+			"export_mode":                   strings.TrimSpace(check.ExportMode),
+			"status":                        strings.TrimSpace(string(check.Status)),
+			"salvage_used":                  check.SalvageUsed,
+			"assistant_found":               check.AssistantFound,
+			"assistant_owned_by_invocation": check.AssistantOwnedByInvocation,
+			"assistant_completed_at":        strings.TrimSpace(check.AssistantCompletedAt),
+			"assistant_finish_reason":       strings.TrimSpace(check.AssistantFinishReason),
+			"assistant_has_error":           check.AssistantHasError,
+			"stdout_bytes":                  check.StdoutBytes,
+			"stderr_bytes":                  check.StderrBytes,
+			"diagnostic_text":               strings.TrimSpace(check.DiagnosticText),
+			"stdout_capture":                strings.TrimSpace(check.StdoutCapture),
+			"stderr_capture":                strings.TrimSpace(check.StderrCapture),
+			"started_at":                    strings.TrimSpace(check.StartedAt),
+			"finished_at":                   strings.TrimSpace(check.FinishedAt),
+			"duration_millis":               check.DurationMillis,
+		})
+	}
+	return result
+}
+
+func tailString(raw string, maxBytes int) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || maxBytes <= 0 || len(trimmed) <= maxBytes {
+		return trimmed
+	}
+	return trimmed[len(trimmed)-maxBytes:]
 }
 
 func emitExecuteLifecycleObservation(req ExecuteRequest, observation ExecuteLifecycleObservation) {

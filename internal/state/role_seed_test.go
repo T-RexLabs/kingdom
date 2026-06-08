@@ -180,10 +180,10 @@ func TestCanonicalRoleDescriptionsMatchReadme(t *testing.T) {
 func TestIsSQLiteBusyError(t *testing.T) {
 	t.Parallel()
 
-	if !isSQLiteBusyError(fmt.Errorf("database is locked (5) (SQLITE_BUSY)")) {
+	if !IsSQLiteBusy(fmt.Errorf("database is locked (5) (SQLITE_BUSY)")) {
 		t.Fatal("expected SQLITE_BUSY marker to be recognized")
 	}
-	if isSQLiteBusyError(fmt.Errorf("constraint failed")) {
+	if IsSQLiteBusy(fmt.Errorf("constraint failed")) {
 		t.Fatal("did not expect non-busy sqlite error to be classified as busy")
 	}
 }

@@ -1107,6 +1107,18 @@ func (s *TransitionService) RecoverLoopCapAutoSuccessConflict(ctx context.Contex
 }
 
 func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Context, req DurableAttemptNodeProjectionRequest) (bool, error) {
+	var projected bool
+	err := retrySQLiteBusy(ctx, func() error {
+		current, err := s.projectNodeTerminalFromDurableAttemptOnce(ctx, req)
+		if err == nil {
+			projected = current
+		}
+		return err
+	})
+	return projected, err
+}
+
+func (s *TransitionService) projectNodeTerminalFromDurableAttemptOnce(ctx context.Context, req DurableAttemptNodeProjectionRequest) (bool, error) {
 	if strings.TrimSpace(req.RunID) == "" {
 		return false, fmt.Errorf("run id is required")
 	}

@@ -669,6 +669,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		job.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(job.providerInvocationAt))
 		job.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
 		job.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
+		job.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
 		job.outcome = response.Outcome
 		job.launchObserved = launchObserved
 		job.launchObservedAt = strings.TrimSpace(launchObservedAt)

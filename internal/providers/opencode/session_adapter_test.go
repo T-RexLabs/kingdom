@@ -308,6 +308,52 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	}
 }
 
+func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
+
+	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_process_failure_diagnostics",
+		AttemptID:     "attempt_process_failure_diagnostics",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: t.TempDir(),
+		Prompt:        "process failure diagnostics",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected process failure to return an error")
+	}
+	if strings.TrimSpace(res.ProviderDiagnosticsJSON) == "" {
+		t.Fatal("expected provider diagnostics json on process failure")
+	}
+	var diagnostics struct {
+		CompletionReceiptModeEnabled bool   `json:"completion_receipt_mode_enabled"`
+		StderrTail                   string `json:"stderr_tail"`
+		ExecutionPathDiagnostics     struct {
+			WaitError string `json:"wait_error"`
+		} `json:"execution_path_diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(res.ProviderDiagnosticsJSON), &diagnostics); err != nil {
+		t.Fatalf("decode provider diagnostics json: %v", err)
+	}
+	if diagnostics.CompletionReceiptModeEnabled {
+		t.Fatal("expected receipt mode to be disabled in provider diagnostics")
+	}
+	if !strings.Contains(diagnostics.StderrTail, "missing FAKE_OPENCODE_TOOL_CALLS_STATE_DIR") {
+		t.Fatalf("expected stderr tail to include missing state dir error, got %q", diagnostics.StderrTail)
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.WaitError) == "" {
+		t.Fatal("expected execution path diagnostics to capture wait_error")
+	}
+}
+
 func TestSessionAdapterLeavesReceiptFileWhenAcceptanceFails(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})

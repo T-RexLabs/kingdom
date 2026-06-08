@@ -254,6 +254,109 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 	}
 }
 
+func TestStoreFinalizeProviderCompletionSettlementPersistsProviderDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	const providerInvocationID = "invocation_diagnostics_1"
+	const providerDiagnosticsJSON = `{"stderr_tail":"exit status 1"}`
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		ExecutionMode: ExecutionModeProviderBacked,
+		SessionRef:    "session_run_1_decree_intake_1",
+		CreatedAt:     "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionCapability: "capability-diagnostics-1",
+		IssuedAt:             "2026-03-01T12:00:02Z",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_diagnostics_1",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+
+	evidence, err := s.EnsureTerminalProviderCompletionEvidence(ctx, EnsureTerminalProviderCompletionEvidenceRequest{
+		ProviderInvocationID:    providerInvocationID,
+		AttemptID:               attemptID,
+		RunID:                   "run_1",
+		NodeRunID:               "nr_1",
+		State:                   "failed",
+		ReasonCode:              "provider_process_failed",
+		FailureText:             "exit status 1",
+		OutputText:              "partial output",
+		EvidenceSource:          "stream",
+		ProviderDiagnosticsJSON: providerDiagnosticsJSON,
+		CreatedAt:               "2026-03-01T12:00:04Z",
+	})
+	if err != nil {
+		t.Fatalf("ensure terminal provider completion evidence: %v", err)
+	}
+
+	var evidencePayload struct {
+		ProviderDiagnostics json.RawMessage `json:"provider_diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(evidence.PayloadJSON), &evidencePayload); err != nil {
+		t.Fatalf("decode terminal evidence payload: %v", err)
+	}
+	if string(evidencePayload.ProviderDiagnostics) != providerDiagnosticsJSON {
+		t.Fatalf("expected provider diagnostics payload %s, got %s", providerDiagnosticsJSON, string(evidencePayload.ProviderDiagnostics))
+	}
+
+	settlement, err := s.FinalizeProviderCompletionSettlement(ctx, FinalizeProviderCompletionSettlementRequest{
+		SettlementID:            ProviderCompletionSettlementID(providerInvocationID),
+		ProviderInvocationID:    providerInvocationID,
+		AttemptID:               attemptID,
+		RunID:                   "run_1",
+		NodeRunID:               "nr_1",
+		Outcome:                 ProviderCompletionOutcomeFailed,
+		PrimaryEvidenceID:       evidence.EvidenceID,
+		StructuredPayloadJSON:   "{}",
+		ProviderDiagnosticsJSON: providerDiagnosticsJSON,
+		FailureReasonCode:       "provider_process_failed",
+		FailureReasonText:       "exit status 1",
+		SettledAt:               "2026-03-01T12:00:05Z",
+	})
+	if err != nil {
+		t.Fatalf("finalize provider completion settlement: %v", err)
+	}
+	if settlement.ProviderDiagnosticsJSON != providerDiagnosticsJSON {
+		t.Fatalf("expected settlement diagnostics %s, got %s", providerDiagnosticsJSON, settlement.ProviderDiagnosticsJSON)
+	}
+
+	stored, found, err := s.GetProviderCompletionSettlementByInvocation(ctx, providerInvocationID)
+	if err != nil {
+		t.Fatalf("get stored provider completion settlement: %v", err)
+	}
+	if !found {
+		t.Fatal("expected provider completion settlement to exist")
+	}
+	if stored.ProviderDiagnosticsJSON != providerDiagnosticsJSON {
+		t.Fatalf("expected stored settlement diagnostics %s, got %s", providerDiagnosticsJSON, stored.ProviderDiagnosticsJSON)
+	}
+}
+
 func TestStoreMarkProviderInvocationOpenRejectsProviderSessionLineageConflict(t *testing.T) {
 	t.Parallel()
 

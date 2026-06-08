@@ -56,6 +56,14 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	if classID == "plan_drafting" {
 		planningGuardrail = "Planning guardrail: return planning deltas, acceptance criteria, and verification scope only. Do not claim completed implementation work."
 	}
+	runtimeManagedPathGuardrail := ""
+	if classID == workflow.NodeClassDelegatedExecution || classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
+		runtimeManagedPathGuardrail = strings.Join([]string{
+			"- Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not decree deliverables.",
+			"- Ignore those paths when checking whether only the intended project files changed, unless the decree explicitly targets them.",
+			"- Never delete, modify, or \"clean up\" those runtime-managed paths as part of decree work or rework.",
+		}, "\n")
+	}
 	responseContract := nodeResponseContractForClass(classID)
 
 	groupOne := []string{
@@ -91,6 +99,9 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	}
 	if trimmedGuardrail := strings.TrimSpace(planningGuardrail); trimmedGuardrail != "" {
 		groupTwo = append(groupTwo, fmt.Sprintf("PlanningGuardrail:\n%s", trimmedGuardrail))
+	}
+	if trimmedGuardrail := strings.TrimSpace(runtimeManagedPathGuardrail); trimmedGuardrail != "" {
+		groupTwo = append(groupTwo, fmt.Sprintf("RuntimeManagedPathGuardrail:\n%s", trimmedGuardrail))
 	}
 	if responseContract != "" {
 		groupTwo = append(groupTwo, fmt.Sprintf("NodeResponseContract:\n%s", responseContract))

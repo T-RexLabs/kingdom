@@ -161,6 +161,7 @@ type asyncExecutionResult struct {
 	completionReceiptDir            string
 	completionReceiptEvidenceID     string
 	completionStructuredPayloadJSON string
+	providerDiagnosticsJSON         string
 	baseSnapshotID                  string
 	resultSnapshotID                string
 	workspaceID                     string

@@ -5505,6 +5505,100 @@ func TestCommitExecutionCompletionDetachedNoOpsAfterCommittedCancellation(t *tes
 	}
 }
 
+func TestRetryDetachedCompletionHandoffRetriesOnlySQLiteBusy(t *testing.T) {
+	t.Parallel()
+
+	loop := orchestrationLoop{sleep: func(time.Duration) {}}
+	busyAttempts := 0
+	err := loop.retryDetachedCompletionHandoff(asyncExecutionResult{attemptID: "attempt_busy_retry"}, func() error {
+		busyAttempts++
+		if busyAttempts == 1 {
+			return fmt.Errorf("database is locked (5) (SQLITE_BUSY)")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry detached completion handoff busy path: %v", err)
+	}
+	if busyAttempts != 2 {
+		t.Fatalf("expected busy retry to attempt twice, got %d", busyAttempts)
+	}
+
+	nonBusyAttempts := 0
+	err = loop.retryDetachedCompletionHandoff(asyncExecutionResult{attemptID: "attempt_non_busy_retry"}, func() error {
+		nonBusyAttempts++
+		return fmt.Errorf("boom")
+	})
+	if err == nil {
+		t.Fatal("expected non-busy handoff error to be returned")
+	}
+	if nonBusyAttempts != 1 {
+		t.Fatalf("expected non-busy error not to retry, got %d attempts", nonBusyAttempts)
+	}
+}
+
+func TestRetrySQLiteBusyWriteRetriesBusy(t *testing.T) {
+	t.Parallel()
+
+	loop := orchestrationLoop{sleep: func(time.Duration) {}}
+	attempts := 0
+	err := loop.retrySQLiteBusyWrite(context.Background(), func(context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return fmt.Errorf("database is locked (5) (SQLITE_BUSY)")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry sqlite busy write: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected busy write retry to attempt twice, got %d", attempts)
+	}
+}
+
+func TestExecutionOutboxPayloadRoundTripsProviderDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	result := asyncExecutionResult{
+		run:                     runSnapshot{RunID: "run_1"},
+		node:                    nodeDefinition{NodeID: "execution_review_shieldmaiden", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"},
+		attempt:                 nodeAttempt{NodeRunID: "nr_1", NodeID: "execution_review_shieldmaiden", Attempt: 1},
+		attemptID:               "run_1:execution_review_shieldmaiden:1",
+		sessionID:               "session_review_1",
+		providerInvocationID:    "pinv_1",
+		providerInvocationAt:    "2026-03-01T12:00:00Z",
+		providerDiagnosticsJSON: `{"stderr_tail":"exit status 1"}`,
+		outputText:              "VERDICT: REWORK\n\nNeed more tests.",
+		outcome: opencode.ExecutionOutcome{
+			State:       "failed",
+			ReasonCode:  "provider_process_failed",
+			FailureText: "exit status 1",
+		},
+	}
+	raw, err := marshalExecutionOutboxPayload(result)
+	if err != nil {
+		t.Fatalf("marshal execution outbox payload: %v", err)
+	}
+	decoded, hasResultPayload, err := decodeExecutionOutboxPayload(executionstore.OutboxRecord{
+		OutboxID:     "outbox_exec_test",
+		AttemptID:    result.attemptID,
+		PayloadJSON:  raw,
+		AttemptState: "terminal_observed",
+		FailureCode:  "provider_process_failed",
+		FailureText:  "exit status 1",
+	})
+	if err != nil {
+		t.Fatalf("decode execution outbox payload: %v", err)
+	}
+	if !hasResultPayload {
+		t.Fatal("expected replay payload to decode")
+	}
+	if decoded.providerDiagnosticsJSON != result.providerDiagnosticsJSON {
+		t.Fatalf("expected provider diagnostics json %s, got %s", result.providerDiagnosticsJSON, decoded.providerDiagnosticsJSON)
+	}
+}
+
 func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(t *testing.T) {
 	t.Parallel()
 
@@ -6333,6 +6427,45 @@ func TestBuildNodePromptExecutionReviewOmitsHydratedPathMetadata(t *testing.T) {
 	prompt := loop.buildNodePrompt(context.Background(), "run_prompt_no_hydrated", "execution_review_shieldmaiden", "nr_execution_review_no_hydrated_1", "reviewer-shieldmaiden", "execution_review", "decree", "council-member", "plan", "review", "")
 	if strings.Contains(prompt, "HydratedArtifactsPath:") {
 		t.Fatalf("expected hydrated metadata to be removed from execution review prompt, got:\n%s", prompt)
+	}
+}
+
+func TestBuildNodePromptExecutionRolesIgnoreRuntimeManagedPaths(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_prompt_runtime_paths', 'Prompt decree', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_prompt_runtime_paths', 'royal-decree-v1', '1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_prompt_runtime_paths', NULL, 'decree_prompt_runtime_paths', 'wfdef_prompt_runtime_paths', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	loop := orchestrationLoop{db: db}
+
+	for _, tc := range []struct {
+		name      string
+		nodeID    string
+		nodeRunID string
+		roleID    string
+		nodeClass string
+	}{
+		{name: "builder", nodeID: "delegated_execution_berserker", nodeRunID: "nr_runtime_paths_builder", roleID: "builder-berserker", nodeClass: workflow.NodeClassDelegatedExecution},
+		{name: "review", nodeID: "execution_review_shieldmaiden", nodeRunID: "nr_runtime_paths_review", roleID: "reviewer-shieldmaiden", nodeClass: workflow.NodeClassExecutionReview},
+		{name: "validation", nodeID: "validation_gates_qa_scout", nodeRunID: "nr_runtime_paths_validation", roleID: "intelligence-qa-scout", nodeClass: workflow.NodeClassValidationGates},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prompt := loop.buildNodePrompt(context.Background(), "run_prompt_runtime_paths", tc.nodeID, tc.nodeRunID, tc.roleID, tc.nodeClass, "decree", "council-member", "plan", "review", "")
+			for _, expected := range []string{
+				"RuntimeManagedPathGuardrail:",
+				"Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state",
+				"Ignore those paths when checking whether only the intended project files changed",
+				"Never delete, modify, or \"clean up\" those runtime-managed paths",
+			} {
+				if !strings.Contains(prompt, expected) {
+					t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
+				}
+			}
+		})
 	}
 }
 

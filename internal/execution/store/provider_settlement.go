@@ -28,21 +28,21 @@ const (
 type ProviderCompletionEvidenceKind string
 
 const (
-	ProviderCompletionEvidenceKindCompletionReceipt ProviderCompletionEvidenceKind = "completion_receipt"
+	ProviderCompletionEvidenceKindCompletionReceipt        ProviderCompletionEvidenceKind = "completion_receipt"
 	ProviderCompletionEvidenceKindCompletionReceiptAttempt ProviderCompletionEvidenceKind = "completion_receipt_attempt"
-	ProviderCompletionEvidenceKindStreamObservation ProviderCompletionEvidenceKind = "stream_observation"
-	ProviderCompletionEvidenceKindExportDiagnostic  ProviderCompletionEvidenceKind = "export_diagnostic"
-	ProviderCompletionEvidenceKindRepairDiagnostic  ProviderCompletionEvidenceKind = "repair_diagnostic"
+	ProviderCompletionEvidenceKindStreamObservation        ProviderCompletionEvidenceKind = "stream_observation"
+	ProviderCompletionEvidenceKindExportDiagnostic         ProviderCompletionEvidenceKind = "export_diagnostic"
+	ProviderCompletionEvidenceKindRepairDiagnostic         ProviderCompletionEvidenceKind = "repair_diagnostic"
 )
 
 type ProviderCompletionReceiptDisposition string
 
 const (
-	ProviderCompletionReceiptDispositionAccepted          ProviderCompletionReceiptDisposition = "accepted"
-	ProviderCompletionReceiptDispositionRejected          ProviderCompletionReceiptDisposition = "rejected"
-	ProviderCompletionReceiptDispositionInvalidated       ProviderCompletionReceiptDisposition = "invalidated"
+	ProviderCompletionReceiptDispositionAccepted            ProviderCompletionReceiptDisposition = "accepted"
+	ProviderCompletionReceiptDispositionRejected            ProviderCompletionReceiptDisposition = "rejected"
+	ProviderCompletionReceiptDispositionInvalidated         ProviderCompletionReceiptDisposition = "invalidated"
 	ProviderCompletionReceiptDispositionIdempotentDuplicate ProviderCompletionReceiptDisposition = "idempotent_duplicate"
-	ProviderCompletionReceiptDispositionError             ProviderCompletionReceiptDisposition = "error"
+	ProviderCompletionReceiptDispositionError               ProviderCompletionReceiptDisposition = "error"
 )
 
 type ProviderCompletionOutcome string
@@ -93,19 +93,20 @@ type ProviderCompletionEvidence struct {
 }
 
 type ProviderCompletionSettlement struct {
-	SettlementID          string
-	ProviderInvocationID  string
-	AttemptID             string
-	RunID                 string
-	NodeRunID             string
-	Outcome               ProviderCompletionOutcome
-	PrimaryEvidenceID     string
-	FinalText             string
-	StructuredPayloadJSON string
-	FailureReasonCode     string
-	FailureReasonText     string
-	SettledAt             string
-	CreatedAt             string
+	SettlementID            string
+	ProviderInvocationID    string
+	AttemptID               string
+	RunID                   string
+	NodeRunID               string
+	Outcome                 ProviderCompletionOutcome
+	PrimaryEvidenceID       string
+	FinalText               string
+	StructuredPayloadJSON   string
+	ProviderDiagnosticsJSON string
+	FailureReasonCode       string
+	FailureReasonText       string
+	SettledAt               string
+	CreatedAt               string
 }
 
 type CreateProviderInvocationRequest struct {
@@ -172,16 +173,17 @@ type ObserveProviderCompletionReceiptAttemptRequest struct {
 }
 
 type EnsureTerminalProviderCompletionEvidenceRequest struct {
-	ProviderInvocationID string
-	AttemptID            string
-	RunID                string
-	NodeRunID            string
-	State                string
-	ReasonCode           string
-	FailureText          string
-	OutputText           string
-	EvidenceSource       string
-	CreatedAt            string
+	ProviderInvocationID    string
+	AttemptID               string
+	RunID                   string
+	NodeRunID               string
+	State                   string
+	ReasonCode              string
+	FailureText             string
+	OutputText              string
+	EvidenceSource          string
+	ProviderDiagnosticsJSON string
+	CreatedAt               string
 }
 
 type AcceptProviderCompletionReceiptRequest struct {
@@ -204,24 +206,25 @@ type AcceptProviderCompletionReceiptResult struct {
 }
 
 type ObserveProviderCompletionReceiptAttemptResult struct {
-	Evidence    ProviderCompletionEvidence
-	Invocation  ProviderInvocation
-	Idempotent  bool
+	Evidence   ProviderCompletionEvidence
+	Invocation ProviderInvocation
+	Idempotent bool
 }
 
 type FinalizeProviderCompletionSettlementRequest struct {
-	SettlementID          string
-	ProviderInvocationID  string
-	AttemptID             string
-	RunID                 string
-	NodeRunID             string
-	Outcome               ProviderCompletionOutcome
-	PrimaryEvidenceID     string
-	FinalText             string
-	StructuredPayloadJSON string
-	FailureReasonCode     string
-	FailureReasonText     string
-	SettledAt             string
+	SettlementID            string
+	ProviderInvocationID    string
+	AttemptID               string
+	RunID                   string
+	NodeRunID               string
+	Outcome                 ProviderCompletionOutcome
+	PrimaryEvidenceID       string
+	FinalText               string
+	StructuredPayloadJSON   string
+	ProviderDiagnosticsJSON string
+	FailureReasonCode       string
+	FailureReasonText       string
+	SettledAt               string
 }
 
 type ReconcileProviderCompletionSettlementRequest struct {
@@ -290,13 +293,25 @@ func IsTerminalProviderReceiptError(err error) bool {
 	return errors.As(err, &settlementErr) && settlementErr != nil && settlementErr.Operation == "accept_provider_completion_receipt"
 }
 
-func MarshalTerminalProviderSettlementEvidencePayload(state, reasonCode, failureText, outputText, evidenceSource string) (string, error) {
-	payloadRaw, err := json.Marshal(map[string]any{
-		"state":           strings.TrimSpace(state),
-		"reason_code":     strings.TrimSpace(reasonCode),
-		"failure_text":    strings.TrimSpace(failureText),
-		"output_text":     strings.TrimSpace(outputText),
-		"evidence_source": strings.TrimSpace(evidenceSource),
+func MarshalTerminalProviderSettlementEvidencePayload(state, reasonCode, failureText, outputText, evidenceSource, providerDiagnosticsJSON string) (string, error) {
+	diagnosticsJSON, err := canonicalizeJSONDocument(providerDiagnosticsJSON, `{}`)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize provider diagnostics payload: %w", err)
+	}
+	payloadRaw, err := json.Marshal(struct {
+		State               string          `json:"state"`
+		ReasonCode          string          `json:"reason_code"`
+		FailureText         string          `json:"failure_text"`
+		OutputText          string          `json:"output_text"`
+		EvidenceSource      string          `json:"evidence_source"`
+		ProviderDiagnostics json.RawMessage `json:"provider_diagnostics"`
+	}{
+		State:               strings.TrimSpace(state),
+		ReasonCode:          strings.TrimSpace(reasonCode),
+		FailureText:         strings.TrimSpace(failureText),
+		OutputText:          strings.TrimSpace(outputText),
+		EvidenceSource:      strings.TrimSpace(evidenceSource),
+		ProviderDiagnostics: json.RawMessage(diagnosticsJSON),
 	})
 	if err != nil {
 		return "", err
@@ -851,19 +866,20 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 		return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
 	settlement := ProviderCompletionSettlement{
-		SettlementID:          normalized.SettlementID,
-		ProviderInvocationID:  invocation.ProviderInvocationID,
-		AttemptID:             invocation.AttemptID,
-		RunID:                 invocation.RunID,
-		NodeRunID:             invocation.NodeRunID,
-		Outcome:               normalized.Outcome,
-		PrimaryEvidenceID:     primaryEvidence.EvidenceID,
-		FinalText:             normalized.FinalText,
-		StructuredPayloadJSON: normalized.StructuredPayloadJSON,
-		FailureReasonCode:     normalized.FailureReasonCode,
-		FailureReasonText:     normalized.FailureReasonText,
-		SettledAt:             normalized.SettledAt,
-		CreatedAt:             normalized.SettledAt,
+		SettlementID:            normalized.SettlementID,
+		ProviderInvocationID:    invocation.ProviderInvocationID,
+		AttemptID:               invocation.AttemptID,
+		RunID:                   invocation.RunID,
+		NodeRunID:               invocation.NodeRunID,
+		Outcome:                 normalized.Outcome,
+		PrimaryEvidenceID:       primaryEvidence.EvidenceID,
+		FinalText:               normalized.FinalText,
+		StructuredPayloadJSON:   normalized.StructuredPayloadJSON,
+		ProviderDiagnosticsJSON: normalized.ProviderDiagnosticsJSON,
+		FailureReasonCode:       normalized.FailureReasonCode,
+		FailureReasonText:       normalized.FailureReasonText,
+		SettledAt:               normalized.SettledAt,
+		CreatedAt:               normalized.SettledAt,
 	}
 	if normalized.Outcome == ProviderCompletionOutcomeSuccess {
 		if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
@@ -910,11 +926,12 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 		primary_evidence_id,
 		final_text,
 		structured_payload_json,
+		provider_diagnostics_json,
 		failure_reason_code,
 		failure_reason_text,
 		settled_at,
 		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		settlement.SettlementID,
 		settlement.ProviderInvocationID,
 		settlement.AttemptID,
@@ -924,6 +941,7 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 		settlement.PrimaryEvidenceID,
 		settlement.FinalText,
 		settlement.StructuredPayloadJSON,
+		settlement.ProviderDiagnosticsJSON,
 		settlement.FailureReasonCode,
 		settlement.FailureReasonText,
 		settlement.SettledAt,
@@ -1463,6 +1481,7 @@ const providerCompletionSettlementSelect = `SELECT settlement_id,
 	primary_evidence_id,
 	COALESCE(final_text, ''),
 	COALESCE(structured_payload_json, '{}'),
+	COALESCE(provider_diagnostics_json, '{}'),
 	COALESCE(failure_reason_code, ''),
 	COALESCE(failure_reason_text, ''),
 	settled_at,
@@ -1555,6 +1574,7 @@ func scanProviderCompletionSettlement(scanner providerCompletionSettlementScanne
 		&settlement.PrimaryEvidenceID,
 		&settlement.FinalText,
 		&settlement.StructuredPayloadJSON,
+		&settlement.ProviderDiagnosticsJSON,
 		&settlement.FailureReasonCode,
 		&settlement.FailureReasonText,
 		&settlement.SettledAt,
@@ -1641,6 +1661,7 @@ func normalizeEnsureTerminalProviderCompletionEvidenceRequest(req EnsureTerminal
 		req.FailureText,
 		req.OutputText,
 		req.EvidenceSource,
+		req.ProviderDiagnosticsJSON,
 	)
 	if err != nil {
 		return AppendProviderCompletionEvidenceRequest{}, fmt.Errorf("marshal terminal provider settlement evidence payload: %w", err)
@@ -1972,6 +1993,11 @@ func normalizeFinalizeProviderCompletionSettlementRequest(req FinalizeProviderCo
 	if req.SettledAt == "" {
 		req.SettledAt = time.Now().UTC().Format(time.RFC3339)
 	}
+	providerDiagnosticsJSON, err := canonicalizeJSONDocument(req.ProviderDiagnosticsJSON, `{}`)
+	if err != nil {
+		return FinalizeProviderCompletionSettlementRequest{}, fmt.Errorf("canonicalize provider completion settlement diagnostics: %w", err)
+	}
+	req.ProviderDiagnosticsJSON = providerDiagnosticsJSON
 	switch req.Outcome {
 	case ProviderCompletionOutcomeSuccess:
 		req.FinalText = strings.TrimSpace(req.FinalText)
@@ -2261,6 +2287,7 @@ func sameProviderCompletionSettlement(existing, candidate ProviderCompletionSett
 		existing.PrimaryEvidenceID == candidate.PrimaryEvidenceID &&
 		existing.FinalText == candidate.FinalText &&
 		existing.StructuredPayloadJSON == candidate.StructuredPayloadJSON &&
+		existing.ProviderDiagnosticsJSON == candidate.ProviderDiagnosticsJSON &&
 		existing.FailureReasonCode == candidate.FailureReasonCode &&
 		existing.FailureReasonText == candidate.FailureReasonText &&
 		existing.SettledAt == candidate.SettledAt

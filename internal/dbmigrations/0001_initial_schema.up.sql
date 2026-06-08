@@ -558,6 +558,7 @@ CREATE TABLE provider_completion_settlements (
   primary_evidence_id TEXT NOT NULL UNIQUE,
   final_text TEXT NOT NULL DEFAULT '',
   structured_payload_json TEXT NOT NULL DEFAULT '{}',
+  provider_diagnostics_json TEXT NOT NULL DEFAULT '{}',
   failure_reason_code TEXT NOT NULL DEFAULT '',
   failure_reason_text TEXT NOT NULL DEFAULT '',
   settled_at TEXT NOT NULL,

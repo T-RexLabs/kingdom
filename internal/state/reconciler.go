@@ -378,7 +378,7 @@ func (r *Reconciler) reconcileDurableAttemptProviderSettlement(ctx context.Conte
 		return fmt.Errorf("load provider settlement for stale attempt %q: %w", attempt.AttemptID, err)
 	}
 	if found {
-		_, err := store.ReconcileProviderCompletionSettlement(ctx, executionstore.ReconcileProviderCompletionSettlementRequest{
+		_, err := r.reconcileProviderCompletionSettlementWithRetry(ctx, store, executionstore.ReconcileProviderCompletionSettlementRequest{
 			ProviderInvocationID: attempt.ActiveProviderInvocationID,
 			AttemptID:            attempt.AttemptID,
 			RunID:                attempt.RunID,
@@ -399,7 +399,7 @@ func (r *Reconciler) reconcileDurableAttemptProviderSettlement(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	if _, err := store.FinalizeProviderCompletionSettlement(ctx, executionstore.FinalizeProviderCompletionSettlementRequest{
+	if _, err := r.finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          executionstore.ProviderCompletionSettlementID(attempt.ActiveProviderInvocationID),
 		ProviderInvocationID:  attempt.ActiveProviderInvocationID,
 		AttemptID:             attempt.AttemptID,
@@ -415,6 +415,50 @@ func (r *Reconciler) reconcileDurableAttemptProviderSettlement(ctx context.Conte
 		return fmt.Errorf("finalize provider settlement for attempt %q: %w", attempt.AttemptID, err)
 	}
 	return nil
+}
+
+func (r *Reconciler) finalizeProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.FinalizeProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
+	return finalizeProviderCompletionSettlementWithRetry(ctx, store, req)
+}
+
+func (r *Reconciler) reconcileProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.ReconcileProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
+	return reconcileProviderCompletionSettlementWithRetry(ctx, store, req)
+}
+
+func finalizeProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.FinalizeProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
+	var settlement executionstore.ProviderCompletionSettlement
+	err := retrySQLiteBusy(ctx, func() error {
+		result, err := store.FinalizeProviderCompletionSettlement(ctx, req)
+		if err == nil {
+			settlement = result
+		}
+		return err
+	})
+	return settlement, err
+}
+
+func reconcileProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.ReconcileProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
+	var settlement executionstore.ProviderCompletionSettlement
+	err := retrySQLiteBusy(ctx, func() error {
+		result, err := store.ReconcileProviderCompletionSettlement(ctx, req)
+		if err == nil {
+			settlement = result
+		}
+		return err
+	})
+	return settlement, err
+}
+
+func ensureTerminalProviderCompletionEvidenceWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.EnsureTerminalProviderCompletionEvidenceRequest) (executionstore.ProviderCompletionEvidence, error) {
+	var evidence executionstore.ProviderCompletionEvidence
+	err := retrySQLiteBusy(ctx, func() error {
+		result, err := store.EnsureTerminalProviderCompletionEvidence(ctx, req)
+		if err == nil {
+			evidence = result
+		}
+		return err
+	})
+	return evidence, err
 }
 
 func providerSettlementOutcomeForAttemptState(state string) (executionstore.ProviderCompletionOutcome, bool) {
@@ -452,7 +496,7 @@ func (r *Reconciler) primaryEvidenceForDurableAttemptSettlement(ctx context.Cont
 	if outcome == executionstore.ProviderCompletionOutcomeSuccess {
 		return "", fmt.Errorf("durable provider success for attempt %q is missing accepted receipt evidence", attempt.AttemptID)
 	}
-	evidence, err = store.EnsureTerminalProviderCompletionEvidence(ctx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+	evidence, err = ensureTerminalProviderCompletionEvidenceWithRetry(ctx, store, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
 		ProviderInvocationID: attempt.ActiveProviderInvocationID,
 		AttemptID:            attempt.AttemptID,
 		RunID:                attempt.RunID,
@@ -826,7 +870,7 @@ func (r *Reconciler) convergeProviderBackedAttemptFromSettlement(ctx context.Con
 				return false, fmt.Errorf("adjudicate recovered provider receipt for stale recovery attempt %q: %w", trimmedAttemptID, err)
 			}
 			settledAt := firstNonEmptyTrimmed(strings.TrimSpace(receiptEvidence.CreatedAt), strings.TrimSpace(invocation.ReceiptPersistedAt), nowTime.UTC().Format(time.RFC3339))
-			settlement, err = store.FinalizeProviderCompletionSettlement(ctx, executionstore.FinalizeProviderCompletionSettlementRequest{
+			settlement, err = finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
 				SettlementID:          executionstore.ProviderCompletionSettlementID(providerInvocationID),
 				ProviderInvocationID:  providerInvocationID,
 				AttemptID:             persisted.AttemptID,
@@ -935,7 +979,7 @@ func reconcileRecoveredReceiptSettlement(ctx context.Context, store *executionst
 	if recoveredOutcome == executionstore.ProviderCompletionOutcomeSuccess {
 		return settlement, nil
 	}
-	return store.ReconcileProviderCompletionSettlement(ctx, executionstore.ReconcileProviderCompletionSettlementRequest{
+	return reconcileProviderCompletionSettlementWithRetry(ctx, store, executionstore.ReconcileProviderCompletionSettlementRequest{
 		ProviderInvocationID: settlement.ProviderInvocationID,
 		AttemptID:            attempt.AttemptID,
 		RunID:                attempt.RunID,
@@ -960,7 +1004,7 @@ func reconcileInvalidHandshakeProviderSettlement(ctx context.Context, store *exe
 		outputText = receiptPayload.FinalText
 	}
 	settledAt := firstNonEmptyTrimmed(strings.TrimSpace(invocation.UpdatedAt), strings.TrimSpace(invocation.ReceiptPersistedAt), nowTime.UTC().Format(time.RFC3339))
-	terminalEvidence, err := store.EnsureTerminalProviderCompletionEvidence(ctx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+	terminalEvidence, err := ensureTerminalProviderCompletionEvidenceWithRetry(ctx, store, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
 		ProviderInvocationID: invocation.ProviderInvocationID,
 		AttemptID:            attempt.AttemptID,
 		RunID:                attempt.RunID,
@@ -974,7 +1018,7 @@ func reconcileInvalidHandshakeProviderSettlement(ctx context.Context, store *exe
 	if err != nil {
 		return executionstore.ProviderCompletionSettlement{}, fmt.Errorf("ensure terminal provider evidence for invalid handshake %q: %w", invocation.ProviderInvocationID, err)
 	}
-	return store.FinalizeProviderCompletionSettlement(ctx, executionstore.FinalizeProviderCompletionSettlementRequest{
+	return finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          executionstore.ProviderCompletionSettlementID(invocation.ProviderInvocationID),
 		ProviderInvocationID:  invocation.ProviderInvocationID,
 		AttemptID:             attempt.AttemptID,

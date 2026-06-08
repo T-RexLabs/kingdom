@@ -29,6 +29,7 @@ type executionOutboxPayload struct {
 	ProviderInvocationAt            string                    `json:"provider_invocation_at,omitempty"`
 	CompletionReceiptEvidenceID     string                    `json:"completion_receipt_evidence_id,omitempty"`
 	CompletionStructuredPayloadJSON string                    `json:"completion_structured_payload_json,omitempty"`
+	ProviderDiagnosticsJSON         string                    `json:"provider_diagnostics_json,omitempty"`
 	BaseSnapshotID                  string                    `json:"base_snapshot_id,omitempty"`
 	ResultSnapshotID                string                    `json:"result_snapshot_id,omitempty"`
 	WorkspaceID                     string                    `json:"workspace_id"`
@@ -123,6 +124,7 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ProviderInvocationAt:            strings.TrimSpace(result.providerInvocationAt),
 		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
+		ProviderDiagnosticsJSON:         strings.TrimSpace(result.providerDiagnosticsJSON),
 		BaseSnapshotID:                  strings.TrimSpace(result.baseSnapshotID),
 		ResultSnapshotID:                strings.TrimSpace(result.resultSnapshotID),
 		WorkspaceID:                     result.workspaceID,
@@ -255,6 +257,9 @@ func (o *orchestrationLoop) retryDetachedCompletionHandoff(job asyncExecutionRes
 		}
 		if err := commit(); err != nil {
 			lastErr = err
+			if !state.IsSQLiteBusy(err) {
+				return err
+			}
 			continue
 		}
 		return nil
@@ -296,6 +301,7 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		providerInvocationAt:            payload.ProviderInvocationAt,
 		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
 		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
+		providerDiagnosticsJSON:         payload.ProviderDiagnosticsJSON,
 		baseSnapshotID:                  payload.BaseSnapshotID,
 		resultSnapshotID:                payload.ResultSnapshotID,
 		workspaceID:                     payload.WorkspaceID,
@@ -1230,7 +1236,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 		result.completionStructuredPayloadJSON = strings.TrimSpace(retryResponse.CompletionStructuredPayloadJSON)
 		result.suppressEmptyOutputRetry = retryResponse.SuppressEmptyOutputRetry
 		result.outputText = strings.TrimSpace(retryResponse.OutputText)
-			artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
+		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
 		if countErr != nil {
 			return result, countErr
 		}
@@ -1423,6 +1429,9 @@ func executionTerminalPayloadJSON(result asyncExecutionResult, reasonCode string
 	} else {
 		extra["error"] = err.Error()
 	}
+	if diagnostics := decodeProviderDiagnosticsJSON(result.providerDiagnosticsJSON); diagnostics != nil {
+		extra["provider_diagnostics"] = diagnostics
+	}
 	raw, marshalErr := marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 	if marshalErr != nil {
 		fallback := map[string]any{
@@ -1449,6 +1458,18 @@ func executionTerminalPayloadJSON(result asyncExecutionResult, reasonCode string
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	return raw
+}
+
+func decodeProviderDiagnosticsJSON(raw string) any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+		return map[string]any{"provider_diagnostics_json": trimmed}
+	}
+	return value
 }
 
 type executionNotStartedError struct {

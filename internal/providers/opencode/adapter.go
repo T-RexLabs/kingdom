@@ -193,6 +193,7 @@ type ExecuteResponse struct {
 	CompletionReceiptAccepted       bool             `json:"completion_receipt_accepted,omitempty"`
 	CompletionReceiptEvidenceID     string           `json:"completion_receipt_evidence_id,omitempty"`
 	CompletionStructuredPayloadJSON string           `json:"completion_structured_payload_json,omitempty"`
+	ProviderDiagnosticsJSON         string           `json:"provider_diagnostics_json,omitempty"`
 	ExportChecks                    []ExportCheck    `json:"-"`
 }
 

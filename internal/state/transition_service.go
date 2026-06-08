@@ -234,6 +234,12 @@ func (s *TransitionService) applyWithEffects(ctx context.Context, req Transition
 }
 
 func (s *TransitionService) applyWithEffectsWithOptions(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
+	return retrySQLiteBusy(ctx, func() error {
+		return s.applyWithEffectsWithOptionsOnce(ctx, req, effects, opts)
+	})
+}
+
+func (s *TransitionService) applyWithEffectsWithOptionsOnce(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
 	if !bypassesTransitionValidation(req) {
 		if err := validateTransition(req.Entity, req.FromState, req.ToState); err != nil {
 			return err
