@@ -126,8 +126,6 @@ func finalChecksForNodeClass(nodeClass string) string {
 	lines := []string{
 		"- Call `kingdom_complete_attempt` exactly once when your final response is complete.",
 		"- Put the full final canonical response in `final_text`.",
-		"- Use the tool's default `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided.",
-		"- Do not edit, replace, or reuse those fields from another node, attempt, retry, or prior message.",
 		"- Do not rely on plain assistant text, stream endings, or process exit to finish the node.",
 		"- If your response is not final yet, do not call the tool.",
 	}

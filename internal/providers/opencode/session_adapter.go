@@ -178,7 +178,7 @@ type startedOpencodeRun struct {
 
 const completionReceiptObservationGracePeriod = 750 * time.Millisecond
 
-const missingCompletionReceiptRecoveryPrompt = "Kingdom has not yet received the required completion receipt for this active invocation.\n\nDo not change your prior answer.\nDo not perform any additional analysis.\nDo not create, edit, rename, or delete any files.\nDo not call any tool except `kingdom_complete_attempt`.\nCall `kingdom_complete_attempt` now using the tool defaults exactly as provided.\nReuse your exact final response body in `final_text`."
+const missingCompletionReceiptRecoveryPrompt = "Kingdom has not yet received the required completion receipt for this active invocation.\n\nDo not change your prior answer.\nDo not perform any additional analysis.\nDo not create, edit, rename, or delete any files.\nDo not call any tool except `kingdom_complete_attempt`.\nCall `kingdom_complete_attempt` now.\nReuse your exact final response body in `final_text`."
 
 func (e *IncompleteTerminalStateError) Error() string {
 	return fmt.Sprintf("incomplete terminal state (reason=%q)", strings.TrimSpace(e.Reason))

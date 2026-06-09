@@ -3143,8 +3143,41 @@ func TestPrepareExecutionWorkspaceInstallsManagedOpenCodeOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read managed completion tool: %v", err)
 	}
-	if !strings.Contains(string(raw), "completion_capability") {
-		t.Fatalf("expected managed completion tool to be installed, got %q", string(raw))
+	content := string(raw)
+	for _, token := range []string{
+		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION",
+		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID",
+		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID",
+		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY",
+		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR",
+		"final_text: tool.schema.string().describe(\"The full final canonical response text for this attempt.\")",
+		"protocol_version: protocolVersion",
+		"attempt_id: attemptID",
+		"invocation_id: invocationID",
+		"completion_capability: completionCapability",
+		"final_text: args.final_text",
+	} {
+		if !strings.Contains(content, token) {
+			t.Fatalf("expected installed managed completion tool to include %q, got %q", token, content)
+		}
+	}
+	for _, token := range []string{
+		"attempt_id`, `invocation_id`, and `completion_capability` exactly as provided",
+		"protocol_version: tool.schema.string()",
+		"attempt_id: tool.schema.string()",
+		"invocation_id: tool.schema.string()",
+		"completion_capability: tool.schema.string()",
+		"protocol_version: args.protocol_version",
+		"attempt_id: args.attempt_id",
+		"invocation_id: args.invocation_id",
+		"completion_capability: args.completion_capability",
+	} {
+		if strings.Contains(content, token) {
+			t.Fatalf("expected installed managed completion tool to ignore caller-supplied handshake field %q", token)
+		}
+	}
+	if !strings.Contains(content, "return `Kingdom completion receipt recorded for invocation ${invocationID}.`") {
+		t.Fatalf("expected installed managed completion tool to acknowledge the runtime invocation id, got %q", content)
 	}
 	if _, err := os.Stat(filepath.Join(workspaceRoot, ".kingdom", "opencode", "agents", "advisor.md")); err != nil {
 		t.Fatalf("expected managed agent overlay to be installed, stat err=%v", err)
@@ -13616,8 +13649,8 @@ func recoveryDiagnosticsJSONForTest(lastStepFinishReason, terminalStateClass, ex
 		"completion_receipt_mode_enabled": true,
 		"execution_path_diagnostics": map[string]any{
 			"last_step_finish_reason": strings.TrimSpace(lastStepFinishReason),
-			"terminal_state_class":   strings.TrimSpace(terminalStateClass),
-			"export_check_reason":    strings.TrimSpace(exportCheckReason),
+			"terminal_state_class":    strings.TrimSpace(terminalStateClass),
+			"export_check_reason":     strings.TrimSpace(exportCheckReason),
 		},
 	})
 	return string(payload)

@@ -35,6 +35,17 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	if !strings.Contains(prompt, "Call `kingdom_complete_attempt` exactly once when your final response is complete.") {
 		t.Fatalf("expected final checks completion reminder, got:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "Put the full final canonical response in `final_text`.") {
+		t.Fatalf("expected final checks final_text reminder, got:\n%s", prompt)
+	}
+	for _, forbidden := range []string{
+		"Use the tool's default `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided.",
+		"Do not edit, replace, or reuse those fields from another node, attempt, retry, or prior message.",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("expected stale handshake guidance removed from prompt, found %q in:\n%s", forbidden, prompt)
+		}
+	}
 	if !strings.Contains(prompt, "- Assignment: Decree Intake") {
 		t.Fatalf("expected plain-language assignment in prompt, got:\n%s", prompt)
 	}
