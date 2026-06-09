@@ -2,12 +2,14 @@ package api
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
@@ -31,6 +33,20 @@ type runArtifactItem struct {
 	Previewable  bool   `json:"previewable"`
 	ContentURL   string `json:"content_url"`
 	DownloadURL  string `json:"download_url"`
+}
+
+type artifactDeletionArchive struct {
+	Version string                         `json:"version"`
+	Entries []artifactDeletionArchiveEntry `json:"entries"`
+}
+
+type artifactDeletionArchiveEntry struct {
+	ArtifactID     string `json:"artifact_id"`
+	Path           string `json:"path"`
+	ArtifactKind   string `json:"artifact_kind"`
+	ArtifactAction string `json:"artifact_action"`
+	ProducerRole   string `json:"producer_role"`
+	CreatedAt      string `json:"created_at"`
 }
 
 func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +112,19 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 
 	entries := make([]archiveEntry, 0, len(records))
 	usedNames := make(map[string]struct{}, len(records))
+	deletions := make([]artifactDeletionArchiveEntry, 0)
 	for _, record := range records {
+		if strings.TrimSpace(record.ArtifactAction) == "delete" {
+			deletions = append(deletions, artifactDeletionArchiveEntry{
+				ArtifactID:     record.ArtifactID,
+				Path:           record.Path,
+				ArtifactKind:   record.ArtifactKind,
+				ArtifactAction: record.ArtifactAction,
+				ProducerRole:   record.ProducerRole,
+				CreatedAt:      record.CreatedAt,
+			})
+			continue
+		}
 		_, content, contentErr := s.artifactService.GetArtifactContent(r.Context(), record.ArtifactID)
 		if contentErr != nil {
 			var notFoundErr *state.ArtifactNotFoundError
@@ -120,6 +148,24 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 
 		entries = append(entries, archiveEntry{record: record, name: entryName, body: content})
 	}
+	if len(deletions) > 0 {
+		body, err := json.MarshalIndent(artifactDeletionArchive{Version: "v1", Entries: deletions}, "", "  ")
+		if err != nil {
+			s.writeInternalError(w, "marshal artifact deletions archive failed")
+			return
+		}
+		metadataName := reserveArchiveMetadataName(usedNames, "deletions.json")
+		entries = append(entries, archiveEntry{
+			record: state.ArtifactRecord{
+				ArtifactID: "run-deletions-metadata",
+				Name:       metadataName,
+				Path:       metadataName,
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+			},
+			name: metadataName,
+			body: body,
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", runID+"-artifacts.zip"))
@@ -142,6 +188,20 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 		}
 	}
 	_ = archiveWriter.Close()
+}
+
+func reserveArchiveMetadataName(used map[string]struct{}, candidate string) string {
+	name := strings.TrimSpace(candidate)
+	if name == "" {
+		name = "metadata.json"
+	}
+	if _, exists := used[name]; !exists {
+		used[name] = struct{}{}
+		return name
+	}
+	fallback := appendArtifactIDSuffix(name, "metadata")
+	used[fallback] = struct{}{}
+	return fallback
 }
 
 func buildArchiveEntryName(record state.ArtifactRecord, used map[string]struct{}) (string, error) {

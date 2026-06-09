@@ -49,11 +49,12 @@ func IsProtectedRelativePath(path string) bool {
 		return false
 	}
 	segments := strings.Split(normalized, "/")
-	if len(segments) == 0 {
-		return false
+	for _, segment := range segments {
+		if _, ok := protectedRootSegments[segment]; ok {
+			return true
+		}
 	}
-	_, ok := protectedRootSegments[segments[0]]
-	return ok
+	return false
 }
 
 func ShouldSkipDirectory(path string) bool {

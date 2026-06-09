@@ -15,6 +15,7 @@ import (
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 )
 
@@ -52,6 +53,29 @@ type completionProjectionDecision struct {
 	AllowDownstreamEffects  bool
 	AllowCanonicalArtifacts bool
 	AllowCanonicalMailbox   bool
+}
+
+type missingCompletionReceiptRecoveryAdapter interface {
+	RecoverMissingCompletionReceipt(ctx context.Context, req opencode.ExecuteRequest, finalText string) (opencode.ExecuteResponse, error)
+}
+
+type completionRecoveryDecision struct {
+	Eligible         bool
+	WorkspaceGuarded bool
+	SkipReason       string
+}
+
+type completionRecoverySnapshotGuard struct {
+	PreSnapshotID string
+}
+
+type completionRecoveryProviderDiagnostics struct {
+	CompletionReceiptModeEnabled bool `json:"completion_receipt_mode_enabled"`
+	ExecutionPathDiagnostics     struct {
+		LastStepFinishReason string `json:"last_step_finish_reason"`
+		TerminalStateClass   string `json:"terminal_state_class"`
+		ExportCheckReason    string `json:"export_check_reason"`
+	} `json:"execution_path_diagnostics"`
 }
 
 func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, error) {
@@ -321,6 +345,246 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
 	result.err = errorFromExecutionOutcome(result.outcome)
 	return result, true, nil
+}
+
+func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response opencode.ExecuteResponse, execErr error) {
+	if result == nil {
+		return
+	}
+	result.outputText = strings.TrimSpace(response.OutputText)
+	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
+	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
+	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
+	result.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
+	result.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
+	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
+	result.outcome = response.Outcome
+	result.suppressEmptyOutputRetry = response.SuppressEmptyOutputRetry
+	result.tokens = response.Tokens
+	result.err = execErr
+}
+
+func decodeCompletionRecoveryProviderDiagnostics(raw string) (completionRecoveryProviderDiagnostics, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" {
+		return completionRecoveryProviderDiagnostics{}, false
+	}
+	var diagnostics completionRecoveryProviderDiagnostics
+	if err := json.Unmarshal([]byte(trimmed), &diagnostics); err != nil {
+		return completionRecoveryProviderDiagnostics{}, false
+	}
+	return diagnostics, true
+}
+
+func (o *orchestrationLoop) shouldAttemptCompletionRecovery(result asyncExecutionResult) completionRecoveryDecision {
+	if result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
+		return completionRecoveryDecision{SkipReason: "execution_mode_not_provider_backed"}
+	}
+	if strings.TrimSpace(result.providerInvocationID) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_provider_invocation_id"}
+	}
+	if strings.TrimSpace(result.providerSessionID) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_provider_session_id"}
+	}
+	if strings.TrimSpace(result.completionCapability) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_completion_capability"}
+	}
+	if strings.TrimSpace(result.completionReceiptDir) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_completion_receipt_dir"}
+	}
+	if strings.TrimSpace(result.completionReceiptEvidenceID) != "" {
+		return completionRecoveryDecision{SkipReason: "completion_receipt_already_accepted"}
+	}
+	outcome := normalizeExecutionOutcome(result.outcome, result.err)
+	if strings.TrimSpace(outcome.State) != "incomplete_turn" || currentExecutionReasonCode(outcome, result.err) != "provider_incomplete_turn" {
+		return completionRecoveryDecision{SkipReason: "reason_not_provider_incomplete_turn"}
+	}
+	if strings.TrimSpace(result.outputText) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_output_text"}
+	}
+	if _, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter); !ok {
+		return completionRecoveryDecision{SkipReason: "adapter_missing_recovery_support"}
+	}
+	diagnostics, ok := decodeCompletionRecoveryProviderDiagnostics(result.providerDiagnosticsJSON)
+	if !ok {
+		return completionRecoveryDecision{SkipReason: "missing_provider_diagnostics"}
+	}
+	if !diagnostics.CompletionReceiptModeEnabled {
+		return completionRecoveryDecision{SkipReason: "completion_receipt_mode_disabled"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.ExportCheckReason) != "missing_completion_receipt" {
+		return completionRecoveryDecision{SkipReason: "export_check_reason_not_missing_completion_receipt"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.TerminalStateClass) != "terminal_success_candidate" {
+		return completionRecoveryDecision{SkipReason: "terminal_state_not_success_candidate"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.LastStepFinishReason) != "stop" {
+		return completionRecoveryDecision{SkipReason: "step_finish_reason_not_stop"}
+	}
+
+	switch resolvedNodeClass(result.node.NodeID, result.node.NodeClass) {
+	case workflow.NodeClassAdvisorConsultation, workflow.NodeClassAdvisorySynthesis, workflow.NodeClassPlanDrafting:
+		return completionRecoveryDecision{Eligible: true}
+	case workflow.NodeClassDelegatedExecution:
+		if o == nil || o.fsStore == nil {
+			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
+		}
+		if strings.TrimSpace(result.workspacePath) == "" {
+			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
+		}
+		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
+	case workflow.NodeClassExecutionReview, workflow.NodeClassValidationGates:
+		if _, err := validateProviderCompletionReceiptForNode(result.node, result.outputText, ""); err != nil {
+			return completionRecoveryDecision{SkipReason: "original_final_text_failed_contract"}
+		}
+		if o == nil || o.fsStore == nil {
+			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
+		}
+		if strings.TrimSpace(result.workspacePath) == "" {
+			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
+		}
+		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
+	default:
+		return completionRecoveryDecision{SkipReason: "node_class_not_recoverable"}
+	}
+}
+
+func (o *orchestrationLoop) beginCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision) (*completionRecoverySnapshotGuard, error) {
+	if !decision.WorkspaceGuarded {
+		return nil, nil
+	}
+	if o == nil || o.fsStore == nil {
+		return nil, fmt.Errorf("runtime filesystem store is required for completion recovery guard")
+	}
+	createdAt := o.now().UTC().Format(time.RFC3339)
+	snapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_pre", o.now().UTC()),
+		RunID:        result.run.RunID,
+		SnapshotKind: "attempt_result",
+		RootPath:     result.workspacePath,
+		CreatedAt:    createdAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("capture pre-recovery snapshot: %w", err)
+	}
+	return &completionRecoverySnapshotGuard{PreSnapshotID: snapshot.SnapshotID}, nil
+}
+
+func (o *orchestrationLoop) finishCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision, guard *completionRecoverySnapshotGuard) error {
+	if !decision.WorkspaceGuarded || guard == nil {
+		return nil
+	}
+	if o == nil || o.fsStore == nil {
+		return fmt.Errorf("runtime filesystem store is required for completion recovery guard")
+	}
+	createdAt := o.now().UTC().Format(time.RFC3339)
+	postSnapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
+		SnapshotID:       composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_post", o.now().UTC()),
+		RunID:            result.run.RunID,
+		ParentSnapshotID: strings.TrimSpace(guard.PreSnapshotID),
+		SnapshotKind:     "attempt_result",
+		RootPath:         result.workspacePath,
+		CreatedAt:        createdAt,
+	})
+	if err != nil {
+		return fmt.Errorf("capture post-recovery snapshot: %w", err)
+	}
+	diffs, err := o.fsStore.DiffSnapshots(ctx, strings.TrimSpace(guard.PreSnapshotID), postSnapshot.SnapshotID)
+	if err != nil {
+		return fmt.Errorf("diff recovery snapshots: %w", err)
+	}
+	if len(diffs) == 0 {
+		return nil
+	}
+	if err := o.fsStore.RestoreSnapshot(ctx, strings.TrimSpace(guard.PreSnapshotID), result.workspacePath); err != nil {
+		return fmt.Errorf("restore pre-recovery snapshot after workspace mutation: %w", err)
+	}
+	paths := make([]string, 0, len(diffs))
+	for _, diff := range diffs {
+		if trimmed := strings.TrimSpace(diff.Path); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return &completionRecoveryWorkspaceMutationError{Paths: paths}
+}
+
+func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Context, result asyncExecutionResult) asyncExecutionResult {
+	decision := o.shouldAttemptCompletionRecovery(result)
+	now := o.now().UTC().Format(time.RFC3339)
+	if !decision.Eligible {
+		if shouldEmitCompletionRecoverySkip(decision.SkipReason) {
+			o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": decision.SkipReason})
+		}
+		return result
+	}
+
+	recoveryAdapter, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter)
+	if !ok {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": "adapter_missing_recovery_support"})
+		return result
+	}
+
+	guard, guardErr := o.beginCompletionRecoveryGuard(ctx, result, decision)
+	if guardErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": guardErr.Error()})
+		result.err = guardErr
+		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
+		return result
+	}
+
+	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
+	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, opencode.ExecuteRequest{
+		SessionID:                 result.sessionID,
+		ProviderSessionID:         result.providerSessionID,
+		AttemptID:                 result.attemptID,
+		RunID:                     result.run.RunID,
+		NodeRunID:                 result.attempt.NodeRunID,
+		Model:                     result.model,
+		Variant:                   result.variant,
+		Agent:                     result.agent,
+		WorkspacePath:             result.workspacePath,
+		ConfigDir:                 bootstrapassets.ManagedOpenCodeRoot(result.workspacePath),
+		Prompt:                    firstNonEmptyString(strings.TrimSpace(result.prompt), "completion receipt recovery"),
+		OccurredAt:                result.occurredAt,
+		InvocationID:              result.providerInvocationID,
+		InvocationIssuedAt:        result.providerInvocationAt,
+		CompletionProtocolVersion: opencode.CompletionProtocolVersion,
+		CompletionCapability:      result.completionCapability,
+		CompletionReceiptDir:      result.completionReceiptDir,
+		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
+	}, result.outputText)
+	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
+
+	if guardErr := o.finishCompletionRecoveryGuard(ctx, result, decision, guard); guardErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_rejected_workspace_mutated", now, map[string]any{"error": guardErr.Error()})
+		result.err = guardErr
+		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
+		return result
+	}
+
+	if recoveryErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
+		return result
+	}
+	if strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
+		recoveryErr = &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"}
+		result.err = recoveryErr
+		result.outcome = normalizeExecutionOutcome(result.outcome, recoveryErr)
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
+		return result
+	}
+
+	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_succeeded", now, map[string]any{"completion_receipt_evidence_id": result.completionReceiptEvidenceID})
+	return result
+}
+
+func shouldEmitCompletionRecoverySkip(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "", "execution_mode_not_provider_backed", "reason_not_provider_incomplete_turn", "completion_receipt_already_accepted":
+		return false
+	default:
+		return true
+	}
 }
 
 func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) opencode.ExecutionOutcome {
@@ -1378,6 +1642,23 @@ func (e *providerEmptyOutputError) Error() string {
 	return fmt.Sprintf("provider returned empty output after retries (node=%s attempt=%s)", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
 }
 
+type completionRecoveryWorkspaceMutationError struct {
+	Paths []string
+}
+
+func (e *completionRecoveryWorkspaceMutationError) Error() string {
+	paths := make([]string, 0, len(e.Paths))
+	for _, path := range e.Paths {
+		if trimmed := strings.TrimSpace(path); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	if len(paths) == 0 {
+		return "completion recovery mutated the workspace"
+	}
+	return fmt.Sprintf("completion recovery mutated the workspace: %s", strings.Join(paths, ", "))
+}
+
 func classifyExecutionReasonCode(err error) string {
 	if err == nil {
 		return "execution_completed"
@@ -1405,6 +1686,10 @@ func classifyExecutionReasonCode(err error) string {
 	var emptyOutputErr *providerEmptyOutputError
 	if errors.As(err, &emptyOutputErr) {
 		return "provider_empty_output"
+	}
+	var recoveryMutationErr *completionRecoveryWorkspaceMutationError
+	if errors.As(err, &recoveryMutationErr) {
+		return "completion_recovery_workspace_mutated"
 	}
 	var incompleteTurnErr *opencode.IncompleteTerminalStateError
 	if errors.As(err, &incompleteTurnErr) {

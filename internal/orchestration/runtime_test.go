@@ -3942,6 +3942,25 @@ func TestPublishArtifactsToProjectRootRejectsProtectedRoots(t *testing.T) {
 	}
 }
 
+func TestPublishArtifactsToProjectRootRejectsNestedProtectedRoots(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	sourcePath := filepath.Join(workspaceRoot, "ai-hub", ".git", "index")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("create nested source directory: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("nested-git-index"), 0o644); err != nil {
+		t.Fatalf("write nested source artifact: %v", err)
+	}
+
+	loop := orchestrationLoop{yoloRoot: t.TempDir()}
+	err := loop.publishArtifactsToProjectRoot(context.Background(), workspaceRoot, "run_protected_nested", []artifactOutputRecord{{ArtifactID: "artifact-1", ArtifactKind: "deliverable", RelativePath: "ai-hub/.git/index", ProducerRole: "builder-berserker", NodeID: "delegated_execution_berserker", Attempt: 1}})
+	if err == nil || !strings.Contains(err.Error(), "protected root segment") {
+		t.Fatalf("expected nested protected root segment error, got %v", err)
+	}
+}
+
 func TestPublishArtifactsToProjectRootGitWorktreeRejectsInvalidRepo(t *testing.T) {
 	t.Parallel()
 
@@ -4056,6 +4075,39 @@ func TestPrepareExecutionWorkspaceCopiesSourceFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspaceRoot, ".git", "config")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected git metadata to be excluded from execution workspace, stat err=%v", err)
+	}
+}
+
+func TestPrepareExecutionWorkspaceSkipsNestedGitMetadata(t *testing.T) {
+	t.Parallel()
+
+	seedRoot := t.TempDir()
+	nestedAppPath := filepath.Join(seedRoot, "ai-hub", "src", "app.js")
+	if err := os.MkdirAll(filepath.Dir(nestedAppPath), 0o755); err != nil {
+		t.Fatalf("create nested app directory: %v", err)
+	}
+	if err := os.WriteFile(nestedAppPath, []byte("console.log('nested')"), 0o644); err != nil {
+		t.Fatalf("write nested app file: %v", err)
+	}
+	nestedGitPath := filepath.Join(seedRoot, "ai-hub", ".git", "index")
+	if err := os.MkdirAll(filepath.Dir(nestedGitPath), 0o755); err != nil {
+		t.Fatalf("create nested git directory: %v", err)
+	}
+	if err := os.WriteFile(nestedGitPath, []byte("git-index"), 0o644); err != nil {
+		t.Fatalf("write nested git file: %v", err)
+	}
+
+	workspaceRoot := t.TempDir()
+	loop := orchestrationLoop{}
+	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot}); err != nil {
+		t.Fatalf("prepare execution workspace: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "ai-hub", "src", "app.js")); err != nil {
+		t.Fatalf("expected nested app file copied to execution workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "ai-hub", ".git", "index")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected nested git metadata to be excluded from execution workspace, stat err=%v", err)
 	}
 }
 
@@ -13211,6 +13263,18 @@ type outcomeSequenceExecutionAdapter struct {
 	requests  []opencode.ExecuteRequest
 }
 
+type completionRecoveryTestAdapter struct {
+	mu               sync.Mutex
+	executeResponse  opencode.ExecuteResponse
+	executeErr       error
+	recoveryResponse opencode.ExecuteResponse
+	recoveryErr      error
+	recoveryWrites   map[string]string
+	recoveryCalls    int
+	recoveryRequests []opencode.ExecuteRequest
+	recoveryTexts    []string
+}
+
 type lifecycleObservationExecutionAdapter struct{}
 
 type errorMetadataExecutionAdapter struct {
@@ -13381,6 +13445,57 @@ func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.Execute
 	return out
 }
 
+func (a *completionRecoveryTestAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.executeResponse, a.executeErr
+}
+
+func (a *completionRecoveryTestAdapter) RecoverMissingCompletionReceipt(_ context.Context, req opencode.ExecuteRequest, finalText string) (opencode.ExecuteResponse, error) {
+	for relativePath, content := range a.recoveryWrites {
+		absolutePath := filepath.Join(req.WorkspacePath, relativePath)
+		if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+		if err := os.WriteFile(absolutePath, []byte(content), 0o644); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.recoveryCalls++
+	a.recoveryRequests = append(a.recoveryRequests, req)
+	a.recoveryTexts = append(a.recoveryTexts, strings.TrimSpace(finalText))
+	return a.recoveryResponse, a.recoveryErr
+}
+
+func (a *completionRecoveryTestAdapter) Cancel(context.Context, opencode.CancelRequest) error {
+	return nil
+}
+
+func (a *completionRecoveryTestAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
+	eventCh := make(chan opencode.AttemptStreamEvent)
+	errCh := make(chan error)
+	close(eventCh)
+	close(errCh)
+	return eventCh, errCh, nil
+}
+
+func (a *completionRecoveryTestAdapter) recoveryCallsCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.recoveryCalls
+}
+
+func (a *completionRecoveryTestAdapter) recoveryRequestsSnapshot() []opencode.ExecuteRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]opencode.ExecuteRequest, len(a.recoveryRequests))
+	copy(out, a.recoveryRequests)
+	return out
+}
+
 func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	callOnProcessStarted(req)
 	a.mu.Lock()
@@ -13494,6 +13609,18 @@ func structuredPayloadJSONForTestOutput(outputText string) string {
 		break
 	}
 	return "{}"
+}
+
+func recoveryDiagnosticsJSONForTest(lastStepFinishReason, terminalStateClass, exportCheckReason string) string {
+	payload, _ := json.Marshal(map[string]any{
+		"completion_receipt_mode_enabled": true,
+		"execution_path_diagnostics": map[string]any{
+			"last_step_finish_reason": strings.TrimSpace(lastStepFinishReason),
+			"terminal_state_class":   strings.TrimSpace(terminalStateClass),
+			"export_check_reason":    strings.TrimSpace(exportCheckReason),
+		},
+	})
+	return string(payload)
 }
 
 func (a *lifecycleObservationExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
@@ -13959,6 +14086,194 @@ func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *t
 	}
 	if queuedCount != 0 {
 		t.Fatalf("expected no review rework queue without accepted receipt, got %d queued nodes", queuedCount)
+	}
+}
+
+func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) {
+	t.Parallel()
+
+	adapter := &completionRecoveryTestAdapter{
+		recoveryResponse: opencode.ExecuteResponse{
+			Accepted:                    true,
+			OutputText:                  "Recovered plan output.",
+			ProviderSessionID:           "ses_recovery_plan",
+			ProviderInvocationID:        "pinv_recovery_plan",
+			ProviderInvocationAt:        "2026-03-01T12:00:00Z",
+			CompletionReceiptAccepted:   true,
+			CompletionReceiptEvidenceID: "receipt_recovery_plan",
+			Outcome: opencode.ExecutionOutcome{
+				State:      "success",
+				ReasonCode: "execution_completed",
+			},
+		},
+	}
+	loop := orchestrationLoop{
+		adapter: adapter,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+
+	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
+		run:                  runSnapshot{RunID: "run_recovery_plan"},
+		node:                 nodeDefinition{NodeID: "plan_drafting", NodeClass: "plan_drafting", RequiredRole: "council-member"},
+		attempt:              nodeAttempt{NodeRunID: "nr_recovery_plan_1", NodeID: "plan_drafting", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:            "run_recovery_plan:plan_drafting:1",
+		sessionID:            "session_recovery_plan",
+		providerSessionID:    "ses_recovery_plan",
+		providerInvocationID: "pinv_recovery_plan",
+		providerInvocationAt: "2026-03-01T12:00:00Z",
+		completionCapability: "cap_recovery_plan",
+		completionReceiptDir: t.TempDir(),
+		workspacePath:        t.TempDir(),
+		model:                "github-copilot/gpt-5.4-mini",
+		variant:              "low",
+		agent:                "council-member",
+		occurredAt:           "2026-03-01T12:00:00Z",
+		outputText:           "Recovered plan output.",
+		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
+			"stop",
+			"terminal_success_candidate",
+			"missing_completion_receipt",
+		),
+		err: &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
+	})
+
+	if result.err != nil {
+		t.Fatalf("expected recovery to succeed, got %v", result.err)
+	}
+	if result.completionReceiptEvidenceID != "receipt_recovery_plan" {
+		t.Fatalf("expected recovery evidence id, got %q", result.completionReceiptEvidenceID)
+	}
+	if adapter.recoveryCallsCount() != 1 {
+		t.Fatalf("expected one recovery attempt, got %d", adapter.recoveryCallsCount())
+	}
+	requests := adapter.recoveryRequestsSnapshot()
+	if len(requests) != 1 || requests[0].ProviderSessionID != "ses_recovery_plan" {
+		t.Fatalf("expected recovery to reuse provider session, got %#v", requests)
+	}
+}
+
+func TestMaybeRecoverMissingCompletionReceiptSkipsInvalidReviewVerdict(t *testing.T) {
+	t.Parallel()
+
+	adapter := &completionRecoveryTestAdapter{}
+	loop := orchestrationLoop{
+		adapter: adapter,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+
+	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
+		run:                  runSnapshot{RunID: "run_recovery_review"},
+		node:                 nodeDefinition{NodeID: "execution_review_shieldmaiden", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"},
+		attempt:              nodeAttempt{NodeRunID: "nr_recovery_review_1", NodeID: "execution_review_shieldmaiden", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:            "run_recovery_review:execution_review_shieldmaiden:1",
+		sessionID:            "session_recovery_review",
+		providerSessionID:    "ses_recovery_review",
+		providerInvocationID: "pinv_recovery_review",
+		providerInvocationAt: "2026-03-01T12:00:00Z",
+		completionCapability: "cap_recovery_review",
+		completionReceiptDir: t.TempDir(),
+		workspacePath:        t.TempDir(),
+		outputText:           "Review complete without a verdict line.",
+		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
+			"stop",
+			"terminal_success_candidate",
+			"missing_completion_receipt",
+		),
+		outcome: opencode.ExecutionOutcome{State: "incomplete_turn", ReasonCode: "provider_incomplete_turn"},
+		err:     &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
+	})
+
+	if adapter.recoveryCallsCount() != 0 {
+		t.Fatalf("expected review recovery to be skipped when original final_text is invalid, got %d calls", adapter.recoveryCallsCount())
+	}
+	if got := strings.TrimSpace(result.outputText); got != "Review complete without a verdict line." {
+		t.Fatalf("unexpected output after skipped recovery: %q", got)
+	}
+}
+
+func TestMaybeRecoverMissingCompletionReceiptRestoresWorkspaceOnMutation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtimefs store: %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	seedPath := filepath.Join(workspaceRoot, "src", "app.ts")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("create workspace seed dir: %v", err)
+	}
+	if err := os.WriteFile(seedPath, []byte("export const value = 1;\n"), 0o644); err != nil {
+		t.Fatalf("write workspace seed file: %v", err)
+	}
+
+	adapter := &completionRecoveryTestAdapter{
+		recoveryResponse: opencode.ExecuteResponse{
+			Accepted:                    true,
+			OutputText:                  "Builder finished.",
+			ProviderSessionID:           "ses_recovery_builder",
+			ProviderInvocationID:        "pinv_recovery_builder",
+			ProviderInvocationAt:        "2026-03-01T12:00:00Z",
+			CompletionReceiptAccepted:   true,
+			CompletionReceiptEvidenceID: "receipt_recovery_builder",
+			Outcome: opencode.ExecutionOutcome{
+				State:      "success",
+				ReasonCode: "execution_completed",
+			},
+		},
+		recoveryWrites: map[string]string{"src/new.ts": "export const created = true;\n"},
+	}
+	loop := orchestrationLoop{
+		adapter: adapter,
+		fsStore: fsStore,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
+		},
+	}
+
+	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
+		run:                  runSnapshot{RunID: "run_1"},
+		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
+		attempt:              nodeAttempt{NodeRunID: "nr_recovery_builder_1", NodeID: "delegated_execution_berserker", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:            "run_1:delegated_execution_berserker:1",
+		sessionID:            "session_recovery_builder",
+		providerSessionID:    "ses_recovery_builder",
+		providerInvocationID: "pinv_recovery_builder",
+		providerInvocationAt: "2026-03-01T12:00:00Z",
+		completionCapability: "cap_recovery_builder",
+		completionReceiptDir: t.TempDir(),
+		workspacePath:        workspaceRoot,
+		outputText:           "Builder finished.",
+		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
+			"stop",
+			"terminal_success_candidate",
+			"missing_completion_receipt",
+		),
+		outcome: opencode.ExecutionOutcome{State: "incomplete_turn", ReasonCode: "provider_incomplete_turn"},
+		err:     &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
+	})
+
+	var mutationErr *completionRecoveryWorkspaceMutationError
+	if !errors.As(result.err, &mutationErr) {
+		t.Fatalf("expected workspace mutation recovery error, got %v", result.err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "src", "new.ts")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected recovery mutation to be rolled back, stat err=%v", err)
+	}
+	seedRaw, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatalf("read restored seed file: %v", err)
+	}
+	if string(seedRaw) != "export const value = 1;\n" {
+		t.Fatalf("expected workspace restore to preserve original content, got %q", string(seedRaw))
 	}
 }
 

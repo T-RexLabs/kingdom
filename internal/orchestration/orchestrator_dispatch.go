@@ -678,19 +678,10 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, job),
 			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, job),
 		})
-		job.outputText = strings.TrimSpace(response.OutputText)
-		job.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
-		job.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(job.providerInvocationID))
-		job.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(job.providerInvocationAt))
-		job.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
-		job.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
-		job.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
-		job.outcome = response.Outcome
+		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.launchObserved = launchObserved
 		job.launchObservedAt = strings.TrimSpace(launchObservedAt)
-		job.suppressEmptyOutputRetry = response.SuppressEmptyOutputRetry
-		job.tokens = response.Tokens
-		job.err = execErr
+		job = o.maybeRecoverMissingCompletionReceipt(ctx, job)
 
 		if o.executionStore != nil {
 			// Async completions must outlive the dispatch tick context because the

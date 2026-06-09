@@ -353,6 +353,110 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	}
 }
 
+func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	receiptDir := t.TempDir()
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	receipts := make([]CompletionReceipt, 0, 1)
+	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
+		SessionID:                 "session_receipt_recovery",
+		ProviderSessionID:         "ses_receipt_recovery",
+		AttemptID:                 "attempt_receipt_recovery",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "completion receipt recovery",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_receipt_recovery",
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_receipt_recovery",
+		CompletionReceiptDir:      receiptDir,
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			receipts = append(receipts, receipt)
+			return CompletionReceiptAcceptance{
+				EvidenceID:            "evidence_receipt_recovery",
+				FinalText:             receipt.FinalText,
+				StructuredPayloadJSON: receipt.StructuredPayloadJSON,
+			}, nil
+		},
+	}, "hello from fake")
+	if err != nil {
+		t.Fatalf("recover missing completion receipt: %v", err)
+	}
+	if !res.CompletionReceiptAccepted {
+		t.Fatal("expected completion recovery receipt to be accepted")
+	}
+	if res.CompletionReceiptEvidenceID != "evidence_receipt_recovery" {
+		t.Fatalf("expected recovery evidence id, got %q", res.CompletionReceiptEvidenceID)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("expected one recovery receipt, got %d", len(receipts))
+	}
+	if receipts[0].FinalText != "hello from fake" {
+		t.Fatalf("expected recovery final_text to round-trip, got %#v", receipts[0])
+	}
+
+	argsLogRaw, err := os.ReadFile(argsLogPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if !strings.Contains(string(argsLogRaw), "--session ses_receipt_recovery") {
+		t.Fatalf("expected recovery run to reuse provider session, args=%q", string(argsLogRaw))
+	}
+	promptRaw, err := os.ReadFile(argsLogPath + ".ses_receipt_recovery.prompt")
+	if err != nil {
+		t.Fatalf("read recovery prompt log: %v", err)
+	}
+	if !strings.Contains(string(promptRaw), "Do not change your prior answer.") {
+		t.Fatalf("expected recovery prompt instructions, got %q", string(promptRaw))
+	}
+}
+
+func TestSessionAdapterRecoveryRejectsChangedFinalText(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_TEXT", "different recovery text")
+	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
+		SessionID:                 "session_receipt_recovery_changed",
+		ProviderSessionID:         "ses_receipt_recovery_changed",
+		AttemptID:                 "attempt_receipt_recovery_changed",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "completion receipt recovery",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_receipt_recovery_changed",
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_receipt_recovery_changed",
+		CompletionReceiptDir:      t.TempDir(),
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			return CompletionReceiptAcceptance{EvidenceID: "should_not_accept"}, nil
+		},
+	}, "original final text")
+	if err == nil {
+		t.Fatal("expected changed recovery final_text to fail")
+	}
+	var incompleteErr *IncompleteTerminalStateError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
+	}
+	if res.CompletionReceiptEvidenceID != "" {
+		t.Fatalf("expected no accepted receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
+	}
+}
+
 func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})

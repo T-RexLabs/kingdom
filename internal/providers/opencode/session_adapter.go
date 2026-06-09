@@ -178,6 +178,8 @@ type startedOpencodeRun struct {
 
 const completionReceiptObservationGracePeriod = 750 * time.Millisecond
 
+const missingCompletionReceiptRecoveryPrompt = "Kingdom has not yet received the required completion receipt for this active invocation.\n\nDo not change your prior answer.\nDo not perform any additional analysis.\nDo not create, edit, rename, or delete any files.\nDo not call any tool except `kingdom_complete_attempt`.\nCall `kingdom_complete_attempt` now using the tool defaults exactly as provided.\nReuse your exact final response body in `final_text`."
+
 func (e *IncompleteTerminalStateError) Error() string {
 	return fmt.Sprintf("incomplete terminal state (reason=%q)", strings.TrimSpace(e.Reason))
 }
@@ -1750,6 +1752,198 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		result.LastReason = buildStepFinishReasonEvidence("", false)
 	}
 	return result, nil
+}
+
+func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, req ExecuteRequest, finalText string) (ExecuteResponse, error) {
+	if err := validateExecuteRequest(req); err != nil {
+		return ExecuteResponse{}, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	expectedFinalText := strings.TrimSpace(finalText)
+	if expectedFinalText == "" {
+		result := attemptCompletionResult{
+			State:                attemptCompletionStateIncompleteTurn,
+			ReasonCode:           "provider_incomplete_turn",
+			FailureText:          "completion recovery requires non-empty final_text",
+			ProviderSessionID:    strings.TrimSpace(req.ProviderSessionID),
+			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+			EvidenceSource:       completionEvidenceSourceStream,
+		}
+		return executeResponseForCompletionResult(result), executeErrorForCompletionResult(result)
+	}
+
+	actualSessionID := firstNonEmpty(strings.TrimSpace(req.ProviderSessionID), a.actualSessionID(req.SessionID))
+	if actualSessionID == "" {
+		result := attemptCompletionResult{
+			State:                attemptCompletionStateIncompleteTurn,
+			ReasonCode:           "provider_incomplete_turn",
+			FailureText:          "completion recovery requires a provider session id",
+			OutputText:           expectedFinalText,
+			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+			EvidenceSource:       completionEvidenceSourceStream,
+		}
+		return executeResponseForCompletionResult(result), executeErrorForCompletionResult(result)
+	}
+
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+	a.setAttemptCancel(req.AttemptID, cancelAttempt)
+	defer a.clearAttemptCancel(req.AttemptID)
+
+	wrappedReq := req
+	wrappedReq.ProviderSessionID = actualSessionID
+	wrappedReq.OnCompletionReceipt = expectedFinalTextRecoveryHandler(expectedFinalText, req.OnCompletionReceipt)
+
+	startedRun, err := a.startOpencodeRun(attemptCtx, wrappedReq, actualSessionID, promptWithProviderInvocationMetadata(missingCompletionReceiptRecoveryPrompt, req.AttemptID, req.InvocationID))
+	if err != nil {
+		return ExecuteResponse{}, err
+	}
+	cmd := startedRun.cmd
+	stdout := startedRun.stdout
+	stderr := startedRun.stderr
+	a.setInFlight(req.AttemptID, cmd)
+	defer terminateCommandProcessTree(cmd)
+	defer a.clearInFlight(req.AttemptID)
+
+	ctxCancelDone := make(chan struct{})
+	go func() {
+		select {
+		case <-attemptCtx.Done():
+			_ = terminateCommandProcessTree(cmd)
+		case <-ctxCancelDone:
+		}
+	}()
+	defer close(ctxCancelDone)
+
+	watchdog := startCommandWatchdog(cmd, a.firstEventTimeout, a.streamInactivityTimeout)
+	defer watchdog.Stop()
+
+	result := continuationTurnResult{
+		TextChunks:        make([]string, 0),
+		LastReason:        buildStepFinishReasonEvidence("", false),
+		ProviderSessionID: actualSessionID,
+	}
+	providerSessionObserved := false
+
+	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+		watchdog.Signal()
+		if strings.TrimSpace(event.SessionID) != "" {
+			result.ProviderSessionID = a.observeProviderSession(wrappedReq, result.ProviderSessionID, event.SessionID, &providerSessionObserved)
+		}
+		if strings.TrimSpace(event.ErrorText) != "" && strings.TrimSpace(event.Type) == "error" {
+			result.UpstreamErrorText = strings.TrimSpace(event.ErrorText)
+		}
+		if event.Type == "step_finish" {
+			result.LastReason = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
+			if event.Part.Tokens != nil {
+				result.Tokens.InputTokens += event.Part.Tokens.Input
+				result.Tokens.OutputTokens += event.Part.Tokens.Output
+				result.Tokens.TotalTokens += event.Part.Tokens.Total
+				result.Tokens.ReasoningTokens += event.Part.Tokens.Reasoning
+				result.Tokens.CacheReadTokens += event.Part.Tokens.Cache.Read
+				result.Tokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
+			}
+		}
+		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
+			result.TextChunks = append(result.TextChunks, event.Part.Text)
+			sum := sha256.Sum256([]byte(event.Part.Text))
+			payload, _ := json.Marshal(map[string]any{
+				"text": event.Part.Text,
+				"execution_path_diagnostics_snapshot": map[string]any{
+					"last_progress_text_len": len(event.Part.Text),
+					"last_progress_text_sha": fmt.Sprintf("%x", sum[:]),
+				},
+			})
+			a.appendEvent(req.AttemptID, AttemptStreamEvent{
+				AttemptID:   req.AttemptID,
+				EventType:   AttemptEventTypeProgress,
+				PayloadJSON: string(payload),
+				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
+			})
+		}
+		return nil
+	}, nil); err != nil {
+		if timeoutErr := watchdog.Err(); timeoutErr != nil {
+			return executeResponseForCompletionResult(executionResultForTimeout(decorateTimeoutError(timeoutErr, streamDiagnostics{}), actualSessionID)), decorateTimeoutError(timeoutErr, streamDiagnostics{})
+		}
+		return executeResponseForObservedState(expectedFinalText, result.Tokens, result.ProviderSessionID), fmt.Errorf("read opencode completion recovery stream: %w", err)
+	}
+
+	stderrRaw, _ := io.ReadAll(stderr)
+	if waitErr := cmd.Wait(); waitErr != nil {
+		if timeoutErr := watchdog.Err(); timeoutErr != nil {
+			decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
+			return executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID)), decorated
+		}
+		if isExecutionCancelled(waitErr) || isExecutionCancelled(attemptCtx.Err()) {
+			cancelledResult := executionResultForCancellation(waitErr, result.ProviderSessionID, "opencode completion recovery cancelled")
+			cancelledResult.OutputText = expectedFinalText
+			cancelledResult.Tokens = result.Tokens
+			return executeResponseForCompletionResult(cancelledResult), executeErrorForCompletionResult(cancelledResult)
+		}
+		if isExecutionTimedOut(waitErr) || isExecutionTimedOut(attemptCtx.Err()) {
+			timeoutErr := firstNonNilError(waitErr, attemptCtx.Err())
+			timeoutResult := executionResultForTimeout(timeoutErr, result.ProviderSessionID)
+			timeoutResult.OutputText = expectedFinalText
+			timeoutResult.Tokens = result.Tokens
+			return executeResponseForCompletionResult(timeoutResult), executeErrorForCompletionResult(timeoutResult)
+		}
+		trimmed := strings.TrimSpace(string(stderrRaw))
+		if trimmed == "" {
+			trimmed = waitErr.Error()
+		}
+		failedResult := executionResultForProcessError(waitErr, result.ProviderSessionID, trimmed)
+		failedResult.OutputText = expectedFinalText
+		failedResult.Tokens = result.Tokens
+		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)
+	}
+	if timeoutErr := watchdog.Err(); timeoutErr != nil {
+		decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
+		return executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID)), decorated
+	}
+	if strings.TrimSpace(result.UpstreamErrorText) != "" {
+		failedResult := executionResultForProcessError(errors.New(result.UpstreamErrorText), result.ProviderSessionID, result.UpstreamErrorText)
+		failedResult.OutputText = expectedFinalText
+		failedResult.Tokens = result.Tokens
+		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)
+	}
+
+	if receiptResult, settled, _ := waitForCompletionReceiptSettlement(wrappedReq, expectedFinalText, result.Tokens, result.ProviderSessionID, completionReceiptObservationGracePeriod); settled {
+		if strings.TrimSpace(receiptResult.OutputText) == "" {
+			receiptResult.OutputText = expectedFinalText
+		}
+		return executeResponseForCompletionResult(receiptResult), executeErrorForCompletionResult(receiptResult)
+	}
+
+	incompleteResult := attemptCompletionResult{
+		State:                attemptCompletionStateIncompleteTurn,
+		ReasonCode:           "provider_incomplete_turn",
+		FailureText:          "provider exited without an accepted kingdom_complete_attempt receipt after recovery",
+		OutputText:           expectedFinalText,
+		Tokens:               result.Tokens,
+		ProviderSessionID:    result.ProviderSessionID,
+		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		EvidenceSource:       completionEvidenceSourceStream,
+	}
+	return executeResponseForCompletionResult(incompleteResult), executeErrorForCompletionResult(incompleteResult)
+}
+
+func expectedFinalTextRecoveryHandler(expectedFinalText string, next func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error)) func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+	trimmedExpected := strings.TrimSpace(expectedFinalText)
+	return func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+		if strings.TrimSpace(receipt.FinalText) != trimmedExpected {
+			return CompletionReceiptAcceptance{Rejected: true, RejectedReason: "completion recovery final_text mismatch"}, nil
+		}
+		if next == nil {
+			return CompletionReceiptAcceptance{}, fmt.Errorf("completion receipt handler is required")
+		}
+		return next(receipt)
+	}
 }
 
 func (a *SessionAdapter) Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error) {

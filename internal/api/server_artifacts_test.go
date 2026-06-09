@@ -114,6 +114,100 @@ func TestServerGetRunArtifactsArchiveDeterministicRenameOnCollision(t *testing.T
 	}
 }
 
+func TestServerGetRunArtifactsArchiveDeleteOnlyUsesMetadata(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedArtifact(t, db, runID)
+	if _, err := db.Exec(`DELETE FROM artifact_contents WHERE artifact_id = 'artifact-1'`); err != nil {
+		t.Fatalf("delete seeded artifact content: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM artifacts WHERE artifact_id = 'artifact-1'`); err != nil {
+		t.Fatalf("delete seeded artifact: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-only', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+		t.Fatalf("insert delete artifact: %v", err)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	archive, err := zip.NewReader(bytes.NewReader(res.Body.Bytes()), int64(res.Body.Len()))
+	if err != nil {
+		t.Fatalf("open zip archive: %v", err)
+	}
+	if len(archive.File) != 1 {
+		t.Fatalf("expected only delete metadata entry, got %d entries", len(archive.File))
+	}
+	if archive.File[0].Name != "deletions.json" {
+		t.Fatalf("expected deletions metadata entry, got %q", archive.File[0].Name)
+	}
+	reader, err := archive.File[0].Open()
+	if err != nil {
+		t.Fatalf("open deletions entry: %v", err)
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read deletions entry: %v", err)
+	}
+	var payload struct {
+		Version string `json:"version"`
+		Entries []struct {
+			ArtifactID     string `json:"artifact_id"`
+			Path           string `json:"path"`
+			ArtifactKind   string `json:"artifact_kind"`
+			ArtifactAction string `json:"artifact_action"`
+			ProducerRole   string `json:"producer_role"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode deletions payload: %v", err)
+	}
+	if payload.Version != "v1" {
+		t.Fatalf("expected deletions payload version v1, got %q", payload.Version)
+	}
+	if len(payload.Entries) != 1 {
+		t.Fatalf("expected one deletion entry, got %d", len(payload.Entries))
+	}
+	if payload.Entries[0].ArtifactID != "artifact-delete-only" || payload.Entries[0].Path != "docs/notes.md" || payload.Entries[0].ArtifactAction != "delete" {
+		t.Fatalf("unexpected deletion metadata entry: %#v", payload.Entries[0])
+	}
+}
+
+func TestServerGetRunArtifactsArchiveMixedWriteAndDelete(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedArtifact(t, db, runID)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-mixed', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+		t.Fatalf("insert delete artifact: %v", err)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	archive, err := zip.NewReader(bytes.NewReader(res.Body.Bytes()), int64(res.Body.Len()))
+	if err != nil {
+		t.Fatalf("open zip archive: %v", err)
+	}
+	if len(archive.File) != 2 {
+		t.Fatalf("expected one write entry plus deletions metadata, got %d entries", len(archive.File))
+	}
+	names := []string{archive.File[0].Name, archive.File[1].Name}
+	if !(containsString(names, "artifacts/report.txt") && containsString(names, "deletions.json")) {
+		t.Fatalf("expected write artifact and deletions metadata, got %v", names)
+	}
+}
+
 func TestServerGetRunArtifactsArchiveRunNotFound(t *testing.T) {
 	t.Parallel()
 

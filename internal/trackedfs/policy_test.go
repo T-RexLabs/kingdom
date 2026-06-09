@@ -14,7 +14,9 @@ func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
 		"src/app.js":                    "console.log('ready')",
 		"docs/notes.md":                 "hello",
 		".git/config":                   "ignore",
+		"ai-hub/.git/index":            "ignore nested git",
 		".kingdom/state.json":           "ignore",
+		"services/api/.kingdom/state":   "ignore nested kingdom",
 		"kingdom-artifacts/run/out.txt": "ignore",
 	}
 	for relativePath, body := range files {
@@ -50,9 +52,12 @@ func TestIsProtectedRelativePath(t *testing.T) {
 		want bool
 	}{
 		{path: ".git/config", want: true},
+		{path: "ai-hub/.git/index", want: true},
 		{path: "./.kingdom/state.json", want: true},
+		{path: "services/api/.kingdom/state.json", want: true},
 		{path: "kingdom-artifacts/run/file.txt", want: true},
 		{path: "src/app.js", want: false},
+		{path: "docs/.gitignore", want: false},
 	}
 	for _, tc := range testCases {
 		if got := IsProtectedRelativePath(tc.path); got != tc.want {
