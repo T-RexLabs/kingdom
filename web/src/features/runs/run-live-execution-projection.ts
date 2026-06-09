@@ -8,6 +8,7 @@ export const liveExecutionProjectionKey = (runId: string) => ["runs", runId, "__
 export interface LiveExecutionProjectionEntry {
 	node_run_id: string;
 	activity_at: string;
+	queued_at?: string;
 	run_event_seq?: number;
 	attempt_seq?: number;
 	attempt_id?: string;
@@ -60,6 +61,7 @@ export function patchLiveExecutionProjection(
 			[entry.node_run_id]: {
 				...existing,
 				...entry,
+				queued_at: earliestObservedTimestamp(existing?.queued_at, entry.queued_at),
 				launch_started_at: earliestObservedTimestamp(existing?.launch_started_at, entry.launch_started_at),
 				started_at: earliestObservedTimestamp(existing?.started_at, entry.started_at),
 				terminal_observed_at: earliestObservedTimestamp(existing?.terminal_observed_at, entry.terminal_observed_at),
@@ -274,6 +276,7 @@ function syntheticExecutionItem(live: LiveExecutionProjectionEntry): RunExecutio
 		required_role: live.required_role ?? "",
 		execution_mode: live.execution_mode ?? "provider_backed",
 		status: live.status,
+		queued_at: live.queued_at ?? live.launch_started_at ?? live.started_at ?? live.activity_at,
 		activity_at: live.activity_at,
 		updated_at: live.activity_at,
 		...(live.launch_started_at ? { launch_started_at: live.launch_started_at } : {}),

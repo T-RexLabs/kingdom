@@ -23,8 +23,10 @@ export function TimelinePanel({
 	const [expandedId, setExpandedId] = useState<string | null>(null);
 	const [showRawEvents, setShowRawEvents] = useState(false);
 	const [userScrolledAwayFromLatest, setUserScrolledAwayFromLatest] = useState(false);
+	const [hasHiddenLatestUpdate, setHasHiddenLatestUpdate] = useState(false);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const prevRangeRef = useRef({ count: 0, firstSeq: 0, lastSeq: 0 });
+	const inspectionLocked = userScrolledAwayFromLatest || expandedId !== null;
 
   const lookups = useMemo(
 		() => buildTimelineLookups(events, graph?.nodes ?? [], executions),
@@ -66,15 +68,21 @@ export function TimelinePanel({
 			&& events.length > previous.count
 			&& firstSeq === previous.firstSeq
 			&& lastSeq > previous.lastSeq;
-		if ((initialLoad || appendedNewer) && !userScrolledAwayFromLatest) {
+		if (appendedNewer && inspectionLocked) {
+			setHasHiddenLatestUpdate(true);
+		}
+		if ((initialLoad || appendedNewer) && !inspectionLocked) {
 			scrollContainerToTop(scrollRef.current, "auto");
+			setHasHiddenLatestUpdate(false);
 		}
 		prevRangeRef.current = { count: events.length, firstSeq, lastSeq };
-	}, [events, userScrolledAwayFromLatest]);
+	}, [events, inspectionLocked]);
 
 	const scrollToLatest = useCallback(() => {
 		scrollContainerToTop(scrollRef.current, "smooth");
 		setUserScrolledAwayFromLatest(false);
+		setHasHiddenLatestUpdate(false);
+		setExpandedId(null);
 	}, []);
 
   if (events.length === 0) {
@@ -159,7 +167,7 @@ export function TimelinePanel({
 				</div>
 			</div>
 
-			{userScrolledAwayFromLatest && (
+			{(userScrolledAwayFromLatest || hasHiddenLatestUpdate) && (
 				<button
 					onClick={scrollToLatest}
 					className="absolute right-4 z-20 flex items-center gap-1.5 rounded-full border border-border-strong bg-surface-overlay px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition-colors hover:bg-surface-raised hover:text-gold sm:right-6"

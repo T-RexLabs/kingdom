@@ -2802,6 +2802,7 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 			LogicalSessionID  *string `json:"logical_session_id"`
 			ProviderSessionID *string `json:"provider_session_id"`
 			LastHeartbeatAt   *string `json:"last_heartbeat_at"`
+			QueuedAt          string  `json:"queued_at"`
 			ActivityAt        string  `json:"activity_at"`
 			FailureCode       *string `json:"failure_code"`
 			FailureText       *string `json:"failure_text"`
@@ -2836,6 +2837,9 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	if payload.Items[0].ActivityAt != now {
 		t.Fatalf("expected provider-backed activity_at to match latest execution activity, got %#v", payload.Items[0].ActivityAt)
 	}
+	if payload.Items[0].QueuedAt != now {
+		t.Fatalf("expected provider-backed queued_at to match attempt creation, got %#v", payload.Items[0].QueuedAt)
+	}
 
 	if payload.Items[1].AttemptID != runID+`:execution_kickoff:1` {
 		t.Fatalf("expected runtime-owned execution second, got %#v", payload.Items[1])
@@ -2848,6 +2852,9 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	}
 	if payload.Items[1].ActivityAt != earlier {
 		t.Fatalf("expected runtime-owned activity_at to match durable row activity, got %#v", payload.Items[1].ActivityAt)
+	}
+	if payload.Items[1].QueuedAt != earlier {
+		t.Fatalf("expected runtime-owned queued_at to match attempt creation, got %#v", payload.Items[1].QueuedAt)
 	}
 	if payload.Items[1].FailureCode == nil || *payload.Items[1].FailureCode != "execution_setup_failed" {
 		t.Fatalf("expected failure code, got %#v", payload.Items[1].FailureCode)
@@ -3151,6 +3158,7 @@ func TestServerGetRunExecutionReturnsDurableProgressFields(t *testing.T) {
 		ProgressReasonCode *string `json:"progress_reason_code"`
 		ProgressAt         *string `json:"progress_at"`
 		LaunchStartedAt    *string `json:"launch_started_at"`
+		QueuedAt           string  `json:"queued_at"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode run execution progress detail payload: %v", err)
@@ -3169,6 +3177,9 @@ func TestServerGetRunExecutionReturnsDurableProgressFields(t *testing.T) {
 	}
 	if payload.LaunchStartedAt == nil || *payload.LaunchStartedAt != now {
 		t.Fatalf("expected launch_started_at %q, got %#v", now, payload.LaunchStartedAt)
+	}
+	if payload.QueuedAt != now {
+		t.Fatalf("expected queued_at %q, got %#v", now, payload.QueuedAt)
 	}
 }
 

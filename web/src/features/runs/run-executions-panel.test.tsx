@@ -14,6 +14,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		required_role: overrides.required_role ?? "builder-berserker",
 		execution_mode: overrides.execution_mode ?? "provider_backed",
 		status: overrides.status ?? "succeeded",
+		queued_at: overrides.queued_at ?? "2026-03-06T10:00:00.000Z",
 		activity_at: overrides.activity_at ?? "2026-03-06T10:01:00.000Z",
 		updated_at: overrides.updated_at ?? "2026-03-06T10:01:00.000Z",
 		provider_session_id: overrides.provider_session_id,
@@ -274,6 +275,7 @@ describe("run executions panel", () => {
 	it("shows both launch and start timestamps once execution becomes observable", async () => {
 		const user = userEvent.setup();
 		const detail = makeExecutionDetail({
+			queued_at: "2026-03-06T10:00:00.000Z",
 			attempt_id: "attempt-launch-start",
 			launch_started_at: "2026-03-06T10:00:30.000Z",
 			started_at: "2026-03-06T10:01:00.000Z",
@@ -293,6 +295,47 @@ describe("run executions panel", () => {
 		expect(screen.getByText((_, element) => element?.tagName === "TIME" && element.getAttribute("datetime") === "2026-03-06T10:00:30.000Z")).toBeInTheDocument();
 		expect(screen.getByText("Started")).toBeInTheDocument();
 		expect(screen.getByText((_, element) => element?.tagName === "TIME" && element.getAttribute("datetime") === "2026-03-06T10:01:00.000Z")).toBeInTheDocument();
+	});
+
+	it("shows queue duration and explains diagnostics labels with tooltips", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "running",
+			queued_at: "2026-03-06T10:00:00.000Z",
+			launch_started_at: "2026-03-06T10:00:30.000Z",
+			started_at: "2026-03-06T10:01:00.000Z",
+			last_heartbeat_at: "2026-03-06T10:01:30.000Z",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Diagnostics/i }));
+
+		expect(screen.getByText("Queued for")).toBeInTheDocument();
+		expect(screen.getByText("30s")).toBeInTheDocument();
+		expect(screen.getByText("Last heartbeat")).toBeInTheDocument();
+
+		await user.hover(screen.getByLabelText("Queued for info"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent("How long this step waited before it began running.");
+		await user.unhover(screen.getByLabelText("Queued for info"));
+
+		await user.hover(screen.getByLabelText("Launching info"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent("When Kingdom began handing this step off to the provider.");
+		await user.unhover(screen.getByLabelText("Launching info"));
+
+		await user.hover(screen.getByLabelText("Started info"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent("When Kingdom observed this step actually begin running.");
+		await user.unhover(screen.getByLabelText("Started info"));
+
+		await user.hover(screen.getByLabelText("Last heartbeat info"));
+		expect(screen.getByRole("tooltip")).toHaveTextContent("The last time Kingdom heard from the active session.");
 	});
 
 	it("shows durable progress messaging after a refetch without live signal state", async () => {

@@ -1081,6 +1081,7 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 		RequiredRole:  record.RequiredRole,
 		ExecutionMode: string(record.ExecutionMode),
 		Status:        runExecutionStatus(record),
+		QueuedAt:      mustParseRFC3339(record.QueuedAt),
 		ActivityAt:    mustParseRFC3339(record.ActivityAt),
 		UpdatedAt:     mustParseRFC3339(record.UpdatedAt),
 	}

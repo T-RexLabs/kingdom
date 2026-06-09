@@ -1783,6 +1783,8 @@ export interface components {
             /** Format: date-time */
             last_heartbeat_at?: string;
             /** Format: date-time */
+            queued_at: string;
+            /** Format: date-time */
             activity_at: string;
             progress_event_type?: string;
             progress_reason_code?: string;

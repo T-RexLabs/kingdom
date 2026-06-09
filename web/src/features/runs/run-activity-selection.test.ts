@@ -12,6 +12,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		required_role: "peasant-delegate",
 		execution_mode: "provider_backed",
 		status: "succeeded",
+		queued_at: "2026-03-01T10:08:00Z",
 		activity_at: "2026-03-01T10:09:00Z",
 		updated_at: "2026-03-01T10:09:00Z",
 		committed_at: "2026-03-01T10:09:00Z",

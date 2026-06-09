@@ -17,7 +17,6 @@ import {
   Activity,
   CheckCircle,
   XCircle,
-  Zap,
   Crown,
   Scroll,
   Timer,
@@ -248,19 +247,16 @@ export function DashboardPage() {
                   key={run.run_id}
                   to="/runs/$runId"
                   params={{ runId: run.run_id }}
-                  className="flex items-center justify-between rounded-md px-3 py-2 transition-colors hover:bg-surface-raised"
-                >
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
-                    <Zap className="mt-0.5 h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-wrap-anywhere text-sm font-medium">
-                        {run.decree_title || run.run_id}
-                      </p>
-                      <p className="mt-1 text-xs text-foreground-subtle">
-                        {run.workflow_id} · Created {formatTimestamp(run.created_at)} · Last Activity {formatTimestamp(run.last_activity_at)}
-                      </p>
-                    </div>
-                  </div>
+	                  className="flex items-center justify-between rounded-md px-3 py-2 transition-colors hover:bg-surface-raised"
+	                >
+	                  <div className="min-w-0 flex-1">
+	                    <p className="text-wrap-anywhere text-sm font-medium">
+	                      {run.decree_title || run.run_id}
+	                    </p>
+	                    <p className="mt-1 text-xs text-foreground-subtle">
+	                      Created {formatTimestamp(run.created_at)} · Last Activity {formatTimestamp(run.last_activity_at)}
+	                    </p>
+	                  </div>
                   <div className="ml-3 flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
                     {isActionRequired ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-gold/10 px-1.5 py-0.5 text-[10px] font-medium text-gold">

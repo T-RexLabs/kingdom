@@ -1,5 +1,5 @@
 import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/api/hooks";
-import { nodeLabel } from "@/lib/utils";
+import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
@@ -1046,16 +1046,7 @@ function compareMilestoneDisplaySequence(left: Milestone, right: Milestone): num
 }
 
 export function formatDuration(startIso: string, endIso: string): string | null {
-  const start = new Date(startIso).getTime();
-  const end = new Date(endIso).getTime();
-  const diffMs = end - start;
-  if (diffMs < 0 || Number.isNaN(diffMs)) return null;
-  if (diffMs < 1000) return "<1s";
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  return formatElapsedDuration(startIso, endIso);
 }
 
 function detectFanOutGroups(edges: RunGraphEdge[]): FanOutGroup[] {

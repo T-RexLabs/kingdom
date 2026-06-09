@@ -3703,7 +3703,7 @@ components:
     RunExecution:
       type: object
       additionalProperties: false
-      required: [attempt_id, node_run_id, node_id, attempt, agent_id, required_role, execution_mode, status, activity_at, updated_at]
+      required: [attempt_id, node_run_id, node_id, attempt, agent_id, required_role, execution_mode, status, queued_at, activity_at, updated_at]
       properties:
         attempt_id:
           type: string
@@ -3736,6 +3736,9 @@ components:
           type: string
           minLength: 1
         last_heartbeat_at:
+          type: string
+          format: date-time
+        queued_at:
           type: string
           format: date-time
         activity_at:

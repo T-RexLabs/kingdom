@@ -1095,17 +1095,26 @@ function reconcileSelectedExecution(
 	stepGroups: ActivityStepGroup[],
 	current: SelectedExecutionState | null,
 ): SelectedExecutionState | null {
-	if (stepGroups.length === 0) {
-		return null;
+	if (!current || current.runId !== runId) {
+		if (stepGroups.length === 0) {
+			return null;
+		}
+		return autoSelectedExecution(runId, stepGroups);
 	}
-	if (!current || current.runId !== runId || current.source === "auto") {
+	if (stepGroups.length === 0) {
+		return current.source === "manual" ? current : null;
+	}
+	if (current.source === "auto") {
 		return autoSelectedExecution(runId, stepGroups);
 	}
 	const currentGroup = stepGroups.find((item) => item.nodeId === current.nodeId);
 	if (!currentGroup) {
-		return autoSelectedExecution(runId, stepGroups);
+		return current;
 	}
 	if (currentGroup.attempts.some((item) => item.attempt_id === current.attemptId)) {
+		return current;
+	}
+	if (currentGroup.preferredAttemptId.trim() === "") {
 		return current;
 	}
 	return {

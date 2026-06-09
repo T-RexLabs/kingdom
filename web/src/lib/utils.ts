@@ -44,6 +44,19 @@ export function formatTimestampAt(iso: string, nowMs: number): string {
   });
 }
 
+export function formatElapsedDuration(startIso: string, endIso: string): string | null {
+	const start = new Date(startIso).getTime();
+	const end = new Date(endIso).getTime();
+	const diffMs = end - start;
+	if (diffMs < 0 || Number.isNaN(diffMs)) return null;
+	if (diffMs < 1000) return "<1s";
+	const seconds = Math.floor(diffMs / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainingSeconds = seconds % 60;
+	return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+}
+
 /**
  * Capitalize the first letter of a string.
  */

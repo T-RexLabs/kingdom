@@ -444,6 +444,7 @@ type runExecutionItem struct {
 	LogicalSessionID   *string    `json:"logical_session_id,omitempty"`
 	ProviderSessionID  *string    `json:"provider_session_id,omitempty"`
 	LastHeartbeatAt    *time.Time `json:"last_heartbeat_at,omitempty"`
+	QueuedAt           time.Time  `json:"queued_at"`
 	ActivityAt         time.Time  `json:"activity_at"`
 	ProgressEventType  *string    `json:"progress_event_type,omitempty"`
 	ProgressReasonCode *string    `json:"progress_reason_code,omitempty"`

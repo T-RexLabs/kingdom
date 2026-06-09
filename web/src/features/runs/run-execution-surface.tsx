@@ -58,11 +58,14 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents: boolean;
 }) {
 	const [timelineOpen, setTimelineOpen] = useState(false);
-	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId) ?? stepGroups[0] ?? null;
-	const currentExecution = currentStepGroup?.attempts.find((item) => item.attempt_id === selectedAttemptId)
-		?? currentStepGroup?.attempts.find((item) => item.attempt_id === currentStepGroup.preferredAttemptId)
-		?? currentStepGroup?.attempts[0]
-		?? null;
+	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId)
+		?? (selectedAttemptSource === "manual" ? null : stepGroups[0] ?? null);
+	const currentExecution = currentStepGroup
+		? currentStepGroup.attempts.find((item) => item.attempt_id === selectedAttemptId)
+			?? currentStepGroup.attempts.find((item) => item.attempt_id === currentStepGroup.preferredAttemptId)
+			?? currentStepGroup.attempts[0]
+			?? null
+		: null;
 	const primaryExecutionErrorVisible = showPrimaryExecutionError && typeof executionsErrorMessage === "string" && executionsErrorMessage.trim() !== "";
 	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(currentExecution, detail);
 	const summary = executionSummary(run, currentExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);

@@ -838,6 +838,98 @@ describe("run detail page", () => {
 		expect(updatedCall.selectedAttemptId).toBe("attempt-failed");
 	});
 
+	it("keeps a manual execution selection stable through transient refresh gaps and unrelated newer steps", async () => {
+		mockSearch.tab = "execution";
+		mockExecutions = [
+			{
+				attempt_id: "attempt-review",
+				node_run_id: "nr-review",
+				node_id: "execution_review_shieldmaiden",
+				attempt: 1,
+				agent_id: "agent-review",
+				required_role: "reviewer-shieldmaiden",
+				execution_mode: "provider_backed",
+				status: "running",
+				queued_at: "2026-03-06T10:00:00.000Z",
+				activity_at: "2026-03-06T10:02:00.000Z",
+				updated_at: "2026-03-06T10:02:00.000Z",
+			},
+			{
+				attempt_id: "attempt-peasant",
+				node_run_id: "nr-peasant",
+				node_id: "advisor_consultation_peasant",
+				attempt: 1,
+				agent_id: "agent-peasant",
+				required_role: "peasant-delegate",
+				execution_mode: "provider_backed",
+				status: "succeeded",
+				queued_at: "2026-03-06T10:00:00.000Z",
+				activity_at: "2026-03-06T10:01:00.000Z",
+				updated_at: "2026-03-06T10:01:00.000Z",
+			},
+		];
+
+		const { rerender } = render(<RunDetailPage />);
+		const firstCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			onSelectStep?: (nodeId: string) => void;
+		};
+
+		await act(async () => {
+			firstCall.onSelectStep?.("advisor_consultation_peasant");
+		});
+
+		mockExecutions = [];
+		await act(async () => {
+			rerender(<RunDetailPage />);
+		});
+
+		let updatedCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedNodeId?: string | null;
+			selectedAttemptId?: string | null;
+		};
+		expect(updatedCall.selectedNodeId).toBe("advisor_consultation_peasant");
+		expect(updatedCall.selectedAttemptId).toBe("attempt-peasant");
+
+		mockExecutions = [
+			{
+				attempt_id: "attempt-plan",
+				node_run_id: "nr-plan",
+				node_id: "plan_drafting",
+				attempt: 2,
+				agent_id: "agent-plan",
+				required_role: "council-member",
+				execution_mode: "provider_backed",
+				status: "running",
+				queued_at: "2026-03-06T10:03:00.000Z",
+				activity_at: "2026-03-06T10:05:00.000Z",
+				updated_at: "2026-03-06T10:05:00.000Z",
+			},
+			{
+				attempt_id: "attempt-peasant",
+				node_run_id: "nr-peasant",
+				node_id: "advisor_consultation_peasant",
+				attempt: 1,
+				agent_id: "agent-peasant",
+				required_role: "peasant-delegate",
+				execution_mode: "provider_backed",
+				status: "succeeded",
+				queued_at: "2026-03-06T10:00:00.000Z",
+				activity_at: "2026-03-06T10:01:00.000Z",
+				updated_at: "2026-03-06T10:01:00.000Z",
+			},
+		];
+		await act(async () => {
+			rerender(<RunDetailPage />);
+		});
+
+		updatedCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedNodeId?: string | null;
+			selectedAttemptId?: string | null;
+		};
+		expect(updatedCall.selectedNodeId).toBe("advisor_consultation_peasant");
+		expect(updatedCall.selectedAttemptId).toBe("attempt-peasant");
+	});
+
 	it("shows live-only execution activity immediately and defers detail fetch until executions catch up", async () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [];

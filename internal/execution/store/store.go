@@ -103,6 +103,7 @@ type RunExecutionRecord struct {
 	LogicalSessionID   sql.NullString
 	ProviderSessionID  sql.NullString
 	LastHeartbeatAt    sql.NullString
+	QueuedAt           string
 	ActivityAt         string
 	ProgressEventType  sql.NullString
 	ProgressReasonCode sql.NullString
@@ -419,6 +420,7 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		          WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
 		          ELSE NULL
 		        END AS last_heartbeat_at,
+		        ae.created_at AS queued_at,
 		        COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
 		        NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
 		        NULLIF(TRIM(ae.progress_reason_code), '') AS progress_reason_code,
@@ -463,6 +465,7 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.LogicalSessionID,
 			&rec.ProviderSessionID,
 			&rec.LastHeartbeatAt,
+			&rec.QueuedAt,
 			&rec.ActivityAt,
 			&rec.ProgressEventType,
 			&rec.ProgressReasonCode,
@@ -542,6 +545,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	         WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
 	         ELSE NULL
 	       END AS last_heartbeat_at,
+	       ae.created_at AS queued_at,
 	       COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
 	       NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
 	       NULLIF(TRIM(ae.progress_reason_code), '') AS progress_reason_code,
@@ -586,6 +590,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.LogicalSessionID,
 		&rec.ProviderSessionID,
 		&rec.LastHeartbeatAt,
+		&rec.QueuedAt,
 		&rec.ActivityAt,
 		&rec.ProgressEventType,
 		&rec.ProgressReasonCode,
