@@ -901,6 +901,131 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesAttemptMismatch(t *testi
 	}
 }
 
+func TestStoreAcceptProviderCompletionReceiptInvalidatesCompletionCapabilityMismatch(t *testing.T) {
+	t.Parallel()
+
+	setupOpenInvocation := func(t *testing.T, attemptID, invocationID, capability string) (*Store, context.Context) {
+		t.Helper()
+
+		db := openTestDB(t)
+		applyMigration(t, db, "0001_initial_schema.up.sql")
+		seedMinimumGraph(t, db)
+
+		s := New(db)
+		ctx := context.Background()
+		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+			AttemptID:     attemptID,
+			RunID:         "run_1",
+			NodeRunID:     "nr_1",
+			ExecutionMode: ExecutionModeProviderBacked,
+			SessionRef:    "session_run_1_decree_intake_1",
+			CreatedAt:     "2026-03-01T12:00:01Z",
+		}); err != nil {
+			t.Fatalf("enqueue attempt: %v", err)
+		}
+		if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+			ProviderInvocationID: invocationID,
+			AttemptID:            attemptID,
+			RunID:                "run_1",
+			NodeRunID:            "nr_1",
+			LogicalSessionID:     "session_run_1_decree_intake_1",
+			CompletionCapability: capability,
+			IssuedAt:             "2026-03-01T12:00:02Z",
+			CreatedAt:            "2026-03-01T12:00:02Z",
+		}); err != nil {
+			t.Fatalf("create provider invocation: %v", err)
+		}
+		if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+			ProviderInvocationID: invocationID,
+			AttemptID:            attemptID,
+			ProviderSessionID:    "ses_" + invocationID,
+			OpenedAt:             "2026-03-01T12:00:03Z",
+		}); err != nil {
+			t.Fatalf("mark provider invocation open: %v", err)
+		}
+
+		return s, ctx
+	}
+
+	t.Run("mismatch invalidates invocation", func(t *testing.T) {
+		s, ctx := setupOpenInvocation(t, "run_1:decree_intake:1", "invocation_capability_mismatch", "capability-expected")
+
+		_, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+			EvidenceID:            "receipt_evidence_capability_mismatch",
+			ProviderInvocationID:  "invocation_capability_mismatch",
+			AttemptID:             "run_1:decree_intake:1",
+			RunID:                 "run_1",
+			NodeRunID:             "nr_1",
+			ProtocolVersion:       "v1",
+			CompletionCapability:  "capability-wrong",
+			FinalText:             "Completed successfully.",
+			StructuredPayloadJSON: `{"verdict":"PASS"}`,
+			ReceivedAt:            "2026-03-01T12:00:04Z",
+		})
+		if err == nil {
+			t.Fatal("expected mismatched capability receipt to fail")
+		}
+		var settlementErr *ProviderSettlementError
+		if !errors.As(err, &settlementErr) {
+			t.Fatalf("expected provider settlement error, got %T: %v", err, err)
+		}
+		if settlementErr.Reason != "completion_capability_mismatch" {
+			t.Fatalf("expected completion_capability_mismatch reason, got %q", settlementErr.Reason)
+		}
+
+		invocation, found, err := s.GetProviderInvocation(ctx, "invocation_capability_mismatch")
+		if err != nil {
+			t.Fatalf("get provider invocation: %v", err)
+		}
+		if !found {
+			t.Fatal("expected provider invocation to exist")
+		}
+		if invocation.InvocationState != ProviderInvocationStateInvalidHandshake {
+			t.Fatalf("expected capability mismatch to invalidate the handshake, got %q", invocation.InvocationState)
+		}
+		if invocation.InvalidReason != "completion_capability_mismatch" {
+			t.Fatalf("expected capability mismatch invalid reason to persist, got %q", invocation.InvalidReason)
+		}
+
+		evidenceRows, err := s.ListProviderCompletionEvidence(ctx, "invocation_capability_mismatch")
+		if err != nil {
+			t.Fatalf("list provider completion evidence: %v", err)
+		}
+		if len(evidenceRows) != 0 {
+			t.Fatalf("expected no receipt evidence rows after capability mismatch, got %d", len(evidenceRows))
+		}
+	})
+
+	t.Run("matching capability still accepts", func(t *testing.T) {
+		s, ctx := setupOpenInvocation(t, "run_1:decree_intake:1", "invocation_capability_match", "capability-match")
+
+		accepted, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+			EvidenceID:            "receipt_evidence_capability_match",
+			ProviderInvocationID:  "invocation_capability_match",
+			AttemptID:             "run_1:decree_intake:1",
+			RunID:                 "run_1",
+			NodeRunID:             "nr_1",
+			ProtocolVersion:       "v1",
+			CompletionCapability:  "capability-match",
+			FinalText:             "Completed successfully.",
+			StructuredPayloadJSON: `{"verdict":"PASS"}`,
+			ReceivedAt:            "2026-03-01T12:00:04Z",
+		})
+		if err != nil {
+			t.Fatalf("accept provider completion receipt: %v", err)
+		}
+		if accepted.Idempotent {
+			t.Fatal("expected first matching completion receipt accept to be non-idempotent")
+		}
+		if accepted.Invocation.InvocationState != ProviderInvocationStateReceiptPersisted {
+			t.Fatalf("expected receipt_persisted invocation state, got %q", accepted.Invocation.InvocationState)
+		}
+		if accepted.Evidence.EvidenceID != "receipt_evidence_capability_match" {
+			t.Fatalf("expected accepted receipt evidence id to persist, got %q", accepted.Evidence.EvidenceID)
+		}
+	})
+}
+
 func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *testing.T) {
 	t.Parallel()
 
