@@ -31,7 +31,12 @@ func NewOpenCodeAgent(adapter *opencode.SessionAdapter, idGenerator func(prefix 
 
 func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
 	prompt := buildContinuePrompt(input)
-	metadata, err := a.execute(ctx, input, prompt, input.ForceNewSession, onChunk)
+	sanitizer := newStreamingQuestionSanitizer(onChunk)
+	streamChunk := onChunk
+	if sanitizer != nil {
+		streamChunk = sanitizer.Write
+	}
+	metadata, err := a.execute(ctx, input, prompt, input.ForceNewSession, streamChunk)
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -43,9 +48,9 @@ func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentConte
 	}, nil
 }
 
-func (a *OpenCodeAgent) GenerateTitle(ctx context.Context, input AgentContext) (GeneratedTitle, error) {
+func (a *OpenCodeAgent) GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
 	prompt := buildTitlePrompt(input)
-	metadata, err := a.execute(ctx, input, prompt, true, nil)
+	metadata, err := a.execute(ctx, input, prompt, true, onChunk)
 	if err != nil {
 		return GeneratedTitle{}, fmt.Errorf("generate title: %w", err)
 	}
@@ -291,7 +296,19 @@ const planningHistoryCharBudget = 60_000
 // own, the planner still sees the immediate context.
 const planningHistoryRecentTurns = 4
 
+const titleHistoryCharBudget = 4_000
+
+const titleHistoryRecentTurns = 6
+
 func formatConversationHistory(messages []state.PlanningMessage) string {
+	return formatBoundedConversationHistory(messages, planningHistoryCharBudget, planningHistoryRecentTurns)
+}
+
+func formatTitleConversationHistory(messages []state.PlanningMessage) string {
+	return formatBoundedConversationHistory(messages, titleHistoryCharBudget, titleHistoryRecentTurns)
+}
+
+func formatBoundedConversationHistory(messages []state.PlanningMessage, charBudget int, recentTurns int) string {
 	if len(messages) == 0 {
 		return "(No conversation yet.)"
 	}
@@ -309,7 +326,7 @@ func formatConversationHistory(messages []state.PlanningMessage) string {
 	}
 	cut := 0
 	for i := range messages {
-		if totals[i] <= planningHistoryCharBudget || (len(messages)-i) <= planningHistoryRecentTurns {
+		if totals[i] <= charBudget || (len(messages)-i) <= recentTurns {
 			cut = i
 			break
 		}
@@ -555,13 +572,8 @@ func normalizeGeneratedTitle(text string) (string, error) {
 func buildTitlePrompt(input AgentContext) string {
 	var sb strings.Builder
 	sb.WriteString("Summarize this planning session as a short title (3-6 words, max 50 characters).\n\n")
-	if strings.TrimSpace(input.ContextSummary) != "" {
-		sb.WriteString("## Project context\n")
-		sb.WriteString(input.ContextSummary)
-		sb.WriteString("\n\n")
-	}
 	sb.WriteString("## Conversation\n")
-	sb.WriteString(formatConversationHistory(input.Messages))
+	sb.WriteString(formatTitleConversationHistory(input.Messages))
 	sb.WriteString("\nRespond with ONLY the title on a single line. Nothing else — no explanation, no quotes, no follow-up text, no markdown, no structured_question block. When the final title is ready, call `kingdom_complete_attempt` exactly once to settle the planner operation.\n\n")
 	sb.WriteString("Examples of good titles:\n- Auth Middleware Rework\n- User Dashboard Analytics\n- Payment Flow Refactor\n")
 	return sb.String()

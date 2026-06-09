@@ -141,6 +141,17 @@ type PlanningOperationEvent struct {
 	CreatedAt   string
 }
 
+type PlanningOperationTelemetrySample struct {
+	OperationID           string
+	CreatedAt             string
+	StartedAt             *string
+	FinishedAt            *string
+	ProviderSessionOpenAt *string
+	FirstTextDeltaAt      *string
+	ReceiptPersistedAt    *string
+	FinalizingAt          *string
+}
+
 type CreatePlanningSessionRequest struct {
 	PlanningSessionID        string
 	Title                    string

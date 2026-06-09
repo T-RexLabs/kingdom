@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"kingdom/internal/state"
 )
@@ -19,18 +21,18 @@ func newOperationService(deps runtimeDeps, runner *operationRunner) *operationSe
 	return &operationService{deps: deps, runner: runner}
 }
 
-func (s *operationService) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (state.PlanningOperation, error) {
+func (s *operationService) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
 	session, ok, err := s.deps.store.GetSession(ctx, planningSessionID)
 	if err != nil {
-		return state.PlanningOperation{}, err
+		return CreateOperationResult{}, err
 	}
 	if !ok {
 		// Use the typed sentinel so handlePlanningError maps to a 404
 		// instead of falling through to the default 400.
-		return state.PlanningOperation{}, ErrSessionNotFound
+		return CreateOperationResult{}, ErrSessionNotFound
 	}
 	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
-		return state.PlanningOperation{}, ErrSessionInactive
+		return CreateOperationResult{}, ErrSessionInactive
 	}
 
 	now := s.deps.nowString()
@@ -41,7 +43,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	case state.PlanningOperationTypeReply:
 		trimmedReply := strings.TrimSpace(input.ReplyMarkdown)
 		if trimmedReply == "" {
-			return state.PlanningOperation{}, fmt.Errorf("planning reply content is required")
+			return CreateOperationResult{}, fmt.Errorf("planning reply content is required")
 		}
 		// Cross-check `truncate_from_turn` against the actual transcript so a
 		// client cannot submit `truncate_from_turn = 99` against a 3-turn
@@ -49,7 +51,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		// at the store layer is necessary but not sufficient.
 		messages, err := s.deps.store.ListMessages(ctx, planningSessionID)
 		if err != nil {
-			return state.PlanningOperation{}, err
+			return CreateOperationResult{}, err
 		}
 		maxTurn := 0
 		if len(messages) > 0 {
@@ -58,7 +60,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		turnIndex := 0
 		if input.TruncateFromTurn != nil {
 			if *input.TruncateFromTurn < 1 || *input.TruncateFromTurn > maxTurn {
-				return state.PlanningOperation{}, ErrTurnIndexOutOfRange
+				return CreateOperationResult{}, ErrTurnIndexOutOfRange
 			}
 			turnIndex = *input.TruncateFromTurn
 		} else {
@@ -85,7 +87,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		}
 	case state.PlanningOperationTypeRegenerate:
 		if input.TargetTurnIndex < 1 {
-			return state.PlanningOperation{}, ErrTurnIndexOutOfRange
+			return CreateOperationResult{}, ErrTurnIndexOutOfRange
 		}
 		// Reject regenerate against turns that don't exist in the canonical
 		// transcript — the partial unique index would catch some collisions
@@ -93,14 +95,14 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		// at that turn.
 		maxTurn, err := s.deps.store.GetMaxTurnIndex(ctx, planningSessionID)
 		if err != nil {
-			return state.PlanningOperation{}, err
+			return CreateOperationResult{}, err
 		}
 		if input.TargetTurnIndex > maxTurn {
-			return state.PlanningOperation{}, ErrTurnIndexOutOfRange
+			return CreateOperationResult{}, ErrTurnIndexOutOfRange
 		}
 		maxVariant, err := s.deps.store.GetMaxVariantIndex(ctx, planningSessionID, input.TargetTurnIndex, state.PlanningMessageRoleAssistant)
 		if err != nil {
-			return state.PlanningOperation{}, err
+			return CreateOperationResult{}, err
 		}
 		nextVariant := maxVariant + 1
 		request = operationRequest{
@@ -112,12 +114,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			ForceNewSession:    true,
 		}
 	default:
-		return state.PlanningOperation{}, fmt.Errorf("unsupported planner operation type: %q", operationType)
+		return CreateOperationResult{}, fmt.Errorf("unsupported planner operation type: %q", operationType)
 	}
 
 	requestJSON, err := json.Marshal(request)
 	if err != nil {
-		return state.PlanningOperation{}, fmt.Errorf("marshal planning operation request: %w", err)
+		return CreateOperationResult{}, fmt.Errorf("marshal planning operation request: %w", err)
 	}
 	operationReq := state.CreatePlanningOperationRequest{
 		OperationID:        s.deps.nextID("planning_operation"),
@@ -177,12 +179,26 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		// unique index covering an active interactive operation. Translate to
 		// the domain sentinel so the API can return a clean 409.
 		if errors.Is(err, state.ErrPlanningUniqueViolation) {
-			return state.PlanningOperation{}, ErrInteractiveOperationActive
+			return CreateOperationResult{}, ErrInteractiveOperationActive
 		}
-		return state.PlanningOperation{}, err
+		return CreateOperationResult{}, err
 	}
 	s.runner.Start(operation.OperationID)
-	return operation, nil
+	if operationType == state.PlanningOperationTypeReply {
+		autoCtx, cancel := detachedAutoTitleContext(ctx)
+		defer cancel()
+		if _, autoErr := maybeAutoGenerateTitleAfterSecondUserMessage(autoCtx, s.deps, s.runner, planningSessionID, titleTriggerSourceAutoSecondUserMessageCreate); autoErr != nil {
+			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageCreate, planningSessionID, autoErr)
+		}
+	}
+	updatedSession, ok, err := s.deps.store.GetSession(ctx, planningSessionID)
+	if err != nil {
+		return CreateOperationResult{}, err
+	}
+	if !ok {
+		return CreateOperationResult{}, ErrSessionNotFound
+	}
+	return CreateOperationResult{Operation: operation, Session: updatedSession}, nil
 }
 
 func (s *operationService) GetOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, map[string]any, error) {
@@ -216,6 +232,10 @@ func (s *operationService) RuntimeMetrics(ctx context.Context) (PlannerRuntimeMe
 	if err != nil {
 		return PlannerRuntimeMetrics{}, err
 	}
+	titleMetrics, err := s.generatedTitleRuntimeMetrics(ctx)
+	if err != nil {
+		return PlannerRuntimeMetrics{}, err
+	}
 
 	metrics := PlannerRuntimeMetrics{
 		QueuedOperations:       statusCounts[state.PlanningOperationStatusQueued],
@@ -225,6 +245,8 @@ func (s *operationService) RuntimeMetrics(ctx context.Context) (PlannerRuntimeMe
 		ProcessingSessions:     conversationCounts[state.PlanningSessionConversationStateProcessing],
 		OldestQueuedCreatedAt:  oldestQueued,
 		OldestRunningStartedAt: oldestRunning,
+		Dispatch:               s.deps.metrics.snapshotDispatchMetrics(),
+		GeneratedTitle:         titleMetrics,
 	}
 	if s.deps.metrics != nil {
 		metrics.ReplayCount = s.deps.metrics.streamReplayCount.Load()
@@ -233,4 +255,93 @@ func (s *operationService) RuntimeMetrics(ctx context.Context) (PlannerRuntimeMe
 		metrics.FailureCount = s.deps.metrics.failureCount.Load()
 	}
 	return metrics, nil
+}
+
+func (s *operationService) generatedTitleRuntimeMetrics(ctx context.Context) (*GeneratedTitleRuntimeMetrics, error) {
+	counts, err := s.deps.store.CountOperationsByTypeAndStatus(ctx, state.PlanningOperationTypeGenerateTitle)
+	if err != nil {
+		return nil, err
+	}
+	oldestQueued, err := s.deps.store.OldestQueuedOperationCreatedAtByType(ctx, state.PlanningOperationTypeGenerateTitle)
+	if err != nil {
+		return nil, err
+	}
+	oldestRunning, err := s.deps.store.OldestRunningOperationStartedAtByType(ctx, state.PlanningOperationTypeGenerateTitle)
+	if err != nil {
+		return nil, err
+	}
+	samples, err := s.deps.store.ListRecentCompletedOperationTelemetryByType(ctx, state.PlanningOperationTypeGenerateTitle, 20)
+	if err != nil {
+		return nil, err
+	}
+	return &GeneratedTitleRuntimeMetrics{
+		QueuedOperations:       counts[state.PlanningOperationStatusQueued],
+		RunningOperations:      counts[state.PlanningOperationStatusRunning],
+		FailedOperations:       counts[state.PlanningOperationStatusFailed],
+		OldestQueuedCreatedAt:  oldestQueued,
+		OldestRunningStartedAt: oldestRunning,
+		Latency:                buildGeneratedTitleLatencyMetrics(samples),
+	}, nil
+}
+
+type latencyAccumulator struct {
+	total int64
+	count int
+}
+
+func (a *latencyAccumulator) add(start string, end *string) {
+	if strings.TrimSpace(start) == "" || end == nil || strings.TrimSpace(*end) == "" {
+		return
+	}
+	startAt, err := time.Parse(time.RFC3339, strings.TrimSpace(start))
+	if err != nil {
+		return
+	}
+	endAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*end))
+	if err != nil || endAt.Before(startAt) {
+		return
+	}
+	a.total += endAt.Sub(startAt).Milliseconds()
+	a.count++
+}
+
+func (a latencyAccumulator) metric() PlannerLatencyMetric {
+	if a.count == 0 {
+		return PlannerLatencyMetric{}
+	}
+	return PlannerLatencyMetric{
+		Samples: a.count,
+		AvgMs:   a.total / int64(a.count),
+	}
+}
+
+func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetrySample) GeneratedTitleLatencyMetrics {
+	metrics := GeneratedTitleLatencyMetrics{RecentSampleSize: len(samples)}
+	var queue latencyAccumulator
+	var launch latencyAccumulator
+	var firstOutput latencyAccumulator
+	var outputToReceipt latencyAccumulator
+	var finalize latencyAccumulator
+	var total latencyAccumulator
+	for _, sample := range samples {
+		queue.add(sample.CreatedAt, sample.StartedAt)
+		if sample.StartedAt != nil {
+			launch.add(*sample.StartedAt, sample.ProviderSessionOpenAt)
+			firstOutput.add(*sample.StartedAt, sample.FirstTextDeltaAt)
+		}
+		if sample.FirstTextDeltaAt != nil {
+			outputToReceipt.add(*sample.FirstTextDeltaAt, sample.ReceiptPersistedAt)
+		}
+		if sample.FinalizingAt != nil {
+			finalize.add(*sample.FinalizingAt, sample.FinishedAt)
+		}
+		total.add(sample.CreatedAt, sample.FinishedAt)
+	}
+	metrics.Queue = queue.metric()
+	metrics.Launch = launch.metric()
+	metrics.FirstOutput = firstOutput.metric()
+	metrics.OutputToReceipt = outputToReceipt.metric()
+	metrics.Finalize = finalize.metric()
+	metrics.Total = total.metric()
+	return metrics
 }

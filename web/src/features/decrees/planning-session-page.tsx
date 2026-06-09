@@ -1,6 +1,5 @@
 import {
   newIdempotencyKey,
-  useGeneratePlanningSessionTitle,
   usePlanningOperation,
   usePlanningSession,
   usePlanningSessionDraft,
@@ -48,7 +47,6 @@ export function PlanningSessionPage() {
     reset: modelReset,
     error: modelError,
 	} = updateModelSelection;
-	const generateTitle = useGeneratePlanningSessionTitle(sessionId);
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
 	const messagePages = usePlannerMessagePages(sessionId);
@@ -61,10 +59,6 @@ export function PlanningSessionPage() {
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
   const titleOperationQuery = usePlanningOperation(session?.current_title_operation_id);
-  // Headless subscription: background title generation must keep streaming its
-  // terminal event into cache reconciliation even when the UI chooses not to
-  // render any dedicated loading state for it. Without this mounted listener,
-  // the generated title only appears after a full session refetch/refresh.
   usePlannerOperation(titleOperationQuery.data ?? null);
 
   // Title persistence is rooted in the explicit commit event (Enter,
@@ -136,9 +130,6 @@ export function PlanningSessionPage() {
   } = usePlanningSessionTitleController({
     sessionId,
     session,
-    userMessageCount,
-    generateTitle: () =>
-      generateTitle.mutateAsync({ key: newIdempotencyKey("generate-title") }),
   });
 
   // Single commit funnel for Enter / blur (when no error) / Retry. The

@@ -258,12 +258,12 @@ func (s *Service) CreateSession(ctx context.Context, title string, modelSelectio
 	return s.sessions.CreateSession(ctx, title, modelSelectionJSON)
 }
 
-func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (state.PlanningOperation, error) {
+func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
 	if s == nil || s.operations == nil {
-		return state.PlanningOperation{}, fmt.Errorf("planning service operation runtime is required")
+		return CreateOperationResult{}, fmt.Errorf("planning service operation runtime is required")
 	}
 	if err := s.admitWrite(); err != nil {
-		return state.PlanningOperation{}, err
+		return CreateOperationResult{}, err
 	}
 	defer s.releaseWrite()
 	return s.operations.CreateOperation(ctx, planningSessionID, input)

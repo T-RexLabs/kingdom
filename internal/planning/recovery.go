@@ -92,7 +92,7 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 				}
 				continue
 			}
-			r.runner.Start(operation.OperationID)
+			r.runner.StartRecovered(operation.OperationID)
 		}
 		if len(operations) < state.DefaultPlanningOperationListLimit {
 			return nil

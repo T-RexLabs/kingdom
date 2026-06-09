@@ -255,6 +255,27 @@ func (s *PlanningStore) CountOperationsByStatus(ctx context.Context) (map[Planni
 	return out, rows.Err()
 }
 
+func (s *PlanningStore) CountOperationsByTypeAndStatus(ctx context.Context, operationType PlanningOperationType) (map[PlanningOperationStatus]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM planning_operations WHERE type = ? GROUP BY status`,
+		operationType,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("count planning operations by type and status: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[PlanningOperationStatus]int)
+	for rows.Next() {
+		var status PlanningOperationStatus
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("scan planning operation type/status count: %w", err)
+		}
+		out[status] = count
+	}
+	return out, rows.Err()
+}
+
 // OldestQueuedOperationCreatedAt returns the created_at of the longest-queued
 // operation, used as a saturation indicator on the metrics endpoint.
 func (s *PlanningStore) OldestQueuedOperationCreatedAt(ctx context.Context) (string, error) {
@@ -291,6 +312,97 @@ func (s *PlanningStore) OldestRunningOperationStartedAt(ctx context.Context) (st
 		return "", fmt.Errorf("oldest running planning operation: %w", err)
 	}
 	return normalizedNullableString(nullableStringFromSQL(startedAt)), nil
+}
+
+func (s *PlanningStore) OldestQueuedOperationCreatedAtByType(ctx context.Context, operationType PlanningOperationType) (string, error) {
+	var createdAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT created_at FROM planning_operations
+		 WHERE type = ? AND status = ?
+		 ORDER BY created_at ASC
+		 LIMIT 1`, operationType, PlanningOperationStatusQueued,
+	).Scan(&createdAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("oldest queued planning operation by type: %w", err)
+	}
+	return normalizedNullableString(nullableStringFromSQL(createdAt)), nil
+}
+
+func (s *PlanningStore) OldestRunningOperationStartedAtByType(ctx context.Context, operationType PlanningOperationType) (string, error) {
+	var startedAt sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT started_at FROM planning_operations
+		 WHERE type = ? AND status = ?
+		 ORDER BY COALESCE(started_at, created_at) ASC
+		 LIMIT 1`, operationType, PlanningOperationStatusRunning,
+	).Scan(&startedAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("oldest running planning operation by type: %w", err)
+	}
+	return normalizedNullableString(nullableStringFromSQL(startedAt)), nil
+}
+
+func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.Context, operationType PlanningOperationType, limit int) ([]PlanningOperationTelemetrySample, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT po.operation_id,
+		        po.created_at,
+		        po.started_at,
+		        po.finished_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'provider_session_open') AS provider_session_open_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'text_delta') AS first_text_delta_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'receipt_persisted') AS receipt_persisted_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'finalizing') AS finalizing_at
+		 FROM planning_operations po
+		 WHERE po.type = ? AND po.finished_at IS NOT NULL
+		 ORDER BY po.finished_at DESC
+		 LIMIT ?`, operationType, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list recent completed planning operation telemetry by type: %w", err)
+	}
+	defer rows.Close()
+	items := make([]PlanningOperationTelemetrySample, 0, limit)
+	for rows.Next() {
+		var sample PlanningOperationTelemetrySample
+		var startedAt sql.NullString
+		var finishedAt sql.NullString
+		var providerSessionOpenAt sql.NullString
+		var firstTextDeltaAt sql.NullString
+		var receiptPersistedAt sql.NullString
+		var finalizingAt sql.NullString
+		if err := rows.Scan(
+			&sample.OperationID,
+			&sample.CreatedAt,
+			&startedAt,
+			&finishedAt,
+			&providerSessionOpenAt,
+			&firstTextDeltaAt,
+			&receiptPersistedAt,
+			&finalizingAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan planning operation telemetry sample: %w", err)
+		}
+		sample.StartedAt = nullableStringFromSQL(startedAt)
+		sample.FinishedAt = nullableStringFromSQL(finishedAt)
+		sample.ProviderSessionOpenAt = nullableStringFromSQL(providerSessionOpenAt)
+		sample.FirstTextDeltaAt = nullableStringFromSQL(firstTextDeltaAt)
+		sample.ReceiptPersistedAt = nullableStringFromSQL(receiptPersistedAt)
+		sample.FinalizingAt = nullableStringFromSQL(finalizingAt)
+		items = append(items, sample)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planning operation telemetry samples: %w", err)
+	}
+	return items, nil
 }
 
 func (s *PlanningStore) UpdateOperation(ctx context.Context, req UpdatePlanningOperationRequest) error {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,18 @@ import (
 // db.Close. This timeout is strictly less than the kingdomd shutdown
 // coordinator's 10s grace; SQLite writes here are normally sub-second.
 const terminalCancelWriteTimeout = 5 * time.Second
+
+const (
+	planningStartMaxClaimAttempts = 4
+	planningStartRetryBaseDelay   = 100 * time.Millisecond
+)
+
+type operationStartSource string
+
+const (
+	operationStartSourceForeground operationStartSource = "foreground"
+	operationStartSourceRecovery   operationStartSource = "recovery"
+)
 
 type operationRunner struct {
 	deps   runtimeDeps
@@ -94,6 +107,14 @@ func newOperationRunner(deps runtimeDeps, ctx context.Context) *operationRunner 
 }
 
 func (r *operationRunner) Start(operationID string) {
+	r.startWithSource(operationID, operationStartSourceForeground)
+}
+
+func (r *operationRunner) StartRecovered(operationID string) {
+	r.startWithSource(operationID, operationStartSourceRecovery)
+}
+
+func (r *operationRunner) startWithSource(operationID string, source operationStartSource) {
 	if r == nil || r.deps.store == nil {
 		return
 	}
@@ -113,6 +134,7 @@ func (r *operationRunner) Start(operationID string) {
 	if len(r.running) == 0 {
 		r.idle = make(chan struct{})
 	}
+	r.observeStartRequested(source)
 	r.running[operationID] = struct{}{}
 	r.wg.Add(1)
 	r.mu.Unlock()
@@ -120,8 +142,14 @@ func (r *operationRunner) Start(operationID string) {
 	go func() {
 		defer r.wg.Done()
 		defer r.finish(operationID)
-		if err := r.execute(r.ctx, operationID); err != nil && r.shouldRecordCancelDrainFailure(err) {
-			r.recordCancelDrainFailure(operationID, err)
+		if err := r.execute(r.ctx, operationID, source); err != nil {
+			if r.shouldRecordCancelDrainFailure(err) {
+				r.recordCancelDrainFailure(operationID, err)
+			}
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, state.ErrPlanningLeaseConflict) {
+				r.observeStartFailure(source, err)
+				log.Printf("planner start source=%s operation_id=%s err=%v", source, operationID, err)
+			}
 		}
 	}()
 }
@@ -204,8 +232,8 @@ func (r *operationRunner) finish(operationID string) {
 	}
 }
 
-func (r *operationRunner) execute(ctx context.Context, operationID string) error {
-	claimed, ok, err := r.claimOperation(ctx, operationID)
+func (r *operationRunner) execute(ctx context.Context, operationID string, source operationStartSource) error {
+	claimed, ok, err := r.claimOperationWithRetry(ctx, operationID, source)
 	if err != nil {
 		return err
 	}
@@ -217,7 +245,7 @@ func (r *operationRunner) execute(ctx context.Context, operationID string) error
 	defer cancelHeartbeat()
 	heartbeatErrCh := r.startHeartbeat(heartbeatCtx, claimed)
 
-	execErr := r.executeClaimed(ctx, claimed)
+	execErr := r.executeClaimed(ctx, claimed, source)
 	cancelHeartbeat()
 	if heartbeatErr := <-heartbeatErrCh; execErr == nil && heartbeatErr != nil {
 		execErr = heartbeatErr
@@ -225,7 +253,7 @@ func (r *operationRunner) execute(ctx context.Context, operationID string) error
 	return execErr
 }
 
-func (r *operationRunner) executeClaimed(ctx context.Context, operation state.PlanningOperation) error {
+func (r *operationRunner) executeClaimed(ctx context.Context, operation state.PlanningOperation, source operationStartSource) error {
 	startSeq, err := r.nextOperationEventSeq(ctx, operation.OperationID)
 	if err != nil {
 		return err
@@ -244,7 +272,15 @@ func (r *operationRunner) executeClaimed(ctx context.Context, operation state.Pl
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "started", map[string]any{"status": "running", "operation_type": operation.Type}); err != nil {
+	startedPayload := map[string]any{
+		"status":         "running",
+		"operation_type": operation.Type,
+		"start_source":   source,
+	}
+	if queueAgeMs := queueAgeMilliseconds(operation); queueAgeMs >= 0 {
+		startedPayload["queue_age_ms"] = queueAgeMs
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "started", startedPayload); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 
@@ -335,11 +371,16 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	streamCtx := decoupleCancellation(ctx)
+	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
-		_, _ = r.appendOperationEvent(streamCtx, operation.OperationID, cursor, "text_delta", map[string]any{"text": text})
+		textWriter.Write(text)
 	})
+	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
+		err = flushErr
+	}
 	// Shutdown short-circuit: if the service ctx was cancelled while the
 	// planner was running, finalize as cancelled regardless of how the
 	// planner returned. A cooperative planner returns ctx.Canceled here;
@@ -355,6 +396,17 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	}
 	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
+	}
+	var autoTitleSession *state.PlanningSession
+	if request.ForceNewSession {
+		autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
+		if err != nil {
+			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
+			autoTitleSession = nil
+		}
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
 	}
 	questionPayloadJSON, err := marshalQuestion(turn.Question)
 	if err != nil {
@@ -385,6 +437,9 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		CreatedAt:           assistantMessage.CreatedAt,
 	})
 	donePayload["variant_count"] = 1
+	if autoTitleSession != nil {
+		donePayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
+	}
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", donePayload)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -447,11 +502,16 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	streamCtx := decoupleCancellation(ctx)
+	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
-		_, _ = r.appendOperationEvent(streamCtx, operation.OperationID, cursor, "text_delta", map[string]any{"text": text})
+		textWriter.Write(text)
 	})
+	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
+		err = flushErr
+	}
 	if reason := r.shutdownReasonOrNil(); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
@@ -460,6 +520,9 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	}
 	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
 	}
 	regenQuestionPayloadJSON, err := marshalQuestion(turn.Question)
 	if err != nil {
@@ -539,11 +602,16 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	streamCtx := decoupleCancellation(ctx)
+	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, false)
 	agentContext.ProviderInvocation = providerInvocation
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
-		_, _ = r.appendOperationEvent(streamCtx, operation.OperationID, cursor, "text_delta", map[string]any{"text": text})
+		textWriter.Write(text)
 	})
+	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
+		err = flushErr
+	}
 	if reason := r.shutdownReasonOrNil(); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
@@ -552,6 +620,9 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	}
 	if err := requireReceiptEvidenceID(plan.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(plan.Metadata, err), plan.Metadata.FinalText)
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
 	}
 	// Drafts no longer carry a hand-crafted summary placeholder; the Decree
 	// Plan body itself is the canonical summary. We persist an empty JSON
@@ -603,19 +674,22 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	snapshot, _, err := r.deps.store.GetLatestContextSnapshot(ctx, session.PlanningSessionID)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	streamCtx := decoupleCancellation(ctx)
-	agentContext := r.deps.agentContext(session, snapshot, messages, false)
+	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
+	agentContext := r.deps.titleAgentContext(session, messages)
 	agentContext.ProviderInvocation = providerInvocation
-	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext)
+	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext, func(text string) {
+		textWriter.Write(text)
+	})
+	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
+		err = flushErr
+	}
 	if reason := r.shutdownReasonOrNil(); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
@@ -625,11 +699,13 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err := requireReceiptEvidenceID(generatedTitle.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(generatedTitle.Metadata, err), generatedTitle.Metadata.FinalText)
 	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
 	finalTitle := strings.TrimSpace(generatedTitle.Title)
 	if finalTitle == "" {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("generated title is empty"))
 	}
-	_, _ = r.appendOperationEvent(streamCtx, operation.OperationID, cursor, "text_delta", map[string]any{"text": finalTitle})
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", map[string]any{
 		"title":       finalTitle,
 		"title_state": "generated",
@@ -938,6 +1014,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	now := r.deps.nowString()
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))
+	observedOutputText = sanitizeObservedPlannerOutput(operation.Type, observedOutputText)
 	providerSettlement, err := terminalPlanningProviderSettlement(ctx, r.deps.store, operation, providerMetadata, now, cause.Error(), cause, false)
 	if err != nil {
 		return err
@@ -1141,6 +1218,41 @@ func (r *operationRunner) buildTerminalEvent(operationID string, cursor *sequenc
 	}, nil
 }
 
+func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context, operationID string, cursor *sequenceCursor, invocation *ProviderInvocationContext) {
+	if r == nil || invocation == nil || cursor == nil {
+		return
+	}
+	_, _ = r.appendOperationEvent(ctx, operationID, cursor, "provider_launching", map[string]any{"status": "launching"})
+	originalProviderSession := invocation.OnProviderSession
+	invocation.OnProviderSession = func(providerSessionID string) {
+		if originalProviderSession != nil {
+			originalProviderSession(providerSessionID)
+		}
+		_, _ = r.appendOperationEvent(ctx, operationID, cursor, "provider_session_open", map[string]any{
+			"provider_session_id": strings.TrimSpace(providerSessionID),
+		})
+	}
+	originalReceipt := invocation.OnCompletionReceipt
+	var receiptOnce sync.Once
+	invocation.OnCompletionReceipt = func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+		var (
+			acceptance CompletionReceiptAcceptance
+			err        error
+		)
+		if originalReceipt != nil {
+			acceptance, err = originalReceipt(receipt)
+		}
+		if err == nil && !acceptance.Rejected {
+			receiptOnce.Do(func() {
+				_, _ = r.appendOperationEvent(ctx, operationID, cursor, "receipt_persisted", map[string]any{
+					"evidence_id": strings.TrimSpace(acceptance.EvidenceID),
+				})
+			})
+		}
+		return acceptance, err
+	}
+}
+
 // buildTerminalEventFromCursor uses the supplied cursor when available
 // (preserving monotonicity with concurrent stream events) and falls back to
 // reading the next sequence from storage only when no cursor is in scope —
@@ -1164,6 +1276,122 @@ func (r *operationRunner) claimOperation(ctx context.Context, operationID string
 		return claimed, ok, err
 	}
 	return claimed, true, nil
+}
+
+func (r *operationRunner) claimOperationWithRetry(ctx context.Context, operationID string, source operationStartSource) (state.PlanningOperation, bool, error) {
+	var lastErr error
+	for attempt := 1; attempt <= planningStartMaxClaimAttempts; attempt++ {
+		claimed, ok, err := r.claimOperation(ctx, operationID)
+		if err == nil {
+			if ok {
+				r.observeClaimSuccess(source)
+			}
+			return claimed, ok, nil
+		}
+		lastErr = err
+		r.observeClaimFailure(source, err)
+		if ctx.Err() != nil || attempt == planningStartMaxClaimAttempts {
+			break
+		}
+		r.observeClaimRetry(source)
+		delay := time.Duration(attempt) * planningStartRetryBaseDelay
+		log.Printf("planner claim retry source=%s operation_id=%s attempt=%d delay_ms=%d err=%v", source, operationID, attempt, delay.Milliseconds(), err)
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return state.PlanningOperation{}, false, sleepErr
+		}
+	}
+	if lastErr != nil {
+		return state.PlanningOperation{}, false, lastErr
+	}
+	return state.PlanningOperation{}, false, nil
+}
+
+func (r *operationRunner) observeStartRequested(source operationStartSource) {
+	if r == nil || r.deps.metrics == nil {
+		return
+	}
+	switch source {
+	case operationStartSourceRecovery:
+		r.deps.metrics.recoveryStarts.Add(1)
+	default:
+		r.deps.metrics.foregroundStarts.Add(1)
+	}
+}
+
+func (r *operationRunner) observeClaimSuccess(source operationStartSource) {
+	if r == nil || r.deps.metrics == nil {
+		return
+	}
+	switch source {
+	case operationStartSourceRecovery:
+		r.deps.metrics.recoveryClaims.Add(1)
+	default:
+		r.deps.metrics.foregroundClaims.Add(1)
+	}
+}
+
+func (r *operationRunner) observeClaimFailure(source operationStartSource, err error) {
+	if r == nil || r.deps.metrics == nil || err == nil {
+		return
+	}
+	r.deps.metrics.claimFailures.Add(1)
+}
+
+func (r *operationRunner) observeClaimRetry(source operationStartSource) {
+	if r == nil || r.deps.metrics == nil {
+		return
+	}
+	r.deps.metrics.claimRetries.Add(1)
+}
+
+func (r *operationRunner) observeStartFailure(source operationStartSource, err error) {
+	if r == nil || r.deps.metrics == nil || err == nil {
+		return
+	}
+	r.deps.metrics.recordStartFailure(r.deps.nowString(), err)
+}
+
+func queueAgeMilliseconds(operation state.PlanningOperation) int64 {
+	if strings.TrimSpace(operation.CreatedAt) == "" || operation.StartedAt == nil || strings.TrimSpace(*operation.StartedAt) == "" {
+		return -1
+	}
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(operation.CreatedAt))
+	if err != nil {
+		return -1
+	}
+	startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*operation.StartedAt))
+	if err != nil || startedAt.Before(createdAt) {
+		return -1
+	}
+	return startedAt.Sub(createdAt).Milliseconds()
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, outputText string) string {
+	trimmed := strings.TrimSpace(outputText)
+	if trimmed == "" {
+		return ""
+	}
+	switch operationType {
+	case state.PlanningOperationTypeReply, state.PlanningOperationTypeRegenerate:
+		cleaned, _ := parseStructuredQuestion(trimmed)
+		return cleaned
+	default:
+		return trimmed
+	}
 }
 
 func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.PlanningOperation) <-chan error {
@@ -1225,6 +1453,19 @@ func structuredQuestionPayload(question *StructuredQuestion) map[string]any {
 		payload["options"] = options
 	}
 	return payload
+}
+
+func sessionPatchPayload(session state.PlanningSession) map[string]any {
+	fields := map[string]any{}
+	if session.CurrentTitleOperationID != nil {
+		if trimmed := strings.TrimSpace(*session.CurrentTitleOperationID); trimmed != "" {
+			fields["current_title_operation_id"] = trimmed
+		}
+	}
+	if trimmed := strings.TrimSpace(session.UpdatedAt); trimmed != "" {
+		fields["updated_at"] = trimmed
+	}
+	return fields
 }
 
 func answerPayloadMap(raw string) map[string]any {

@@ -121,6 +121,27 @@ func (s *PlanningStore) ListMessages(ctx context.Context, planningSessionID stri
 	return items, nil
 }
 
+func (s *PlanningStore) CountMessagesByRole(ctx context.Context, planningSessionID string, role PlanningMessageRole) (int, error) {
+	trimmedSessionID := strings.TrimSpace(planningSessionID)
+	if trimmedSessionID == "" {
+		return 0, fmt.Errorf("planning session id is required")
+	}
+	if !isValidPlanningMessageRole(role) {
+		return 0, fmt.Errorf("invalid planning message role: %q", role)
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1)
+		 FROM planning_messages
+		 WHERE planning_session_id = ? AND active = 1 AND role = ?`,
+		trimmedSessionID,
+		role,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count planning messages by role: %w", err)
+	}
+	return count, nil
+}
+
 func (s *PlanningStore) ListMessagesPage(ctx context.Context, planningSessionID string, limit int, before *int) (PlanningMessagePage, error) {
 	trimmedSessionID := strings.TrimSpace(planningSessionID)
 	if trimmedSessionID == "" {

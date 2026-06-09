@@ -154,6 +154,13 @@ func planningOperationDetailFromState(item state.PlanningOperation, request map[
 	return result
 }
 
+func createPlanningOperationResultFromState(result planning.CreateOperationResult, request map[string]any) gen.CreatePlanningOperationResult {
+	return gen.CreatePlanningOperationResult{
+		Operation: planningOperationDetailFromState(result.Operation, request),
+		Session:   planningSessionDetailFromState(result.Session),
+	}
+}
+
 func planningOperationRequestEnvelopeFromState(operationType state.PlanningOperationType, request map[string]any) gen.PlanningOperationRequestEnvelope {
 	envelope := gen.PlanningOperationRequestEnvelope{
 		Type: gen.PlanningOperationRequestEnvelopeType(operationType),

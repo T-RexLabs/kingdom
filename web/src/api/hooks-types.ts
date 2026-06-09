@@ -65,6 +65,7 @@ export type PlanningContextSnapshot = components["schemas"]["PlanningContextSnap
 export type PlanningAgentModelSelection = components["schemas"]["PlanningAgentModelSelection"];
 export type PlanningOperationSummary = components["schemas"]["PlanningOperationSummary"];
 export type PlanningOperationDetail = components["schemas"]["PlanningOperationDetail"];
+export type CreatePlanningOperationResult = components["schemas"]["CreatePlanningOperationResult"];
 export type PlanningOperationEvent = components["schemas"]["PlanningOperationEvent"];
 export type PlanningMessageVariantsResponse = components["schemas"]["PlanningMessageVariantsResponse"];
 export type HealthResponse = components["schemas"]["HealthResponse"];

@@ -11,7 +11,7 @@ import (
 type Agent interface {
 	ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error)
 	FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error)
-	GenerateTitle(ctx context.Context, input AgentContext) (GeneratedTitle, error)
+	GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error)
 }
 
 type CompletionReceipt struct {

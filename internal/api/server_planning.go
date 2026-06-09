@@ -367,17 +367,17 @@ func (s *Server) handleCreatePlanningSessionOperation(w http.ResponseWriter, r *
 		input.TargetTurnIndex = int(req.Regenerate.TargetTurnIndex)
 	}
 
-	operation, err := s.planningService.CreateOperation(r.Context(), planningSessionID, input)
+	result, err := s.planningService.CreateOperation(r.Context(), planningSessionID, input)
 	if err != nil {
 		handlePlanningError(w, err, "api.create_planning_session_operation")
 		return
 	}
-	_, _, request, err := s.planningService.GetOperation(r.Context(), operation.OperationID)
+	_, _, request, err := s.planningService.GetOperation(r.Context(), result.Operation.OperationID)
 	if err != nil {
 		s.writeInternalError(w, "fetch planning operation failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, planningOperationDetailFromState(operation, request))
+	writeJSON(w, http.StatusCreated, createPlanningOperationResultFromState(result, request))
 }
 
 func (s *Server) handleGetPlanningOperation(w http.ResponseWriter, r *http.Request) {

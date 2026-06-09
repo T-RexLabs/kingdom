@@ -368,6 +368,10 @@ export function patchPlannerTerminalCaches(
     if (messageId) {
       fields.current_question_message_id = messageId;
     }
+    const sessionPatch = sessionPatchFields(event.payload.session_patch);
+    if (sessionPatch) {
+      Object.assign(fields, sessionPatch);
+    }
   }
   if (event.event_type === "done" && operation.type === "formalize") {
     const draftId = typeof event.payload.planning_draft_id === "string" ? event.payload.planning_draft_id : undefined;
@@ -387,6 +391,21 @@ export function patchPlannerTerminalCaches(
     }
   }
   applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+}
+
+function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const fields: Partial<PlanningSessionDetail> = {};
+  if (typeof candidate.current_title_operation_id === "string" && candidate.current_title_operation_id.trim() !== "") {
+    fields.current_title_operation_id = candidate.current_title_operation_id.trim();
+  }
+  if (typeof candidate.updated_at === "string" && candidate.updated_at.trim() !== "") {
+    fields.updated_at = candidate.updated_at.trim();
+  }
+  return Object.keys(fields).length > 0 ? fields : null;
 }
 
 function patchPlanningCaches(

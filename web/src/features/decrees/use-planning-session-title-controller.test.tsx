@@ -29,75 +29,21 @@ describe("usePlanningSessionTitleController", () => {
     vi.useRealTimers();
   });
 
-  it("auto-generates once when the second user message appears", async () => {
-    const generateTitle = vi.fn(async () =>
-      buildSession({ title: "Mock Generated Title", title_state: "generated" })
-    );
-
-    const { rerender } = renderHook(
-      ({ sessionId, session, userMessageCount }) =>
-        usePlanningSessionTitleController({
-          sessionId,
-          session,
-          userMessageCount,
-          generateTitle,
-        }),
-      {
-        initialProps: {
-          sessionId: "planning-session-1",
-          session: buildSession({ title: "plan_1", title_state: "placeholder" }),
-          userMessageCount: 1,
-        },
-      }
-    );
-
-    expect(generateTitle).not.toHaveBeenCalled();
-
-    rerender({
-      sessionId: "planning-session-1",
-      session: buildSession({ title: "plan_1", title_state: "placeholder" }),
-      userMessageCount: 2,
-    });
-
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(1);
-    });
-
-    rerender({
-      sessionId: "planning-session-1",
-      session: buildSession({ title: "Mock Generated Title", title_state: "generated" }),
-      userMessageCount: 2,
-    });
-
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(1);
-    });
-  });
-
   it("reveals a generated title once and keeps it visible after completion", async () => {
     vi.useFakeTimers();
-    const generateTitle = vi.fn(async () =>
-      buildSession({ title: "Mock Generated Title", title_state: "generated" })
-    );
 
     const { result, rerender } = renderHook(
       ({ session }) =>
         usePlanningSessionTitleController({
           sessionId: "planning-session-1",
           session,
-          userMessageCount: 2,
-          generateTitle,
         }),
       {
         initialProps: {
-          session: buildSession({ title: "plan_1", title_state: "placeholder" }),
+          session: buildSession({ title: "Planner kickoff", title_state: "custom" }),
         },
       }
     );
-
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(1);
-    });
 
     rerender({
       session: buildSession({ title: "Mock Generated Title", title_state: "generated" }),
@@ -120,65 +66,42 @@ describe("usePlanningSessionTitleController", () => {
     expect(result.current.isRevealing).toBe(false);
   });
 
-  it("resets generation state when switching sessions", async () => {
-    const generateTitle = vi.fn(async () =>
-      buildSession({ title: "Mock Generated Title", title_state: "generated" })
-    );
-
+  it("resets local state when switching sessions", () => {
     const { rerender } = renderHook(
       ({ sessionId, session }) =>
         usePlanningSessionTitleController({
           sessionId,
           session,
-          userMessageCount: 2,
-          generateTitle,
         }),
       {
         initialProps: {
           sessionId: "planning-session-1",
-          session: buildSession({ planning_session_id: "planning-session-1", title: "plan_1", title_state: "placeholder" }),
+          session: buildSession({ planning_session_id: "planning-session-1", title: "Planner kickoff", title_state: "custom" }),
         },
       }
     );
 
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(1);
-    });
-
     rerender({
       sessionId: "planning-session-2",
-      session: buildSession({ planning_session_id: "planning-session-2", title: "plan_2", title_state: "placeholder" }),
-    });
-
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(2);
+      session: buildSession({ planning_session_id: "planning-session-2", title: "Planner follow-up", title_state: "custom" }),
     });
   });
 
   it("manual edit during reveal stops animation without replaying it", async () => {
     vi.useFakeTimers();
-    const generateTitle = vi.fn(async () =>
-      buildSession({ title: "Mock Generated Title", title_state: "generated" })
-    );
 
     const { result, rerender } = renderHook(
       ({ session }) =>
         usePlanningSessionTitleController({
           sessionId: "planning-session-1",
           session,
-          userMessageCount: 2,
-          generateTitle,
         }),
       {
         initialProps: {
-          session: buildSession({ title: "plan_1", title_state: "placeholder" }),
+          session: buildSession({ title: "Planner kickoff", title_state: "custom" }),
         },
       }
     );
-
-    await vi.waitFor(() => {
-      expect(generateTitle).toHaveBeenCalledTimes(1);
-    });
 
     rerender({
       session: buildSession({ title: "Mock Generated Title", title_state: "generated" }),
@@ -219,7 +142,6 @@ describe("usePlanningSessionTitleController", () => {
     // landed yet). The atomic abandon_edit reducer action means there
     // is no intermediate state where the draft still carries the
     // abandoned value — and the page-owned commit funnel never sees it.
-    const generateTitle = vi.fn(async () => buildSession());
     // Build the session ONCE outside the renderHook factory so the
     // effect-deps stay stable across re-renders. Creating a fresh
     // session inside the factory would change the reference every
@@ -230,8 +152,6 @@ describe("usePlanningSessionTitleController", () => {
       usePlanningSessionTitleController({
         sessionId: "planning-session-1",
         session,
-        userMessageCount: 1,
-        generateTitle,
       }),
     );
 
@@ -255,8 +175,5 @@ describe("usePlanningSessionTitleController", () => {
     // "garbage" but isEditing was already false.
     expect(result.current.isEditing).toBe(false);
     expect(result.current.titleInput).toBe("Planner kickoff");
-    // generateTitle is unrelated to abandon — assert as a witness that
-    // abandonment did not trigger any side effects via callbacks.
-    expect(generateTitle).not.toHaveBeenCalled();
   });
 });

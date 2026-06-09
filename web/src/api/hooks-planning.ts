@@ -12,6 +12,7 @@ import type {
   PlanningMessage,
   PlanningMessageVariantsResponse,
   PlanningMessagesPage,
+  CreatePlanningOperationResult,
   PlanningOperationDetail,
   PlanningSessionDetail,
   PlanningSessionListResponse,
@@ -185,13 +186,15 @@ export function useCreatePlanningOperation(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ body, key }: MutationWithBody<CreatePlanningOperationRequest>) =>
-      apiFetch<PlanningOperationDetail>(`/planning-sessions/${sessionId}/operations`, {
+      apiFetch<CreatePlanningOperationResult>(`/planning-sessions/${sessionId}/operations`, {
         method: "POST",
         headers: { "Idempotency-Key": key },
         body: JSON.stringify(body),
       }),
-    onSuccess: (operation) => {
-      qc.setQueryData<PlanningOperationDetail>(plannerKeys.operation(operation.operation_id), operation);
+    onSuccess: (result) => {
+      qc.setQueryData<PlanningOperationDetail>(plannerKeys.operation(result.operation.operation_id), result.operation);
+      qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail(sessionId), result.session);
+      applyPlanningSessionFields(qc, sessionId, result.session);
     },
   });
 }
