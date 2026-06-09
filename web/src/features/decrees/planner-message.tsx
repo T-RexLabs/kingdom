@@ -52,7 +52,6 @@ export function PlannerMessageCard({
   const reveal = useTextReveal(isAssistant ? renderedContent : "", isAssistantStreaming);
   const displayText = isAssistant ? reveal.displayText : renderedContent;
   const isStreamActive = isAssistant ? reveal.isStreamActive : false;
-  const hasCaughtUpToTarget = isAssistant ? reveal.hasCaughtUpToTarget : true;
 
   const hasVariants = isAssistant && variantCount != null && variantCount > 1 && currentVariantIndex != null && sessionId && onActivateVariant;
   const showRegenerate = isAssistant && !isFirstAssistant && !(isProcessing ?? false) && onRegenerate;
@@ -95,11 +94,12 @@ export function PlannerMessageCard({
                   )
                 ) : null}
                 {isAssistant && isStreaming && !displayText.trim() ? (
-                  <span className="inline-flex items-center text-gold/70">
+                  <span className="inline-flex items-center gap-2 text-gold/70">
                     <Feather className="h-4 w-4 animate-quill-write" />
+                    <span className="text-xs font-medium">Planner is thinking...</span>
                   </span>
                 ) : null}
-                {hasCaughtUpToTarget ? children : null}
+                {children}
               </>
             )}
           </div>

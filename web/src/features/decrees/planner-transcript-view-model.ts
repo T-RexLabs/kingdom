@@ -48,7 +48,7 @@ export function buildPlannerTranscriptViewModel({
   operation,
   parsedReply,
 }: BuildPlannerTranscriptInput): TranscriptBuildResult {
-  const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages);
+  const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages, currentQuestionMessageId, operation);
   // Resolve `parsedReply` once: prefer the caller's memoised value, fall back
   // to a single parse here if the caller did not supply one. The four call
   // sites below all reuse this resolution rather than re-running the parser.
@@ -186,7 +186,11 @@ function resolveActiveQuestion(
   return messages.find((message) => message.planning_message_id === activeQuestionId)?.question_payload;
 }
 
-function persistedAnswersByQuestionId(messages: PlanningMessage[]) {
+function persistedAnswersByQuestionId(
+  messages: PlanningMessage[],
+  currentQuestionMessageId: string | undefined,
+  operation: PlannerOperationState | null | undefined,
+) {
   const answers: Record<string, AnswerPayload> = {};
 
   for (let index = 0; index < messages.length; index += 1) {
@@ -199,6 +203,15 @@ function persistedAnswersByQuestionId(messages: PlanningMessage[]) {
       continue;
     }
     answers[message.planning_message_id] = next.answer_payload ?? { text: next.content_markdown };
+  }
+
+  if (
+    currentQuestionMessageId &&
+    operation?.kind === "reply" &&
+    !isPlannerOperationTerminal(operation.status) &&
+    operation.pendingReply?.answer
+  ) {
+    answers[currentQuestionMessageId] = operation.pendingReply.answer;
   }
 
   return answers;

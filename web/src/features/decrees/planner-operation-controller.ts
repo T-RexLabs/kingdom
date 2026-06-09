@@ -83,7 +83,7 @@ export function buildPlannerOperationState(operation: PlanningOperationDetail): 
             answer: parseAnswerPayload(operation.request.answer_payload),
           }
         : null,
-    replyText: kind === "reply" || kind === "regenerate" ? observedOutputText : "",
+    replyText: kind === "formalize" ? "" : observedOutputText,
     formalizeText: kind === "formalize" ? observedOutputText : "",
     draftId: typeof operation.result_ref === "string" ? operation.result_ref : undefined,
     error: operation.error ?? null,
@@ -102,6 +102,11 @@ export function reducePlannerOperationEvent(
 
   switch (event.event_type) {
     case "user_message":
+    case "started":
+    case "provider_launching":
+    case "provider_session_open":
+    case "receipt_persisted":
+    case "finalizing":
       return next;
     case "text_delta": {
       const text = readString(event.payload.text);

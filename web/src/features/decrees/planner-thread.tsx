@@ -5,7 +5,10 @@ import { PlannerComposer } from "./planner-composer";
 import { usePlannerMessagePages } from "./use-planner-message-pages";
 import { buildPlannerTranscriptViewModel } from "./planner-transcript-view-model";
 import { parseStreamingQuestion } from "./parse-streaming-question";
-import type { AnswerPayload, PlannerOperationState } from "./planner-operation-controller";
+import {
+  type AnswerPayload,
+  type PlannerOperationState,
+} from "./planner-operation-controller";
 import type { PlannerConnection } from "./use-planner-operation";
 
 function buildAnswerPayloadForOption(option: { label: string; value: string }): AnswerPayload {

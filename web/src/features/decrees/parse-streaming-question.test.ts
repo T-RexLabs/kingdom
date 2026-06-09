@@ -15,6 +15,20 @@ describe("parseStreamingQuestion", () => {
     expect(result.question).toBeNull();
   });
 
+  it("hides a trailing partial structured_question opener before the full tag arrives", () => {
+    const raw = "Context here.\n\n```str";
+    const result = parseStreamingQuestion(raw);
+    expect(result.content).toBe("Context here.");
+    expect(result.question).toBeNull();
+  });
+
+  it("never leaks partial structured-question JSON while the block is still streaming", () => {
+    const raw = "Context here.\n\n```structured_question\n{\"prompt\":\"Cho";
+    const result = parseStreamingQuestion(raw);
+    expect(result.content).toBe("Context here.");
+    expect(result.question).toBeNull();
+  });
+
   it("parses complete block and strips trailing prompt from prose", () => {
     const raw = [
       "Got it — cursor-based is more scalable.",

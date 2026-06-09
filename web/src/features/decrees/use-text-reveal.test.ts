@@ -147,6 +147,10 @@ describe("useTextReveal", () => {
     // Target SHRINKS — simulates parseStreamingQuestion stripping a partial block
     rerender({ text: "Some prose text", streaming: true });
 
+    // The public return value must clamp immediately so no stale structured
+    // block text can flash before the next animation frame.
+    expect(result.current.displayText).toBe("Some prose text");
+
     // Flush — the hook should clamp to the new shorter target, not get stuck
     act(() => advanceAndFlush(THROTTLE_MS + 1));
 

@@ -144,4 +144,18 @@ describe("PlannerOperationController — cancelled handling", () => {
     expect(next.status).toBe("error");
     expect(next.error).toBe("boom");
   });
+
+	it("reduces lifecycle progress events into visible planner stages", () => {
+		const launching = reducePlannerOperationEvent(
+			buildBaseState({ status: "pending", replyText: "" }),
+			buildEvent({ event_type: "provider_launching", payload: {}, seq: 6 }),
+		);
+		expect(launching.status).toBe("streaming");
+
+		const finalizing = reducePlannerOperationEvent(
+			launching,
+			buildEvent({ event_type: "receipt_persisted", payload: { evidence_id: "receipt_1" }, seq: 7 }),
+		);
+		expect(finalizing.status).toBe("streaming");
+	});
 });
