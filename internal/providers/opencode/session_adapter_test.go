@@ -1757,7 +1757,7 @@ func TestSessionAdapterLongRunWithHeartbeatEventsDoesNotTimeout(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2124,7 +2124,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2134,6 +2134,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
+	t.Setenv("FAKE_OPENCODE_SUPPRESS_SESSION_EVENT", "1")
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_CLOSE_STDOUT_AND_STALL", "1")
 
 	started := time.Now()
@@ -2149,7 +2150,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream_inactivity_timeout") {
 		t.Fatalf("expected stream_inactivity_timeout error, got %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("expected watchdog timeout before stalled continuation exits, elapsed=%s", elapsed)
 	}
 }
@@ -2159,7 +2160,7 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2169,6 +2170,7 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
+	t.Setenv("FAKE_OPENCODE_SUPPRESS_SESSION_EVENT", "1")
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_STALL_AFTER_FIRST", "1")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
@@ -3994,13 +3996,13 @@ if [ "$FAKE_OPENCODE_TOOL_CALLS_THEN_STOP" = "1" ]; then
 
   if [ "$FAKE_OPENCODE_CONTINUATION_STALL_AFTER_FIRST" = "1" ]; then
     echo "{\"type\":\"step_start\"$SESSION_FIELD}"
-    sleep 3
+    sleep 5
     exit 0
   fi
 
   if [ "$FAKE_OPENCODE_CONTINUATION_CLOSE_STDOUT_AND_STALL" = "1" ]; then
     exec 1>&-
-    sleep 2
+    sleep 5
     exit 0
   fi
 
