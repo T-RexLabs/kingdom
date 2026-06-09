@@ -147,9 +147,38 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		t.Fatalf("read managed completion tool: %v", err)
 	}
 	content := string(raw)
-	for _, token := range []string{"completion_capability", "KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", "Request canonical Kingdom completion settlement"} {
+	for _, token := range []string{
+		"Finalize the current Kingdom attempt for the active invocation",
+		"Provide the full final canonical response in `final_text`.",
+		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION",
+		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID",
+		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID",
+		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY",
+		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR",
+		"final_text: tool.schema.string().describe(\"The full final canonical response text for this attempt.\")",
+		"protocol_version: protocolVersion",
+		"attempt_id: attemptID",
+		"invocation_id: invocationID",
+		"completion_capability: completionCapability",
+		"final_text: args.final_text",
+	} {
 		if !strings.Contains(content, token) {
 			t.Fatalf("expected managed completion tool to include %q", token)
+		}
+	}
+	for _, token := range []string{
+		"attempt_id`, `invocation_id`, and `completion_capability` exactly as provided",
+		"protocol_version: tool.schema.string()",
+		"attempt_id: tool.schema.string()",
+		"invocation_id: tool.schema.string()",
+		"completion_capability: tool.schema.string()",
+		"protocol_version: args.protocol_version",
+		"attempt_id: args.attempt_id",
+		"invocation_id: args.invocation_id",
+		"completion_capability: args.completion_capability",
+	} {
+		if strings.Contains(content, token) {
+			t.Fatalf("expected managed completion tool to ignore caller-supplied handshake field %q", token)
 		}
 	}
 }

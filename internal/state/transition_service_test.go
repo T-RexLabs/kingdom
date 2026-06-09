@@ -968,6 +968,55 @@ func TestTransitionServiceReassignStaleAttemptProjectsReplacementParticipant(t *
 	}
 }
 
+func TestTransitionServiceReassignStaleAttemptClaimsReplacementAgentAfterStatusDrift(t *testing.T) {
+	t.Parallel()
+
+	for _, replacementStatus := range []string{"busy", "blocked"} {
+		t.Run(replacementStatus, func(t *testing.T) {
+			t.Parallel()
+
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'King Backup', %q, NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`, replacementStatus))
+
+			svc := NewTransitionService(db, nil)
+			queued, err := svc.ReassignStaleAttemptForRetry(context.Background(), ReassignStaleAttemptRequest{
+				Attempt: staleAttempt{
+					NodeRunID:     "nr_1",
+					RunID:         "run_1",
+					NodeID:        "decree_intake",
+					Attempt:       1,
+					Wave:          1,
+					RequiredRole:  "king",
+					AgentID:       "agent_king",
+					CurrentStatus: "running",
+					StartedAt:     "2026-03-01T12:00:00Z",
+				},
+				ReplacementAgentID: "agent_king_backup",
+				HasReplacement:     true,
+				OccurredAt:         "2026-03-01T12:10:00Z",
+				CurrentAttemptID:   "att_1",
+				CurrentEventSeq:    2,
+			})
+			if err != nil {
+				t.Fatalf("reassign stale attempt with drifted replacement status: %v", err)
+			}
+			if queued.AgentID != "agent_king_backup" {
+				t.Fatalf("expected queued replacement agent, got %#v", queued)
+			}
+
+			var agentStatus string
+			if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king_backup'`).Scan(&agentStatus); err != nil {
+				t.Fatalf("query replacement agent status: %v", err)
+			}
+			if agentStatus != "busy" {
+				t.Fatalf("expected replacement agent to be claimed busy after status drift repair, got %q", agentStatus)
+			}
+		})
+	}
+}
+
 func TestTransitionServiceRollsBackOnEventWriteFailure(t *testing.T) {
 	t.Parallel()
 
@@ -1710,6 +1759,473 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 				t.Fatalf("expected no provider cancel rows for durably terminal attempt, got %d", cancelCount)
 			}
 		})
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchKeepsSharedAgentBusy(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_2', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeAdopted {
+		t.Fatal("expected older attempt adoption to succeed")
+	}
+
+	var retryStatus string
+	var retrySupersededAt sql.NullString
+	if err := db.QueryRow(`SELECT node_status, superseded_at FROM node_runs WHERE node_run_id = 'nr_retry_2'`).Scan(&retryStatus, &retrySupersededAt); err != nil {
+		t.Fatalf("query retry node state: %v", err)
+	}
+	if retryStatus != "cancelled" {
+		t.Fatalf("expected retry node to be cancelled, got %q", retryStatus)
+	}
+	if !retrySupersededAt.Valid || strings.TrimSpace(retrySupersededAt.String) == "" {
+		t.Fatal("expected retry node to be marked superseded")
+	}
+
+	var agentStatus string
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king'`).Scan(&agentStatus); err != nil {
+		t.Fatalf("query agent status after supersession: %v", err)
+	}
+	if agentStatus != "busy" {
+		t.Fatalf("expected shared agent to remain busy while older live attempt still exists, got %q", agentStatus)
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCancelForStartingRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_2', 'run_1', 'decree_intake', 2, 2, 'starting', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_2', 'starting', 'provider_backed', '', NULL, 0, 'session_retry_provider_2', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeAdopted {
+		t.Fatal("expected provider-backed starting retry to be adopted by older success")
+	}
+
+	var attemptState string
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&attemptState); err != nil {
+		t.Fatalf("query superseded attempt execution state: %v", err)
+	}
+	if attemptState != "committed_cancelled" {
+		t.Fatalf("expected superseded attempt execution to become committed_cancelled, got %q", attemptState)
+	}
+
+	var nodeStatus string
+	var supersededAt sql.NullString
+	if err := db.QueryRow(`SELECT node_status, superseded_at FROM node_runs WHERE node_run_id = 'nr_retry_provider_2'`).Scan(&nodeStatus, &supersededAt); err != nil {
+		t.Fatalf("query superseded starting retry node state: %v", err)
+	}
+	if nodeStatus != "blocked" {
+		t.Fatalf("expected launched superseded retry to remain blocked until cancel dispatch, got %q", nodeStatus)
+	}
+	if !supersededAt.Valid || strings.TrimSpace(supersededAt.String) == "" {
+		t.Fatal("expected launched superseded retry to be marked superseded")
+	}
+
+	var cancelReasonCode string
+	var cancelReasonText string
+	var cancelStatus string
+	if err := db.QueryRow(`SELECT reason_code, reason_text, status FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelReasonCode, &cancelReasonText, &cancelStatus); err != nil {
+		t.Fatalf("query superseded attempt cancel outbox: %v", err)
+	}
+	if cancelReasonCode != "superseded_after_launch_handoff" {
+		t.Fatalf("expected superseded cancel reason_code, got %q", cancelReasonCode)
+	}
+	if cancelReasonText != "retry attempt superseded after launch handoff by an earlier successful attempt" {
+		t.Fatalf("expected superseded cancel reason_text, got %q", cancelReasonText)
+	}
+	if cancelStatus != "pending" {
+		t.Fatalf("expected superseded cancel outbox to remain pending, got %q", cancelStatus)
+	}
+
+	var leaseStatus string
+	if err := db.QueryRow(`SELECT status FROM session_leases WHERE session_id = 'session_retry_provider_2'`).Scan(&leaseStatus); err != nil {
+		t.Fatalf("query superseded session lease status: %v", err)
+	}
+	if leaseStatus != "closed" {
+		t.Fatalf("expected superseded session lease to close, got %q", leaseStatus)
+	}
+
+	var mailboxCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_1'`).Scan(&mailboxCount); err != nil {
+		t.Fatalf("count mailbox messages after superseded starting retry: %v", err)
+	}
+	if mailboxCount != 0 {
+		t.Fatalf("expected superseded retry transition to stay out of mailbox projections, got %d rows", mailboxCount)
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsProviderCancelForQueuedRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_queued_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_queued_2', 'queued', 'provider_backed', '', NULL, 0, 'session_retry_provider_queued_2', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_queued_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeAdopted {
+		t.Fatal("expected queued provider retry to be superseded before launch")
+	}
+
+	var cancelCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelCount); err != nil {
+		t.Fatalf("count queued retry cancel outbox rows: %v", err)
+	}
+	if cancelCount != 0 {
+		t.Fatalf("expected no provider cancel rows for queued retry without launch handoff, got %d", cancelCount)
+	}
+
+	var leaseStatus string
+	if err := db.QueryRow(`SELECT status FROM session_leases WHERE session_id = 'session_retry_provider_queued_2'`).Scan(&leaseStatus); err != nil {
+		t.Fatalf("query superseded queued retry session lease status: %v", err)
+	}
+	if leaseStatus != "closed" {
+		t.Fatalf("expected queued retry session lease to close, got %q", leaseStatus)
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchTreatsQueuedRetryWithActiveInvocationAsLaunched(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_invocation_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_invocation_2', 'queued', 'provider_backed', '', NULL, 0, 'session_retry_provider_invocation_2', 'provider_session_retry_provider_invocation_2', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_invocation_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch with active invocation: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeAdopted {
+		t.Fatal("expected queued retry with active invocation to be adopted as launched")
+	}
+
+	var nodeStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_retry_provider_invocation_2'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query queued retry with active invocation state: %v", err)
+	}
+	if nodeStatus != "blocked" {
+		t.Fatalf("expected queued retry with active invocation to remain blocked until cancel dispatch, got %q", nodeStatus)
+	}
+
+	var cancelReasonCode string
+	if err := db.QueryRow(`SELECT reason_code FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelReasonCode); err != nil {
+		t.Fatalf("query cancel outbox for queued retry with active invocation: %v", err)
+	}
+	if cancelReasonCode != "superseded_after_launch_handoff" {
+		t.Fatalf("expected queued retry with active invocation to cancel after launch handoff, got %q", cancelReasonCode)
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsTerminalNoopRetryAndAdoptsLaterQueuedRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_pending_3', 'run_1', 'decree_intake', 3, 3, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, '`+now+`', '`+now+`', 'superseded_before_launch', 'already cancelled', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:3', 'run_1', 'nr_retry_pending_3', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch with terminal noop retry: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeAdopted {
+		t.Fatal("expected later queued retry to be superseded even when an intermediate terminal retry exists")
+	}
+
+	var nodeStatus string
+	var supersededAt sql.NullString
+	if err := db.QueryRow(`SELECT node_status, superseded_at FROM node_runs WHERE node_run_id = 'nr_retry_pending_3'`).Scan(&nodeStatus, &supersededAt); err != nil {
+		t.Fatalf("query later queued retry after terminal noop retry: %v", err)
+	}
+	if nodeStatus != "cancelled" {
+		t.Fatalf("expected later queued retry to be cancelled, got %q", nodeStatus)
+	}
+	if !supersededAt.Valid || strings.TrimSpace(supersededAt.String) == "" {
+		t.Fatal("expected later queued retry to be marked superseded")
+	}
+}
+
+func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchBlocksOlderAdoptionWhenNewerTerminalRetryRemainsCanonical(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_canonical', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_canonical', 'committed_cancelled', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry remained canonical')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
+		RunID:       "run_1",
+		NodeID:      "decree_intake",
+		KeepAttempt: 1,
+		OccurredAt:  now,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		t.Fatalf("supersede queued attempts before launch with canonical terminal retry: %v", err)
+	}
+	if result.Outcome != SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt {
+		t.Fatalf("expected canonical terminal retry to block adoption, got %q", result.Outcome)
+	}
+
+	var supersededAt sql.NullString
+	if err := db.QueryRow(`SELECT superseded_at FROM node_runs WHERE node_run_id = 'nr_retry_terminal_canonical'`).Scan(&supersededAt); err != nil {
+		t.Fatalf("query canonical terminal retry superseded_at: %v", err)
+	}
+	if supersededAt.Valid && strings.TrimSpace(supersededAt.String) != "" {
+		t.Fatalf("expected canonical terminal retry to remain unsuperseded, got %q", supersededAt.String)
+	}
+	if len(result.CancelledNodeRun) != 0 {
+		t.Fatalf("expected blocked adoption to leave newer attempts untouched, got %#v", result.CancelledNodeRun)
+	}
+}
+
+func TestLoadLiveNodeAttemptsTxPrefersNonSupersededAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, started_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_superseded', 'committed_cancelled', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'superseded_before_launch', 'superseded')`)
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	svc := NewTransitionService(db, nil)
+	attempts, err := svc.loadLiveNodeAttemptsTx(context.Background(), tx, "run_1")
+	if err != nil {
+		t.Fatalf("load live node attempts: %v", err)
+	}
+
+	for _, attempt := range attempts {
+		if attempt.NodeID != "decree_intake" {
+			continue
+		}
+		if attempt.NodeRunID != "nr_1" || attempt.Attempt != 1 || attempt.NodeStatus != "running" {
+			t.Fatalf("expected decree_intake to resolve to non-superseded running attempt 1, got node_run=%q attempt=%d status=%q", attempt.NodeRunID, attempt.Attempt, attempt.NodeStatus)
+		}
+		return
+	}
+	t.Fatal("expected decree_intake live attempt to remain visible")
+}
+
+func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`', '`+now+`')`)
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	active, err := liveNodeAttemptExistsTx(context.Background(), tx, "run_1", []string{"decree_intake"})
+	if err != nil {
+		t.Fatalf("check live target node attempt activity: %v", err)
+	}
+	if !active {
+		t.Fatal("expected non-superseded running attempt to keep target node active")
+	}
+}
+
+func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemptWhenNewerRetryIsAlreadyTerminal(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'blocked', started_at = '`+now+`', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', '', NULL, 1, 'session_terminalize_hidden_live', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_terminalize_hidden_live', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'already terminal')`)
+
+	svc := NewTransitionService(db, nil)
+	err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{
+		Transition: TransitionRequest{
+			TransitionID:    "tr_terminalize_hidden_live",
+			EventID:         "evt_terminalize_hidden_live",
+			RunID:           "run_1",
+			Entity:          EntityTypeRun,
+			FromState:       "running",
+			ToState:         "failed",
+			ActorID:         "runtime_orchestrator",
+			RoleID:          "king",
+			AuthoritySource: "runtime.orchestrator",
+			ReasonCode:      "dependency_blocked",
+			ReasonText:      "node failure propagated to run",
+			CorrelationID:   "corr_terminalize_hidden_live",
+			CausationID:     "caus_terminalize_hidden_live",
+			OccurredAt:      now,
+			AttemptID:       "run:run_1:status",
+			SchemaVersion:   "v1",
+			EventType:       "run.state_changed",
+			EventSeq:        1,
+			PayloadJSON:     `{"run_id":"run_1","status":"failed"}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("terminalize run with hidden live attempt: %v", err)
+	}
+
+	if got := queryNodeStatus(t, db, "nr_1"); got != "cancelled" {
+		t.Fatalf("expected older blocked lineage to be cancelled, got %q", got)
+	}
+
+	var attemptState string
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&attemptState); err != nil {
+		t.Fatalf("query hidden live attempt state after run terminalization: %v", err)
+	}
+	if attemptState != "committed_cancelled" {
+		t.Fatalf("expected hidden live attempt to become committed_cancelled, got %q", attemptState)
+	}
+}
+
+func TestTransitionServiceQueuePendingNodeWaveNoopsWhenOlderLiveLineageExistsBesideTerminalRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:40:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'approved' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, started_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry should not hide live attempt')`)
+
+	svc := NewTransitionService(db, nil)
+	result, err := svc.QueuePendingNodeWave(context.Background(), QueuePendingNodeWaveRequest{
+		RunID:      "run_1",
+		NodeIDs:    []string{"decree_intake"},
+		OccurredAt: now,
+	})
+	if err != nil {
+		t.Fatalf("queue pending node wave with hidden live attempt: %v", err)
+	}
+	if result.Queued {
+		t.Fatalf("expected queue pending node wave to noop while older live lineage still exists, got %#v", result)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake'`).Scan(&count); err != nil {
+		t.Fatalf("count node attempts after hidden live noop queue: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected no new node attempt while older lineage is still live, got %d rows", count)
 	}
 }
 

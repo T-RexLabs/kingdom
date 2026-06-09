@@ -1,5 +1,10 @@
 import type { RunExecution } from "@/api/hooks";
-import { isCurrentActivityExecutionStatus } from "./run-status-semantics";
+import {
+	isActiveExecutionStatus,
+	isBlockedExecutionStatus,
+	isCurrentActivityExecutionStatus,
+	isQueuedExecutionStatus,
+} from "./run-status-semantics";
 
 export type ActivityStepGroup = {
 	nodeId: string;
@@ -51,12 +56,25 @@ function compareActivityStepGroupPriority(left: ActivityStepGroup, right: Activi
 }
 
 function compareActivityAttemptPriority(left: RunExecution, right: RunExecution): number {
-	const leftInFlight = isInFlightExecutionStatus(left.status);
-	const rightInFlight = isInFlightExecutionStatus(right.status);
-	if (leftInFlight !== rightInFlight) {
-		return leftInFlight ? -1 : 1;
+	const leftPriority = activityExecutionPriority(left.status);
+	const rightPriority = activityExecutionPriority(right.status);
+	if (leftPriority !== rightPriority) {
+		return leftPriority - rightPriority;
 	}
 	return compareExecutionActivityTimeDesc(left, right);
+}
+
+function activityExecutionPriority(status?: string | null): number {
+	if (isActiveExecutionStatus(status)) {
+		return 0;
+	}
+	if (isBlockedExecutionStatus(status)) {
+		return 1;
+	}
+	if (isQueuedExecutionStatus(status)) {
+		return 2;
+	}
+	return 3;
 }
 
 function compareExecutionActivityTimeDesc(

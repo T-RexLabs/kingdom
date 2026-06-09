@@ -24,6 +24,7 @@ func TestAttemptEventIngestorDeduplicatesByAttemptAndSequence(t *testing.T) {
 	request.EventID = "evt_attempt_dedupe_1"
 	request.AttemptID = "att_dedupe"
 	request.Seq = 1
+	seedCanonicalAttemptExecutionRow(t, db, request.AttemptID, request.RunID, request.NodeRunID.String)
 
 	if _, err := ingestor.Ingest(ctx, request); err != nil {
 		t.Fatalf("ingest first event: %v", err)
@@ -42,6 +43,75 @@ func TestAttemptEventIngestorDeduplicatesByAttemptAndSequence(t *testing.T) {
 
 	if got := countAttemptEventsBySeq(t, db, "att_dedupe", 1); got != 1 {
 		t.Fatalf("expected one deduped event row for seq=1, got %d", got)
+	}
+	if got := countAttemptEventLogRowsBySeq(t, db, "att_dedupe", 1); got != 1 {
+		t.Fatalf("expected one deduped canonical attempt_event_log row for seq=1, got %d", got)
+	}
+}
+
+func TestAttemptEventIngestorMirrorsCanonicalAttemptLog(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
+	ctx := context.Background()
+
+	request := baseAttemptEventIngestionRequest()
+	request.EventID = "evt_attempt_started_canonical"
+	request.AttemptID = "att_started_canonical"
+	request.EventType = "attempt.started"
+	request.Seq = 1
+	request.ReasonCode = "orchestration_progress"
+	seedCanonicalAttemptExecutionRow(t, db, request.AttemptID, request.RunID, request.NodeRunID.String)
+
+	if _, err := ingestor.Ingest(ctx, request); err != nil {
+		t.Fatalf("ingest canonical attempt event: %v", err)
+	}
+
+	if got := countAttemptEventLogRowsBySeq(t, db, "att_started_canonical", 1); got != 1 {
+		t.Fatalf("expected canonical attempt_event_log row for ingested event, got %d", got)
+	}
+
+	eventType, reasonCode := queryAttemptEventTypeAndReason(t, db, "att_started_canonical", 1)
+	if eventType != "attempt.started" || reasonCode != "orchestration_progress" {
+		t.Fatalf("expected canonical attempt_event_log to preserve type/reason, got type=%q reason=%q", eventType, reasonCode)
+	}
+}
+
+func TestAttemptEventIngestorSkipsCanonicalProjectionForSupersededAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
+	ctx := context.Background()
+
+	request := baseAttemptEventIngestionRequest()
+	request.EventID = "evt_attempt_superseded_audit_only"
+	request.AttemptID = "att_superseded_audit_only"
+	request.Seq = 1
+	request.ReasonCode = "stream_event"
+	request.ReasonText = "late superseded stream event"
+	seedCanonicalAttemptExecutionRow(t, db, request.AttemptID, request.RunID, request.NodeRunID.String)
+	mustExec(t, db, `UPDATE node_runs SET superseded_at = '2026-03-01T12:01:00Z' WHERE node_run_id = 'nr_1'`)
+
+	if _, err := ingestor.Ingest(ctx, request); err != nil {
+		t.Fatalf("ingest superseded attempt event: %v", err)
+	}
+
+	if got := countAttemptEventsBySeq(t, db, request.AttemptID, 1); got != 1 {
+		t.Fatalf("expected raw audit event to persist for superseded attempt, got %d", got)
+	}
+	if got := countAttemptEventLogRowsBySeq(t, db, request.AttemptID, 1); got != 0 {
+		t.Fatalf("expected superseded attempt to skip canonical attempt_event_log projection, got %d rows", got)
+	}
+	if got := countMailboxMessagesByEventID(t, db, request.EventID); got != 0 {
+		t.Fatalf("expected superseded attempt to skip mailbox mirroring, got %d rows", got)
 	}
 }
 
@@ -432,6 +502,32 @@ func queryAttemptEventTypeAndReason(t *testing.T, db *sql.DB, attemptID string, 
 	}
 
 	return eventType, reasonCode
+}
+
+func countAttemptEventLogRowsBySeq(t *testing.T, db *sql.DB, attemptID string, seq int) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND seq = ?`, attemptID, seq).Scan(&count); err != nil {
+		t.Fatalf("count canonical attempt_event_log rows: %v", err)
+	}
+	return count
+}
+
+func countMailboxMessagesByEventID(t *testing.T, db *sql.DB, eventID string) int {
+	t.Helper()
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE json_extract(payload_json, '$.event_id') = ?`, eventID).Scan(&count); err != nil {
+		t.Fatalf("count mailbox messages by event id: %v", err)
+	}
+	return count
+}
+
+func seedCanonicalAttemptExecutionRow(t *testing.T, db *sql.DB, attemptID, runID, nodeRunID string) {
+	t.Helper()
+
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', '`+runID+`', '`+nodeRunID+`', 'running', '', NULL, 0, '', NULL, NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 }
 
 func queryRunEventSequenceMax(t *testing.T, db *sql.DB, runID string) int {

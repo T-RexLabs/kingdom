@@ -189,18 +189,6 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		}).Error()
 	}
 
-	// Reset the agent from busy->idle so it doesn't stay stuck after a timeout.
-	if o.registry != nil && attempt.AgentID != "" {
-		if statusErr := o.registry.UpdateAgentStatus(ctx, state.UpdateAgentStatusRequest{
-			AgentID:    attempt.AgentID,
-			FromStatus: state.AgentStatusBusy,
-			ToStatus:   state.AgentStatusIdle,
-			UpdatedAt:  now,
-		}); statusErr != nil {
-			slog.Warn("failed to transition agent to idle after timeout", "agent_id", attempt.AgentID, "error", statusErr)
-		}
-	}
-
 	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, reasonCode, map[string]any{
 		"error":                 errorText,
 		"elapsed_ms":            elapsed.Milliseconds(),
@@ -212,7 +200,7 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		return fmt.Errorf("marshal timeout failure payload: %w", err)
 	}
 
-	return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
+	if err := o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
 		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		RunID:           run.RunID,
@@ -233,7 +221,15 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		EventType:       "attempt.failed",
 		EventSeq:        o.nextEventSeq(ctx, attemptID),
 		PayloadJSON:     string(payloadRaw),
-	}})
+	}}); err != nil {
+		return err
+	}
+	if o.registry != nil && attempt.AgentID != "" {
+		if statusErr := o.registry.SyncOperationalStatus(ctx, attempt.AgentID, now); statusErr != nil {
+			slog.Warn("failed to sync agent operational status after timeout", "agent_id", attempt.AgentID, "error", statusErr)
+		}
+	}
+	return nil
 }
 
 func executionNeverStarted(executionDiagnostics, cancelDiagnostics map[string]any) bool {

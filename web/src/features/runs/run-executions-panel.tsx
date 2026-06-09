@@ -1,10 +1,12 @@
 import type { RunExecutionDetail } from "@/api/hooks";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { runStatusBannerClass } from "./run-detail-tones";
-import { isActiveExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorLiveExecutionLabel } from "./run-status-semantics";
+import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
+import { formatElapsedDuration } from "@/lib/utils";
 
 type PresentedExecutionDetail = RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } };
 
@@ -92,7 +94,7 @@ export function RunExecutionsPanel({
 				{diagnosticsFields.length > 0 ? (
 					<div className="grid gap-3 text-sm text-foreground-subtle sm:grid-cols-2 xl:grid-cols-3">
 						{diagnosticsFields.map((field) => (
-							<DetailField key={field.label} label={field.label}>{field.value}</DetailField>
+							<DetailField key={field.label} label={field.label} tooltip={field.tooltip}>{field.value}</DetailField>
 						))}
 					</div>
 				) : (
@@ -141,27 +143,75 @@ function SectionPlaceholder({ label, message }: { label: string; message: string
 	);
 }
 
-function DetailField({ label, children }: { label: string; children: ReactNode }) {
+function DetailField({ label, tooltip, children }: { label: string; tooltip?: string; children: ReactNode }) {
 	return (
 		<div className="rounded-lg border border-border/70 bg-surface px-3 py-2">
-			<div className="text-[11px] uppercase tracking-[0.16em] text-foreground-muted">{label}</div>
+			<div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] text-foreground-muted">
+				<span>{label}</span>
+				{tooltip ? <InfoTooltip label={`${label} info`} message={tooltip} /> : null}
+			</div>
 			<div className="mt-1 break-words text-sm text-foreground">{children}</div>
 		</div>
 	);
 }
 
-function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ label: string; value: ReactNode }> {
-	const fields: Array<{ label: string; value: ReactNode }> = [];
+function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ label: string; tooltip?: string; value: ReactNode }> {
+	const fields: Array<{ label: string; tooltip?: string; value: ReactNode }> = [];
+	const queuedDuration = queuedDurationForDetail(detail);
+	if (queuedDuration) {
+		fields.push({
+			label: "Queued for",
+			tooltip: "How long this step waited before it began running.",
+			value: queuedDuration,
+		});
+	}
 	if (detail.failure_code) {
-		fields.push({ label: "Failure code", value: detail.failure_code });
+		fields.push({
+			label: "Failure code",
+			tooltip: "The system reason Kingdom recorded for this failed step.",
+			value: detail.failure_code,
+		});
+	}
+	if (detail.launch_started_at) {
+		fields.push({
+			label: "Launching",
+			tooltip: "When Kingdom began handing this step off to the provider.",
+			value: <RelativeTime iso={detail.launch_started_at} />,
+		});
 	}
 	if (detail.started_at) {
-		fields.push({ label: "Started", value: <RelativeTime iso={detail.started_at} /> });
+		fields.push({
+			label: "Started",
+			tooltip: "When Kingdom observed this step actually begin running.",
+			value: <RelativeTime iso={detail.started_at} />,
+		});
+	}
+	if (detail.last_heartbeat_at) {
+		fields.push({
+			label: "Last heartbeat",
+			tooltip: "The last time Kingdom heard from the active session.",
+			value: <RelativeTime iso={detail.last_heartbeat_at} />,
+		});
 	}
 	return fields;
 }
 
+function queuedDurationForDetail(detail: PresentedExecutionDetail): string | null {
+	const queuedAt = detail.queued_at;
+	if (!queuedAt) {
+		return null;
+	}
+	const queueEndedAt = detail.launch_started_at ?? detail.started_at ?? new Date().toISOString();
+	return formatElapsedDuration(queuedAt, queueEndedAt);
+}
+
 function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: string } {
+	const progressLabel = executionProgressLabel(
+		detail.status,
+		detail.progress_reason_code,
+		detail.progress_event_type,
+		detail.live_signal?.live_label,
+	);
 	if (detail.output_verdict === "REWORK") {
 		return {
 			body: "Changes were requested for this step.",
@@ -169,22 +219,27 @@ function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: 
 		};
 	}
 	if (detail.settlement_status === "pending") {
-		const liveBody = operatorLiveExecutionLabel(detail.live_signal?.live_label);
 		return {
-			body: detail.output_text ? undefined : liveBody ?? "Kingdom is still confirming the final result for this step.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
 			note: detail.output_text ? "The output below may still change." : undefined,
 		};
 	}
 	if (isQueuedExecutionStatus(detail.status)) {
 		return {
-			body: operatorLiveExecutionLabel(detail.live_signal?.live_label) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is queued to start.",
 			note: undefined,
 		};
 	}
 	if (isActiveExecutionStatus(detail.status)) {
 		return {
-			body: detail.output_text ? undefined : operatorLiveExecutionLabel(detail.live_signal?.live_label) ?? "This step is still in progress.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is still running.",
 			note: detail.output_text ? "The output below may still change." : undefined,
+		};
+	}
+	if (isBlockedExecutionStatus(detail.status)) {
+		return {
+			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+			note: detail.output_text ? undefined : missingOutputNote(detail),
 		};
 	}
 	const failureText = operatorFacingFailureText(detail);

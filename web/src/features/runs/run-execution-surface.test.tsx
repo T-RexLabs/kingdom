@@ -75,6 +75,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		required_role: "peasant-delegate",
 		execution_mode: "provider_backed",
 		status: "succeeded",
+		queued_at: "2026-03-01T10:08:00Z",
 		activity_at: "2026-03-01T10:09:00Z",
 		updated_at: "2026-03-01T10:09:00Z",
 		committed_at: "2026-03-01T10:09:00Z",
@@ -150,6 +151,16 @@ describe("run execution surface", () => {
 		expect(screen.queryByText("Latest Completed Step")).not.toBeInTheDocument();
 	});
 
+	it("uses launching copy while the selected step is still starting", () => {
+		renderSurface({
+			executions: [makeExecution({ status: "starting", launch_started_at: "2026-03-01T10:07:30Z", started_at: undefined, committed_at: undefined })],
+		});
+
+		expect(screen.getByText("Current Activity")).toBeInTheDocument();
+		expect(screen.getByText("Launching")).toBeInTheDocument();
+		expect(screen.getByText("This step is launching now.")).toBeInTheDocument();
+	});
+
 	it("keeps the hero in verifying while settlement is still pending", () => {
 		renderSurface({
 			detail: {
@@ -187,6 +198,24 @@ describe("run execution surface", () => {
 		expect(screen.getByText("This step is finishing up.")).toBeInTheDocument();
 	});
 
+	it("uses durable progress metadata when no live signal is present", () => {
+		renderSurface({
+			executions: [makeExecution({ status: "verifying", committed_at: undefined, terminal_observed_at: "2026-03-01T10:08:05Z" })],
+			detail: {
+				...makeExecution({ status: "verifying", committed_at: undefined, terminal_observed_at: "2026-03-01T10:08:05Z" }),
+				provider_session_id: "ses-1",
+				provider_invocation_id: "inv-1",
+				settlement_status: "pending",
+				output_status: "none",
+				progress_event_type: "attempt.progress",
+				progress_reason_code: "runtime_completion_observation",
+				progress_at: "2026-03-01T10:08:05Z",
+			} as PresentedExecutionDetail,
+		});
+
+		expect(screen.getByText("This step is finishing up.")).toBeInTheDocument();
+	});
+
 	it("keeps queued work in the current activity lane without claiming it completed", () => {
 		renderSurface({
 			executions: [makeExecution({ status: "queued", committed_at: undefined, started_at: undefined, terminal_observed_at: undefined })],
@@ -196,6 +225,55 @@ describe("run execution surface", () => {
 		expect(screen.getByText("Queued")).toBeInTheDocument();
 		expect(screen.getByText("This step is queued to start.")).toBeInTheDocument();
 		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
+	});
+
+	it("keeps blocked work in the current activity lane without claiming it completed", () => {
+		renderSurface({
+			executions: [makeExecution({ status: "blocked", committed_at: undefined, started_at: "2026-03-01T10:08:00Z", terminal_observed_at: "2026-03-01T10:08:30Z" })],
+		});
+
+		expect(screen.getByText("Current Activity")).toBeInTheDocument();
+		expect(screen.getByText("Blocked")).toBeInTheDocument();
+		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
+		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
+	});
+
+	it("keeps a blocked lineage selected over a newer queued retry for the same step", () => {
+		renderSurface({
+			executions: [
+				makeExecution({
+					attempt_id: "attempt-blocked",
+					node_run_id: "nr-blocked",
+					node_id: "delegated_execution_berserker",
+					attempt: 1,
+					required_role: "builder-berserker",
+					status: "blocked",
+					activity_at: "2026-03-01T10:08:00Z",
+					updated_at: "2026-03-01T10:08:00Z",
+					started_at: "2026-03-01T10:07:00Z",
+					committed_at: undefined,
+				}),
+				makeExecution({
+					attempt_id: "attempt-queued",
+					node_run_id: "nr-queued",
+					node_id: "delegated_execution_berserker",
+					attempt: 2,
+					required_role: "builder-berserker",
+					status: "queued",
+					activity_at: "2026-03-01T10:09:00Z",
+					updated_at: "2026-03-01T10:09:00Z",
+					started_at: undefined,
+					committed_at: undefined,
+				}),
+			],
+			selectedAttemptId: null,
+			selectedNodeId: null,
+		});
+
+		expect(screen.getByText("Current Activity")).toBeInTheDocument();
+		expect(screen.getByText("Blocked")).toBeInTheDocument();
+		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
+		expect(screen.queryByText("Queued")).not.toBeInTheDocument();
 	});
 
 	it("keeps rework summary copy aligned with the rework pill when detail is unavailable", () => {

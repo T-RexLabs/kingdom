@@ -1,6 +1,8 @@
 package state
 
 import (
+	"context"
+	"fmt"
 	"testing"
 )
 
@@ -53,5 +55,35 @@ func TestIsUniqueViolationOnDistinguishesPrimaryKeyCollisions(t *testing.T) {
 	}
 	if !IsUniqueViolationOn(err, "idempotency_keys.idempotency_key_id") {
 		t.Fatalf("expected primary-key conflict to match primary-key target, got %v", err)
+	}
+}
+
+func TestIsSQLiteBusyMatchesBusyMarkers(t *testing.T) {
+	t.Parallel()
+
+	if !IsSQLiteBusy(fmt.Errorf("database is locked (5) (SQLITE_BUSY)")) {
+		t.Fatal("expected SQLITE_BUSY marker to be recognized")
+	}
+	if IsSQLiteBusy(fmt.Errorf("constraint failed")) {
+		t.Fatal("did not expect non-busy sqlite error to be classified as busy")
+	}
+}
+
+func TestRetrySQLiteBusyRetriesBusyError(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	err := retrySQLiteBusy(context.Background(), func() error {
+		attempts++
+		if attempts == 1 {
+			return fmt.Errorf("database is locked (5) (SQLITE_BUSY)")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry sqlite busy: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
 	}
 }

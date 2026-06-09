@@ -2,9 +2,7 @@ package orchestration
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +11,8 @@ import (
 	"time"
 
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/runtimefs"
+	"kingdom/internal/trackedfs"
 	"kingdom/internal/workspace"
 )
 
@@ -27,30 +27,22 @@ func (o *orchestrationLoop) git() gitCommandRunner {
 	return execGitCommandRunner{}
 }
 
-const workspaceBaselinePath = ".kingdom/workspace-baseline.json"
-
 type executionWorkspaceContext struct {
-	SeedRoot       string
-	PublishRoot    string
-	IsGitRepo      bool
-	WorkspaceEmpty bool
-	UseGitWorktree bool
+	SeedRoot          string
+	ExecutionRoot     string
+	SourceSnapshotID  string
+	TrustedSnapshotID string
+	PublishRoot       string
+	IsGitRepo         bool
+	WorkspaceEmpty    bool
+	UseGitWorktree    bool
 }
 
 type executionArtifact struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-	MIME string `json:"mime"`
-}
-
-type workspaceArtifactFingerprint struct {
-	SHA256    string `json:"sha256"`
-	SizeBytes int64  `json:"size_bytes"`
-}
-
-type workspaceArtifactBaseline struct {
-	SchemaVersion string                                  `json:"schema_version"`
-	Files         map[string]workspaceArtifactFingerprint `json:"files"`
+	Path   string `json:"path"`
+	Name   string `json:"name"`
+	MIME   string `json:"mime"`
+	Action string `json:"action,omitempty"`
 }
 
 type runWorktreeContext struct {
@@ -65,9 +57,21 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContext(ctx context.Context
 
 func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.Context, runID, publishMode string) (executionWorkspaceContext, error) {
 	projectRoot := strings.TrimSpace(o.yoloRoot)
-	if projectRoot == "" {
-		return executionWorkspaceContext{}, nil
+
+	targetMode := normalizePublishMode(publishMode)
+	nowFn := time.Now
+	if o != nil && o.now != nil {
+		nowFn = o.now
 	}
+	now := nowFn().UTC()
+	var (
+		sourceRoot     string
+		executionRoot  string
+		publishRoot    string
+		isGitRepo      bool
+		workspaceEmpty bool
+		useGitWorktree bool
+	)
 
 	if normalizePublishMode(publishMode) == PublishModeGitWorktree {
 		worktreeCtx, err := o.ensureRunWorktree(ctx, projectRoot, runID)
@@ -78,56 +82,136 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 		if err != nil {
 			return executionWorkspaceContext{}, fmt.Errorf("inspect worktree project root: %w", err)
 		}
+		sourceRoot = worktreeCtx.ProjectRoot
+		executionRoot = worktreeCtx.ProjectRoot
+		publishRoot = worktreeCtx.ProjectRoot
+		isGitRepo = true
+		workspaceEmpty = empty
+		useGitWorktree = true
+	} else {
+		if projectRoot != "" {
+			if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+				return executionWorkspaceContext{}, fmt.Errorf("prepare execution project root: %w", err)
+			}
+			empty, err := directoryIsEmpty(projectRoot)
+			if err != nil {
+				return executionWorkspaceContext{}, fmt.Errorf("inspect execution project root: %w", err)
+			}
+			workspaceEmpty = empty
+			isGitRepo = o.isGitWorkingTree(projectRoot)
+		} else {
+			workspaceEmpty = true
+			isGitRepo = false
+		}
+		sourceRoot = projectRoot
+		if o != nil && o.fsStore != nil {
+			executionRoot = o.fsStore.RunTargetRoot(runID)
+		}
+		publishRoot = projectRoot
+		useGitWorktree = false
+	}
+	if o == nil || o.fsStore == nil {
 		return executionWorkspaceContext{
-			SeedRoot:       worktreeCtx.ProjectRoot,
-			PublishRoot:    worktreeCtx.ProjectRoot,
-			IsGitRepo:      true,
-			WorkspaceEmpty: empty,
-			UseGitWorktree: true,
+			SeedRoot:          sourceRoot,
+			ExecutionRoot:     firstNonEmptyString(executionRoot, sourceRoot),
+			SourceSnapshotID:  "",
+			TrustedSnapshotID: "",
+			PublishRoot:       publishRoot,
+			IsGitRepo:         isGitRepo,
+			WorkspaceEmpty:    workspaceEmpty,
+			UseGitWorktree:    useGitWorktree,
 		}, nil
 	}
 
-	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
-		return executionWorkspaceContext{}, fmt.Errorf("prepare execution project root: %w", err)
-	}
-	empty, err := directoryIsEmpty(projectRoot)
-	if err != nil {
-		return executionWorkspaceContext{}, fmt.Errorf("inspect execution project root: %w", err)
+	record, err := o.fsStore.GetExecutionTarget(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		captureRoot := strings.TrimSpace(sourceRoot)
+		if captureRoot == "" {
+			captureRoot = executionRoot
+		}
+		if err := os.MkdirAll(executionRoot, 0o755); err != nil {
+			return executionWorkspaceContext{}, fmt.Errorf("create execution target root: %w", err)
+		}
+		sourceSnapshotID := composeRuntimeSnapshotID(runID, "source", now)
+		snapshot, captureErr := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
+			SnapshotID:   sourceSnapshotID,
+			RunID:        runID,
+			SnapshotKind: "baseline",
+			RootPath:     captureRoot,
+			CreatedAt:    now.Format(time.RFC3339),
+		})
+		if captureErr != nil {
+			return executionWorkspaceContext{}, captureErr
+		}
+		if err := o.fsStore.RestoreSnapshot(ctx, snapshot.SnapshotID, executionRoot); err != nil {
+			return executionWorkspaceContext{}, err
+		}
+		record, err = o.fsStore.EnsureExecutionTarget(ctx, runtimefs.EnsureExecutionTargetRequest{
+			RunID:               runID,
+			TargetMode:          targetMode,
+			SourceRoot:          sourceRoot,
+			ExecutionRoot:       executionRoot,
+			PublishRoot:         publishRoot,
+			SourceSnapshotID:    snapshot.SnapshotID,
+			TrustedSnapshotID:   snapshot.SnapshotID,
+			PublishedSnapshotID: snapshot.SnapshotID,
+			State:               "trusted",
+			CreatedAt:           now.Format(time.RFC3339),
+			UpdatedAt:           now.Format(time.RFC3339),
+		})
+		if err != nil {
+			return executionWorkspaceContext{}, err
+		}
+	} else if err != nil {
+		return executionWorkspaceContext{}, fmt.Errorf("load execution target: %w", err)
 	}
 
 	return executionWorkspaceContext{
-		SeedRoot:       projectRoot,
-		PublishRoot:    projectRoot,
-		IsGitRepo:      o.isGitWorkingTree(projectRoot),
-		WorkspaceEmpty: empty,
-		UseGitWorktree: false,
+		SeedRoot:          sourceRoot,
+		ExecutionRoot:     record.ExecutionRoot,
+		SourceSnapshotID:  record.SourceSnapshotID,
+		TrustedSnapshotID: record.TrustedSnapshotID,
+		PublishRoot:       publishRoot,
+		IsGitRepo:         isGitRepo,
+		WorkspaceEmpty:    workspaceEmpty,
+		UseGitWorktree:    useGitWorktree,
 	}, nil
 }
 
-func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, context executionWorkspaceContext) error {
+func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, workspaceCtx executionWorkspaceContext) error {
 	resolvedWorkspace := strings.TrimSpace(workspacePath)
 	if resolvedWorkspace == "" {
 		return fmt.Errorf("workspace path is required")
 	}
-	seedRoot := strings.TrimSpace(context.SeedRoot)
-	seededArtifacts := make([]executionArtifact, 0)
-	if seedRoot != "" {
-		empty, err := directoryIsEmpty(seedRoot)
+	trustedSnapshotID := strings.TrimSpace(workspaceCtx.TrustedSnapshotID)
+	if trustedSnapshotID != "" {
+		if o == nil || o.fsStore == nil {
+			return fmt.Errorf("runtime filesystem store is required")
+		}
+		if err := o.fsStore.RestoreSnapshot(context.Background(), trustedSnapshotID, resolvedWorkspace); err != nil {
+			return fmt.Errorf("restore execution workspace from trusted snapshot: %w", err)
+		}
+	} else if strings.TrimSpace(workspaceCtx.SeedRoot) != "" {
+		trackedFiles, err := trackedfs.WalkTrackedFiles(workspaceCtx.SeedRoot)
 		if err != nil {
-			return fmt.Errorf("inspect execution seed root: %w", err)
+			return fmt.Errorf("walk execution seed root: %w", err)
 		}
-		if !empty {
-			if err := copyDirectoryContents(seedRoot, resolvedWorkspace); err != nil {
-				return fmt.Errorf("prepare execution workspace contents: %w", err)
-			}
-			seededArtifacts, err = discoverWorkspaceArtifacts(seedRoot)
+		for _, file := range trackedFiles {
+			resolvedPath, err := resolvePathWithinRoot(resolvedWorkspace, file.RelativePath)
 			if err != nil {
-				return fmt.Errorf("discover execution seed artifacts: %w", err)
+				return err
+			}
+			raw, err := os.ReadFile(file.AbsolutePath)
+			if err != nil {
+				return fmt.Errorf("read execution seed file %q: %w", file.RelativePath, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
+				return fmt.Errorf("create execution seed directory: %w", err)
+			}
+			if err := os.WriteFile(resolvedPath, raw, os.FileMode(file.Metadata.ModeBits)); err != nil {
+				return fmt.Errorf("write execution seed file %q: %w", file.RelativePath, err)
 			}
 		}
-	}
-	if err := writeWorkspaceArtifactBaseline(resolvedWorkspace, seedRoot, seededArtifacts); err != nil {
-		return err
 	}
 	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(resolvedWorkspace), true); err != nil {
 		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
@@ -135,97 +219,31 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, cont
 	return nil
 }
 
-func writeWorkspaceArtifactBaseline(workspacePath, seedRoot string, seededArtifacts []executionArtifact) error {
-	baseline := workspaceArtifactBaseline{
-		SchemaVersion: "v1",
-		Files:         make(map[string]workspaceArtifactFingerprint, len(seededArtifacts)),
-	}
-
-	for _, artifact := range seededArtifacts {
-		fingerprint, err := fingerprintWorkspaceArtifact(seedRoot, artifact.Path)
+func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context, runID, publishMode string) (string, error) {
+	projectRoot := strings.TrimSpace(o.yoloRoot)
+	workspacePath := projectRoot
+	if normalizePublishMode(publishMode) == PublishModeGitWorktree {
+		if projectRoot == "" {
+			return "", fmt.Errorf("project root is required for git worktree publish mode")
+		}
+		worktreeCtx, err := o.ensureRunWorktree(ctx, projectRoot, runID)
 		if err != nil {
-			return fmt.Errorf("fingerprint execution seed artifact %q: %w", artifact.Path, err)
+			return "", err
 		}
-		baseline.Files[artifact.Path] = fingerprint
+		workspacePath = strings.TrimSpace(worktreeCtx.ProjectRoot)
+	} else if workspacePath == "" && o != nil && o.fsStore != nil {
+		workspacePath = strings.TrimSpace(o.fsStore.RunTargetRoot(runID))
 	}
-
-	raw, err := json.MarshalIndent(baseline, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal execution workspace baseline: %w", err)
+	if workspacePath == "" {
+		return "", fmt.Errorf("response-only workspace path is required")
 	}
-
-	baselineFilePath, err := resolvePathWithinRoot(workspacePath, workspaceBaselinePath)
-	if err != nil {
-		return fmt.Errorf("resolve execution workspace baseline path: %w", err)
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		return "", fmt.Errorf("prepare response-only workspace root: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(baselineFilePath), 0o755); err != nil {
-		return fmt.Errorf("create execution workspace baseline directory: %w", err)
+	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(workspacePath), true); err != nil {
+		return "", fmt.Errorf("install managed opencode overlay into response-only workspace: %w", err)
 	}
-	if err := os.WriteFile(baselineFilePath, raw, 0o644); err != nil {
-		return fmt.Errorf("write execution workspace baseline: %w", err)
-	}
-	return nil
-}
-
-func loadWorkspaceArtifactBaseline(workspacePath string) (workspaceArtifactBaseline, error) {
-	baselinePath, err := resolvePathWithinRoot(workspacePath, workspaceBaselinePath)
-	if err != nil {
-		return workspaceArtifactBaseline{}, fmt.Errorf("resolve execution workspace baseline path: %w", err)
-	}
-	raw, err := os.ReadFile(baselinePath)
-	if errors.Is(err, os.ErrNotExist) {
-		return workspaceArtifactBaseline{SchemaVersion: "v1", Files: map[string]workspaceArtifactFingerprint{}}, nil
-	}
-	if err != nil {
-		return workspaceArtifactBaseline{}, fmt.Errorf("read execution workspace baseline: %w", err)
-	}
-
-	var baseline workspaceArtifactBaseline
-	if err := json.Unmarshal(raw, &baseline); err != nil {
-		return workspaceArtifactBaseline{}, fmt.Errorf("decode execution workspace baseline: %w", err)
-	}
-	if baseline.Files == nil {
-		baseline.Files = map[string]workspaceArtifactFingerprint{}
-	}
-	return baseline, nil
-}
-
-func filterImplementationArtifactsAgainstBaseline(workspacePath string, discoveredArtifacts []executionArtifact) ([]executionArtifact, error) {
-	baseline, err := loadWorkspaceArtifactBaseline(workspacePath)
-	if err != nil {
-		return nil, err
-	}
-	if len(discoveredArtifacts) == 0 || len(baseline.Files) == 0 {
-		return discoveredArtifacts, nil
-	}
-
-	filtered := make([]executionArtifact, 0, len(discoveredArtifacts))
-	for _, artifact := range discoveredArtifacts {
-		fingerprint, err := fingerprintWorkspaceArtifact(workspacePath, artifact.Path)
-		if err != nil {
-			return nil, fmt.Errorf("fingerprint execution artifact %q: %w", artifact.Path, err)
-		}
-		baselineFingerprint, exists := baseline.Files[artifact.Path]
-		if exists && baselineFingerprint == fingerprint {
-			continue
-		}
-		filtered = append(filtered, artifact)
-	}
-
-	return filtered, nil
-}
-
-func fingerprintWorkspaceArtifact(rootPath, relativePath string) (workspaceArtifactFingerprint, error) {
-	resolvedPath, err := resolvePathWithinRoot(rootPath, relativePath)
-	if err != nil {
-		return workspaceArtifactFingerprint{}, err
-	}
-	raw, err := os.ReadFile(resolvedPath)
-	if err != nil {
-		return workspaceArtifactFingerprint{}, err
-	}
-	sum := sha256.Sum256(raw)
-	return workspaceArtifactFingerprint{SHA256: fmt.Sprintf("%x", sum), SizeBytes: int64(len(raw))}, nil
+	return workspacePath, nil
 }
 
 func directoryIsEmpty(path string) (bool, error) {
@@ -240,52 +258,8 @@ func (o *orchestrationLoop) isGitWorkingTree(path string) bool {
 	return workspace.ProbeGitWorktreeSupport(path, o.git()).IsGitRepo
 }
 
-func copyDirectoryContents(sourceRoot, destinationRoot string) error {
-	entries, err := os.ReadDir(sourceRoot)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if shouldSkipWorkspaceSeedEntry(entry.Name()) {
-			continue
-		}
-		sourcePath := filepath.Join(sourceRoot, entry.Name())
-		destinationPath := filepath.Join(destinationRoot, entry.Name())
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if err := os.MkdirAll(destinationPath, 0o755); err != nil {
-				return err
-			}
-			if err := copyDirectoryContents(sourcePath, destinationPath); err != nil {
-				return err
-			}
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-		raw, err := os.ReadFile(sourcePath)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(destinationPath, raw, info.Mode().Perm()); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func shouldSkipWorkspaceSeedEntry(name string) bool {
-	trimmed := strings.TrimSpace(name)
-	switch trimmed {
-	case ".git", ".kingdom", "kingdom-artifacts":
-		return true
-	default:
-		return false
-	}
+func composeRuntimeSnapshotID(runID, label string, now time.Time) string {
+	return fmt.Sprintf("snap_%s_%s_%d", sanitizeFileToken(runID), sanitizeFileToken(label), now.UTC().UnixNano())
 }
 
 func (o *orchestrationLoop) ensureRunWorktree(ctx context.Context, projectRoot, runID string) (runWorktreeContext, error) {
@@ -462,24 +436,5 @@ func newGitWorktreeRuntimeError(reason string) error {
 }
 
 func resolvePathWithinRoot(root, relativePath string) (string, error) {
-	normalized := strings.TrimSpace(relativePath)
-	if normalized == "" {
-		return "", fmt.Errorf("artifact path is required")
-	}
-	if filepath.IsAbs(normalized) {
-		return "", fmt.Errorf("artifact path must be relative")
-	}
-
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve root path: %w", err)
-	}
-	resolved := filepath.Clean(filepath.Join(rootAbs, normalized))
-	if resolved != rootAbs {
-		prefix := rootAbs + string(filepath.Separator)
-		if !strings.HasPrefix(resolved, prefix) {
-			return "", fmt.Errorf("artifact path escapes root: %q", relativePath)
-		}
-	}
-	return resolved, nil
+	return trackedfs.ResolveWithinRoot(root, relativePath)
 }

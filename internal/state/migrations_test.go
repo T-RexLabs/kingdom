@@ -74,6 +74,27 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !tableExists(t, db, "run_worktrees") {
 		t.Fatal("expected run_worktrees table to exist after up migration")
 	}
+	if !tableExists(t, db, "run_execution_targets") {
+		t.Fatal("expected run_execution_targets table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_snapshots") {
+		t.Fatal("expected filesystem_snapshots table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_snapshot_entries") {
+		t.Fatal("expected filesystem_snapshot_entries table to exist after up migration")
+	}
+	if !tableExists(t, db, "filesystem_blobs") {
+		t.Fatal("expected filesystem_blobs table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_batches") {
+		t.Fatal("expected run_publication_batches table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_entries") {
+		t.Fatal("expected run_publication_entries table to exist after up migration")
+	}
+	if !tableExists(t, db, "run_publication_paths") {
+		t.Fatal("expected run_publication_paths table to exist after up migration")
+	}
 	if !tableExists(t, db, "run_search_documents") {
 		t.Fatal("expected run_search_documents table to exist after up migration")
 	}
@@ -92,14 +113,35 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "attempt_executions", "canonical_settlement_id") {
 		t.Fatal("expected attempt_executions.canonical_settlement_id column to exist after up migration")
 	}
+	if !columnExists(t, db, "attempt_executions", "base_snapshot_id") {
+		t.Fatal("expected attempt_executions.base_snapshot_id column to exist after up migration")
+	}
+	if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
+		t.Fatal("expected attempt_executions.result_snapshot_id column to exist after up migration")
+	}
 	if !columnExists(t, db, "provider_invocations", "completion_capability_hash") {
 		t.Fatal("expected provider_invocations.completion_capability_hash column to exist after up migration")
+	}
+	if !columnExists(t, db, "provider_invocations", "receipt_seen_count") {
+		t.Fatal("expected provider_invocations.receipt_seen_count column to exist after up migration")
+	}
+	if !columnExists(t, db, "provider_invocations", "first_receipt_seen_at") {
+		t.Fatal("expected provider_invocations.first_receipt_seen_at column to exist after up migration")
+	}
+	if !columnExists(t, db, "provider_invocations", "last_receipt_seen_at") {
+		t.Fatal("expected provider_invocations.last_receipt_seen_at column to exist after up migration")
+	}
+	if !columnExists(t, db, "provider_invocations", "last_receipt_disposition") {
+		t.Fatal("expected provider_invocations.last_receipt_disposition column to exist after up migration")
 	}
 	if !columnExists(t, db, "provider_completion_evidence", "evidence_kind") {
 		t.Fatal("expected provider_completion_evidence.evidence_kind column to exist after up migration")
 	}
 	if !columnExists(t, db, "provider_completion_settlements", "primary_evidence_id") {
 		t.Fatal("expected provider_completion_settlements.primary_evidence_id column to exist after up migration")
+	}
+	if !columnExists(t, db, "artifacts", "artifact_action") {
+		t.Fatal("expected artifacts.artifact_action column to exist after up migration")
 	}
 	if !indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
 		t.Fatal("expected planner receipt uniqueness index to exist after up migration")
@@ -810,9 +852,11 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 
 	t.Run("existing_database_does_not_duplicate_baseline", func(t *testing.T) {
 		db := openTestDB(t)
-		applyMigration(t, db, "0001_initial_schema.up.sql")
-		mustExec(t, db, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`)
-		mustExec(t, db, `INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_initial_schema.up.sql', '2026-04-21T12:04:00Z')`)
+		if err := ApplySQLMigrations(context.Background(), db, load(t,
+			"0001_initial_schema.up.sql",
+		), time.Date(2026, 4, 21, 12, 4, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
 
 		if err := ApplySQLMigrations(context.Background(), db, load(t,
 			"0001_initial_schema.up.sql",
@@ -870,6 +914,108 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		}
 		if got := strings.Join(names, ","); got != "0001_initial_schema.up.sql,0002_future_feature.up.sql" {
 			t.Fatalf("expected baseline and forward migration recorded, got %v", names)
+		}
+	})
+
+	t.Run("baseline_contains_final_runtime_execution_schema", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(context.Background(), db, load(t,
+			"0001_initial_schema.up.sql",
+		), time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
+
+		seedMinimumGraph(t, db)
+		if !columnExists(t, db, "node_runs", "superseded_at") {
+			t.Fatal("expected node_runs.superseded_at in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "launch_started_at") {
+			t.Fatal("expected attempt_executions.launch_started_at in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_event_type") {
+			t.Fatal("expected attempt_executions.progress_event_type in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_reason_code") {
+			t.Fatal("expected attempt_executions.progress_reason_code in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "progress_at") {
+			t.Fatal("expected attempt_executions.progress_at in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "base_snapshot_id") {
+			t.Fatal("expected attempt_executions.base_snapshot_id in baseline schema")
+		}
+		if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
+			t.Fatal("expected attempt_executions.result_snapshot_id in baseline schema")
+		}
+		if !indexExists(t, db, "idx_attempt_executions_launch_started") {
+			t.Fatal("expected launch_started_at index in baseline schema")
+		}
+		if !columnExists(t, db, "idempotency_keys", "status") {
+			t.Fatal("expected idempotency_keys.status in baseline schema")
+		}
+		if !columnExists(t, db, "idempotency_keys", "updated_at") {
+			t.Fatal("expected idempotency_keys.updated_at in baseline schema")
+		}
+		if !columnExists(t, db, "artifacts", "artifact_action") {
+			t.Fatal("expected artifacts.artifact_action in baseline schema")
+		}
+		for _, tableName := range []string{"run_execution_targets", "filesystem_snapshots", "filesystem_snapshot_entries", "filesystem_blobs", "run_publication_batches", "run_publication_entries", "run_publication_paths"} {
+			if !tableExists(t, db, tableName) {
+				t.Fatalf("expected %s table in baseline schema", tableName)
+			}
+		}
+
+		rows, err := db.Query(`PRAGMA foreign_key_check`)
+		if err != nil {
+			t.Fatalf("run foreign_key_check after baseline apply: %v", err)
+		}
+		defer rows.Close()
+		if rows.Next() {
+			var tableName string
+			var rowID int64
+			var parentTable string
+			var fkIndex int64
+			if err := rows.Scan(&tableName, &rowID, &parentTable, &fkIndex); err != nil {
+				t.Fatalf("scan foreign_key_check row: %v", err)
+			}
+			t.Fatalf("expected no foreign key violations after upgrade, got table=%s rowid=%d parent=%s fk=%d", tableName, rowID, parentTable, fkIndex)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate foreign_key_check rows: %v", err)
+		}
+	})
+
+	t.Run("rejects foreign-key-off migration with broken references", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(context.Background(), db, load(t, "0001_initial_schema.up.sql"), time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("apply baseline migration: %v", err)
+		}
+		seedMinimumGraph(t, db)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+
+		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
+			Name: "0002_broken_fk_rebuild.up.sql",
+			SQL: []byte(`-- kingdom: foreign_keys=off
+DELETE FROM node_runs;`),
+		})
+
+		err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 4, 21, 12, 7, 0, 0, time.UTC))
+		if err == nil {
+			t.Fatal("expected broken foreign-key-off migration to fail")
+		}
+		if !strings.Contains(err.Error(), "validate foreign keys") {
+			t.Fatalf("expected foreign key validation failure, got %v", err)
+		}
+		if tableExists(t, db, "fk_bad_child") {
+			t.Fatal("expected broken migration table to roll back")
+		}
+
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE name = '0002_broken_fk_rebuild.up.sql'`).Scan(&count); err != nil {
+			t.Fatalf("query broken migration recording: %v", err)
+		}
+		if count != 0 {
+			t.Fatalf("expected broken migration to remain unrecorded, got %d rows", count)
 		}
 	})
 
@@ -999,14 +1145,16 @@ func applyMigration(t *testing.T, db *sql.DB, fileName string) {
 	}
 	sort.Strings(names)
 
+	migrations := make([]SQLMigration, 0, len(names))
 	for _, name := range names {
 		raw, err := dbmigrations.Read(name)
 		if err != nil {
 			t.Fatalf("read migration %s: %v", name, err)
 		}
-		if _, err := db.Exec(string(raw)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply migrations from %s: %v", fileName, err)
 	}
 }
 

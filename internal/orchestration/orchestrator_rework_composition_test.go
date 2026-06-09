@@ -34,6 +34,9 @@ func newScriptedExecutionAdapter(steps map[string]scriptedExecutionStep) *script
 }
 
 func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	step, ok := a.steps[req.AttemptID]

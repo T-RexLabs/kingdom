@@ -1,5 +1,6 @@
 GO ?= go
-PNPM ?= pnpm
+COREPACK ?= corepack
+PNPM ?= $(COREPACK) pnpm
 GOBIN ?= $(shell $(GO) env GOBIN)
 
 ifeq ($(strip $(GOBIN)),)
@@ -19,8 +20,6 @@ OPENAPI_GENERATED ?= internal/apigen/types.gen.go
 WEB_OPENAPI_GENERATED ?= web/src/api/schema.ts
 CORE_COVERAGE_MIN ?= 72.0
 
-MAKE_STATE_DIR := .make
-PNPM_READY_STAMP := $(MAKE_STATE_DIR)/pnpm-ready-$(PNPM_VERSION).stamp
 WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
 WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
 WEB_DIST_INDEX := web/dist/index.html
@@ -94,14 +93,7 @@ tool-versions: ## Print the pinned local tool versions
 # Internal targets
 contracts-generate: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
 
-$(PNPM_READY_STAMP): Makefile
-	mkdir -p $(MAKE_STATE_DIR)
-	corepack enable
-	corepack prepare pnpm@$(PNPM_VERSION) --activate
-	touch $@
-
-
-$(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml $(PNPM_READY_STAMP)
+$(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml Makefile
 	rm -rf web/node_modules
 	$(PNPM) --dir web install --frozen-lockfile
 	touch $@

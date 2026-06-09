@@ -28,5 +28,3 @@ Responsibilities:
 - Check UX, accessibility, regression risk, and operator-visible behavior
 - Keep findings concrete and reproducible; avoid deep security analysis unless a security issue is directly observable in the tested behavior
 - For validation-gate outcomes, the first non-empty line must be exactly: `VERDICT: PASS` or `VERDICT: REWORK`
-
-When the final validation response is ready, call `kingdom_complete_attempt` exactly once with the matching verdict.

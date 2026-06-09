@@ -37,6 +37,36 @@ func NormalizeExecutionMode(raw string) ExecutionMode {
 	}
 }
 
+func AttemptLaunchObserved(state string, startedAt string) bool {
+	if strings.TrimSpace(startedAt) != "" {
+		return true
+	}
+	return strings.TrimSpace(state) == "running"
+}
+
+func AttemptReachedLaunchHandoff(state string, launchStartedAt string, startedAt string, providerSessionID string, activeProviderInvocationID string) bool {
+	if AttemptHasActiveLaunchFence(state, launchStartedAt, startedAt) || AttemptLaunchObserved(state, startedAt) {
+		return true
+	}
+	return strings.TrimSpace(providerSessionID) != "" || strings.TrimSpace(activeProviderInvocationID) != ""
+}
+
+func AttemptHasActiveLaunchFence(state string, launchStartedAt string, startedAt string) bool {
+	return strings.TrimSpace(state) == "starting" && strings.TrimSpace(launchStartedAt) != "" && strings.TrimSpace(startedAt) == ""
+}
+
+func AttemptRetainsSessionLease(state string, launchStartedAt string, startedAt string) bool {
+	return AttemptHasActiveLaunchFence(state, launchStartedAt, startedAt) || AttemptLaunchObserved(state, startedAt)
+}
+
+func AttemptRenewsSessionLease(state string, launchStartedAt string, startedAt string) bool {
+	return AttemptHasActiveLaunchFence(state, launchStartedAt, startedAt) || AttemptLaunchObserved(state, startedAt)
+}
+
+func AttemptInPreLaunch(state string, startedAt string) bool {
+	return strings.TrimSpace(state) == "starting" && !AttemptLaunchObserved(state, startedAt)
+}
+
 type AttemptExecution struct {
 	AttemptID                  string
 	RunID                      string
@@ -48,10 +78,15 @@ type AttemptExecution struct {
 	ProviderSessionID          string
 	ActiveProviderInvocationID string
 	CanonicalSettlementID      string
+	LaunchStartedAt            string
+	StartedAt                  string
 	TerminalObservedAt         string
 	CommittedAt                string
 	FailureCode                string
 	FailureText                string
+	ProgressEventType          string
+	ProgressReasonCode         string
+	ProgressAt                 string
 }
 
 type RunExecutionRecord struct {
@@ -60,6 +95,7 @@ type RunExecutionRecord struct {
 	NodeRunID          string
 	NodeID             string
 	Attempt            int
+	NodeStatus         string
 	RequiredRole       string
 	AgentID            string
 	State              string
@@ -67,7 +103,12 @@ type RunExecutionRecord struct {
 	LogicalSessionID   sql.NullString
 	ProviderSessionID  sql.NullString
 	LastHeartbeatAt    sql.NullString
+	QueuedAt           string
 	ActivityAt         string
+	ProgressEventType  sql.NullString
+	ProgressReasonCode sql.NullString
+	ProgressAt         sql.NullString
+	LaunchStartedAt    sql.NullString
 	StartedAt          sql.NullString
 	UpdatedAt          string
 	TerminalObservedAt sql.NullString
@@ -268,8 +309,8 @@ func (s *Store) EnqueueAttempt(ctx context.Context, req EnqueueAttemptRequest) e
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
-		 VALUES (?, ?, ?, 'queued', ?, ?, '', NULL, 0, ?, ?, NULL, NULL, NULL, '', '', ?, ?)`,
+		`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
+		 VALUES (?, ?, ?, 'queued', ?, ?, '', NULL, 0, ?, ?, NULL, NULL, NULL, NULL, '', '', ?, ?)`,
 		strings.TrimSpace(req.AttemptID),
 		strings.TrimSpace(req.RunID),
 		strings.TrimSpace(req.NodeRunID),
@@ -338,10 +379,11 @@ func (s *Store) GetAttempt(ctx context.Context, attemptID string) (AttemptExecut
 	err := s.db.QueryRowContext(ctx,
 		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, session_ref, provider_session_id,
 		        COALESCE(active_provider_invocation_id, ''), COALESCE(canonical_settlement_id, ''),
-		        COALESCE(terminal_observed_at, ''), COALESCE(committed_at, ''), failure_code, failure_text
+		        COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(terminal_observed_at, ''), COALESCE(committed_at, ''), failure_code, failure_text,
+		        COALESCE(progress_event_type, ''), COALESCE(progress_reason_code, ''), COALESCE(progress_at, '')
 		 FROM attempt_executions WHERE attempt_id = ?`,
 		attemptID,
-	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText)
+	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.LaunchStartedAt, &rec.StartedAt, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText, &rec.ProgressEventType, &rec.ProgressReasonCode, &rec.ProgressAt)
 	if err == sql.ErrNoRows {
 		return AttemptExecution{}, false, nil
 	}
@@ -367,17 +409,23 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        ae.node_run_id,
 		        nr.node_id,
 		        nr.attempt,
+		        nr.node_status,
 		        nr.required_role,
 		        nr.agent_id,
 		        ae.state,
 		        ae.execution_mode,
 		        NULLIF(TRIM(ae.session_ref), '') AS logical_session_id,
 			        NULLIF(TRIM(ae.provider_session_id), '') AS provider_session_id,
-			        CASE
-			          WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
-			          ELSE NULL
-			        END AS last_heartbeat_at,
-			        COALESCE(ae.updated_at, ae.started_at, ae.created_at) AS activity_at,
+		        CASE
+		          WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
+		          ELSE NULL
+		        END AS last_heartbeat_at,
+		        ae.created_at AS queued_at,
+		        COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
+		        NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
+		        NULLIF(TRIM(ae.progress_reason_code), '') AS progress_reason_code,
+		        ae.progress_at,
+		        ae.launch_started_at,
 		        ae.started_at,
 		        ae.updated_at,
 		        ae.terminal_observed_at,
@@ -409,6 +457,7 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.NodeRunID,
 			&rec.NodeID,
 			&rec.Attempt,
+			&rec.NodeStatus,
 			&rec.RequiredRole,
 			&rec.AgentID,
 			&rec.State,
@@ -416,7 +465,12 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.LogicalSessionID,
 			&rec.ProviderSessionID,
 			&rec.LastHeartbeatAt,
+			&rec.QueuedAt,
 			&rec.ActivityAt,
+			&rec.ProgressEventType,
+			&rec.ProgressReasonCode,
+			&rec.ProgressAt,
+			&rec.LaunchStartedAt,
 			&rec.StartedAt,
 			&rec.UpdatedAt,
 			&rec.TerminalObservedAt,
@@ -480,6 +534,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       ae.node_run_id,
 	       nr.node_id,
 	       nr.attempt,
+	       nr.node_status,
 	       nr.required_role,
 	       nr.agent_id,
 	       ae.state,
@@ -490,7 +545,12 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	         WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
 	         ELSE NULL
 	       END AS last_heartbeat_at,
-	       COALESCE(ae.updated_at, ae.started_at, ae.created_at) AS activity_at,
+	       ae.created_at AS queued_at,
+	       COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
+	       NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
+	       NULLIF(TRIM(ae.progress_reason_code), '') AS progress_reason_code,
+	       ae.progress_at,
+	       ae.launch_started_at,
 	       ae.started_at,
 	       ae.updated_at,
 	       ae.terminal_observed_at,
@@ -522,6 +582,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.NodeRunID,
 		&rec.NodeID,
 		&rec.Attempt,
+		&rec.NodeStatus,
 		&rec.RequiredRole,
 		&rec.AgentID,
 		&rec.State,
@@ -529,7 +590,12 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.LogicalSessionID,
 		&rec.ProviderSessionID,
 		&rec.LastHeartbeatAt,
+		&rec.QueuedAt,
 		&rec.ActivityAt,
+		&rec.ProgressEventType,
+		&rec.ProgressReasonCode,
+		&rec.ProgressAt,
+		&rec.LaunchStartedAt,
 		&rec.StartedAt,
 		&rec.UpdatedAt,
 		&rec.TerminalObservedAt,
@@ -622,7 +688,11 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 		       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text,
 		       ROW_NUMBER() OVER (
 		         PARTITION BY nr.node_id
-		         ORDER BY nr.attempt DESC,
+		         ORDER BY CASE
+		           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+		           ELSE 1
+		         END ASC,
+		                  nr.attempt DESC,
 		                  COALESCE(ae.committed_at, ae.terminal_observed_at, ae.updated_at, ae.created_at) DESC,
 		                  ae.attempt_id DESC
 		       ) AS node_rank
@@ -1047,6 +1117,13 @@ func (s *Store) ObserveTerminal(ctx context.Context, req ObserveTerminalRequest)
 				return fmt.Errorf("attempt %q not found", attemptID)
 			}
 			return fmt.Errorf("load observed attempt state: %w", err)
+		}
+		if existingState == "committed_success" || existingState == "committed_failure" || existingState == "committed_cancelled" {
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit terminal observe no-op transaction: %w", err)
+			}
+			committed = true
+			return nil
 		}
 		if existingState != "terminal_observed" {
 			return fmt.Errorf("attempt %q cannot observe terminal from state %q", attemptID, existingState)

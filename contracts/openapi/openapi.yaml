@@ -3591,7 +3591,7 @@ components:
           minLength: 1
         state:
           type: string
-          enum: [pending, ready, running, succeeded, failed, blocked, cancelled, skipped]
+          enum: [pending, ready, starting, running, succeeded, failed, blocked, cancelled, skipped]
         required_role:
           type: string
           minLength: 1
@@ -3703,7 +3703,7 @@ components:
     RunExecution:
       type: object
       additionalProperties: false
-      required: [attempt_id, node_run_id, node_id, attempt, agent_id, required_role, execution_mode, status, activity_at, updated_at]
+      required: [attempt_id, node_run_id, node_id, attempt, agent_id, required_role, execution_mode, status, queued_at, activity_at, updated_at]
       properties:
         attempt_id:
           type: string
@@ -3728,7 +3728,7 @@ components:
           enum: [provider_backed, runtime_owned]
         status:
           type: string
-          enum: [queued, starting, running, verifying, succeeded, failed, cancelled]
+          enum: [queued, starting, running, blocked, verifying, succeeded, failed, cancelled]
         logical_session_id:
           type: string
           minLength: 1
@@ -3738,7 +3738,22 @@ components:
         last_heartbeat_at:
           type: string
           format: date-time
+        queued_at:
+          type: string
+          format: date-time
         activity_at:
+          type: string
+          format: date-time
+        progress_event_type:
+          type: string
+          minLength: 1
+        progress_reason_code:
+          type: string
+          minLength: 1
+        progress_at:
+          type: string
+          format: date-time
+        launch_started_at:
           type: string
           format: date-time
         started_at:

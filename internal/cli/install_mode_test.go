@@ -609,6 +609,50 @@ func TestInitEnablesSQLiteWALMode(t *testing.T) {
 	}
 }
 
+func TestOpenSQLiteDatabaseAppliesPragmasToEveryPooledConnection(t *testing.T) {
+	t.Parallel()
+
+	db, err := openSQLiteDatabase(filepath.Join(t.TempDir(), "kingdom.db"), sqlitePoolOptions{MaxOpenConns: 4, MaxIdleConns: 4})
+	if err != nil {
+		t.Fatalf("open sqlite database: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 0, 4)
+	defer func() {
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+	}()
+
+	for i := 0; i < 4; i++ {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("acquire sqlite connection %d: %v", i+1, err)
+		}
+		conns = append(conns, conn)
+	}
+
+	for i, conn := range conns {
+		var foreignKeys int
+		if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+			t.Fatalf("query foreign_keys for sqlite connection %d: %v", i+1, err)
+		}
+		if foreignKeys != 1 {
+			t.Fatalf("expected foreign_keys=1 for sqlite connection %d, got %d", i+1, foreignKeys)
+		}
+
+		var busyTimeout int
+		if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+			t.Fatalf("query busy_timeout for sqlite connection %d: %v", i+1, err)
+		}
+		if busyTimeout != 5000 {
+			t.Fatalf("expected busy_timeout=5000 for sqlite connection %d, got %d", i+1, busyTimeout)
+		}
+	}
+}
+
 // TestReadInstallConfigFromStructCanonicalizesBasePath pins the
 // validator-level contract: cfg.Server.BasePath leaves the validator
 // in canonical form regardless of how the user typed it. Every

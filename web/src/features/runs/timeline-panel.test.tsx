@@ -470,4 +470,79 @@ describe("timeline panel", () => {
 
 		expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
 	});
+
+	it("does not auto-follow newer events while an activity item is expanded", async () => {
+		const user = userEvent.setup();
+		const scrollTo = vi.fn();
+		Object.defineProperty(HTMLDivElement.prototype, "scrollTo", {
+			configurable: true,
+			value: scrollTo,
+		});
+
+		const initialEvents = [
+			{
+				event_id: "evt-1",
+				run_event_seq: 1,
+				attempt_seq: 1,
+				event_type: "attempt.started",
+				emitted_at: "2026-03-18T11:40:00Z",
+				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+			},
+		];
+		const { rerender } = render(
+			<TimelinePanel
+				events={initialEvents}
+				graph={{
+					nodes: [{
+						node_id: "advisor_consultation_peasant",
+						required_role: "peasant-delegate",
+						execution_ownership: "provider_backed",
+						state: "running",
+					}],
+					edges: [],
+				}}
+				hasMore={false}
+			/>,
+		);
+		scrollTo.mockClear();
+
+		await user.click(screen.getByRole("button", { name: /Advisor Consultation Peasant/i }));
+
+		rerender(
+			<TimelinePanel
+				events={[
+					...initialEvents,
+					{
+						event_id: "evt-2",
+						run_event_seq: 2,
+						attempt_seq: 2,
+						event_type: "attempt.started",
+						emitted_at: "2026-03-18T11:41:00Z",
+						payload_json: { node_id: "plan_drafting", node_run_id: "nr-plan-1" },
+					},
+				]}
+				graph={{
+					nodes: [
+						{
+							node_id: "advisor_consultation_peasant",
+							required_role: "peasant-delegate",
+							execution_ownership: "provider_backed",
+							state: "running",
+						},
+						{
+							node_id: "plan_drafting",
+							required_role: "council-member",
+							execution_ownership: "provider_backed",
+							state: "running",
+						},
+					],
+					edges: [],
+				}}
+				hasMore={false}
+			/>,
+		);
+
+		expect(scrollTo).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: /Jump to latest/i })).toBeInTheDocument();
+	});
 });

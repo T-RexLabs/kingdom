@@ -55,6 +55,7 @@ type ArtifactRecord struct {
 	NodeRunID    string
 	AttemptID    string
 	ArtifactKind string
+	ArtifactAction string
 	Name         string
 	MIME         string
 	Path         string
@@ -73,6 +74,7 @@ type workerOutputEnvelope struct {
 
 type workerOutputArtifact struct {
 	Kind      string `json:"kind,omitempty"`
+	Action    string `json:"action,omitempty"`
 	Name      string `json:"name"`
 	MIME      string `json:"mime"`
 	Path      string `json:"path"`
@@ -136,8 +138,10 @@ func (v *WorkerOutputValidator) ValidateAndPersist(ctx context.Context, req Work
 		if err := insertArtifactRecord(ctx, tx, record); err != nil {
 			return WorkerOutputValidationResult{}, fmt.Errorf("persist artifact %q: %w", record.ArtifactID, err)
 		}
-		if err := insertArtifactContentRecord(ctx, tx, record, content); err != nil {
-			return WorkerOutputValidationResult{}, fmt.Errorf("persist artifact content %q: %w", record.ArtifactID, err)
+		if record.ArtifactAction != "delete" {
+			if err := insertArtifactContentRecord(ctx, tx, record, content); err != nil {
+				return WorkerOutputValidationResult{}, fmt.Errorf("persist artifact content %q: %w", record.ArtifactID, err)
+			}
 		}
 	}
 
@@ -156,7 +160,7 @@ func (v *WorkerOutputValidator) ListArtifactsByAttempt(ctx context.Context, atte
 
 	rows, err := v.db.QueryContext(
 		ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at
+		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
 		 FROM artifacts
 		 WHERE attempt_id = ?
 		 ORDER BY artifact_id ASC`,
@@ -176,6 +180,7 @@ func (v *WorkerOutputValidator) ListArtifactsByAttempt(ctx context.Context, atte
 			&record.NodeRunID,
 			&record.AttemptID,
 			&record.ArtifactKind,
+			&record.ArtifactAction,
 			&record.Name,
 			&record.MIME,
 			&record.Path,
@@ -197,8 +202,26 @@ func (v *WorkerOutputValidator) ListArtifactsByAttempt(ctx context.Context, atte
 }
 
 func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRequest, artifact workerOutputArtifact, index int) (ArtifactRecord, []byte, error) {
+	action := firstNonEmptyArtifactAction(artifact.Action)
 	artifactPath := strings.TrimSpace(artifact.Path)
 	raw, hasInlineContent := req.ArtifactContentByPath[artifactPath]
+	if action == "delete" {
+		return ArtifactRecord{
+			ArtifactID:      fmt.Sprintf("%s_artifact_%d", req.AttemptID, index+1),
+			RunID:           req.RunID,
+			NodeRunID:       req.NodeRunID,
+			AttemptID:       req.AttemptID,
+			ArtifactKind:    firstNonEmptyArtifactKind(artifact.Kind),
+			ArtifactAction:  action,
+			Name:            artifact.Name,
+			MIME:            artifact.MIME,
+			Path:            artifactPath,
+			SHA256:          "",
+			SizeBytes:       0,
+			ProducerRole:    req.ProducerRole,
+			CreatedAt:       req.CreatedAt,
+		}, nil, nil
+	}
 	if hasInlineContent {
 		if err := validateArtifactPathReference(artifactPath); err != nil {
 			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
@@ -253,6 +276,7 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 		NodeRunID:    req.NodeRunID,
 		AttemptID:    req.AttemptID,
 		ArtifactKind: firstNonEmptyArtifactKind(artifact.Kind),
+		ArtifactAction: action,
 		Name:         artifact.Name,
 		MIME:         artifact.MIME,
 		Path:         artifactPath,
@@ -335,13 +359,14 @@ func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {
 func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord) error {
 	_, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		artifact.ArtifactID,
 		artifact.RunID,
 		artifact.NodeRunID,
 		artifact.AttemptID,
 		artifact.ArtifactKind,
+		artifact.ArtifactAction,
 		artifact.Name,
 		artifact.MIME,
 		artifact.Path,
@@ -392,4 +417,12 @@ func firstNonEmptyArtifactKind(value string) string {
 		return "orchestration_meta"
 	}
 	return trimmed
+}
+
+func firstNonEmptyArtifactAction(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "delete" {
+		return "delete"
+	}
+	return "write"
 }

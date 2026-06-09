@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -250,6 +251,109 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 		CreatedAt:            "2026-03-01T12:00:04Z",
 	}); err == nil {
 		t.Fatal("expected unknown terminal evidence source to fail")
+	}
+}
+
+func TestStoreFinalizeProviderCompletionSettlementPersistsProviderDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	const providerInvocationID = "invocation_diagnostics_1"
+	const providerDiagnosticsJSON = `{"stderr_tail":"exit status 1"}`
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		ExecutionMode: ExecutionModeProviderBacked,
+		SessionRef:    "session_run_1_decree_intake_1",
+		CreatedAt:     "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionCapability: "capability-diagnostics-1",
+		IssuedAt:             "2026-03-01T12:00:02Z",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_diagnostics_1",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+
+	evidence, err := s.EnsureTerminalProviderCompletionEvidence(ctx, EnsureTerminalProviderCompletionEvidenceRequest{
+		ProviderInvocationID:    providerInvocationID,
+		AttemptID:               attemptID,
+		RunID:                   "run_1",
+		NodeRunID:               "nr_1",
+		State:                   "failed",
+		ReasonCode:              "provider_process_failed",
+		FailureText:             "exit status 1",
+		OutputText:              "partial output",
+		EvidenceSource:          "stream",
+		ProviderDiagnosticsJSON: providerDiagnosticsJSON,
+		CreatedAt:               "2026-03-01T12:00:04Z",
+	})
+	if err != nil {
+		t.Fatalf("ensure terminal provider completion evidence: %v", err)
+	}
+
+	var evidencePayload struct {
+		ProviderDiagnostics json.RawMessage `json:"provider_diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(evidence.PayloadJSON), &evidencePayload); err != nil {
+		t.Fatalf("decode terminal evidence payload: %v", err)
+	}
+	if string(evidencePayload.ProviderDiagnostics) != providerDiagnosticsJSON {
+		t.Fatalf("expected provider diagnostics payload %s, got %s", providerDiagnosticsJSON, string(evidencePayload.ProviderDiagnostics))
+	}
+
+	settlement, err := s.FinalizeProviderCompletionSettlement(ctx, FinalizeProviderCompletionSettlementRequest{
+		SettlementID:            ProviderCompletionSettlementID(providerInvocationID),
+		ProviderInvocationID:    providerInvocationID,
+		AttemptID:               attemptID,
+		RunID:                   "run_1",
+		NodeRunID:               "nr_1",
+		Outcome:                 ProviderCompletionOutcomeFailed,
+		PrimaryEvidenceID:       evidence.EvidenceID,
+		StructuredPayloadJSON:   "{}",
+		ProviderDiagnosticsJSON: providerDiagnosticsJSON,
+		FailureReasonCode:       "provider_process_failed",
+		FailureReasonText:       "exit status 1",
+		SettledAt:               "2026-03-01T12:00:05Z",
+	})
+	if err != nil {
+		t.Fatalf("finalize provider completion settlement: %v", err)
+	}
+	if settlement.ProviderDiagnosticsJSON != providerDiagnosticsJSON {
+		t.Fatalf("expected settlement diagnostics %s, got %s", providerDiagnosticsJSON, settlement.ProviderDiagnosticsJSON)
+	}
+
+	stored, found, err := s.GetProviderCompletionSettlementByInvocation(ctx, providerInvocationID)
+	if err != nil {
+		t.Fatalf("get stored provider completion settlement: %v", err)
+	}
+	if !found {
+		t.Fatal("expected provider completion settlement to exist")
+	}
+	if stored.ProviderDiagnosticsJSON != providerDiagnosticsJSON {
+		t.Fatalf("expected stored settlement diagnostics %s, got %s", providerDiagnosticsJSON, stored.ProviderDiagnosticsJSON)
 	}
 }
 
@@ -584,6 +688,132 @@ func TestStoreAcceptProviderCompletionReceiptRejectsDuplicateWhenInvocationNoLon
 	}
 }
 
+func TestStoreObserveProviderCompletionReceiptAttemptPersistsEvidenceAndCounters(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		ExecutionMode: ExecutionModeProviderBacked,
+		SessionRef:    "session_run_1_decree_intake_1",
+		CreatedAt:     "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_receipt_attempt_obs",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionCapability: "capability-receipt-attempt-obs",
+		IssuedAt:             "2026-03-01T12:00:02Z",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_receipt_attempt_obs",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_receipt_attempt_obs",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+
+	if _, err := s.ObserveProviderCompletionReceiptAttempt(ctx, ObserveProviderCompletionReceiptAttemptRequest{
+		EvidenceID:            "receipt_attempt_obs_1",
+		ProviderInvocationID:  "invocation_receipt_attempt_obs",
+		AttemptID:             attemptID,
+		RunID:                 "run_1",
+		NodeRunID:             "nr_1",
+		ProtocolVersion:       "v1",
+		ObservedAttemptID:     "run_1:decree_intake:999",
+		ObservedInvocationID:  "invocation_receipt_attempt_obs",
+		CompletionCapability:  "capability-receipt-attempt-obs",
+		FinalText:             "bad receipt",
+		StructuredPayloadJSON: `{"verdict":"PASS"}`,
+		Disposition:           ProviderCompletionReceiptDispositionRejected,
+		ReasonCode:            "validation_failed",
+		ReasonText:            "completion receipt final_text is required",
+		ObservedAt:            "2026-03-01T12:00:04Z",
+	}); err != nil {
+		t.Fatalf("observe rejected receipt attempt: %v", err)
+	}
+	if _, err := s.ObserveProviderCompletionReceiptAttempt(ctx, ObserveProviderCompletionReceiptAttemptRequest{
+		EvidenceID:            "receipt_attempt_obs_2",
+		ProviderInvocationID:  "invocation_receipt_attempt_obs",
+		AttemptID:             attemptID,
+		RunID:                 "run_1",
+		NodeRunID:             "nr_1",
+		ProtocolVersion:       "v1",
+		ObservedAttemptID:     attemptID,
+		ObservedInvocationID:  "invocation_receipt_attempt_obs",
+		CompletionCapability:  "capability-receipt-attempt-obs",
+		FinalText:             "good receipt",
+		StructuredPayloadJSON: `{"verdict":"PASS"}`,
+		Disposition:           ProviderCompletionReceiptDispositionAccepted,
+		ReasonCode:            "accepted",
+		AcceptedEvidenceID:    "receipt_evidence_obs_accepted",
+		ObservedAt:            "2026-03-01T12:00:05Z",
+	}); err != nil {
+		t.Fatalf("observe accepted receipt attempt: %v", err)
+	}
+
+	evidenceRows, err := s.ListProviderCompletionEvidence(ctx, "invocation_receipt_attempt_obs")
+	if err != nil {
+		t.Fatalf("list provider completion evidence: %v", err)
+	}
+	if len(evidenceRows) != 2 {
+		t.Fatalf("expected two receipt attempt evidence rows, got %d", len(evidenceRows))
+	}
+	if evidenceRows[0].EvidenceKind != ProviderCompletionEvidenceKindCompletionReceiptAttempt || evidenceRows[1].EvidenceKind != ProviderCompletionEvidenceKindCompletionReceiptAttempt {
+		t.Fatalf("expected receipt attempt evidence kinds, got %#v", evidenceRows)
+	}
+	var payload struct {
+		Disposition        string `json:"disposition"`
+		ReasonCode         string `json:"reason_code"`
+		AcceptedEvidenceID string `json:"accepted_evidence_id"`
+	}
+	if err := json.Unmarshal([]byte(evidenceRows[1].PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode receipt attempt payload: %v", err)
+	}
+	if payload.Disposition != string(ProviderCompletionReceiptDispositionAccepted) {
+		t.Fatalf("expected accepted disposition, got %q", payload.Disposition)
+	}
+	if payload.AcceptedEvidenceID != "receipt_evidence_obs_accepted" {
+		t.Fatalf("expected accepted evidence id in payload, got %q", payload.AcceptedEvidenceID)
+	}
+
+	invocation, found, err := s.GetProviderInvocation(ctx, "invocation_receipt_attempt_obs")
+	if err != nil {
+		t.Fatalf("get provider invocation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected provider invocation to exist")
+	}
+	if invocation.ReceiptSeenCount != 2 {
+		t.Fatalf("expected receipt_seen_count=2, got %d", invocation.ReceiptSeenCount)
+	}
+	if invocation.FirstReceiptSeenAt != "2026-03-01T12:00:04Z" {
+		t.Fatalf("expected first_receipt_seen_at to persist, got %q", invocation.FirstReceiptSeenAt)
+	}
+	if invocation.LastReceiptSeenAt != "2026-03-01T12:00:05Z" {
+		t.Fatalf("expected last_receipt_seen_at to persist, got %q", invocation.LastReceiptSeenAt)
+	}
+	if invocation.LastReceiptDisposition != ProviderCompletionReceiptDispositionAccepted {
+		t.Fatalf("expected last receipt disposition accepted, got %q", invocation.LastReceiptDisposition)
+	}
+}
+
 func TestStoreAcceptProviderCompletionReceiptInvalidatesAttemptMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -669,6 +899,131 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesAttemptMismatch(t *testi
 	if len(evidenceRows) != 0 {
 		t.Fatalf("expected no receipt evidence rows after attempt mismatch, got %d", len(evidenceRows))
 	}
+}
+
+func TestStoreAcceptProviderCompletionReceiptInvalidatesCompletionCapabilityMismatch(t *testing.T) {
+	t.Parallel()
+
+	setupOpenInvocation := func(t *testing.T, attemptID, invocationID, capability string) (*Store, context.Context) {
+		t.Helper()
+
+		db := openTestDB(t)
+		applyMigration(t, db, "0001_initial_schema.up.sql")
+		seedMinimumGraph(t, db)
+
+		s := New(db)
+		ctx := context.Background()
+		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+			AttemptID:     attemptID,
+			RunID:         "run_1",
+			NodeRunID:     "nr_1",
+			ExecutionMode: ExecutionModeProviderBacked,
+			SessionRef:    "session_run_1_decree_intake_1",
+			CreatedAt:     "2026-03-01T12:00:01Z",
+		}); err != nil {
+			t.Fatalf("enqueue attempt: %v", err)
+		}
+		if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+			ProviderInvocationID: invocationID,
+			AttemptID:            attemptID,
+			RunID:                "run_1",
+			NodeRunID:            "nr_1",
+			LogicalSessionID:     "session_run_1_decree_intake_1",
+			CompletionCapability: capability,
+			IssuedAt:             "2026-03-01T12:00:02Z",
+			CreatedAt:            "2026-03-01T12:00:02Z",
+		}); err != nil {
+			t.Fatalf("create provider invocation: %v", err)
+		}
+		if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+			ProviderInvocationID: invocationID,
+			AttemptID:            attemptID,
+			ProviderSessionID:    "ses_" + invocationID,
+			OpenedAt:             "2026-03-01T12:00:03Z",
+		}); err != nil {
+			t.Fatalf("mark provider invocation open: %v", err)
+		}
+
+		return s, ctx
+	}
+
+	t.Run("mismatch invalidates invocation", func(t *testing.T) {
+		s, ctx := setupOpenInvocation(t, "run_1:decree_intake:1", "invocation_capability_mismatch", "capability-expected")
+
+		_, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+			EvidenceID:            "receipt_evidence_capability_mismatch",
+			ProviderInvocationID:  "invocation_capability_mismatch",
+			AttemptID:             "run_1:decree_intake:1",
+			RunID:                 "run_1",
+			NodeRunID:             "nr_1",
+			ProtocolVersion:       "v1",
+			CompletionCapability:  "capability-wrong",
+			FinalText:             "Completed successfully.",
+			StructuredPayloadJSON: `{"verdict":"PASS"}`,
+			ReceivedAt:            "2026-03-01T12:00:04Z",
+		})
+		if err == nil {
+			t.Fatal("expected mismatched capability receipt to fail")
+		}
+		var settlementErr *ProviderSettlementError
+		if !errors.As(err, &settlementErr) {
+			t.Fatalf("expected provider settlement error, got %T: %v", err, err)
+		}
+		if settlementErr.Reason != "completion_capability_mismatch" {
+			t.Fatalf("expected completion_capability_mismatch reason, got %q", settlementErr.Reason)
+		}
+
+		invocation, found, err := s.GetProviderInvocation(ctx, "invocation_capability_mismatch")
+		if err != nil {
+			t.Fatalf("get provider invocation: %v", err)
+		}
+		if !found {
+			t.Fatal("expected provider invocation to exist")
+		}
+		if invocation.InvocationState != ProviderInvocationStateInvalidHandshake {
+			t.Fatalf("expected capability mismatch to invalidate the handshake, got %q", invocation.InvocationState)
+		}
+		if invocation.InvalidReason != "completion_capability_mismatch" {
+			t.Fatalf("expected capability mismatch invalid reason to persist, got %q", invocation.InvalidReason)
+		}
+
+		evidenceRows, err := s.ListProviderCompletionEvidence(ctx, "invocation_capability_mismatch")
+		if err != nil {
+			t.Fatalf("list provider completion evidence: %v", err)
+		}
+		if len(evidenceRows) != 0 {
+			t.Fatalf("expected no receipt evidence rows after capability mismatch, got %d", len(evidenceRows))
+		}
+	})
+
+	t.Run("matching capability still accepts", func(t *testing.T) {
+		s, ctx := setupOpenInvocation(t, "run_1:decree_intake:1", "invocation_capability_match", "capability-match")
+
+		accepted, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+			EvidenceID:            "receipt_evidence_capability_match",
+			ProviderInvocationID:  "invocation_capability_match",
+			AttemptID:             "run_1:decree_intake:1",
+			RunID:                 "run_1",
+			NodeRunID:             "nr_1",
+			ProtocolVersion:       "v1",
+			CompletionCapability:  "capability-match",
+			FinalText:             "Completed successfully.",
+			StructuredPayloadJSON: `{"verdict":"PASS"}`,
+			ReceivedAt:            "2026-03-01T12:00:04Z",
+		})
+		if err != nil {
+			t.Fatalf("accept provider completion receipt: %v", err)
+		}
+		if accepted.Idempotent {
+			t.Fatal("expected first matching completion receipt accept to be non-idempotent")
+		}
+		if accepted.Invocation.InvocationState != ProviderInvocationStateReceiptPersisted {
+			t.Fatalf("expected receipt_persisted invocation state, got %q", accepted.Invocation.InvocationState)
+		}
+		if accepted.Evidence.EvidenceID != "receipt_evidence_capability_match" {
+			t.Fatalf("expected accepted receipt evidence id to persist, got %q", accepted.Evidence.EvidenceID)
+		}
+	})
 }
 
 func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *testing.T) {
@@ -924,6 +1279,84 @@ func TestStoreSupersedeProviderInvocationRejectsStaleReceipt(t *testing.T) {
 	}
 	if settlementErr.Reason != "invocation_superseded" {
 		t.Fatalf("expected invocation_superseded reason, got %q", settlementErr.Reason)
+	}
+}
+
+func TestStoreAcceptProviderCompletionReceiptRejectsTerminalSupersededAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:2"
+	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_retry_provider_2', 'run_1', 'decree_intake', 2, 2, 'blocked', 'king', 'agent_king', 1)`); err != nil {
+		t.Fatalf("insert superseded retry node run: %v", err)
+	}
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:     attemptID,
+		RunID:         "run_1",
+		NodeRunID:     "nr_retry_provider_2",
+		ExecutionMode: ExecutionModeProviderBacked,
+		SessionRef:    "session_run_1_decree_intake_2",
+		CreatedAt:     "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_retry_2",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_retry_provider_2",
+		LogicalSessionID:     "session_run_1_decree_intake_2",
+		CompletionCapability: "capability-retry-2",
+		IssuedAt:             "2026-03-01T12:00:02Z",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_retry_2",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_retry_2",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions
+		SET state = 'committed_cancelled',
+		    terminal_observed_at = '2026-03-01T12:00:04Z',
+		    committed_at = '2026-03-01T12:00:04Z',
+		    failure_code = 'superseded_after_launch_handoff',
+		    failure_text = 'retry attempt superseded after launch handoff by an earlier successful attempt',
+		    updated_at = '2026-03-01T12:00:04Z'
+		WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatalf("terminalize superseded attempt: %v", err)
+	}
+
+	_, err := s.AcceptProviderCompletionReceipt(ctx, AcceptProviderCompletionReceiptRequest{
+		EvidenceID:            "stale_terminal_receipt_evidence",
+		ProviderInvocationID:  "invocation_retry_2",
+		AttemptID:             attemptID,
+		RunID:                 "run_1",
+		NodeRunID:             "nr_retry_provider_2",
+		ProtocolVersion:       "v1",
+		CompletionCapability:  "capability-retry-2",
+		FinalText:             "stale receipt",
+		StructuredPayloadJSON: `{}`,
+		ReceivedAt:            "2026-03-01T12:00:05Z",
+	})
+	if err == nil {
+		t.Fatal("expected stale receipt for terminal superseded attempt to fail")
+	}
+	var settlementErr *ProviderSettlementError
+	if !errors.As(err, &settlementErr) {
+		t.Fatalf("expected provider settlement error, got %T: %v", err, err)
+	}
+	if settlementErr.Reason != "attempt_not_active" {
+		t.Fatalf("expected attempt_not_active reason, got %q", settlementErr.Reason)
 	}
 }
 

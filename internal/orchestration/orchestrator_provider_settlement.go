@@ -5,18 +5,23 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	coreverdict "kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
 )
 
 const completionReceiptInboxPath = ".kingdom/provider-completion/receipts"
+
+var sqliteBusyWriteRetrySchedule = []time.Duration{0, 50 * time.Millisecond, 150 * time.Millisecond, 400 * time.Millisecond}
 
 var providerInvocationIDCounter atomic.Uint64
 
@@ -85,11 +90,12 @@ func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Contex
 		}
 		structuredPayloadJSON, err := validateProviderCompletionReceiptForNode(job.node, receipt.FinalText, receipt.StructuredPayloadJSON)
 		if err != nil {
+			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionRejected, "validation_failed", err.Error(), "")
 			return opencode.CompletionReceiptAcceptance{Rejected: true, RejectedReason: err.Error()}, nil
 		}
 		acceptCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 		defer cancel()
-		accepted, err := o.executionStore.AcceptProviderCompletionReceipt(acceptCtx, executionstore.AcceptProviderCompletionReceiptRequest{
+		accepted, err := o.acceptProviderCompletionReceiptWithRetry(acceptCtx, executionstore.AcceptProviderCompletionReceiptRequest{
 			EvidenceID:            fmt.Sprintf("receipt_%s_%d", sanitizeFileToken(job.attemptID), time.Now().UTC().UnixNano()),
 			ProviderInvocationID:  strings.TrimSpace(receipt.InvocationID),
 			AttemptID:             strings.TrimSpace(receipt.AttemptID),
@@ -103,10 +109,22 @@ func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Contex
 		})
 		if err != nil {
 			if executionstore.IsTerminalProviderReceiptError(err) {
+				reasonCode := "accept_provider_completion_receipt_failed"
+				var settlementErr *executionstore.ProviderSettlementError
+				if errors.As(err, &settlementErr) && settlementErr != nil && strings.TrimSpace(settlementErr.Reason) != "" {
+					reasonCode = strings.TrimSpace(settlementErr.Reason)
+				}
+				o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionInvalidated, reasonCode, err.Error(), "")
 				return opencode.CompletionReceiptAcceptance{Rejected: true, InvalidatesInvocation: true, RejectedReason: err.Error()}, nil
 			}
+			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionError, "accept_error", err.Error(), "")
 			return opencode.CompletionReceiptAcceptance{}, err
 		}
+		disposition := executionstore.ProviderCompletionReceiptDispositionAccepted
+		if accepted.Idempotent {
+			disposition = executionstore.ProviderCompletionReceiptDispositionIdempotentDuplicate
+		}
+		o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, disposition, string(disposition), "", accepted.Evidence.EvidenceID)
 		return opencode.CompletionReceiptAcceptance{
 			EvidenceID:            accepted.Evidence.EvidenceID,
 			FinalText:             strings.TrimSpace(receipt.FinalText),
@@ -116,29 +134,110 @@ func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Contex
 	}
 }
 
+func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func(context.Context) error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var lastErr error
+	for attempt, backoff := range sqliteBusyWriteRetrySchedule {
+		if attempt > 0 {
+			if err := sleepWithContext(ctx, o.sleep, backoff); err != nil {
+				return err
+			}
+		}
+		if err := write(ctx); err != nil {
+			lastErr = err
+			if !state.IsSQLiteBusy(err) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func (o *orchestrationLoop) acceptProviderCompletionReceiptWithRetry(ctx context.Context, req executionstore.AcceptProviderCompletionReceiptRequest) (executionstore.AcceptProviderCompletionReceiptResult, error) {
+	var accepted executionstore.AcceptProviderCompletionReceiptResult
+	err := o.retrySQLiteBusyWrite(ctx, func(ctx context.Context) error {
+		result, err := o.executionStore.AcceptProviderCompletionReceipt(ctx, req)
+		if err != nil {
+			return err
+		}
+		accepted = result
+		return nil
+	})
+	return accepted, err
+}
+
+func (o *orchestrationLoop) ensureTerminalProviderCompletionEvidenceWithRetry(ctx context.Context, req executionstore.EnsureTerminalProviderCompletionEvidenceRequest) (executionstore.ProviderCompletionEvidence, error) {
+	var evidence executionstore.ProviderCompletionEvidence
+	err := o.retrySQLiteBusyWrite(ctx, func(ctx context.Context) error {
+		result, err := o.executionStore.EnsureTerminalProviderCompletionEvidence(ctx, req)
+		if err != nil {
+			return err
+		}
+		evidence = result
+		return nil
+	})
+	return evidence, err
+}
+
+func (o *orchestrationLoop) finalizeProviderCompletionSettlementWithRetry(ctx context.Context, req executionstore.FinalizeProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
+	var settlement executionstore.ProviderCompletionSettlement
+	err := o.retrySQLiteBusyWrite(ctx, func(ctx context.Context) error {
+		result, err := o.executionStore.FinalizeProviderCompletionSettlement(ctx, req)
+		if err != nil {
+			return err
+		}
+		settlement = result
+		return nil
+	})
+	return settlement, err
+}
+
+func (o *orchestrationLoop) observeProviderCompletionReceiptAttempt(ctx context.Context, job asyncExecutionResult, receipt opencode.CompletionReceipt, structuredPayloadJSON string, disposition executionstore.ProviderCompletionReceiptDisposition, reasonCode, reasonText, acceptedEvidenceID string) {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(job.providerInvocationID) == "" {
+		return
+	}
+	observeCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	_, err := o.executionStore.ObserveProviderCompletionReceiptAttempt(observeCtx, executionstore.ObserveProviderCompletionReceiptAttemptRequest{
+		EvidenceID:            fmt.Sprintf("receipt_attempt_%s_%d", sanitizeFileToken(job.attemptID), time.Now().UTC().UnixNano()),
+		ProviderInvocationID:  strings.TrimSpace(job.providerInvocationID),
+		AttemptID:             strings.TrimSpace(job.attemptID),
+		RunID:                 strings.TrimSpace(job.run.RunID),
+		NodeRunID:             strings.TrimSpace(job.attempt.NodeRunID),
+		ProtocolVersion:       firstNonEmptyString(strings.TrimSpace(receipt.ProtocolVersion), opencode.CompletionProtocolVersion),
+		ObservedAttemptID:     strings.TrimSpace(receipt.AttemptID),
+		ObservedInvocationID:  strings.TrimSpace(receipt.InvocationID),
+		CompletionCapability:  strings.TrimSpace(receipt.CompletionCapability),
+		FinalText:             strings.TrimSpace(receipt.FinalText),
+		StructuredPayloadJSON: firstNonEmptyString(strings.TrimSpace(structuredPayloadJSON), strings.TrimSpace(receipt.StructuredPayloadJSON), "{}"),
+		Disposition:           disposition,
+		ReasonCode:            strings.TrimSpace(reasonCode),
+		ReasonText:            strings.TrimSpace(reasonText),
+		AcceptedEvidenceID:    strings.TrimSpace(acceptedEvidenceID),
+		ObservedAt:            o.now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		o.emitCompletionLifecycleObservation(ctx, job, "completion_receipt_observation_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error(), "disposition": string(disposition)})
+	}
+}
+
 func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, structuredPayloadJSON string) (string, error) {
 	trimmedFinalText := strings.TrimSpace(finalText)
 	if trimmedFinalText == "" {
 		return "", fmt.Errorf("completion receipt final_text is required")
 	}
-	trimmedStructured := strings.TrimSpace(structuredPayloadJSON)
-	if trimmedStructured == "" {
-		trimmedStructured = "{}"
-	}
-	var structured map[string]any
-	if err := json.Unmarshal([]byte(trimmedStructured), &structured); err != nil {
-		return "", fmt.Errorf("decode completion receipt structured payload: %w", err)
-	}
-	if structured == nil {
-		structured = map[string]any{}
-	}
+	structured := map[string]any{}
 	switch resolvedNodeClass(node.NodeID, node.NodeClass) {
 	case workflow.NodeClassExecutionReview:
-		if err := validateReceiptVerdict(structured, trimmedFinalText, "execution review"); err != nil {
+		if err := canonicalizeReceiptVerdict(structured, trimmedFinalText, "execution review", "invalid_execution_review_verdict"); err != nil {
 			return "", err
 		}
 	case workflow.NodeClassValidationGates:
-		if err := validateReceiptVerdict(structured, trimmedFinalText, "validation"); err != nil {
+		if err := canonicalizeReceiptVerdict(structured, trimmedFinalText, "validation", "invalid_validation_verdict"); err != nil {
 			return "", err
 		}
 	}
@@ -149,27 +248,12 @@ func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, st
 	return string(raw), nil
 }
 
-func validateReceiptVerdict(structured map[string]any, finalText, ownerLabel string) error {
-	rawVerdict, ok := structured["verdict"]
-	if !ok {
-		return fmt.Errorf("%s completion receipt missing structured verdict", ownerLabel)
-	}
-	verdict, ok := rawVerdict.(string)
-	if !ok {
-		return fmt.Errorf("%s completion receipt verdict must be a string", ownerLabel)
-	}
-	verdict = strings.ToUpper(strings.TrimSpace(verdict))
-	if verdict != "PASS" && verdict != "REWORK" {
-		return fmt.Errorf("%s completion receipt verdict must be PASS or REWORK", ownerLabel)
-	}
-	parsedVerdict, err := parseNodeVerdict(finalText, ownerLabel)
+func canonicalizeReceiptVerdict(structured map[string]any, finalText, ownerLabel, invalidReasonCode string) error {
+	parsedVerdict, err := coreverdict.ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
 	if err != nil {
 		return err
 	}
-	if parsedVerdict != verdict {
-		return fmt.Errorf("%s completion receipt verdict does not match final_text verdict", ownerLabel)
-	}
-	structured["verdict"] = verdict
+	structured["verdict"] = parsedVerdict
 	return nil
 }
 
@@ -210,17 +294,18 @@ func (o *orchestrationLoop) finalizeProviderSettlement(ctx context.Context, resu
 		if strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
 			return fmt.Errorf("completion receipt evidence id is required for provider success settlement")
 		}
-		_, err := o.executionStore.FinalizeProviderCompletionSettlement(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
-			SettlementID:          settlementID,
-			ProviderInvocationID:  result.providerInvocationID,
-			AttemptID:             result.attemptID,
-			RunID:                 result.run.RunID,
-			NodeRunID:             result.attempt.NodeRunID,
-			Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
-			PrimaryEvidenceID:     result.completionReceiptEvidenceID,
-			FinalText:             strings.TrimSpace(result.outputText),
-			StructuredPayloadJSON: firstNonEmptyString(strings.TrimSpace(result.completionStructuredPayloadJSON), "{}"),
-			SettledAt:             settledAt,
+		_, err := o.finalizeProviderCompletionSettlementWithRetry(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
+			SettlementID:            settlementID,
+			ProviderInvocationID:    result.providerInvocationID,
+			AttemptID:               result.attemptID,
+			RunID:                   result.run.RunID,
+			NodeRunID:               result.attempt.NodeRunID,
+			Outcome:                 executionstore.ProviderCompletionOutcomeSuccess,
+			PrimaryEvidenceID:       result.completionReceiptEvidenceID,
+			FinalText:               strings.TrimSpace(result.outputText),
+			StructuredPayloadJSON:   firstNonEmptyString(strings.TrimSpace(result.completionStructuredPayloadJSON), "{}"),
+			ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),
+			SettledAt:               settledAt,
 		})
 		return err
 	case "cancelled", "failed", "incomplete_turn":
@@ -229,33 +314,35 @@ func (o *orchestrationLoop) finalizeProviderSettlement(ctx context.Context, resu
 			if strings.TrimSpace(outcome.State) == "cancelled" {
 				settlementOutcome = executionstore.ProviderCompletionOutcomeCancelled
 			}
-			_, err := o.executionStore.FinalizeProviderCompletionSettlement(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
-				SettlementID:          settlementID,
-				ProviderInvocationID:  result.providerInvocationID,
-				AttemptID:             result.attemptID,
-				RunID:                 result.run.RunID,
-				NodeRunID:             result.attempt.NodeRunID,
-				Outcome:               settlementOutcome,
-				PrimaryEvidenceID:     result.completionReceiptEvidenceID,
-				FinalText:             strings.TrimSpace(result.outputText),
-				StructuredPayloadJSON: firstNonEmptyString(strings.TrimSpace(result.completionStructuredPayloadJSON), "{}"),
-				FailureReasonCode:     strings.TrimSpace(outcome.ReasonCode),
-				FailureReasonText:     strings.TrimSpace(outcome.FailureText),
-				SettledAt:             settledAt,
+			_, err := o.finalizeProviderCompletionSettlementWithRetry(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
+				SettlementID:            settlementID,
+				ProviderInvocationID:    result.providerInvocationID,
+				AttemptID:               result.attemptID,
+				RunID:                   result.run.RunID,
+				NodeRunID:               result.attempt.NodeRunID,
+				Outcome:                 settlementOutcome,
+				PrimaryEvidenceID:       result.completionReceiptEvidenceID,
+				FinalText:               strings.TrimSpace(result.outputText),
+				StructuredPayloadJSON:   firstNonEmptyString(strings.TrimSpace(result.completionStructuredPayloadJSON), "{}"),
+				ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),
+				FailureReasonCode:       strings.TrimSpace(outcome.ReasonCode),
+				FailureReasonText:       strings.TrimSpace(outcome.FailureText),
+				SettledAt:               settledAt,
 			})
 			return err
 		}
-		evidence, err := o.executionStore.EnsureTerminalProviderCompletionEvidence(settleCtx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
-			ProviderInvocationID: result.providerInvocationID,
-			AttemptID:            result.attemptID,
-			RunID:                result.run.RunID,
-			NodeRunID:            result.attempt.NodeRunID,
-			State:                outcome.State,
-			ReasonCode:           outcome.ReasonCode,
-			FailureText:          outcome.FailureText,
-			OutputText:           result.outputText,
-			EvidenceSource:       outcome.EvidenceSource,
-			CreatedAt:            settledAt,
+		evidence, err := o.ensureTerminalProviderCompletionEvidenceWithRetry(settleCtx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+			ProviderInvocationID:    result.providerInvocationID,
+			AttemptID:               result.attemptID,
+			RunID:                   result.run.RunID,
+			NodeRunID:               result.attempt.NodeRunID,
+			State:                   outcome.State,
+			ReasonCode:              outcome.ReasonCode,
+			FailureText:             outcome.FailureText,
+			OutputText:              result.outputText,
+			EvidenceSource:          outcome.EvidenceSource,
+			ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),
+			CreatedAt:               settledAt,
 		})
 		if err != nil {
 			return err
@@ -264,18 +351,19 @@ func (o *orchestrationLoop) finalizeProviderSettlement(ctx context.Context, resu
 		if strings.TrimSpace(outcome.State) == "cancelled" {
 			settlementOutcome = executionstore.ProviderCompletionOutcomeCancelled
 		}
-		_, err = o.executionStore.FinalizeProviderCompletionSettlement(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
-			SettlementID:          settlementID,
-			ProviderInvocationID:  result.providerInvocationID,
-			AttemptID:             result.attemptID,
-			RunID:                 result.run.RunID,
-			NodeRunID:             result.attempt.NodeRunID,
-			Outcome:               settlementOutcome,
-			PrimaryEvidenceID:     evidence.EvidenceID,
-			FailureReasonCode:     strings.TrimSpace(outcome.ReasonCode),
-			FailureReasonText:     strings.TrimSpace(outcome.FailureText),
-			StructuredPayloadJSON: "{}",
-			SettledAt:             settledAt,
+		_, err = o.finalizeProviderCompletionSettlementWithRetry(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
+			SettlementID:            settlementID,
+			ProviderInvocationID:    result.providerInvocationID,
+			AttemptID:               result.attemptID,
+			RunID:                   result.run.RunID,
+			NodeRunID:               result.attempt.NodeRunID,
+			Outcome:                 settlementOutcome,
+			PrimaryEvidenceID:       evidence.EvidenceID,
+			FailureReasonCode:       strings.TrimSpace(outcome.ReasonCode),
+			FailureReasonText:       strings.TrimSpace(outcome.FailureText),
+			StructuredPayloadJSON:   "{}",
+			ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),
+			SettledAt:               settledAt,
 		})
 		return err
 	default:
@@ -366,6 +454,7 @@ func (o *orchestrationLoop) hydrateExecutionResultFromCanonicalSettlement(ctx co
 		result.providerInvocationID = strings.TrimSpace(settlement.ProviderInvocationID)
 		result.outputText = strings.TrimSpace(settlement.FinalText)
 		result.completionStructuredPayloadJSON = firstNonEmptyString(strings.TrimSpace(settlement.StructuredPayloadJSON), "{}")
+		result.providerDiagnosticsJSON = firstNonEmptyString(strings.TrimSpace(settlement.ProviderDiagnosticsJSON), strings.TrimSpace(result.providerDiagnosticsJSON), "{}")
 	}
 
 	lookupInvocationID := firstNonEmptyString(strings.TrimSpace(result.providerInvocationID), providerInvocationID)

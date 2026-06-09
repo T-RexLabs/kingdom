@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
@@ -160,9 +161,16 @@ var legalNodeTransitions = map[string]map[string]struct{}{
 		"cancelled": {},
 	},
 	"ready": {
+		"starting":  {},
+		"running":   {},
 		"succeeded": {},
 		"failed":    {},
+		"cancelled": {},
+	},
+	"starting": {
+		"blocked":   {},
 		"running":   {},
+		"failed":    {},
 		"cancelled": {},
 	},
 	"running": {
@@ -226,6 +234,12 @@ func (s *TransitionService) applyWithEffects(ctx context.Context, req Transition
 }
 
 func (s *TransitionService) applyWithEffectsWithOptions(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
+	return retrySQLiteBusy(ctx, func() error {
+		return s.applyWithEffectsWithOptionsOnce(ctx, req, effects, opts)
+	})
+}
+
+func (s *TransitionService) applyWithEffectsWithOptionsOnce(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
 	if !bypassesTransitionValidation(req) {
 		if err := validateTransition(req.Entity, req.FromState, req.ToState); err != nil {
 			return err
@@ -369,7 +383,7 @@ func (s *TransitionService) enforceTransitionInvariants(ctx context.Context, tx 
 		}
 	}
 
-	if req.Entity != EntityTypeNode || req.ToState != "running" || !req.NodeRunID.Valid {
+	if req.Entity != EntityTypeNode || (req.ToState != "starting" && req.ToState != "running") || !req.NodeRunID.Valid {
 		return nil
 	}
 
@@ -592,7 +606,15 @@ func (s *TransitionService) nodeClassSucceeded(ctx context.Context, tx *sql.Tx, 
 		`WITH latest_attempts AS (
 			SELECT nr.node_id,
 			       nr.node_status,
-			       ROW_NUMBER() OVER (PARTITION BY nr.node_id ORDER BY nr.attempt DESC, nr.node_run_id DESC) AS rn
+			       ROW_NUMBER() OVER (
+			         PARTITION BY nr.node_id
+			         ORDER BY CASE
+			           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+			           ELSE 1
+			         END ASC,
+			         nr.attempt DESC,
+			         nr.node_run_id DESC
+			       ) AS rn
 			FROM node_runs nr
 			JOIN workflow_runs wr ON wr.run_id = nr.run_id
 			JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
@@ -824,6 +846,25 @@ func (s *TransitionService) touchRunActivityTimestamp(ctx context.Context, tx *s
 	return nil
 }
 
+func markNodeAttemptSupersededTx(ctx context.Context, tx *sql.Tx, nodeRunID, supersededAt string) error {
+	if strings.TrimSpace(nodeRunID) == "" {
+		return fmt.Errorf("node_run_id is required")
+	}
+	if strings.TrimSpace(supersededAt) == "" {
+		supersededAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE node_runs
+		 SET superseded_at = ?
+		 WHERE node_run_id = ?`,
+		supersededAt,
+		strings.TrimSpace(nodeRunID),
+	); err != nil {
+		return fmt.Errorf("mark node attempt superseded: %w", err)
+	}
+	return nil
+}
+
 func (s *TransitionService) loadCurrentState(ctx context.Context, tx *sql.Tx, req TransitionRequest) (string, bool, error) {
 	var query string
 	var arg any
@@ -925,20 +966,28 @@ func (s *TransitionService) insertEvent(ctx context.Context, tx *sql.Tx, req Tra
 			return err
 		}
 	}
-
-	_ = MirrorEventToMailbox(ctx, tx, s.roleCommunicationPolicy, EventMailboxMirrorRequest{
-		EventID:     req.EventID,
-		RunID:       req.RunID,
-		NodeRunID:   req.NodeRunID,
-		FromState:   req.FromState,
-		ToState:     req.ToState,
-		AttemptID:   req.AttemptID,
-		EventType:   req.EventType,
-		PayloadJSON: req.PayloadJSON,
-		RoleID:      req.RoleID,
-		ReasonCode:  req.ReasonCode,
-		ReasonText:  req.ReasonText,
-		CreatedAt:   req.OccurredAt,
-	})
+	if err := persistAttemptExecutionProgressTx(ctx, tx, req.AttemptID, req.RunID, req.NodeRunID.String, req.EventType, req.ReasonCode, req.ToState, req.OccurredAt); err != nil {
+		return err
+	}
+	mailboxProjectionAllowed, err := nodeRunMailboxProjectionAllowedTx(ctx, tx, req.NodeRunID.String)
+	if err != nil {
+		return err
+	}
+	if mailboxProjectionAllowed {
+		_ = MirrorEventToMailbox(ctx, tx, s.roleCommunicationPolicy, EventMailboxMirrorRequest{
+			EventID:     req.EventID,
+			RunID:       req.RunID,
+			NodeRunID:   req.NodeRunID,
+			FromState:   req.FromState,
+			ToState:     req.ToState,
+			AttemptID:   req.AttemptID,
+			EventType:   req.EventType,
+			PayloadJSON: req.PayloadJSON,
+			RoleID:      req.RoleID,
+			ReasonCode:  req.ReasonCode,
+			ReasonText:  req.ReasonText,
+			CreatedAt:   req.OccurredAt,
+		})
+	}
 	return err
 }

@@ -28,5 +28,3 @@ Responsibilities:
 - Return precise, actionable rework guidance when gaps remain
 - Avoid rewriting the feature or re-running broad validation; focus on review clarity, decree conformance, and correction direction
 - For execution-review outcomes, the first non-empty line must be exactly: `VERDICT: PASS` or `VERDICT: REWORK`
-
-When the final review response is ready, call `kingdom_complete_attempt` exactly once with the matching verdict.

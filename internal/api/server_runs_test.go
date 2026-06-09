@@ -1592,6 +1592,114 @@ func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 	t.Fatal("expected delegated_execution_berserker node in graph response")
 }
 
+func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-06T10:01:00Z"
+	later := "2026-03-06T10:05:00Z"
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-blocked-visible', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-1', ?, 'delegated_execution_berserker', 1,1, 'blocked', 'builder-berserker', 'agent-graph-blocked-visible', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-2', ?, 'delegated_execution_berserker', 2,2, 'ready', 'builder-berserker', 'agent-graph-blocked-visible', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-blocked-visible-1', ?, 'nr-graph-blocked-visible-1', 'starting', 'provider_backed', '', NULL, 1, 'session-graph-blocked-visible-1', 'ses-graph-blocked-visible-1', ?, NULL, NULL, NULL, 'agent_unresponsive', 'blocked while retry is queued', ?, ?)`, runID, now, later, later)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-blocked-visible-2', ?, 'nr-graph-blocked-visible-2', 'queued', 'provider_backed', '', NULL, 1, 'session-graph-blocked-visible-2', '', NULL, NULL, NULL, NULL, '', '', ?, ?)`, runID, later, later)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/graph",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload struct {
+		Nodes []struct {
+			NodeID    string  `json:"node_id"`
+			State     string  `json:"state"`
+			NodeRunID *string `json:"node_run_id"`
+			Attempt   *int    `json:"attempt"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run graph response: %v", err)
+	}
+
+	for _, node := range payload.Nodes {
+		if node.NodeID != "delegated_execution_berserker" {
+			continue
+		}
+		if node.State != "blocked" {
+			t.Fatalf("expected blocked lineage to remain visible while retry is only queued, got %#v", node)
+		}
+		if node.NodeRunID == nil || *node.NodeRunID != "nr-graph-blocked-visible-1" {
+			t.Fatalf("expected blocked node_run_id to stay primary until retry launches, got %#v", node)
+		}
+		if node.Attempt == nil || *node.Attempt != 1 {
+			t.Fatalf("expected blocked attempt=1 to remain primary, got %#v", node)
+		}
+		return
+	}
+	t.Fatal("expected delegated_execution_berserker node in graph response")
+}
+
+func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-06T10:01:00Z"
+	later := "2026-03-06T10:05:00Z"
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-superseded-visible', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-superseded-visible-1', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-graph-superseded-visible', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr-graph-superseded-visible-2', ?, 'delegated_execution_berserker', 2,2, 'blocked', 'builder-berserker', 'agent-graph-superseded-visible', 1, ?, ?, ?)`, runID, later, later, later)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-superseded-visible-1', ?, 'nr-graph-superseded-visible-1', 'committed_success', 'provider_backed', '', NULL, 1, 'session-graph-superseded-visible-1', 'ses-graph-superseded-visible-1', ?, ?, ?, ?, '', '', ?, ?)`, runID, now, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-superseded-visible-2', ?, 'nr-graph-superseded-visible-2', 'committed_cancelled', 'provider_backed', '', NULL, 1, 'session-graph-superseded-visible-2', 'ses-graph-superseded-visible-2', ?, NULL, ?, ?, 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', ?, ?)`, runID, later, later, later, later, later, later)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/graph",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload struct {
+		Nodes []struct {
+			NodeID    string  `json:"node_id"`
+			State     string  `json:"state"`
+			NodeRunID *string `json:"node_run_id"`
+			Attempt   *int    `json:"attempt"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run graph response: %v", err)
+	}
+
+	for _, node := range payload.Nodes {
+		if node.NodeID != "delegated_execution_berserker" {
+			continue
+		}
+		if node.State != "blocked" {
+			t.Fatalf("expected superseded blocked lineage to remain visible until cancel drain, got %#v", node)
+		}
+		if node.NodeRunID == nil || *node.NodeRunID != "nr-graph-superseded-visible-2" {
+			t.Fatalf("expected superseded blocked node_run_id to remain visible, got %#v", node)
+		}
+		if node.Attempt == nil || *node.Attempt != 2 {
+			t.Fatalf("expected superseded blocked attempt=2 to remain visible, got %#v", node)
+		}
+		return
+	}
+	t.Fatal("expected delegated_execution_berserker node in graph response")
+}
+
 func TestServerRunPlanSnapshotReturnsLatestPlanDraftingResponse(t *testing.T) {
 	t.Parallel()
 
@@ -2694,6 +2802,7 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 			LogicalSessionID  *string `json:"logical_session_id"`
 			ProviderSessionID *string `json:"provider_session_id"`
 			LastHeartbeatAt   *string `json:"last_heartbeat_at"`
+			QueuedAt          string  `json:"queued_at"`
 			ActivityAt        string  `json:"activity_at"`
 			FailureCode       *string `json:"failure_code"`
 			FailureText       *string `json:"failure_text"`
@@ -2728,6 +2837,9 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	if payload.Items[0].ActivityAt != now {
 		t.Fatalf("expected provider-backed activity_at to match latest execution activity, got %#v", payload.Items[0].ActivityAt)
 	}
+	if payload.Items[0].QueuedAt != now {
+		t.Fatalf("expected provider-backed queued_at to match attempt creation, got %#v", payload.Items[0].QueuedAt)
+	}
 
 	if payload.Items[1].AttemptID != runID+`:execution_kickoff:1` {
 		t.Fatalf("expected runtime-owned execution second, got %#v", payload.Items[1])
@@ -2740,6 +2852,9 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	}
 	if payload.Items[1].ActivityAt != earlier {
 		t.Fatalf("expected runtime-owned activity_at to match durable row activity, got %#v", payload.Items[1].ActivityAt)
+	}
+	if payload.Items[1].QueuedAt != earlier {
+		t.Fatalf("expected runtime-owned queued_at to match attempt creation, got %#v", payload.Items[1].QueuedAt)
 	}
 	if payload.Items[1].FailureCode == nil || *payload.Items[1].FailureCode != "execution_setup_failed" {
 		t.Fatalf("expected failure code, got %#v", payload.Items[1].FailureCode)
@@ -2802,6 +2917,35 @@ func TestServerListRunExecutionsUsesVerifyingStatusForPendingSettlement(t *testi
 	}
 	if payload.Items[0].Status != "verifying" {
 		t.Fatalf("expected verifying status, got %#v", payload.Items[0].Status)
+	}
+}
+
+func TestServerListRunExecutionsUsesBlockedStatusFromNodeState(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-blocked', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-blocked', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-blocked', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-builder-blocked', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-builder-blocked', 'ses-builder-blocked', ?, ?, ?, ?, 'dependency_blocked', 'validator blocked', ?, ?)`, runID, now, now, now, now, now, now)
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload struct {
+		Items []struct {
+			Status string `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode blocked run executions payload: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Status != "blocked" {
+		t.Fatalf("expected blocked execution status, got %#v", payload.Items)
 	}
 }
 
@@ -2988,6 +3132,54 @@ func TestServerGetRunExecutionReturnsPendingObservedOutputDetail(t *testing.T) {
 	}
 	if payload.SettlementDetail != nil {
 		t.Fatalf("expected pending settlement detail to be omitted when no reason exists, got %#v", payload.SettlementDetail)
+	}
+}
+
+func TestServerGetRunExecutionReturnsDurableProgressFields(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+	attemptID := runID + `:execution_review_shieldmaiden:1`
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-progress-detail', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-progress-detail', ?, 'execution_review_shieldmaiden', 1,1, 'starting', 'reviewer-shieldmaiden', 'agent-review-progress-detail', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, progress_event_type, progress_reason_code, progress_at, created_at, updated_at) VALUES (?, ?, 'nr-review-progress-detail', 'starting', 'provider_backed', '', NULL, 1, 'session-review-progress-detail', '', ?, NULL, NULL, NULL, '', '', 'attempt.progress', 'provider_invoked', ?, ?, ?)`, attemptID, runID, now, now, now, now)
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload struct {
+		Status             string  `json:"status"`
+		ProgressEventType  *string `json:"progress_event_type"`
+		ProgressReasonCode *string `json:"progress_reason_code"`
+		ProgressAt         *string `json:"progress_at"`
+		LaunchStartedAt    *string `json:"launch_started_at"`
+		QueuedAt           string  `json:"queued_at"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run execution progress detail payload: %v", err)
+	}
+	if payload.ProgressEventType == nil || *payload.ProgressEventType != "attempt.progress" {
+		t.Fatalf("expected progress_event_type attempt.progress, got %#v", payload.ProgressEventType)
+	}
+	if payload.Status != "running" {
+		t.Fatalf("expected provider_invoked progress to surface running status, got %q", payload.Status)
+	}
+	if payload.ProgressReasonCode == nil || *payload.ProgressReasonCode != "provider_invoked" {
+		t.Fatalf("expected progress_reason_code provider_invoked, got %#v", payload.ProgressReasonCode)
+	}
+	if payload.ProgressAt == nil || *payload.ProgressAt != now {
+		t.Fatalf("expected progress_at %q, got %#v", now, payload.ProgressAt)
+	}
+	if payload.LaunchStartedAt == nil || *payload.LaunchStartedAt != now {
+		t.Fatalf("expected launch_started_at %q, got %#v", now, payload.LaunchStartedAt)
+	}
+	if payload.QueuedAt != now {
+		t.Fatalf("expected queued_at %q, got %#v", now, payload.QueuedAt)
 	}
 }
 

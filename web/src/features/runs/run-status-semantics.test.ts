@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attemptEventIconKey, liveExecutionLabel, timelineEventTone } from "./run-status-semantics";
+import { attemptEventIconKey, attemptEventLabelFragment, liveExecutionLabel, operatorExecutionStatusText, timelineEventTone } from "./run-status-semantics";
 
 describe("run status semantics", () => {
 	it("treats run cancellations as cancelled instead of failed", () => {
@@ -27,5 +27,20 @@ describe("run status semantics", () => {
 			payload_json: {},
 		})).toBe("alert");
 		expect(liveExecutionLabel("provider_invoked", "attempt.progress")).toBe("Provider running");
+		expect(liveExecutionLabel(undefined, "attempt.recovered", "blocked")).toBe("Blocked for retry");
+		expect(attemptEventLabelFragment({
+			event_type: "attempt.recovered",
+			reason_code: undefined,
+			payload_json: { state: "blocked" },
+		})).toBe("blocked for retry");
+	});
+
+	it("distinguishes launching, running, and verifying operator copy", () => {
+		expect(operatorExecutionStatusText("starting")).toBe("This step is launching now.");
+		expect(operatorExecutionStatusText("running")).toBe("This step is still running.");
+		expect(operatorExecutionStatusText("blocked")).toBe("This step is blocked while Kingdom decides or performs recovery.");
+		expect(operatorExecutionStatusText("blocked", "Blocked for retry")).toBe("This step is blocked while Kingdom decides or performs recovery.");
+		expect(operatorExecutionStatusText("running", "Retry exhausted")).toBe("Kingdom exhausted provider retries for this step.");
+		expect(operatorExecutionStatusText("verifying")).toBe("Kingdom is still confirming the final result for this step.");
 	});
 });

@@ -12,9 +12,9 @@ pnpm-debug.log*
 .make/
 .tmp/
 bin/
-kd
-kingdomd
-*__pycache__
+/kd
+/kingdomd
+__pycache__/
 kd-sandbox/
 web/dist/
 .claude

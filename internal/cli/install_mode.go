@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -51,6 +52,18 @@ const (
 	summonStopPollInterval        = 120 * time.Millisecond
 	summonStopSettleGrace         = 1200 * time.Millisecond
 )
+
+var sqliteConnectionPragmas = []string{
+	"busy_timeout(5000)",
+	"foreign_keys(ON)",
+	"journal_mode(WAL)",
+	"synchronous(NORMAL)",
+}
+
+type sqlitePoolOptions struct {
+	MaxOpenConns int
+	MaxIdleConns int
+}
 
 var errSummonForcedShutdown = errors.New("summon forced shutdown")
 
@@ -210,8 +223,9 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 }
 
 func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) error {
+	args = normalizeSummonCommandArgs(args)
 	if len(args) == 0 {
-		return runSummonServe(ctx, stdout, stderr, []string{})
+		return runSummonServe(ctx, stdout, stderr, []string{"--detach"})
 	}
 
 	switch args[0] {
@@ -224,6 +238,24 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 	default:
 		return runSummonServe(ctx, stdout, stderr, args)
 	}
+}
+
+func normalizeSummonCommandArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "serve", "status", "stop":
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--detach" || strings.HasPrefix(arg, "--detach=") {
+			return args
+		}
+	}
+	normalized := make([]string, 0, len(args)+1)
+	normalized = append(normalized, "--detach")
+	return append(normalized, args...)
 }
 
 func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
@@ -270,7 +302,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		return err
 	}
 
-	db, err := sql.Open("sqlite", cfg.DBPath)
+	db, err := openSQLiteDatabase(cfg.DBPath, sqlitePoolOptions{MaxOpenConns: 4, MaxIdleConns: 4})
 	if err != nil {
 		return fmt.Errorf("open sqlite database: %w", err)
 	}
@@ -281,12 +313,6 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		}
 		_ = db.Close()
 	}()
-	db.SetMaxOpenConns(1)
-
-	if err := configureSQLiteConnection(ctx, db); err != nil {
-		return err
-	}
-
 	skipPermissions := true
 	if cfg.Provider.SkipPermissions != nil {
 		skipPermissions = *cfg.Provider.SkipPermissions
@@ -1397,16 +1423,11 @@ func ensureDatabaseSchema(dbPath string) error {
 		return fmt.Errorf("create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := openSQLiteDatabase(dbPath, sqlitePoolOptions{MaxOpenConns: 1, MaxIdleConns: 1})
 	if err != nil {
 		return fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
-
-	if err := configureSQLiteConnection(context.Background(), db); err != nil {
-		return err
-	}
 
 	migrationNames, err := dbmigrations.List()
 	if err != nil {
@@ -1428,28 +1449,50 @@ func ensureDatabaseSchema(dbPath string) error {
 	return nil
 }
 
-func configureSQLiteConnection(ctx context.Context, db *sql.DB) error {
-	if ctx == nil {
-		ctx = context.Background()
+func openSQLiteDatabase(dbPath string, pool sqlitePoolOptions) (*sql.DB, error) {
+	dsn, err := sqliteDSN(dbPath)
+	if err != nil {
+		return nil, err
 	}
-	if db == nil {
-		return fmt.Errorf("configure sqlite connection: db is nil")
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if pool.MaxOpenConns > 0 {
+		db.SetMaxOpenConns(pool.MaxOpenConns)
+	}
+	if pool.MaxIdleConns > 0 {
+		db.SetMaxIdleConns(pool.MaxIdleConns)
+	}
+	return db, nil
+}
+
+func sqliteDSN(dbPath string) (string, error) {
+	trimmedPath := strings.TrimSpace(dbPath)
+	if trimmedPath == "" {
+		return "", fmt.Errorf("sqlite database path is required")
 	}
 
-	for _, pragma := range []struct {
-		statement   string
-		description string
-	}{
-		{statement: `PRAGMA busy_timeout = 5000`, description: "set sqlite busy timeout"},
-		{statement: `PRAGMA foreign_keys = ON`, description: "enable sqlite foreign keys"},
-		{statement: `PRAGMA journal_mode = WAL`, description: "enable sqlite WAL mode"},
-		{statement: `PRAGMA synchronous = NORMAL`, description: "set sqlite synchronous mode"},
-	} {
-		if _, err := db.ExecContext(ctx, pragma.statement); err != nil {
-			return fmt.Errorf("%s: %w", pragma.description, err)
+	var sqliteURL *url.URL
+	switch {
+	case strings.HasPrefix(trimmedPath, "file:"):
+		parsed, err := url.Parse(trimmedPath)
+		if err != nil {
+			return "", fmt.Errorf("parse sqlite dsn %q: %w", trimmedPath, err)
 		}
+		sqliteURL = parsed
+	case trimmedPath == ":memory:":
+		sqliteURL = &url.URL{Scheme: "file", Opaque: ":memory:"}
+	default:
+		sqliteURL = &url.URL{Scheme: "file", Path: trimmedPath}
 	}
-	return nil
+
+	query := sqliteURL.Query()
+	for _, pragma := range sqliteConnectionPragmas {
+		query.Add("_pragma", pragma)
+	}
+	sqliteURL.RawQuery = query.Encode()
+	return sqliteURL.String(), nil
 }
 
 func acquirePIDFile(path string) (func(), error) {

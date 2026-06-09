@@ -7,7 +7,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import type { ActivityStepGroup } from "./run-activity-selection";
 import { RunExecutionsPanel } from "./run-executions-panel";
-import { executionDisplayStatus, isActiveExecutionStatus, isCurrentActivityExecutionStatus, isQueuedExecutionStatus, operatorLiveExecutionLabel } from "./run-status-semantics";
+import { executionDisplayStatus, executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isCurrentActivityExecutionStatus, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { TimelinePanel } from "./timeline-panel";
 
 export function RunExecutionSurface({
@@ -58,8 +58,14 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents: boolean;
 }) {
 	const [timelineOpen, setTimelineOpen] = useState(false);
-	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId) ?? stepGroups[0] ?? null;
-	const currentExecution = currentStepGroup?.attempts.find((item) => item.attempt_id === selectedAttemptId) ?? currentStepGroup?.attempts[0] ?? null;
+	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId)
+		?? (selectedAttemptSource === "manual" ? null : stepGroups[0] ?? null);
+	const currentExecution = currentStepGroup
+		? currentStepGroup.attempts.find((item) => item.attempt_id === selectedAttemptId)
+			?? currentStepGroup.attempts.find((item) => item.attempt_id === currentStepGroup.preferredAttemptId)
+			?? currentStepGroup.attempts[0]
+			?? null
+		: null;
 	const primaryExecutionErrorVisible = showPrimaryExecutionError && typeof executionsErrorMessage === "string" && executionsErrorMessage.trim() !== "";
 	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(currentExecution, detail);
 	const summary = executionSummary(run, currentExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);
@@ -260,6 +266,12 @@ function executionSummary(
 
 	const title = nodeLabel(execution.node_id);
 	const state = execution.status;
+	const progressLabel = executionProgressLabel(
+		state,
+		detail?.progress_reason_code,
+		detail?.progress_event_type,
+		detail?.live_signal?.live_label,
+	);
 
 	if (displayStatus === "rework") {
 		return { title, body: "Changes were requested for this step." };
@@ -270,17 +282,23 @@ function executionSummary(
 	if (detail?.settlement_status === "pending") {
 		return {
 			title,
-			body: operatorLiveExecutionLabel(detail.live_signal?.live_label) ?? "Kingdom is still confirming the final result for this step.",
+			body: operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
 		};
 	}
 	if (isQueuedExecutionStatus(state)) {
 		return {
 			title,
-			body: operatorLiveExecutionLabel(detail?.live_signal?.live_label) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is queued to start.",
 		};
 	}
 	if (isActiveExecutionStatus(state)) {
-		return { title, body: "This is the step currently in motion." };
+		return { title, body: operatorExecutionStatusText(state, progressLabel) ?? "This step is still running." };
+	}
+	if (isBlockedExecutionStatus(state)) {
+		return {
+			title,
+			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+		};
 	}
 	if (state === "failed") {
 		return {
@@ -316,5 +334,8 @@ function selectedExecutionDisplayStatus(
 }
 
 function plainStatus(status: string): string {
+	if (status === "starting") {
+		return "Launching";
+	}
 	return status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

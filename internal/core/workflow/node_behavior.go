@@ -89,6 +89,14 @@ func BehaviorForNode(nodeID, nodeClass string) NodeBehavior {
 			ProjectArtifacts:            false,
 			IncludeInExecutionAnalytics: false,
 		}
+	case NodeClassAdvisorConsultation, NodeClassAdvisorySynthesis, NodeClassPlanDrafting:
+		return NodeBehavior{
+			ExecutionOwnership:          NodeExecutionOwnershipProviderBacked,
+			RequiresWorkspace:           false,
+			ArtifactPersistence:         NodeArtifactPersistenceDirect,
+			ProjectArtifacts:            true,
+			IncludeInExecutionAnalytics: true,
+		}
 	default:
 		return NodeBehavior{
 			ExecutionOwnership:          NodeExecutionOwnershipProviderBacked,

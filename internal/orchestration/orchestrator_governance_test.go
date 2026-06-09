@@ -112,6 +112,27 @@ func TestAdvancePlanProjectionReachesAwaitingKingDecisionAfterPlanDraftingSucces
 	}
 }
 
+func TestCanAdvanceToKingDecisionUsesCanonicalNonSupersededPlanAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedPlanProjectionRun(t, db)
+
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_member', 'council-member', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_projection_2', 'wfdef_plan_projection', 'plan_drafting', 'council-member', 'plan_drafting', '`+governanceTestNowRFC3339+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_plan_projection_plan_1', 'run_plan_projection', 'plan_drafting', 1, 1, 'succeeded', 'council-member', 'agent_council_member', 1, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_plan_projection_plan_2', 'run_plan_projection', 'plan_drafting', 2, 2, 'cancelled', 'council-member', 'agent_council_member', 1, NULL, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
+
+	loop := newGovernanceLoopForTest(db)
+	nodes := []nodeDefinition{{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"}}
+	nodeIDs := map[string]struct{}{"plan_drafting": {}}
+
+	if !loop.canAdvanceToKingDecision(context.Background(), "run_plan_projection", nodes, nodeIDs) {
+		t.Fatal("expected king decision gate to use the canonical non-superseded succeeded plan attempt")
+	}
+}
+
 func TestAutoAdvanceKingDecisionSkipsWhenAutonomousApprovalsDisabled(t *testing.T) {
 	t.Parallel()
 

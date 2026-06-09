@@ -385,13 +385,14 @@ func (m *SessionManager) FindStaleLeases(ctx context.Context, req FindStaleSessi
 	}
 
 	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339)
-
-	rows, err := m.db.QueryContext(ctx,
-		`SELECT session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at
+	query := fmt.Sprintf(`SELECT session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at
 		 FROM session_leases
 		 WHERE status = 'active'
-		   AND (last_heartbeat_at <= ? OR lease_expires_at <= ?)
-		 ORDER BY session_id ASC`,
+		   AND %s
+		 ORDER BY session_id ASC`, staleActiveSessionLeaseConditionSQL("session_leases"))
+
+	rows, err := m.db.QueryContext(ctx,
+		query,
 		cutoff,
 		nowTime.UTC().Format(time.RFC3339),
 	)
@@ -422,6 +423,19 @@ func (m *SessionManager) FindStaleLeases(ctx context.Context, req FindStaleSessi
 	}
 
 	return leases, nil
+}
+
+func staleActiveSessionLeaseConditionSQL(tableAlias string) string {
+	trimmedAlias := tableAlias
+	if trimmedAlias == "" {
+		trimmedAlias = "session_leases"
+	}
+	return fmt.Sprintf(`(
+		COALESCE(TRIM(%[1]s.last_heartbeat_at), '') = '' OR
+		%[1]s.last_heartbeat_at <= ? OR
+		COALESCE(TRIM(%[1]s.lease_expires_at), '') = '' OR
+		%[1]s.lease_expires_at <= ?
+	)`, trimmedAlias)
 }
 
 func (m *SessionManager) ReconcileStaleLeases(ctx context.Context, req FindStaleSessionLeasesRequest) ([]SessionLease, error) {

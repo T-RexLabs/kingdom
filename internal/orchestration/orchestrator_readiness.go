@@ -220,7 +220,15 @@ WITH latest_wave_attempts AS (
 	FROM (
 		SELECT nr.node_id,
 		       nr.node_status,
-		       ROW_NUMBER() OVER (PARTITION BY nr.node_id, nr.wave ORDER BY nr.attempt DESC, nr.node_run_id DESC) AS rn
+		       ROW_NUMBER() OVER (
+		         PARTITION BY nr.node_id, nr.wave
+		         ORDER BY CASE
+		           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+		           ELSE 1
+		         END ASC,
+		         nr.attempt DESC,
+		         nr.node_run_id DESC
+		       ) AS rn
 		FROM node_runs nr
 		JOIN workflow_runs wr ON wr.run_id = nr.run_id
 		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
@@ -255,7 +263,15 @@ WITH latest_wave_attempts AS (
 	FROM (
 		SELECT nr.node_id,
 		       nr.node_status,
-		       ROW_NUMBER() OVER (PARTITION BY nr.node_id, nr.wave ORDER BY nr.attempt DESC, nr.node_run_id DESC) AS rn
+		       ROW_NUMBER() OVER (
+		         PARTITION BY nr.node_id, nr.wave
+		         ORDER BY CASE
+		           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+		           ELSE 1
+		         END ASC,
+		         nr.attempt DESC,
+		         nr.node_run_id DESC
+		       ) AS rn
 		FROM node_runs nr
 		JOIN workflow_runs wr ON wr.run_id = nr.run_id
 		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
@@ -421,7 +437,15 @@ WITH latest_attempts AS (
 		SELECT nr.node_id,
 		       nr.wave,
 		       nr.node_status,
-		       ROW_NUMBER() OVER (PARTITION BY nr.node_id, nr.wave ORDER BY nr.attempt DESC, nr.node_run_id DESC) AS rn
+		       ROW_NUMBER() OVER (
+		         PARTITION BY nr.node_id, nr.wave
+		         ORDER BY CASE
+		           WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+		           ELSE 1
+		         END ASC,
+		         nr.attempt DESC,
+		         nr.node_run_id DESC
+		       ) AS rn
 		FROM node_runs nr
 		WHERE nr.run_id = ?
 		  AND nr.node_id IN (%s)

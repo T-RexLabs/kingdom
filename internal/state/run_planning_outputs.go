@@ -148,6 +148,75 @@ func insertRunPlanningOutput(ctx context.Context, exec sqlExecutor, req CreateRu
 	return row, nil
 }
 
+func persistRunPlanningOutputTx(ctx context.Context, tx *sql.Tx, db *sql.DB, req CreateRunPlanningOutputRequest) error {
+	if tx == nil {
+		return fmt.Errorf("run planning output transaction is required")
+	}
+	if db == nil {
+		return fmt.Errorf("run planning output database is required")
+	}
+	if err := validateRunPlanningOutputLineageTx(ctx, tx, req); err != nil {
+		return err
+	}
+
+	output, err := insertRunPlanningOutput(ctx, tx, req)
+	if err != nil {
+		if !IsUniqueViolation(err) {
+			return err
+		}
+		existing, found, loadErr := loadRunPlanningOutputByIDTx(ctx, tx, req.PlanningOutputID)
+		if loadErr != nil {
+			return loadErr
+		}
+		if !found {
+			return err
+		}
+		if !runPlanningOutputMatchesRequest(existing, req) {
+			return fmt.Errorf("planning output %q already exists with different content", strings.TrimSpace(req.PlanningOutputID))
+		}
+		output = existing
+	}
+
+	if output.Kind != RunPlanningOutputKindPlanRevision {
+		return nil
+	}
+	_, _, err = NewRunPlanRevisionStore(db).refreshCurrentRunPlanRevisionTx(ctx, tx, output.RunID)
+	return err
+}
+
+func loadRunPlanningOutputByIDTx(ctx context.Context, tx *sql.Tx, planningOutputID string) (RunPlanningOutput, bool, error) {
+	if tx == nil {
+		return RunPlanningOutput{}, false, fmt.Errorf("run planning output transaction is required")
+	}
+	var item RunPlanningOutput
+	err := scanRunPlanningOutput(tx.QueryRowContext(ctx,
+		`SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at
+		 FROM run_planning_outputs
+		 WHERE planning_output_id = ?`,
+		strings.TrimSpace(planningOutputID),
+	), &item)
+	if err == sql.ErrNoRows {
+		return RunPlanningOutput{}, false, nil
+	}
+	if err != nil {
+		return RunPlanningOutput{}, false, fmt.Errorf("load run planning output %q: %w", strings.TrimSpace(planningOutputID), err)
+	}
+	return item, true, nil
+}
+
+func runPlanningOutputMatchesRequest(output RunPlanningOutput, req CreateRunPlanningOutputRequest) bool {
+	return strings.TrimSpace(output.PlanningOutputID) == strings.TrimSpace(req.PlanningOutputID) &&
+		strings.TrimSpace(output.RunID) == strings.TrimSpace(req.RunID) &&
+		strings.TrimSpace(output.NodeID) == strings.TrimSpace(req.NodeID) &&
+		strings.TrimSpace(output.NodeRunID) == strings.TrimSpace(req.NodeRunID) &&
+		strings.TrimSpace(output.AttemptID) == strings.TrimSpace(req.AttemptID) &&
+		strings.TrimSpace(output.AgentID) == strings.TrimSpace(req.AgentID) &&
+		strings.TrimSpace(output.SourceMessageID) == strings.TrimSpace(req.SourceMessageID) &&
+		output.Kind == req.Kind &&
+		strings.TrimSpace(output.ContentMarkdown) == strings.TrimSpace(req.ContentMarkdown) &&
+		strings.TrimSpace(output.CreatedAt) == strings.TrimSpace(req.CreatedAt)
+}
+
 func validateRunPlanningOutputLineageTx(ctx context.Context, tx *sql.Tx, req CreateRunPlanningOutputRequest) error {
 	if tx == nil {
 		return fmt.Errorf("run planning output transaction is required")

@@ -42,7 +42,7 @@ func NewArtifactService(db *sql.DB) *ArtifactService {
 func (s *ArtifactService) GetArtifact(ctx context.Context, artifactID string) (ArtifactRecord, error) {
 	var record ArtifactRecord
 	err := s.db.QueryRowContext(ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at
+		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
 		 FROM artifacts
 		 WHERE artifact_id = ?`,
 		artifactID,
@@ -52,6 +52,7 @@ func (s *ArtifactService) GetArtifact(ctx context.Context, artifactID string) (A
 		&record.NodeRunID,
 		&record.AttemptID,
 		&record.ArtifactKind,
+		&record.ArtifactAction,
 		&record.Name,
 		&record.MIME,
 		&record.Path,
@@ -72,7 +73,7 @@ func (s *ArtifactService) GetArtifact(ctx context.Context, artifactID string) (A
 
 func (s *ArtifactService) ListRunArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at
+		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
 		 FROM artifacts
 		 WHERE run_id = ?
 		 ORDER BY
@@ -95,6 +96,7 @@ func (s *ArtifactService) ListRunArtifacts(ctx context.Context, runID string) ([
 			&record.NodeRunID,
 			&record.AttemptID,
 			&record.ArtifactKind,
+			&record.ArtifactAction,
 			&record.Name,
 			&record.MIME,
 			&record.Path,
@@ -119,7 +121,7 @@ func (s *ArtifactService) ResolveArtifactContentPath(ctx context.Context, artifa
 	var workspacePath string
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at, w.workspace_path
+		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.artifact_action, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at, w.workspace_path
 		 FROM artifacts a
 		 JOIN workspaces w ON w.run_id = a.run_id AND w.node_run_id = a.node_run_id
 		 WHERE a.artifact_id = ?
@@ -132,6 +134,7 @@ func (s *ArtifactService) ResolveArtifactContentPath(ctx context.Context, artifa
 		&record.NodeRunID,
 		&record.AttemptID,
 		&record.ArtifactKind,
+		&record.ArtifactAction,
 		&record.Name,
 		&record.MIME,
 		&record.Path,
@@ -206,7 +209,7 @@ func (s *ArtifactService) lookupStoredArtifactContent(ctx context.Context, artif
 	var contentSize int64
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at,
+		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.artifact_action, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at,
 		        ac.content, ac.sha256, ac.size_bytes
 		 FROM artifacts a
 		 JOIN artifact_contents ac ON ac.artifact_id = a.artifact_id
@@ -218,6 +221,7 @@ func (s *ArtifactService) lookupStoredArtifactContent(ctx context.Context, artif
 		&record.NodeRunID,
 		&record.AttemptID,
 		&record.ArtifactKind,
+		&record.ArtifactAction,
 		&record.Name,
 		&record.MIME,
 		&record.Path,

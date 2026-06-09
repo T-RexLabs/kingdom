@@ -62,6 +62,38 @@ func TestRefreshCurrentRunPlanRevisionRejectsProjectionDrift(t *testing.T) {
 	}
 }
 
+func TestCurrentRunPlanRevisionUsesCanonicalNonSupersededPlanAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_state', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_state', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_plan_state_1', 'run_1', 'plan_drafting', 1, 1, 'succeeded', 'council-member', 'agent_council_state', 1, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_plan_state_2', 'run_1', 'plan_drafting', 2, 2, 'cancelled', 'council-member', 'agent_council_state', 1, NULL, '2026-03-01T12:06:00Z', '2026-03-01T12:06:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:1', 'run_1', 'nr_plan_state_1', 'committed_success', '', NULL, 0, '', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', '', '', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_state_2', 'committed_cancelled', '', NULL, 0, '', NULL, NULL, '2026-03-01T12:06:00Z', '2026-03-01T12:06:00Z', 'superseded_before_launch', 'superseded before launch', '2026-03-01T12:06:00Z', '2026-03-01T12:06:00Z')`)
+	mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_canonical_1', 'run_1', 'plan_drafting', 'nr_plan_state_1', 'run_1:plan_drafting:1', 'agent_council_state', '', 'plan_revision', 'Canonical earlier plan', '2026-03-01T12:05:00Z')`)
+
+	store := NewRunPlanRevisionStore(db)
+	revision, ok, err := store.CurrentRunPlanRevision(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load current run plan revision: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected current run plan revision from canonical non-superseded attempt")
+	}
+	if revision.ContentMarkdown != "Canonical earlier plan" {
+		t.Fatalf("expected canonical earlier plan content, got %q", revision.ContentMarkdown)
+	}
+	if len(revision.Components) != 1 || revision.Components[0].NodeRunID != "nr_plan_state_1" {
+		t.Fatalf("expected revision to point at non-superseded node run nr_plan_state_1, got %+v", revision.Components)
+	}
+}
+
 func seedStatePlanRevisionOutput(t *testing.T, db *sql.DB, planningOutputID, content, createdAt string) {
 	t.Helper()
 

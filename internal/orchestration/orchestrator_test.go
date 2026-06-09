@@ -13,7 +13,7 @@ import (
 	"kingdom/internal/workspace"
 )
 
-func TestBuildNodePromptIsRoleAwareAndMetadataFirst(t *testing.T) {
+func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
@@ -27,25 +27,49 @@ func TestBuildNodePromptIsRoleAwareAndMetadataFirst(t *testing.T) {
 	if strings.Contains(prompt, "write or edit concrete files in the current workspace") {
 		t.Fatalf("expected universal write mandate removed from prompt, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Execution Metadata:") {
-		t.Fatalf("expected execution metadata block in prompt, got:\n%s", prompt)
+	for _, expected := range []string{"System Role:", "Kingdom Rules:", "Run Context:", "Final Checks:", "Current Assignment:", "Current Decree:"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
+		}
 	}
-	if !strings.Contains(prompt, "RoleID: king") {
-		t.Fatalf("expected role id context in prompt, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Call `kingdom_complete_attempt` exactly once when your final response is complete.") {
+		t.Fatalf("expected final checks completion reminder, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "DelegatorRoleID: chancellor") {
-		t.Fatalf("expected delegator role context in prompt, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Put the full final canonical response in `final_text`.") {
+		t.Fatalf("expected final checks final_text reminder, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "DelegatorInstruction:") {
-		t.Fatalf("expected delegator instruction section in prompt, got:\n%s", prompt)
+	for _, forbidden := range []string{
+		"Use the tool's default `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided.",
+		"Do not edit, replace, or reuse those fields from another node, attempt, retry, or prior message.",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("expected stale handshake guidance removed from prompt, found %q in:\n%s", forbidden, prompt)
+		}
 	}
-	if !strings.Contains(prompt, "ApprovedPlan:") {
+	if !strings.Contains(prompt, "- Assignment: Decree Intake") {
+		t.Fatalf("expected plain-language assignment in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "- Upstream Role: Chancellor") {
+		t.Fatalf("expected upstream role context in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Upstream Guidance:") {
+		t.Fatalf("expected upstream guidance section in prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Approved Plan:") {
 		t.Fatalf("expected approved plan section in prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "\n\n----\n\n") {
 		t.Fatalf("expected grouped section separator in prompt, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "PlanningGuardrail:") {
+	if strings.Contains(prompt, "PlanningGuardrail:") || strings.Contains(prompt, "Execution Metadata:") || strings.Contains(prompt, "DelegatorInstruction:") || strings.Contains(prompt, "ApprovedPlan:") {
+		t.Fatalf("expected legacy prompt labels removed, got:\n%s", prompt)
+	}
+	for _, forbidden := range []string{"RunID:", "NodeID:", "NodeRunID:", "RoleID:", "NodeClass:", "DelegatorRoleID:"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("expected raw execution metadata %q to be omitted, got:\n%s", forbidden, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected non-planning node prompt to omit planning guardrail section, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "PriorWithholdContext:") {
@@ -65,7 +89,7 @@ func TestBuildNodePromptIsRoleAwareAndMetadataFirst(t *testing.T) {
 	}
 }
 
-func TestBuildNodePromptValidationGateIncludesHydratedMetadataAndDelegatorInstruction(t *testing.T) {
+func TestBuildNodePromptValidationGateIncludesDelegatorInstructionWithoutHydratedMetadata(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
@@ -73,10 +97,10 @@ func TestBuildNodePromptValidationGateIncludesHydratedMetadataAndDelegatorInstru
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "validation_gates_qa_scout", "nr_1", "intelligence-qa-scout", "validation_gates", "Build a homepage", "chancellor", "Approved plan content", "Check the delivered homepage end-to-end and report verdict.", "")
 
-	if !strings.Contains(prompt, "HydratedArtifactsPath: hydrated/") {
-		t.Fatalf("expected hydrated artifacts metadata path in validation prompt, got:\n%s", prompt)
+	if strings.Contains(prompt, "HydratedArtifactsPath:") {
+		t.Fatalf("expected hydrated artifacts metadata to be removed from validation prompt, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "DelegatorInstruction:") || !strings.Contains(prompt, "Check the delivered homepage end-to-end and report verdict.") {
+	if !strings.Contains(prompt, "Upstream Guidance:") || !strings.Contains(prompt, "Check the delivered homepage end-to-end and report verdict.") {
 		t.Fatalf("expected delegator instruction body in validation prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Approved plan content") {
@@ -95,17 +119,39 @@ func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_drafting", "nr_1", "council-member", "plan_drafting", "Build a homepage", "chancellor", "Approved plan content", "Refine scope and acceptance criteria.", "prior context")
 
-	if !strings.Contains(prompt, "PlanningGuardrail:") {
+	if !strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected planning guardrail section in planning prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Do not claim completed implementation work.") {
 		t.Fatalf("expected planning guardrail instruction text, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Response-Only Constraints:") {
+		t.Fatalf("expected response-first workspace guardrail section in planning prompt, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Do not create, edit, rename, or delete project files for this node") {
+		t.Fatalf("expected response-first workspace guardrail text, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "PriorWithholdContext:") {
 		t.Fatalf("expected planning prompt to omit legacy withhold context section, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "\n\n----\n\n") {
 		t.Fatalf("expected grouped section separator in planning prompt, got:\n%s", prompt)
+	}
+}
+
+func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "advisor_consultation_noble", "nr_1", "noble-delegate", "advisor_consultation", "Build a homepage", "king", "Approved plan content", "Advise on scope and risk.", "")
+
+	if !strings.Contains(prompt, "Response-Only Constraints:") {
+		t.Fatalf("expected advisor prompt to include response-first workspace guardrail, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Planning Constraints:") {
+		t.Fatalf("expected advisor prompt to omit planning guardrail section, got:\n%s", prompt)
 	}
 }
 
@@ -117,7 +163,7 @@ func TestBuildNodePromptExecutionKickoffOmitsPlanningGuardrail(t *testing.T) {
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_kickoff", "nr_1", "council-member", "execution_kickoff", "Build a homepage", "king", "Approved plan content", "Authorize execution kickoff and delegation framing.", "prior context")
 
-	if strings.Contains(prompt, "PlanningGuardrail:") {
+	if strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected execution kickoff prompt to omit planning guardrail section, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "PriorWithholdContext:") {
@@ -147,10 +193,10 @@ func TestBuildNodePromptNonOwnerNodeSanitizesControlCommandLines(t *testing.T) {
 	if regexp.MustCompile(`(?im)^\s*(ROYAL_VERDICT|VERDICT)\s*:`).MatchString(prompt) {
 		t.Fatalf("expected non-owner prompt sections to strip control command lines, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "NodeResponseContract:") {
+	if strings.Contains(prompt, "Response Format Requirements:") {
 		t.Fatalf("expected non-owner prompt to omit NodeResponseContract block, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "ApprovedPlan:") {
+	if strings.Contains(prompt, "ApprovedPlan:") || strings.Contains(prompt, "Approved Plan:") {
 		t.Fatalf("expected delegated execution prompt envelope to omit duplicate ApprovedPlan section, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Keep this sentence.") {
@@ -165,7 +211,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	loop := &orchestrationLoop{roleComm: policy}
 
 	reviewPrompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_review_shieldmaiden", "nr_1", "reviewer-shieldmaiden", "execution_review", "Build feature", "council-member", "Plan", "Review it", "")
-	if !strings.Contains(reviewPrompt, "NodeResponseContract:") || !strings.Contains(reviewPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
+	if !strings.Contains(reviewPrompt, "Response Format Requirements:") || !strings.Contains(reviewPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
 		t.Fatalf("expected execution review prompt to include minimal response contract, got:\n%s", reviewPrompt)
 	}
 	for _, expected := range []string{
@@ -179,7 +225,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	}
 
 	validatorPrompt := loop.buildNodePrompt(context.Background(), "run_1", "validation_gates_qa_scout", "nr_1", "intelligence-qa-scout", "validation_gates", "Build feature", "reviewer-shieldmaiden", "Plan", "Validate it", "")
-	if !strings.Contains(validatorPrompt, "NodeResponseContract:") || !strings.Contains(validatorPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
+	if !strings.Contains(validatorPrompt, "Response Format Requirements:") || !strings.Contains(validatorPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
 		t.Fatalf("expected validation prompt to include minimal response contract, got:\n%s", validatorPrompt)
 	}
 	for _, expected := range []string{
@@ -204,7 +250,7 @@ func TestBuildNodePromptKingPlanDecisionOmitsRoyalVerdictContract(t *testing.T) 
 	if regexp.MustCompile(`(?im)^\s*ROYAL_VERDICT\s*:`).MatchString(prompt) {
 		t.Fatalf("expected king_plan_decision prompt to avoid royal closure verdict contract, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "NodeResponseContract:") {
+	if strings.Contains(prompt, "Response Format Requirements:") {
 		t.Fatalf("expected king_plan_decision prompt to omit response contract block, got:\n%s", prompt)
 	}
 }

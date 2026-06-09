@@ -223,7 +223,7 @@ func TestIntegrationReconcilerFailurePathPersistsEscalationAuditEvent(t *testing
 	}
 }
 
-func TestIntegrationRuntimeDispatchPersistsWorkspaceAndArtifacts(t *testing.T) {
+func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTargets(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
@@ -258,8 +258,8 @@ func TestIntegrationRuntimeDispatchPersistsWorkspaceAndArtifacts(t *testing.T) {
 			if artifacts := queryInt(t, db, `SELECT COUNT(1) FROM artifacts WHERE run_id = ?`, "run_dispatch"); artifacts < 2 {
 				return fmt.Errorf("expected persisted artifacts for dispatch run, got %d", artifacts)
 			}
-			if released := queryInt(t, db, `SELECT COUNT(1) FROM workspaces WHERE run_id = ? AND status = 'released'`, "run_dispatch"); released < 1 {
-				return fmt.Errorf("expected released workspace records for provider-backed nodes, got %d", released)
+			if targets := queryInt(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch"); targets != 0 {
+				return fmt.Errorf("expected response-first dispatch run to avoid execution targets, got %d", targets)
 			}
 			return nil
 		}

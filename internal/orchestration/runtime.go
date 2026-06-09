@@ -27,6 +27,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 )
@@ -101,15 +102,19 @@ type Runtime struct {
 	providerEngine  string
 	orchestrator    *orchestrationLoop
 	dispatchEvery   time.Duration
-	workspace       *workspace.Manager
+	completionEvery time.Duration
+	fsStore         *runtimefs.Store
 	closeMode       *runtimeCloseMode
 
-	mu             sync.Mutex
-	periodicDone   chan error
-	cancelPeriodic context.CancelFunc
-	dispatchDone   chan error
-	cancelDispatch context.CancelFunc
-	started        bool
+	mu               sync.Mutex
+	periodicDone     chan error
+	cancelPeriodic   context.CancelFunc
+	dispatchDone     chan error
+	cancelDispatch   context.CancelFunc
+	completionDone   chan error
+	cancelCompletion context.CancelFunc
+	completionWake   chan struct{}
+	started          bool
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -194,9 +199,9 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		workspaceRoot = filepath.Join(os.TempDir(), "kingdom-workspaces")
 	}
 
-	workspaceManager, err := workspace.NewManager(cfg.DB, workspaceRoot)
+	fsStore, err := runtimefs.NewStore(cfg.DB, workspaceRoot)
 	if err != nil {
-		return nil, fmt.Errorf("bootstrap workspace manager: %w", err)
+		return nil, fmt.Errorf("bootstrap runtime filesystem store: %w", err)
 	}
 
 	outputValidator := state.NewWorkerOutputValidator(cfg.DB, schemaSet)
@@ -259,11 +264,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	closeMode := newRuntimeCloseMode()
 
-	return &Runtime{
+	runtimeInstance := &Runtime{
 		db:              cfg.DB,
 		paths:           cfg.Paths,
 		reconcileEvery:  cfg.ReconcileInterval,
 		dispatchEvery:   cfg.DispatchInterval,
+		completionEvery: defaultCompletionProjectionInterval,
 		schemas:         schemaSet,
 		retryEngine:     retryPlanEngine,
 		providerPolicy:  providerCfg,
@@ -275,10 +281,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		outputValidator: outputValidator,
 		adapter:         adapter,
 		providerEngine:  providerEngine,
-		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, workspaceManager, outputValidator, schemaSet, nodeTimeouts, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
-		workspace:       workspaceManager,
+		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
+		fsStore:         fsStore,
 		closeMode:       closeMode,
-	}, nil
+		completionWake:  make(chan struct{}, 1),
+	}
+	runtimeInstance.orchestrator.notifyCompletionReady = runtimeInstance.signalCompletionReady
+	return runtimeInstance, nil
 }
 
 func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg providerpolicy.Policy, strictProbeAttemptTimeout time.Duration, strictStartupTotalTimeout time.Duration) (opencode.Adapter, string, error) {
@@ -565,15 +574,20 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	periodicCtx, cancel := context.WithCancel(ctx)
 	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
+	completionCtx, cancelCompletion := context.WithCancel(ctx)
 	r.started = true
 	r.cancelPeriodic = cancel
 	r.cancelDispatch = cancelDispatch
+	r.cancelCompletion = cancelCompletion
 	r.periodicDone = make(chan error, 1)
 	r.dispatchDone = make(chan error, 1)
+	r.completionDone = make(chan error, 1)
 	periodicDone := r.periodicDone
 	dispatchDone := r.dispatchDone
+	completionDone := r.completionDone
 	interval := r.reconcileEvery
 	dispatchInterval := r.dispatchEvery
+	completionInterval := r.completionEvery
 	r.mu.Unlock()
 
 	go func() {
@@ -586,7 +600,22 @@ func (r *Runtime) Start(ctx context.Context) error {
 		close(dispatchDone)
 	}()
 
+	go func() {
+		completionDone <- r.runCompletionLoop(completionCtx, completionInterval)
+		close(completionDone)
+	}()
+
 	return nil
+}
+
+func (r *Runtime) signalCompletionReady() {
+	if r == nil || r.completionWake == nil {
+		return
+	}
+	select {
+	case r.completionWake <- struct{}{}:
+	default:
+	}
 }
 
 func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) error {
@@ -641,6 +670,88 @@ func (r *Runtime) runDispatchLoop(ctx context.Context, interval time.Duration) e
 	}
 }
 
+func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		interval = defaultCompletionProjectionInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			slog.Warn("completion projection loop failed", "error", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		case <-r.completionWake:
+		}
+	}
+}
+
+func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
+	if r == nil || r.orchestrator == nil {
+		return nil
+	}
+	for {
+		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
+		if err != nil {
+			return err
+		}
+		if processed == 0 {
+			return nil
+		}
+	}
+}
+
+func (r *Runtime) drainExecutionOutboxUntilDrained(ctx context.Context) error {
+	if r == nil || r.orchestrator == nil {
+		return nil
+	}
+	for {
+		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
+		if err != nil {
+			return err
+		}
+		pending, err := r.hasPendingExecutionOutbox(ctx)
+		if err != nil {
+			return err
+		}
+		if !pending {
+			return nil
+		}
+		if processed > 0 {
+			continue
+		}
+		if err := sleepWithContext(ctx, nil, r.completionProjectionInterval()); err != nil {
+			return err
+		}
+	}
+}
+
+func (r *Runtime) hasPendingExecutionOutbox(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
+		return false, nil
+	}
+	pending, err := r.orchestrator.executionStore.ListPendingOutbox(ctx, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(pending) > 0, nil
+}
+
+func (r *Runtime) completionProjectionInterval() time.Duration {
+	if r == nil || r.completionEvery <= 0 {
+		return defaultCompletionProjectionInterval
+	}
+	return r.completionEvery
+}
+
 func (r *Runtime) Close() error {
 	return r.GracefulClose(context.Background())
 }
@@ -651,7 +762,7 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cancel, cancelDispatch, done, dispatchDone, ok := r.stopHandles(false)
+	cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, ok := r.stopHandles(false)
 	if !ok {
 		return nil
 	}
@@ -674,6 +785,15 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 			closeErr = errors.Join(closeErr, err)
 		}
 	}
+	if cancelCompletion != nil {
+		cancelCompletion()
+	}
+	if err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if err := r.drainExecutionOutboxUntilDrained(ctx); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
 
 	return closeErr
 }
@@ -684,12 +804,15 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 // and best-effort cancels tracked provider attempts without waiting for
 // the runtime loops to drain.
 func (r *Runtime) ForceClose() error {
-	cancel, cancelDispatch, _, _, ok := r.stopHandles(true)
+	cancel, cancelDispatch, cancelCompletion, _, _, _, ok := r.stopHandles(true)
 	if cancel != nil {
 		cancel()
 	}
 	if cancelDispatch != nil {
 		cancelDispatch()
+	}
+	if cancelCompletion != nil {
+		cancelCompletion()
 	}
 	if ok {
 		r.cancelInflightAttempts()
@@ -701,17 +824,28 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	for {
-		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		if processed == 0 {
-			break
-		}
+	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
+		return err
 	}
 	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
 		slog.Warn("startup attempt-cancel replay will retry during runtime", "error", err)
+	}
+	return nil
+}
+
+func (r *Runtime) recoverExecutionOutboxStartup(ctx context.Context) error {
+	if r == nil || r.orchestrator == nil {
+		return nil
+	}
+	if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		return err
+	}
+	pending, err := r.hasPendingExecutionOutbox(ctx)
+	if err != nil {
+		return err
+	}
+	if pending {
+		slog.Warn("startup execution outbox recovery left retryable rows pending; completion loop will retry")
 	}
 	return nil
 }
@@ -734,25 +868,29 @@ func waitForRuntimeLoopDrain(ctx context.Context, done <-chan error, label strin
 	}
 }
 
-func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFunc, chan error, chan error, bool) {
+func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFunc, context.CancelFunc, chan error, chan error, chan error, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if force && r.closeMode != nil {
 		r.closeMode.MarkForced()
 	}
 	if !r.started {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	cancel := r.cancelPeriodic
 	cancelDispatch := r.cancelDispatch
+	cancelCompletion := r.cancelCompletion
 	done := r.periodicDone
 	dispatchDone := r.dispatchDone
+	completionDone := r.completionDone
 	r.started = false
 	r.cancelPeriodic = nil
 	r.cancelDispatch = nil
+	r.cancelCompletion = nil
 	r.periodicDone = nil
 	r.dispatchDone = nil
-	return cancel, cancelDispatch, done, dispatchDone, true
+	r.completionDone = nil
+	return cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, true
 }
 
 func (r *Runtime) cancelInflightAttempts() {
@@ -979,6 +1117,9 @@ func validatePaths(paths BootstrapPaths) error {
 
 func ensureDurableExecutionSchema(db *sql.DB) error {
 	tableRequirements := map[string][]string{
+		"node_runs": {
+			"superseded_at",
+		},
 		"attempt_executions": {
 			"attempt_id",
 			"run_id",
@@ -991,17 +1132,30 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"lease_version",
 			"session_ref",
 			"provider_session_id",
+			"launch_started_at",
 			"started_at",
 			"terminal_observed_at",
 			"committed_at",
 			"failure_code",
 			"failure_text",
+			"progress_event_type",
+			"progress_reason_code",
+			"progress_at",
+			"base_snapshot_id",
+			"result_snapshot_id",
 			"created_at",
 			"updated_at",
 		},
 		"attempt_event_log":     nil,
 		"attempt_outbox":        nil,
 		"attempt_cancel_outbox": nil,
+		"run_execution_targets": nil,
+		"filesystem_snapshots":  nil,
+		"filesystem_snapshot_entries": nil,
+		"filesystem_blobs":      nil,
+		"run_publication_batches": nil,
+		"run_publication_entries": nil,
+		"run_publication_paths": nil,
 		"workflow_runs":         {"publish_mode"},
 		"run_worktrees": {
 			"repo_common_dir",
@@ -1016,12 +1170,30 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"cleaned_at",
 			"failure_reason",
 		},
+		"provider_invocations": {
+			"receipt_seen_count",
+			"first_receipt_seen_at",
+			"last_receipt_seen_at",
+			"last_receipt_disposition",
+		},
 	}
-	tableNames := make([]string, 0, len(tableRequirements))
-	for tableName := range tableRequirements {
-		tableNames = append(tableNames, tableName)
+	tableNames := []string{
+		"workflow_runs",
+		"node_runs",
+		"attempt_executions",
+		"attempt_event_log",
+		"attempt_outbox",
+		"attempt_cancel_outbox",
+		"provider_invocations",
+		"run_worktrees",
+		"run_execution_targets",
+		"filesystem_snapshots",
+		"filesystem_snapshot_entries",
+		"filesystem_blobs",
+		"run_publication_batches",
+		"run_publication_entries",
+		"run_publication_paths",
 	}
-	sort.Strings(tableNames)
 	for _, tableName := range tableNames {
 		if err := requireRuntimeTableColumns(db, tableName, tableRequirements[tableName]); err != nil {
 			return err

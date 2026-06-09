@@ -276,6 +276,9 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	if providerBacked.ActivityAt != "2026-03-01T12:00:03Z" {
 		t.Fatalf("expected provider-backed activity_at from latest execution activity, got %q", providerBacked.ActivityAt)
 	}
+	if providerBacked.QueuedAt != "2026-03-01T12:00:02Z" {
+		t.Fatalf("expected provider-backed queued_at from attempt creation, got %q", providerBacked.QueuedAt)
+	}
 
 	runtimeOwned := records[1]
 	if runtimeOwned.AttemptID != "run_1:decree_intake:1" {
@@ -295,6 +298,9 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	}
 	if runtimeOwned.ActivityAt != "2026-03-01T12:00:01Z" {
 		t.Fatalf("expected runtime-owned activity_at from created execution row, got %q", runtimeOwned.ActivityAt)
+	}
+	if runtimeOwned.QueuedAt != "2026-03-01T12:00:01Z" {
+		t.Fatalf("expected runtime-owned queued_at from attempt creation, got %q", runtimeOwned.QueuedAt)
 	}
 }
 
@@ -463,6 +469,9 @@ func TestStoreGetRunExecutionDetailIncludesCanonicalSettlementProjection(t *test
 	}
 	if !record.ProviderInvocationID.Valid || record.ProviderInvocationID.String != "pinv_run_1_execution_review_shieldmaiden_1" {
 		t.Fatalf("expected provider invocation id, got %#v", record.ProviderInvocationID)
+	}
+	if record.QueuedAt != "2026-03-01T12:00:00Z" {
+		t.Fatalf("expected queued_at from attempt creation, got %q", record.QueuedAt)
 	}
 	if !record.ProviderInvocationAt.Valid || record.ProviderInvocationAt.String != "2026-03-01T12:00:00Z" {
 		t.Fatalf("expected provider invocation at, got %#v", record.ProviderInvocationAt)

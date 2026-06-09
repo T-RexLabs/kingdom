@@ -22,6 +22,18 @@ export function PlanningSessionIndexPage() {
     () => providerModelCatalog.items.find((item) => item.id === model),
     [model, providerModelCatalog.items]
   );
+  const recoveryPending = createPlanningSession.hasRecovery;
+	const currentRequest = useMemo(() => (
+		model.trim()
+			? {
+				model_selection: {
+					model: model.trim(),
+					...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
+				},
+			}
+			: {}
+	), [model, thinkingEffort]);
+	const recoveryMatchesCurrentForm = createPlanningSession.canRecoverWith(currentRequest);
 
   useEffect(() => {
     if (!model.trim()) return;
@@ -30,29 +42,35 @@ export function PlanningSessionIndexPage() {
     );
   }, [model, selectedModel]);
 
-  const handleCreateSession = async () => {
-    try {
-      void preloadPlanningSessionPage();
-      const session = await createPlanningSession.mutateAsync({
-        ...(model.trim()
-          ? {
-              model_selection: {
-                model: model.trim(),
-                ...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-              },
-            }
-          : {}),
-      });
-      setModel("");
-      setThinkingEffort("");
-      await navigate({
+	const handleCreateSession = async () => {
+		try {
+			void preloadPlanningSessionPage();
+			const session = await createPlanningSession.mutateAsync(currentRequest);
+		setModel("");
+		setThinkingEffort("");
+		await navigate({
         to: "/decrees/planning/$sessionId",
         params: { sessionId: session.planning_session_id },
       });
-    } catch {
-      // surfaced through the inline error state
-    }
-  };
+		} catch {
+			// surfaced through the inline error state
+		}
+	};
+
+	const handleRetryRecovery = async () => {
+		try {
+			void preloadPlanningSessionPage();
+			const session = await createPlanningSession.retryRecovery();
+			setModel("");
+			setThinkingEffort("");
+			await navigate({
+				to: "/decrees/planning/$sessionId",
+				params: { sessionId: session.planning_session_id },
+			});
+		} catch {
+			// surfaced through the inline error state
+		}
+	};
 
   return (
     <Card className="h-full border-border/80">
@@ -109,21 +127,40 @@ export function PlanningSessionIndexPage() {
               </div>
             </div>
 
-            {createPlanningSession.error ? (
-              <p className="mt-3 text-xs text-status-failed">
-                {createPlanningSession.error.message}
-              </p>
+			{createPlanningSession.error ? (
+				recoveryPending ? (
+					<div className="mt-3 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed">
+						<p>
+							{recoveryMatchesCurrentForm
+								? "Kingdom may have accepted this planner request before the connection failed. Starting again will reuse the same request and idempotency key so Kingdom can recover without creating duplicate sessions."
+								: "Kingdom may have accepted an earlier planner request before the connection failed. Your current form will start a fresh request; use recovery only if you want to retry the earlier submission exactly as it was sent."}
+						</p>
+						<p className="mt-1 text-status-failed/90">{createPlanningSession.error.message}</p>
+						<div className="mt-3 flex flex-wrap gap-2">
+							<Button type="button" size="sm" onClick={() => void handleRetryRecovery()} disabled={createPlanningSession.isPending}>
+								{createPlanningSession.isPending ? "Retrying..." : "Retry Previous Request"}
+							</Button>
+							<Button type="button" size="sm" variant="outline" onClick={createPlanningSession.discardRecovery} disabled={createPlanningSession.isPending}>
+								Discard Recovery
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-status-failed">
+                  {createPlanningSession.error.message}
+                </p>
+              )
             ) : null}
 
             <div className="mt-4 flex flex-wrap gap-3 border-t border-border/60 pt-4">
-              <Button
-                type="button"
-                onClick={() => void handleCreateSession()}
-                disabled={createPlanningSession.isPending}
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                {createPlanningSession.isPending ? "Starting..." : "Start Planner Session"}
-              </Button>
+				<Button
+					type="button"
+					onClick={() => void handleCreateSession()}
+					disabled={createPlanningSession.isPending}
+				>
+					<Sparkles className="h-3.5 w-3.5" />
+					{createPlanningSession.isPending ? "Starting..." : "Start Planner Session"}
+				</Button>
               <Link to="/decrees/new" className={buttonVariants({ variant: "outline" })}>
                 <Scroll className="h-3.5 w-3.5" />
                 Issue Decree Directly

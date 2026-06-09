@@ -272,7 +272,7 @@ func upsertCanonicalRoleWithRetry(ctx context.Context, db *sql.DB, role Canonica
 		if err == nil {
 			return nil
 		}
-		if !isSQLiteBusyError(err) {
+		if !IsSQLiteBusy(err) {
 			return err
 		}
 		if time.Now().After(deadline) {
@@ -285,12 +285,4 @@ func upsertCanonicalRoleWithRetry(ctx context.Context, db *sql.DB, role Canonica
 		case <-time.After(75 * time.Millisecond):
 		}
 	}
-}
-
-func isSQLiteBusyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "database is locked") || strings.Contains(message, "sqlite_busy")
 }

@@ -123,7 +123,7 @@ func (o *orchestrationLoop) closeSessionLease(ctx context.Context, sessionID, no
 }
 
 func (o *orchestrationLoop) closeRunSessionLeases(ctx context.Context, runID, now string) error {
-	sessionIDs, err := o.loadRunSessionIDs(ctx, runID)
+	sessionIDs, err := o.loadClosableRunSessionIDs(ctx, runID)
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (o *orchestrationLoop) renewRunSessionLease(ctx context.Context, runID, now
 		now = nowTime.Format(time.RFC3339)
 	}
 
-	sessionIDs, err := o.loadRunSessionIDs(ctx, runID)
+	sessionIDs, err := o.loadRenewableRunSessionIDs(ctx, runID)
 	if err != nil {
 		return err
 	}
@@ -212,7 +212,34 @@ func (o *orchestrationLoop) renewRunSessionLease(ctx context.Context, runID, now
 	return nil
 }
 
-func (o *orchestrationLoop) loadRunSessionIDs(ctx context.Context, runID string) ([]string, error) {
+func (o *orchestrationLoop) loadClosableRunSessionIDs(ctx context.Context, runID string) ([]string, error) {
+	prefix := fmt.Sprintf("session_%s_", sanitizeFileToken(runID))
+	rows, err := o.db.QueryContext(ctx, `
+SELECT DISTINCT ae.session_ref
+FROM attempt_executions ae
+WHERE ae.run_id = ?
+  AND COALESCE(TRIM(ae.session_ref), '') <> ''
+  AND ae.session_ref LIKE ?`, runID, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessionIDs := make([]string, 0)
+	for rows.Next() {
+		var sessionID string
+		if scanErr := rows.Scan(&sessionID); scanErr != nil {
+			return nil, scanErr
+		}
+		sessionIDs = append(sessionIDs, strings.TrimSpace(sessionID))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sessionIDs, nil
+}
+
+func (o *orchestrationLoop) loadRenewableRunSessionIDs(ctx context.Context, runID string) ([]string, error) {
 	prefix := fmt.Sprintf("session_%s_", sanitizeFileToken(runID))
 	rows, err := o.db.QueryContext(ctx, `
 SELECT DISTINCT sl.session_id
@@ -220,7 +247,16 @@ FROM session_leases sl
 JOIN attempt_executions ae ON ae.session_ref = sl.session_id
 WHERE ae.run_id = ?
   AND sl.session_id LIKE ?
-  AND ae.state IN ('queued', 'starting', 'running')`, runID, prefix+"%")
+  AND (
+    (
+      ae.state = 'starting'
+      AND COALESCE(TRIM(ae.launch_started_at), '') <> ''
+      AND COALESCE(TRIM(ae.started_at), '') = ''
+    ) OR (
+      ae.state = 'running'
+      AND COALESCE(TRIM(ae.started_at), '') <> ''
+    )
+  )`, runID, prefix+"%")
 	if err != nil {
 		return nil, err
 	}

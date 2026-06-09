@@ -194,11 +194,13 @@ describe("DashboardPage", () => {
     expect(screen.getByText("1.8K")).toBeInTheDocument();
     expect(screen.getByText("600")).toBeInTheDocument();
     expect(screen.getByText("200")).toBeInTheDocument();
-    expect(screen.getByText("Broken compact")).toBeInTheDocument();
-    expect(screen.getByText("Awaiting Plan Decision")).toBeInTheDocument();
-    expect(screen.getByText("Action Required")).toBeInTheDocument();
-    expect(screen.getAllByText(/royal-decree-v1/)).toHaveLength(2);
-    await screen.findByTestId("sparkline");
+	    expect(screen.getByText("Broken compact")).toBeInTheDocument();
+	    expect(screen.getByText("Awaiting Plan Decision")).toBeInTheDocument();
+	    expect(screen.getByText("Action Required")).toBeInTheDocument();
+	    expect(screen.getAllByText(/Created /)).toHaveLength(2);
+	    expect(screen.getAllByText(/Last Activity/)).toHaveLength(2);
+	    expect(screen.queryByText(/royal-decree-v1/)).not.toBeInTheDocument();
+	    await screen.findByTestId("sparkline");
     expect(screen.queryByText("Refreshing dashboard metrics...")).not.toBeInTheDocument();
     expect(apiFetchMock).toHaveBeenCalledTimes(1);
 	    expect(apiFetchMock).toHaveBeenCalledWith("/dashboard/snapshot");

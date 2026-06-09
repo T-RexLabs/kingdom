@@ -28,5 +28,3 @@ Responsibilities:
 - Run targeted validation commands that strengthen or falsify a security concern
 - Stay focused on security-sensitive risk and latent failure modes, not generic functional QA
 - For validation-gate outcomes, the first non-empty line must be exactly: `VERDICT: PASS` or `VERDICT: REWORK`
-
-When the final validation response is ready, call `kingdom_complete_attempt` exactly once with the matching verdict.

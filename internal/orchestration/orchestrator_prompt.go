@@ -52,76 +52,162 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	approvedPlan = stripControlCommandLines(approvedPlan)
 	delegatorInstruction = stripControlCommandLines(delegatorInstruction)
 	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID, projectedDecree)
-	hydratedPath := ""
-	planningGuardrail := ""
-	if classID == "validation_gates" {
-		hydratedPath = "hydrated/"
-	}
-	if classID == "execution_review" {
-		hydratedPath = "hydrated/"
-	}
+	planningConstraints := ""
 	if classID == "plan_drafting" {
-		planningGuardrail = "Planning guardrail: return planning deltas, acceptance criteria, and verification scope only. Do not claim completed implementation work."
+		planningConstraints = strings.Join([]string{
+			"- Return planning output only: plan deltas, acceptance criteria, dependency notes, and verification scope.",
+			"- Do not claim completed implementation work.",
+			"- Do not present code changes, delivered files, or test execution as finished work.",
+		}, "\n")
+	}
+	responseOnlyConstraints := ""
+	if classID == workflow.NodeClassAdvisorConsultation || classID == workflow.NodeClassAdvisorySynthesis || classID == workflow.NodeClassPlanDrafting {
+		responseOnlyConstraints = strings.Join([]string{
+			"- You may inspect current project files when needed.",
+			"- Do not create, edit, rename, or delete project files for this node.",
+			"- Return advice, synthesis, or planning output only.",
+			"- Implementation changes belong to delegated execution after plan approval.",
+		}, "\n")
+	}
+	protectedRuntimePaths := ""
+	if classID == workflow.NodeClassDelegatedExecution || classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
+		protectedRuntimePaths = strings.Join([]string{
+			"- Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not decree deliverables.",
+			"- Ignore those paths when checking whether only the intended project files changed, unless the decree explicitly targets them.",
+			"- Never delete, modify, or \"clean up\" those runtime-managed paths as part of decree work or rework.",
+		}, "\n")
 	}
 	responseContract := nodeResponseContractForClass(classID)
-
-	groupOne := []string{
-		systemPreamble,
-		"You are executing a Kingdom workflow node.",
-		"Execution Metadata:",
-		fmt.Sprintf("RunID: %s", runID),
-		fmt.Sprintf("NodeID: %s", nodeID),
-		fmt.Sprintf("NodeRunID: %s", nodeRunID),
-		fmt.Sprintf("RoleID: %s", roleID),
-		fmt.Sprintf("NodeClass: %s", classID),
+	rulesBlocks := []string{}
+	if trimmedConstraints := strings.TrimSpace(planningConstraints); trimmedConstraints != "" {
+		rulesBlocks = append(rulesBlocks, renderPromptSection("Planning Constraints", trimmedConstraints))
 	}
-	if strings.TrimSpace(hydratedPath) != "" {
-		groupOne = append(groupOne, fmt.Sprintf("HydratedArtifactsPath: %s", hydratedPath))
+	if trimmedConstraints := strings.TrimSpace(responseOnlyConstraints); trimmedConstraints != "" {
+		rulesBlocks = append(rulesBlocks, renderPromptSection("Response-Only Constraints", trimmedConstraints))
 	}
-	if trimmedDelegatorRole := strings.TrimSpace(delegatorRoleID); trimmedDelegatorRole != "" {
-		groupOne = append(groupOne, fmt.Sprintf("DelegatorRoleID: %s", trimmedDelegatorRole))
+	if trimmedConstraints := strings.TrimSpace(protectedRuntimePaths); trimmedConstraints != "" {
+		rulesBlocks = append(rulesBlocks, renderPromptSection("Protected Runtime Paths", trimmedConstraints))
+	}
+	if responseContract != "" {
+		rulesBlocks = append(rulesBlocks, renderPromptSection("Response Format Requirements", responseContract))
 	}
 
-	groupTwo := []string{
-		fmt.Sprintf("Decree:\n%s", firstNonEmptyString(strings.TrimSpace(projectedDecree), "none")),
+	runContextBlocks := []string{
+		renderPromptSection("Current Assignment", currentAssignmentForNodeClass(classID, delegatorRoleID)),
+		renderPromptSection("Current Decree", firstNonEmptyString(strings.TrimSpace(projectedDecree), "No decree text was provided.")),
 	}
-	if trimmedPlan := strings.TrimSpace(approvedPlan); trimmedPlan != "" {
-		if classID != "delegated_execution" {
-			groupTwo = append(groupTwo, fmt.Sprintf("ApprovedPlan:\n%s", trimmedPlan))
-		}
+	if trimmedPlan := strings.TrimSpace(approvedPlan); trimmedPlan != "" && classID != workflow.NodeClassDelegatedExecution {
+		runContextBlocks = append(runContextBlocks, renderPromptSection("Approved Plan", trimmedPlan))
 	}
 	if trimmedInstruction := strings.TrimSpace(delegatorInstruction); trimmedInstruction != "" {
-		groupTwo = append(groupTwo, fmt.Sprintf("DelegatorInstruction:\n%s", trimmedInstruction))
+		runContextBlocks = append(runContextBlocks, renderPromptSection("Upstream Guidance", trimmedInstruction))
 	}
 	if classID == "execution_review" || classID == "validation_gates" {
 		if builderEvidence := o.builderEvidenceManifestForRun(ctx, runID); strings.TrimSpace(builderEvidence) != "" {
-			groupTwo = append(groupTwo, instructionSectionSeparator)
-			groupTwo = append(groupTwo, builderEvidence)
+			runContextBlocks = append(runContextBlocks, renderPromptSection("Builder Evidence Summary", builderEvidence))
 		}
 	}
-	if trimmedGuardrail := strings.TrimSpace(planningGuardrail); trimmedGuardrail != "" {
-		groupTwo = append(groupTwo, fmt.Sprintf("PlanningGuardrail:\n%s", trimmedGuardrail))
+	rulesBody := joinPromptBlocks(rulesBlocks...)
+	if strings.TrimSpace(rulesBody) == "" {
+		rulesBody = "- No additional node-specific rules."
 	}
-	if responseContract != "" {
-		groupTwo = append(groupTwo, fmt.Sprintf("NodeResponseContract:\n%s", responseContract))
-	}
-	groupTwo = append(groupTwo, fmt.Sprintf("CompletionProtocol:\n%s", completionProtocolForNodeClass(classID)))
 
 	_ = priorWithholdContext
-	return joinPromptGroups(groupOne, groupTwo) + "\n"
+	sections := []string{
+		renderPromptSection("System Role", systemPreamble),
+		renderPromptSection("Kingdom Rules", rulesBody),
+		renderPromptSection("Run Context", joinPromptBlocks(runContextBlocks...)),
+		renderPromptSection("Final Checks", finalChecksForNodeClass(classID)),
+	}
+	return joinInstructionBlocks(sections...) + "\n"
 }
 
-func completionProtocolForNodeClass(nodeClass string) string {
+func finalChecksForNodeClass(nodeClass string) string {
 	lines := []string{
-		"- When you are completely finished, call the `kingdom_complete_attempt` tool exactly once.",
-		"- Put the final canonical response body in `final_text`.",
+		"- Call `kingdom_complete_attempt` exactly once when your final response is complete.",
+		"- Put the full final canonical response in `final_text`.",
 		"- Do not rely on plain assistant text, stream endings, or process exit to finish the node.",
-		"- Do not call the completion tool until the final response body is ready.",
+		"- If your response is not final yet, do not call the tool.",
 	}
 	if strings.TrimSpace(nodeClass) == workflow.NodeClassExecutionReview || strings.TrimSpace(nodeClass) == workflow.NodeClassValidationGates {
-		lines = append(lines, "- Also pass `verdict: PASS` or `verdict: REWORK`, and make it match the `VERDICT:` line in `final_text`.")
+		lines = append(lines, "- Your first non-empty line in `final_text` must be `VERDICT: PASS` or `VERDICT: REWORK`.")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func currentAssignmentForNodeClass(nodeClass, delegatorRoleID string) string {
+	lines := []string{fmt.Sprintf("- Assignment: %s", humanizeNodeClass(nodeClass))}
+	if trimmedDelegatorRole := strings.TrimSpace(delegatorRoleID); trimmedDelegatorRole != "" {
+		lines = append(lines, fmt.Sprintf("- Upstream Role: %s", humanizePromptIdentifier(trimmedDelegatorRole)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func humanizeNodeClass(nodeClass string) string {
+	switch strings.TrimSpace(nodeClass) {
+	case workflow.NodeClassDecreeIntake:
+		return "Decree Intake"
+	case workflow.NodeClassAdvisorConsultation:
+		return "Advisory Consultation"
+	case workflow.NodeClassAdvisorySynthesis:
+		return "Advisory Synthesis"
+	case workflow.NodeClassPlanDrafting:
+		return "Plan Drafting"
+	case workflow.NodeClassKingPlanDecision:
+		return "King Plan Decision"
+	case workflow.NodeClassExecutionKickoff:
+		return "Execution Kickoff"
+	case workflow.NodeClassDelegatedExecution:
+		return "Delegated Execution"
+	case workflow.NodeClassExecutionReview:
+		return "Execution Review"
+	case workflow.NodeClassValidationGates:
+		return "Validation Gates"
+	case workflow.NodeClassRoyalClosure:
+		return "Royal Closure"
+	default:
+		return humanizePromptIdentifier(nodeClass)
+	}
+}
+
+func humanizePromptIdentifier(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '-' || r == '_'
+	})
+	for idx, part := range parts {
+		lower := strings.ToLower(strings.TrimSpace(part))
+		if lower == "" {
+			continue
+		}
+		if len(lower) <= 2 {
+			parts[idx] = strings.ToUpper(lower)
+			continue
+		}
+		parts[idx] = strings.ToUpper(lower[:1]) + lower[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func renderPromptSection(title, body string) string {
+	trimmedBody := strings.TrimSpace(body)
+	if trimmedBody == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:\n%s", strings.TrimSpace(title), trimmedBody)
+}
+
+func joinPromptBlocks(blocks ...string) string {
+	trimmed := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if section := strings.TrimSpace(block); section != "" {
+			trimmed = append(trimmed, section)
+		}
+	}
+	return strings.Join(trimmed, "\n\n")
 }
 
 func nodeResponseContractForClass(nodeClass string) string {
@@ -817,14 +903,14 @@ func (o *orchestrationLoop) advisorSynthesisInstructionForRun(ctx context.Contex
 	builder.WriteString("- Merge aligned advice into one coherent direction.\n")
 	builder.WriteString("- Call out major tradeoffs and conflicts among advisors.\n")
 	builder.WriteString("- Keep output strategic, concrete, and ready for council planning.\n\n")
-	builder.WriteString("Advisor Inputs:\n")
+	builder.WriteString("Advisor Responses:\n")
 	for idx, input := range inputs {
 		if idx > 0 {
 			builder.WriteString(instructionSectionSeparator)
 			builder.WriteString("\n\n")
 		}
 		label := firstNonEmptyString(strings.TrimSpace(input.agentName), strings.TrimSpace(input.agentID), input.nodeID)
-		builder.WriteString(fmt.Sprintf("%s - Advice\n", label))
+		builder.WriteString(fmt.Sprintf("%s:\n", label))
 		builder.WriteString(input.responseText)
 		builder.WriteString("\n\n")
 	}
@@ -850,18 +936,6 @@ func joinInstructionBlocks(parts ...string) string {
 		return ""
 	}
 	return strings.Join(trimmed, "\n\n"+instructionSectionSeparator+"\n\n")
-}
-
-func joinPromptGroups(groupOne, groupTwo []string) string {
-	left := strings.TrimSpace(strings.Join(groupOne, "\n\n"))
-	right := strings.TrimSpace(strings.Join(groupTwo, "\n\n"))
-	if left == "" {
-		return right
-	}
-	if right == "" {
-		return left
-	}
-	return left + "\n\n" + instructionSectionSeparator + "\n\n" + right
 }
 
 func defaultDelegatorInstructionForDispatch(nodeID, roleID, decreeText string) string {

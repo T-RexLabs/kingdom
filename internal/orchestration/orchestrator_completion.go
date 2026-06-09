@@ -15,8 +15,8 @@ import (
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
-	"kingdom/internal/workspace"
 )
 
 type executionOutboxPayload struct {
@@ -30,6 +30,9 @@ type executionOutboxPayload struct {
 	ProviderInvocationAt            string                    `json:"provider_invocation_at,omitempty"`
 	CompletionReceiptEvidenceID     string                    `json:"completion_receipt_evidence_id,omitempty"`
 	CompletionStructuredPayloadJSON string                    `json:"completion_structured_payload_json,omitempty"`
+	ProviderDiagnosticsJSON         string                    `json:"provider_diagnostics_json,omitempty"`
+	BaseSnapshotID                  string                    `json:"base_snapshot_id,omitempty"`
+	ResultSnapshotID                string                    `json:"result_snapshot_id,omitempty"`
 	WorkspaceID                     string                    `json:"workspace_id"`
 	Workspace                       string                    `json:"workspace_path"`
 	Delegator                       string                    `json:"delegator"`
@@ -42,6 +45,37 @@ type executionOutboxPayload struct {
 	Tokens                          opencode.TokenUsage       `json:"tokens"`
 	Outcome                         opencode.ExecutionOutcome `json:"outcome,omitempty"`
 	SuppressEmptyOutputRetry        bool                      `json:"suppress_empty_output_retry,omitempty"`
+}
+
+type completionProjectionDecision struct {
+	LatestAttempt           bool
+	AllowPlanningOutput     bool
+	AllowDownstreamEffects  bool
+	AllowCanonicalArtifacts bool
+	AllowCanonicalMailbox   bool
+}
+
+type missingCompletionReceiptRecoveryAdapter interface {
+	RecoverMissingCompletionReceipt(ctx context.Context, req opencode.ExecuteRequest, finalText string) (opencode.ExecuteResponse, error)
+}
+
+type completionRecoveryDecision struct {
+	Eligible         bool
+	WorkspaceGuarded bool
+	SkipReason       string
+}
+
+type completionRecoverySnapshotGuard struct {
+	PreSnapshotID string
+}
+
+type completionRecoveryProviderDiagnostics struct {
+	CompletionReceiptModeEnabled bool `json:"completion_receipt_mode_enabled"`
+	ExecutionPathDiagnostics     struct {
+		LastStepFinishReason string `json:"last_step_finish_reason"`
+		TerminalStateClass   string `json:"terminal_state_class"`
+		ExportCheckReason    string `json:"export_check_reason"`
+	} `json:"execution_path_diagnostics"`
 }
 
 func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, error) {
@@ -114,6 +148,9 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ProviderInvocationAt:            strings.TrimSpace(result.providerInvocationAt),
 		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
+		ProviderDiagnosticsJSON:         strings.TrimSpace(result.providerDiagnosticsJSON),
+		BaseSnapshotID:                  strings.TrimSpace(result.baseSnapshotID),
+		ResultSnapshotID:                strings.TrimSpace(result.resultSnapshotID),
 		WorkspaceID:                     result.workspaceID,
 		Workspace:                       result.workspacePath,
 		Delegator:                       result.delegator,
@@ -140,6 +177,11 @@ func marshalExecutionOutboxPayload(result asyncExecutionResult) (string, error) 
 func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job asyncExecutionResult) error {
 	if o == nil || o.executionStore == nil {
 		return fmt.Errorf("execution store is not configured")
+	}
+	if job.launchObserved {
+		if err := o.persistObservedExecutionLaunch(ctx, job); err != nil {
+			return err
+		}
 	}
 	job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
 	raw, err := marshalExecutionOutboxPayload(job)
@@ -178,6 +220,32 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 			return err
 		}
 	}
+	if o.notifyCompletionReady != nil {
+		o.notifyCompletionReady()
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) persistObservedExecutionLaunch(ctx context.Context, job asyncExecutionResult) error {
+	payloadRaw, err := marshalAsyncExecutionAttemptEventPayload(job, "orchestration_progress", map[string]any{
+		"execution_mode":           string(job.attempt.ExecutionMode),
+		"resolved_model":           strings.TrimSpace(job.model),
+		"resolved_thinking_effort": strings.TrimSpace(job.variant),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal execution launch payload for attempt %q: %w", job.attemptID, err)
+	}
+	if err := o.ensureExecutionLaunchPersisted(ctx, job, payloadRaw, job.launchObservedAt); err != nil {
+		return fmt.Errorf("persist observed execution launch for attempt %q: %w", job.attemptID, err)
+	}
+	if err := o.ensureProviderInvokedEventRecorded(ctx, job); err != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if o != nil && o.now != nil {
+			now = o.now().UTC().Format(time.RFC3339)
+		}
+		o.emitCompletionLifecycleObservation(ctx, job, "provider_invoked_backfill_failed", now, map[string]any{"error": err.Error()})
+		slog.Warn("failed to record provider invoked event during completion handoff", "attempt_id", job.attemptID, "error", err)
+	}
 	return nil
 }
 
@@ -188,6 +256,42 @@ func (o *orchestrationLoop) commitExecutionCompletionDetached(ctx context.Contex
 	queueCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
 	return o.commitExecutionCompletion(queueCtx, job)
+}
+
+var completionHandoffRetrySchedule = []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond}
+
+func (o *orchestrationLoop) commitExecutionCompletionWithRetryDetached(ctx context.Context, job asyncExecutionResult) error {
+	return o.retryDetachedCompletionHandoff(job, func() error {
+		return o.commitExecutionCompletionDetached(ctx, job)
+	})
+}
+
+func (o *orchestrationLoop) retryDetachedCompletionHandoff(job asyncExecutionResult, commit func() error) error {
+	var lastErr error
+	for attempt, backoff := range completionHandoffRetrySchedule {
+		if o.forceCloseActive() {
+			return nil
+		}
+		if attempt > 0 && backoff > 0 {
+			if o.sleep != nil {
+				o.sleep(backoff)
+			} else {
+				time.Sleep(backoff)
+			}
+		}
+		if err := commit(); err != nil {
+			lastErr = err
+			if !state.IsSQLiteBusy(err) {
+				return err
+			}
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil && o.asyncDrain != nil {
+		o.asyncDrain.RecordError(fmt.Errorf("durable completion handoff failed for attempt %q: %w", strings.TrimSpace(job.attemptID), lastErr))
+	}
+	return lastErr
 }
 
 func detachedTimeoutContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -221,6 +325,9 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		providerInvocationAt:            payload.ProviderInvocationAt,
 		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
 		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
+		providerDiagnosticsJSON:         payload.ProviderDiagnosticsJSON,
+		baseSnapshotID:                  payload.BaseSnapshotID,
+		resultSnapshotID:                payload.ResultSnapshotID,
 		workspaceID:                     payload.WorkspaceID,
 		workspacePath:                   payload.Workspace,
 		delegator:                       payload.Delegator,
@@ -238,6 +345,246 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
 	result.err = errorFromExecutionOutcome(result.outcome)
 	return result, true, nil
+}
+
+func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response opencode.ExecuteResponse, execErr error) {
+	if result == nil {
+		return
+	}
+	result.outputText = strings.TrimSpace(response.OutputText)
+	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
+	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
+	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
+	result.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
+	result.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
+	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
+	result.outcome = response.Outcome
+	result.suppressEmptyOutputRetry = response.SuppressEmptyOutputRetry
+	result.tokens = response.Tokens
+	result.err = execErr
+}
+
+func decodeCompletionRecoveryProviderDiagnostics(raw string) (completionRecoveryProviderDiagnostics, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" {
+		return completionRecoveryProviderDiagnostics{}, false
+	}
+	var diagnostics completionRecoveryProviderDiagnostics
+	if err := json.Unmarshal([]byte(trimmed), &diagnostics); err != nil {
+		return completionRecoveryProviderDiagnostics{}, false
+	}
+	return diagnostics, true
+}
+
+func (o *orchestrationLoop) shouldAttemptCompletionRecovery(result asyncExecutionResult) completionRecoveryDecision {
+	if result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
+		return completionRecoveryDecision{SkipReason: "execution_mode_not_provider_backed"}
+	}
+	if strings.TrimSpace(result.providerInvocationID) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_provider_invocation_id"}
+	}
+	if strings.TrimSpace(result.providerSessionID) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_provider_session_id"}
+	}
+	if strings.TrimSpace(result.completionCapability) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_completion_capability"}
+	}
+	if strings.TrimSpace(result.completionReceiptDir) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_completion_receipt_dir"}
+	}
+	if strings.TrimSpace(result.completionReceiptEvidenceID) != "" {
+		return completionRecoveryDecision{SkipReason: "completion_receipt_already_accepted"}
+	}
+	outcome := normalizeExecutionOutcome(result.outcome, result.err)
+	if strings.TrimSpace(outcome.State) != "incomplete_turn" || currentExecutionReasonCode(outcome, result.err) != "provider_incomplete_turn" {
+		return completionRecoveryDecision{SkipReason: "reason_not_provider_incomplete_turn"}
+	}
+	if strings.TrimSpace(result.outputText) == "" {
+		return completionRecoveryDecision{SkipReason: "missing_output_text"}
+	}
+	if _, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter); !ok {
+		return completionRecoveryDecision{SkipReason: "adapter_missing_recovery_support"}
+	}
+	diagnostics, ok := decodeCompletionRecoveryProviderDiagnostics(result.providerDiagnosticsJSON)
+	if !ok {
+		return completionRecoveryDecision{SkipReason: "missing_provider_diagnostics"}
+	}
+	if !diagnostics.CompletionReceiptModeEnabled {
+		return completionRecoveryDecision{SkipReason: "completion_receipt_mode_disabled"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.ExportCheckReason) != "missing_completion_receipt" {
+		return completionRecoveryDecision{SkipReason: "export_check_reason_not_missing_completion_receipt"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.TerminalStateClass) != "terminal_success_candidate" {
+		return completionRecoveryDecision{SkipReason: "terminal_state_not_success_candidate"}
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.LastStepFinishReason) != "stop" {
+		return completionRecoveryDecision{SkipReason: "step_finish_reason_not_stop"}
+	}
+
+	switch resolvedNodeClass(result.node.NodeID, result.node.NodeClass) {
+	case workflow.NodeClassAdvisorConsultation, workflow.NodeClassAdvisorySynthesis, workflow.NodeClassPlanDrafting:
+		return completionRecoveryDecision{Eligible: true}
+	case workflow.NodeClassDelegatedExecution:
+		if o == nil || o.fsStore == nil {
+			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
+		}
+		if strings.TrimSpace(result.workspacePath) == "" {
+			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
+		}
+		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
+	case workflow.NodeClassExecutionReview, workflow.NodeClassValidationGates:
+		if _, err := validateProviderCompletionReceiptForNode(result.node, result.outputText, ""); err != nil {
+			return completionRecoveryDecision{SkipReason: "original_final_text_failed_contract"}
+		}
+		if o == nil || o.fsStore == nil {
+			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
+		}
+		if strings.TrimSpace(result.workspacePath) == "" {
+			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
+		}
+		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
+	default:
+		return completionRecoveryDecision{SkipReason: "node_class_not_recoverable"}
+	}
+}
+
+func (o *orchestrationLoop) beginCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision) (*completionRecoverySnapshotGuard, error) {
+	if !decision.WorkspaceGuarded {
+		return nil, nil
+	}
+	if o == nil || o.fsStore == nil {
+		return nil, fmt.Errorf("runtime filesystem store is required for completion recovery guard")
+	}
+	createdAt := o.now().UTC().Format(time.RFC3339)
+	snapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
+		SnapshotID:   composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_pre", o.now().UTC()),
+		RunID:        result.run.RunID,
+		SnapshotKind: "attempt_result",
+		RootPath:     result.workspacePath,
+		CreatedAt:    createdAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("capture pre-recovery snapshot: %w", err)
+	}
+	return &completionRecoverySnapshotGuard{PreSnapshotID: snapshot.SnapshotID}, nil
+}
+
+func (o *orchestrationLoop) finishCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision, guard *completionRecoverySnapshotGuard) error {
+	if !decision.WorkspaceGuarded || guard == nil {
+		return nil
+	}
+	if o == nil || o.fsStore == nil {
+		return fmt.Errorf("runtime filesystem store is required for completion recovery guard")
+	}
+	createdAt := o.now().UTC().Format(time.RFC3339)
+	postSnapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
+		SnapshotID:       composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_post", o.now().UTC()),
+		RunID:            result.run.RunID,
+		ParentSnapshotID: strings.TrimSpace(guard.PreSnapshotID),
+		SnapshotKind:     "attempt_result",
+		RootPath:         result.workspacePath,
+		CreatedAt:        createdAt,
+	})
+	if err != nil {
+		return fmt.Errorf("capture post-recovery snapshot: %w", err)
+	}
+	diffs, err := o.fsStore.DiffSnapshots(ctx, strings.TrimSpace(guard.PreSnapshotID), postSnapshot.SnapshotID)
+	if err != nil {
+		return fmt.Errorf("diff recovery snapshots: %w", err)
+	}
+	if len(diffs) == 0 {
+		return nil
+	}
+	if err := o.fsStore.RestoreSnapshot(ctx, strings.TrimSpace(guard.PreSnapshotID), result.workspacePath); err != nil {
+		return fmt.Errorf("restore pre-recovery snapshot after workspace mutation: %w", err)
+	}
+	paths := make([]string, 0, len(diffs))
+	for _, diff := range diffs {
+		if trimmed := strings.TrimSpace(diff.Path); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return &completionRecoveryWorkspaceMutationError{Paths: paths}
+}
+
+func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Context, result asyncExecutionResult) asyncExecutionResult {
+	decision := o.shouldAttemptCompletionRecovery(result)
+	now := o.now().UTC().Format(time.RFC3339)
+	if !decision.Eligible {
+		if shouldEmitCompletionRecoverySkip(decision.SkipReason) {
+			o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": decision.SkipReason})
+		}
+		return result
+	}
+
+	recoveryAdapter, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter)
+	if !ok {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": "adapter_missing_recovery_support"})
+		return result
+	}
+
+	guard, guardErr := o.beginCompletionRecoveryGuard(ctx, result, decision)
+	if guardErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": guardErr.Error()})
+		result.err = guardErr
+		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
+		return result
+	}
+
+	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
+	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, opencode.ExecuteRequest{
+		SessionID:                 result.sessionID,
+		ProviderSessionID:         result.providerSessionID,
+		AttemptID:                 result.attemptID,
+		RunID:                     result.run.RunID,
+		NodeRunID:                 result.attempt.NodeRunID,
+		Model:                     result.model,
+		Variant:                   result.variant,
+		Agent:                     result.agent,
+		WorkspacePath:             result.workspacePath,
+		ConfigDir:                 bootstrapassets.ManagedOpenCodeRoot(result.workspacePath),
+		Prompt:                    firstNonEmptyString(strings.TrimSpace(result.prompt), "completion receipt recovery"),
+		OccurredAt:                result.occurredAt,
+		InvocationID:              result.providerInvocationID,
+		InvocationIssuedAt:        result.providerInvocationAt,
+		CompletionProtocolVersion: opencode.CompletionProtocolVersion,
+		CompletionCapability:      result.completionCapability,
+		CompletionReceiptDir:      result.completionReceiptDir,
+		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
+	}, result.outputText)
+	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
+
+	if guardErr := o.finishCompletionRecoveryGuard(ctx, result, decision, guard); guardErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_rejected_workspace_mutated", now, map[string]any{"error": guardErr.Error()})
+		result.err = guardErr
+		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
+		return result
+	}
+
+	if recoveryErr != nil {
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
+		return result
+	}
+	if strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
+		recoveryErr = &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"}
+		result.err = recoveryErr
+		result.outcome = normalizeExecutionOutcome(result.outcome, recoveryErr)
+		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
+		return result
+	}
+
+	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_succeeded", now, map[string]any{"completion_receipt_evidence_id": result.completionReceiptEvidenceID})
+	return result
+}
+
+func shouldEmitCompletionRecoverySkip(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "", "execution_mode_not_provider_backed", "reason_not_provider_incomplete_turn", "completion_receipt_already_accepted":
+		return false
+	default:
+		return true
+	}
 }
 
 func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) opencode.ExecutionOutcome {
@@ -404,20 +751,6 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	now := o.now().UTC().Format(time.RFC3339)
 	o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_entered", now, nil)
 	originalOutputText := strings.TrimSpace(result.outputText)
-	if strings.TrimSpace(result.workspaceID) != "" {
-		defer func() {
-			if o.forceCloseActive() {
-				return
-			}
-			releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancelRelease()
-			_ = o.workspace.ReleaseWorkspace(releaseCtx, workspace.ReleaseWorkspaceRequest{
-				WorkspaceID: result.workspaceID,
-				ReleasedAt:  o.now().UTC().Format(time.RFC3339),
-				Cleanup:     false,
-			})
-		}()
-	}
 
 	persistedAttemptExecution := executionstore.AttemptExecution{}
 	hasPersistedAttemptExecution := false
@@ -445,7 +778,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	currentOutcome := normalizeExecutionOutcome(result.outcome, execErr)
 	hasCanonicalSettlement := hasPersistedAttemptExecution && strings.TrimSpace(persistedAttemptExecution.CanonicalSettlementID) != ""
 	if execErr == nil {
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath)
+		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
 		if countErr != nil {
 			execErr = countErr
 			currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, execErr)
@@ -638,9 +971,15 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		EventSeq:        terminalSeq,
 		PayloadJSON:     terminalPayload,
 	}
+	decision, err := o.completionProjectionDecision(ctx, result)
+	if err != nil {
+		return err
+	}
 	var planningOutput *state.CreateRunPlanningOutputRequest
-	if req, ok := buildRunPlanningOutputRequest(result, now, responseText, execErr); ok {
-		planningOutput = &req
+	if decision.AllowPlanningOutput {
+		if req, ok := buildRunPlanningOutputRequest(result, now, responseText, execErr); ok {
+			planningOutput = &req
+		}
 	}
 	fence, guardErr := o.loadExecutionCompletionFence(ctx, result.run.RunID, result.attempt.NodeRunID)
 	if guardErr != nil {
@@ -658,7 +997,11 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		projectionAllowed = true
 		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_retry", now, map[string]any{"terminal_state": terminalState})
 	case runStatus != "running" || nodeStatus != "running":
-		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_skipped_terminalized", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		if !runTerminalized && decision.LatestAttempt && isDurableExecutionTerminalState(actualAttemptState) && nodeStatus != projectedNodeTerminalState(currentOutcome) {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_deferred_to_durable_projection", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		} else {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_skipped_terminalized", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
+		}
 	default:
 		err := o.transitionService().RecordNodeCompletion(ctx, state.NodeCompletionRecordRequest{
 			Transition:     transitionReq,
@@ -683,35 +1026,39 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		}
 	}
 	if (transitionCommitted || projectionAllowed) && o.registry != nil {
-		if statusErr := o.registry.UpdateAgentStatus(ctx, state.UpdateAgentStatusRequest{
-			AgentID:    result.attempt.AgentID,
-			FromStatus: state.AgentStatusBusy,
-			ToStatus:   state.AgentStatusIdle,
-			UpdatedAt:  now,
-		}); statusErr != nil {
-			slog.Warn("failed to transition agent to idle", "agent_id", result.attempt.AgentID, "error", statusErr)
+		if statusErr := o.registry.SyncOperationalStatus(ctx, result.attempt.AgentID, now); statusErr != nil {
+			slog.Warn("failed to sync agent operational status after completion", "agent_id", result.attempt.AgentID, "error", statusErr)
 		}
 	}
 	evaluateReviewReworkAfterProjection := currentNodeClass == workflow.NodeClassExecutionReview && !alreadyAutoSucceededAtLoopCap
 	evaluateValidationReworkAfterProjection := currentNodeClass == workflow.NodeClassValidationGates && !alreadyAutoSucceededAtLoopCap
 
 	if isDurableExecutionTerminalState(actualAttemptState) && (runTerminalized || nodeStatus != projectedNodeTerminalState(currentOutcome)) {
+		durablePlanningOutput := (*state.CreateRunPlanningOutputRequest)(nil)
+		if !runTerminalized && decision.LatestAttempt && !projectionAllowed && !transitionCommitted {
+			durablePlanningOutput = planningOutput
+		}
 		projected, projectErr := o.transitionService().ProjectNodeTerminalFromDurableAttempt(ctx, state.DurableAttemptNodeProjectionRequest{
-			RunID:      result.run.RunID,
-			NodeRunID:  result.attempt.NodeRunID,
-			AttemptID:  result.attemptID,
-			ActorID:    "runtime_orchestrator",
-			OccurredAt: now,
+			RunID:          result.run.RunID,
+			NodeRunID:      result.attempt.NodeRunID,
+			AttemptID:      result.attemptID,
+			ActorID:        "runtime_orchestrator",
+			OccurredAt:     now,
+			PlanningOutput: durablePlanningOutput,
 		})
 		if projectErr != nil {
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_durable_node_projection_error", now, map[string]any{"error": projectErr.Error(), "attempt_state": actualAttemptState})
 			return projectErr
 		}
 		if projected {
+			if !runTerminalized && decision.LatestAttempt {
+				transitionCommitted = true
+				projectionAllowed = true
+			}
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_durable_node_projected", now, map[string]any{"attempt_state": actualAttemptState})
 		}
 	}
-	if transitionCommitted || projectionAllowed {
+	if (transitionCommitted || projectionAllowed) && decision.AllowDownstreamEffects {
 		if evaluateReviewReworkAfterProjection {
 			queued, _, queueErr := o.queueExecutionReviewReworkIfEligibleForClass(ctx, result.run, now, result.node.NodeID, result.node.NodeClass)
 			if queueErr != nil {
@@ -733,8 +1080,21 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			}
 		}
 	}
+	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+		snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, result, now)
+		if snapshotErr != nil {
+			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_snapshot_capture_error", now, map[string]any{"error": snapshotErr.Error()})
+			return snapshotErr
+		}
+		result.resultSnapshotID = snapshot.SnapshotID
+	}
+	canonicalArtifactProjectionAllowed := projectionAllowed && decision.AllowCanonicalArtifacts
+	canonicalMailboxProjectionAllowed := projectionAllowed && decision.AllowCanonicalMailbox
+	if projectionAllowed && !decision.LatestAttempt {
+		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_suppressed_superseded", now, map[string]any{"attempt": result.attempt.Attempt})
+	}
 	var projectionErr error
-	if projectionAllowed {
+	if canonicalArtifactProjectionAllowed {
 		if execErr == nil || isImplementationRole(result.node.RequiredRole) {
 			artifactErr := error(nil)
 			if workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), responseReasonCode) && strings.TrimSpace(result.workspacePath) == "" {
@@ -747,6 +1107,8 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 				o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_artifact_projection_error", now, map[string]any{"error": artifactErr.Error()})
 			}
 		}
+	}
+	if canonicalMailboxProjectionAllowed {
 		if mailboxErr := o.emitCommunicationMessage(ctx, communicationMessageRequest{
 			MessageID:         responseMessageID,
 			RunID:             result.run.RunID,
@@ -788,6 +1150,21 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			slog.Warn("failed to persist token usage", "run_id", result.run.RunID, "attempt_id", result.attemptID, "error", insertErr)
 		}
 	}
+	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+		if projectionErr == nil && execErr == nil && canonicalArtifactProjectionAllowed && isImplementationRole(result.node.RequiredRole) {
+			if promoteErr := o.promoteExecutionTargetSnapshot(ctx, result.run.RunID, result.resultSnapshotID, now); promoteErr != nil {
+				return promoteErr
+			}
+		} else {
+			trustedSnapshotID := strings.TrimSpace(result.baseSnapshotID)
+			if target, err := o.fsStore.GetExecutionTarget(ctx, result.run.RunID); err == nil && strings.TrimSpace(target.TrustedSnapshotID) != "" {
+				trustedSnapshotID = strings.TrimSpace(target.TrustedSnapshotID)
+			}
+			if restoreErr := o.restoreExecutionTarget(ctx, result.run.RunID, result.workspacePath, trustedSnapshotID, now); restoreErr != nil {
+				return restoreErr
+			}
+		}
+	}
 	if projectionErr != nil {
 		return projectionErr
 	}
@@ -801,6 +1178,90 @@ func (o *orchestrationLoop) loadAttemptExecutionMetadata(ctx context.Context, at
 		return executionstore.AttemptExecution{}, false, nil
 	}
 	return o.executionStore.GetAttempt(ctx, attemptID)
+}
+
+func (o *orchestrationLoop) hasNewerNodeAttempt(ctx context.Context, runID, nodeID string, attempt int) (bool, error) {
+	if o == nil || o.db == nil {
+		return false, nil
+	}
+	var newerAttempt int
+	err := o.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(attempt), 0)
+		 FROM node_runs
+		 WHERE run_id = ? AND node_id = ? AND attempt > ? AND COALESCE(TRIM(superseded_at), '') = ''`,
+		strings.TrimSpace(runID),
+		strings.TrimSpace(nodeID),
+		attempt,
+	).Scan(&newerAttempt)
+	if err != nil {
+		return false, fmt.Errorf("load newer node attempt for run %q node %q: %w", strings.TrimSpace(runID), strings.TrimSpace(nodeID), err)
+	}
+	return newerAttempt > 0, nil
+}
+
+func (o *orchestrationLoop) completionProjectionDecision(ctx context.Context, result asyncExecutionResult) (completionProjectionDecision, error) {
+	hasNewerAttempt, err := o.hasNewerNodeAttempt(ctx, result.run.RunID, result.node.NodeID, result.attempt.Attempt)
+	if err != nil {
+		return completionProjectionDecision{}, err
+	}
+	if !hasNewerAttempt {
+		return completionProjectionDecision{
+			LatestAttempt:           true,
+			AllowPlanningOutput:     true,
+			AllowDownstreamEffects:  true,
+			AllowCanonicalArtifacts: true,
+			AllowCanonicalMailbox:   true,
+		}, nil
+	}
+	if durableExecutionTerminalState(result.outcome) == "committed_success" {
+		adopted, err := o.adoptOlderSuccessfulAttemptBeforeLaunch(ctx, result, o.now().UTC().Format(time.RFC3339))
+		if err != nil {
+			return completionProjectionDecision{}, err
+		}
+		if adopted {
+			return completionProjectionDecision{
+				LatestAttempt:           true,
+				AllowPlanningOutput:     true,
+				AllowDownstreamEffects:  true,
+				AllowCanonicalArtifacts: true,
+				AllowCanonicalMailbox:   true,
+			}, nil
+		}
+	}
+	return completionProjectionDecision{
+		LatestAttempt:           false,
+		AllowPlanningOutput:     false,
+		AllowDownstreamEffects:  false,
+		AllowCanonicalArtifacts: false,
+		AllowCanonicalMailbox:   false,
+	}, nil
+}
+
+func (o *orchestrationLoop) adoptOlderSuccessfulAttemptBeforeLaunch(ctx context.Context, result asyncExecutionResult, occurredAt string) (bool, error) {
+	if o == nil {
+		return false, nil
+	}
+	resolveCtx := ctx
+	if resolveCtx == nil {
+		resolveCtx = context.Background()
+	}
+	resolveCtx = context.WithoutCancel(resolveCtx)
+	supersedeResult, err := o.transitionService().SupersedeQueuedAttemptsBeforeLaunch(resolveCtx, state.SupersedeQueuedAttemptsRequest{
+		RunID:       result.run.RunID,
+		NodeID:      result.node.NodeID,
+		KeepAttempt: result.attempt.Attempt,
+		OccurredAt:  occurredAt,
+		ActorID:     "runtime_orchestrator",
+	})
+	if err != nil {
+		var stateConflict *state.StateConflictError
+		var illegalTransition *state.IllegalTransitionError
+		if errors.As(err, &stateConflict) || errors.As(err, &illegalTransition) {
+			return false, nil
+		}
+		return false, err
+	}
+	return supersedeResult.AllowsCanonicalAdoption(), nil
 }
 
 func buildRunPlanningOutputRequest(result asyncExecutionResult, occurredAt, responseText string, execErr error) (state.CreateRunPlanningOutputRequest, bool) {
@@ -852,6 +1313,8 @@ func (o *orchestrationLoop) emitCompletionLifecycleObservation(ctx context.Conte
 	if err != nil {
 		return
 	}
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
 	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_completion_%s", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt, sanitizeFileToken(phase)),
 		RunID:           result.run.RunID,
@@ -929,20 +1392,19 @@ func isDurableExecutionTerminalState(state string) bool {
 	}
 }
 
-func (o *orchestrationLoop) retryArtifactCountForExecution(ctx context.Context, node nodeDefinition, workspacePath string) (int, error) {
+func (o *orchestrationLoop) retryArtifactCountForExecution(ctx context.Context, node nodeDefinition, workspacePath, baseSnapshotID string) (int, error) {
 	if isImplementationRole(node.RequiredRole) {
 		if strings.TrimSpace(workspacePath) == "" {
 			return 0, fmt.Errorf("workspace path is required for implementation artifact retry evaluation")
 		}
-		discoveredArtifacts, err := discoverWorkspaceArtifacts(workspacePath)
-		if err != nil {
-			return 0, err
+		if o == nil || o.fsStore == nil || strings.TrimSpace(baseSnapshotID) == "" {
+			discoveredArtifacts, err := discoverWorkspaceArtifacts(workspacePath)
+			if err != nil {
+				return 0, err
+			}
+			return len(discoveredArtifacts), nil
 		}
-		filteredArtifacts, err := filterImplementationArtifactsAgainstBaseline(workspacePath, discoveredArtifacts)
-		if err != nil {
-			return 0, err
-		}
-		return len(filteredArtifacts), nil
+		return o.fsStore.CountChangesAgainstSnapshot(ctx, workspacePath, baseSnapshotID)
 	}
 	return 0, nil
 }
@@ -1038,7 +1500,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 		result.completionStructuredPayloadJSON = strings.TrimSpace(retryResponse.CompletionStructuredPayloadJSON)
 		result.suppressEmptyOutputRetry = retryResponse.SuppressEmptyOutputRetry
 		result.outputText = strings.TrimSpace(retryResponse.OutputText)
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath)
+		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
 		if countErr != nil {
 			return result, countErr
 		}
@@ -1180,6 +1642,23 @@ func (e *providerEmptyOutputError) Error() string {
 	return fmt.Sprintf("provider returned empty output after retries (node=%s attempt=%s)", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
 }
 
+type completionRecoveryWorkspaceMutationError struct {
+	Paths []string
+}
+
+func (e *completionRecoveryWorkspaceMutationError) Error() string {
+	paths := make([]string, 0, len(e.Paths))
+	for _, path := range e.Paths {
+		if trimmed := strings.TrimSpace(path); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	if len(paths) == 0 {
+		return "completion recovery mutated the workspace"
+	}
+	return fmt.Sprintf("completion recovery mutated the workspace: %s", strings.Join(paths, ", "))
+}
+
 func classifyExecutionReasonCode(err error) string {
 	if err == nil {
 		return "execution_completed"
@@ -1208,6 +1687,10 @@ func classifyExecutionReasonCode(err error) string {
 	if errors.As(err, &emptyOutputErr) {
 		return "provider_empty_output"
 	}
+	var recoveryMutationErr *completionRecoveryWorkspaceMutationError
+	if errors.As(err, &recoveryMutationErr) {
+		return "completion_recovery_workspace_mutated"
+	}
 	var incompleteTurnErr *opencode.IncompleteTerminalStateError
 	if errors.As(err, &incompleteTurnErr) {
 		return "provider_incomplete_turn"
@@ -1230,6 +1713,9 @@ func executionTerminalPayloadJSON(result asyncExecutionResult, reasonCode string
 		extra["status"] = "ok"
 	} else {
 		extra["error"] = err.Error()
+	}
+	if diagnostics := decodeProviderDiagnosticsJSON(result.providerDiagnosticsJSON); diagnostics != nil {
+		extra["provider_diagnostics"] = diagnostics
 	}
 	raw, marshalErr := marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 	if marshalErr != nil {
@@ -1257,6 +1743,18 @@ func executionTerminalPayloadJSON(result asyncExecutionResult, reasonCode string
 		return fmt.Sprintf(`{"error":%q}`, err.Error())
 	}
 	return raw
+}
+
+func decodeProviderDiagnosticsJSON(raw string) any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+		return map[string]any{"provider_diagnostics_json": trimmed}
+	}
+	return value
 }
 
 type executionNotStartedError struct {

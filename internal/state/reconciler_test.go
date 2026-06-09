@@ -97,6 +97,37 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	}
 }
 
+func TestReconcilerStartupRecoversAndReassignsStaleAttemptWithDriftedReplacementStatus(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:05:30Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'blocked', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile startup with drifted replacement status: %v", err)
+	}
+	if result.AttemptsReassigned != 1 {
+		t.Fatalf("expected one reassigned attempt, got %d", result.AttemptsReassigned)
+	}
+	if got := queryNodeAssignedAgent(t, db, "nr_1_retry_2"); got != "agent_king_backup" {
+		t.Fatalf("expected drifted replacement agent to be claimed for retry, got %q", got)
+	}
+	if got := queryReconcilerAgentStatus(t, db, "agent_king_backup"); got != "busy" {
+		t.Fatalf("expected drifted replacement agent status to converge to busy after claim, got %q", got)
+	}
+}
+
 func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) {
 	t.Parallel()
 
@@ -120,6 +151,176 @@ func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) 
 	}
 	if got := queryNodeStatus(t, db, "nr_1"); got != "succeeded" {
 		t.Fatalf("expected reconciler to project node status from durable execution, got %q", got)
+	}
+}
+
+func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	now := "2026-03-01T12:09:30Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting', 'starting', 'starting', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting', 'starting-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting', 'wfdef_starting', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting', NULL, 'decree_starting', 'wfdef_starting', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_1', 'run_starting', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting:advisor_consultation_noble:1', 'run_starting', 'nr_starting_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile starting launch fence: %v", err)
+	}
+	if result.StaleAttemptsFound != 0 {
+		t.Fatalf("expected active starting launch fence to avoid stale recovery, got %d stale attempts", result.StaleAttemptsFound)
+	}
+	if got := queryNodeStatus(t, db, "nr_starting_1"); got != "starting" {
+		t.Fatalf("expected starting attempt to remain starting while launch fence is active, got %q", got)
+	}
+	if count := queryEventTypeCount(t, db, "run_starting", "attempt.retry_queued"); count != 0 {
+		t.Fatalf("expected no retry queueing while launch fence is active, got %d events", count)
+	}
+}
+
+func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	now := "2026-03-01T12:09:50Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_lease', 'starting lease', 'starting lease', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_lease', 'starting-lease-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_lease', 'wfdef_starting_lease', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_lease', NULL, 'decree_starting_lease', 'wfdef_starting_lease', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_lease_1', 'run_starting_lease', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_lease:advisor_consultation_noble:1', 'run_starting_lease', 'nr_starting_lease_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_lease_1', '', '2026-03-01T12:09:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_lease_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile starting lease retention: %v", err)
+	}
+	if result.StaleAttemptsFound != 0 {
+		t.Fatalf("expected active launch fence to avoid stale attempt recovery, got %d stale attempts", result.StaleAttemptsFound)
+	}
+	if result.SessionsClosed != 0 {
+		t.Fatalf("expected starting lease to remain open while launch fence is valid, got %d closed sessions", result.SessionsClosed)
+	}
+	if result.SessionsRenewed != 1 {
+		t.Fatalf("expected starting lease to renew while launch fence is still active, got %d renewals", result.SessionsRenewed)
+	}
+	status, heartbeat, expiry := querySessionLeaseState(t, db, "session_starting_lease_1")
+	if status != "active" {
+		t.Fatalf("expected starting lease to remain active, got %q", status)
+	}
+	if heartbeat != now {
+		t.Fatalf("expected starting lease heartbeat to renew to %q, got %q", now, heartbeat)
+	}
+	if expiry != "2026-03-01T12:10:25Z" {
+		t.Fatalf("expected starting lease expiry to extend with the renewal, got %q", expiry)
+	}
+}
+
+func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	now := "2026-03-01T12:13:30Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'noble-delegate', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_stale', 'starting stale', 'starting stale', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_stale', 'starting-stale-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_stale', 'wfdef_starting_stale', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_stale', NULL, 'decree_starting_stale', 'wfdef_starting_stale', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_stale_1', 'run_starting_stale', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_stale:advisor_consultation_noble:1', 'run_starting_stale', 'nr_starting_stale_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_stale_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_stale_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile stale starting attempt: %v", err)
+	}
+	if result.StaleAttemptsFound != 1 {
+		t.Fatalf("expected one stale starting attempt, got %d", result.StaleAttemptsFound)
+	}
+	if result.AttemptsReassigned != 1 {
+		t.Fatalf("expected one reassigned starting attempt, got %d", result.AttemptsReassigned)
+	}
+	if got := queryNodeStatus(t, db, "nr_starting_stale_1"); got != "blocked" {
+		t.Fatalf("expected stale starting attempt to become blocked, got %q", got)
+	}
+	if got := queryNodeStatus(t, db, "nr_starting_stale_1_retry_2"); got != "ready" {
+		t.Fatalf("expected retry attempt to be ready after stale starting recovery, got %q", got)
+	}
+	if got := queryNodeAssignedAgent(t, db, "nr_starting_stale_1_retry_2"); got != "agent_noble_backup" {
+		t.Fatalf("expected stale starting retry to move to backup agent, got %q", got)
+	}
+	payload := queryLatestEventPayloadForType(t, db, "run_starting_stale", "attempt.retry_queued")
+	if got, _ := payload["node_id"].(string); got != "advisor_consultation_noble" {
+		t.Fatalf("expected retry payload node_id, got %#v", payload)
+	}
+	if got, _ := payload["attempt_id"].(string); got != "run_starting_stale:advisor_consultation_noble:2" {
+		t.Fatalf("expected retry payload attempt_id, got %#v", payload)
+	}
+	if got, _ := payload["required_role"].(string); got != "noble-delegate" {
+		t.Fatalf("expected retry payload required_role, got %#v", payload)
+	}
+	if got, _ := payload["execution_mode"].(string); got != "provider_backed" {
+		t.Fatalf("expected retry payload execution_mode, got %#v", payload)
+	}
+}
+
+func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	now := "2026-03-01T12:13:30Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'noble-delegate', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_expired', 'starting expired', 'starting expired', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_expired', 'starting-expired-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_expired', 'wfdef_starting_expired', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_expired', NULL, 'decree_starting_expired', 'wfdef_starting_expired', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_expired_1', 'run_starting_expired', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_expired:advisor_consultation_noble:1', 'run_starting_expired', 'nr_starting_expired_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_expired_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_expired_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:13:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:13:00Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile expired starting attempt: %v", err)
+	}
+	if result.StaleAttemptsFound != 1 {
+		t.Fatalf("expected expired launch-fence lease to mark one stale attempt, got %d", result.StaleAttemptsFound)
+	}
+	if result.AttemptsReassigned != 1 {
+		t.Fatalf("expected expired launch-fence lease to reassign one attempt, got %d", result.AttemptsReassigned)
+	}
+	if got := queryNodeStatus(t, db, "nr_starting_expired_1"); got != "blocked" {
+		t.Fatalf("expected expired starting attempt to become blocked, got %q", got)
+	}
+	if got := queryNodeStatus(t, db, "nr_starting_expired_1_retry_2"); got != "ready" {
+		t.Fatalf("expected retry attempt to be ready after lease-expiry recovery, got %q", got)
 	}
 }
 
@@ -2070,6 +2271,21 @@ func queryLatestAttemptFailedPayload(t *testing.T, db *sql.DB, attemptID string)
 	payload := make(map[string]any)
 	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
 		t.Fatalf("decode attempt.failed payload: %v", err)
+	}
+	return payload
+}
+
+func queryLatestEventPayloadForType(t *testing.T, db *sql.DB, runID, eventType string) map[string]any {
+	t.Helper()
+
+	var payloadRaw string
+	if err := db.QueryRow(`SELECT payload_json FROM events WHERE run_id = ? AND event_type = ? ORDER BY run_event_seq DESC LIMIT 1`, runID, eventType).Scan(&payloadRaw); err != nil {
+		t.Fatalf("query %s payload: %v", eventType, err)
+	}
+
+	payload := make(map[string]any)
+	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+		t.Fatalf("decode %s payload: %v", eventType, err)
 	}
 	return payload
 }

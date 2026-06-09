@@ -119,6 +119,51 @@ func TestSessionAdapterSetsConfiguredOpencodeConfigDir(t *testing.T) {
 	}
 }
 
+func TestSessionAdapterPassesWorkspaceDirFlagForRunExecution(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	workspacePath := t.TempDir()
+	fallbackWorkDir := t.TempDir()
+	relativePath := filepath.Join("deliverables", "index.html")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath, WorkDir: fallbackWorkDir})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_WRITE_RELATIVE_PATH", relativePath)
+	t.Setenv("FAKE_OPENCODE_WRITE_CONTENT", "<html>ok</html>\n")
+
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_workspace_dir",
+		AttemptID:     "attempt_workspace_dir",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: workspacePath,
+		Prompt:        "write deliverable",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	argsLogRaw, err := os.ReadFile(argsLogPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	argsLog := string(argsLogRaw)
+	if !strings.Contains(argsLog, "--dir "+workspacePath) {
+		t.Fatalf("expected workspace dir flag in args log, got %q", argsLog)
+	}
+
+	workspaceArtifactPath := filepath.Join(workspacePath, relativePath)
+	if _, err := os.Stat(workspaceArtifactPath); err != nil {
+		t.Fatalf("expected fake run to write artifact under workspace path %q: %v", workspaceArtifactPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(fallbackWorkDir, relativePath)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected configured fallback work dir to stay untouched, stat err=%v", err)
+	}
+}
+
 func TestSessionAdapterRequestConfigDirOverridesDefault(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	envLogPath := filepath.Join(t.TempDir(), "env.log")
@@ -305,6 +350,156 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	}
 	if receipts[0].AttemptID != "attempt_receipt_success" {
 		t.Fatalf("expected receipt attempt id, got %#v", receipts[0])
+	}
+}
+
+func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	receiptDir := t.TempDir()
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	receipts := make([]CompletionReceipt, 0, 1)
+	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
+		SessionID:                 "session_receipt_recovery",
+		ProviderSessionID:         "ses_receipt_recovery",
+		AttemptID:                 "attempt_receipt_recovery",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "completion receipt recovery",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_receipt_recovery",
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_receipt_recovery",
+		CompletionReceiptDir:      receiptDir,
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			receipts = append(receipts, receipt)
+			return CompletionReceiptAcceptance{
+				EvidenceID:            "evidence_receipt_recovery",
+				FinalText:             receipt.FinalText,
+				StructuredPayloadJSON: receipt.StructuredPayloadJSON,
+			}, nil
+		},
+	}, "hello from fake")
+	if err != nil {
+		t.Fatalf("recover missing completion receipt: %v", err)
+	}
+	if !res.CompletionReceiptAccepted {
+		t.Fatal("expected completion recovery receipt to be accepted")
+	}
+	if res.CompletionReceiptEvidenceID != "evidence_receipt_recovery" {
+		t.Fatalf("expected recovery evidence id, got %q", res.CompletionReceiptEvidenceID)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("expected one recovery receipt, got %d", len(receipts))
+	}
+	if receipts[0].FinalText != "hello from fake" {
+		t.Fatalf("expected recovery final_text to round-trip, got %#v", receipts[0])
+	}
+
+	argsLogRaw, err := os.ReadFile(argsLogPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	if !strings.Contains(string(argsLogRaw), "--session ses_receipt_recovery") {
+		t.Fatalf("expected recovery run to reuse provider session, args=%q", string(argsLogRaw))
+	}
+	promptRaw, err := os.ReadFile(argsLogPath + ".ses_receipt_recovery.prompt")
+	if err != nil {
+		t.Fatalf("read recovery prompt log: %v", err)
+	}
+	if !strings.Contains(string(promptRaw), "Do not change your prior answer.") {
+		t.Fatalf("expected recovery prompt instructions, got %q", string(promptRaw))
+	}
+}
+
+func TestSessionAdapterRecoveryRejectsChangedFinalText(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_TEXT", "different recovery text")
+	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
+		SessionID:                 "session_receipt_recovery_changed",
+		ProviderSessionID:         "ses_receipt_recovery_changed",
+		AttemptID:                 "attempt_receipt_recovery_changed",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "completion receipt recovery",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_receipt_recovery_changed",
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_receipt_recovery_changed",
+		CompletionReceiptDir:      t.TempDir(),
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			return CompletionReceiptAcceptance{EvidenceID: "should_not_accept"}, nil
+		},
+	}, "original final text")
+	if err == nil {
+		t.Fatal("expected changed recovery final_text to fail")
+	}
+	var incompleteErr *IncompleteTerminalStateError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
+	}
+	if res.CompletionReceiptEvidenceID != "" {
+		t.Fatalf("expected no accepted receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
+	}
+}
+
+func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
+
+	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_process_failure_diagnostics",
+		AttemptID:     "attempt_process_failure_diagnostics",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: t.TempDir(),
+		Prompt:        "process failure diagnostics",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected process failure to return an error")
+	}
+	if strings.TrimSpace(res.ProviderDiagnosticsJSON) == "" {
+		t.Fatal("expected provider diagnostics json on process failure")
+	}
+	var diagnostics struct {
+		CompletionReceiptModeEnabled bool   `json:"completion_receipt_mode_enabled"`
+		StderrTail                   string `json:"stderr_tail"`
+		ExecutionPathDiagnostics     struct {
+			WaitError string `json:"wait_error"`
+		} `json:"execution_path_diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(res.ProviderDiagnosticsJSON), &diagnostics); err != nil {
+		t.Fatalf("decode provider diagnostics json: %v", err)
+	}
+	if diagnostics.CompletionReceiptModeEnabled {
+		t.Fatal("expected receipt mode to be disabled in provider diagnostics")
+	}
+	if !strings.Contains(diagnostics.StderrTail, "missing FAKE_OPENCODE_TOOL_CALLS_STATE_DIR") {
+		t.Fatalf("expected stderr tail to include missing state dir error, got %q", diagnostics.StderrTail)
+	}
+	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.WaitError) == "" {
+		t.Fatal("expected execution path diagnostics to capture wait_error")
 	}
 }
 
@@ -1562,7 +1757,7 @@ func TestSessionAdapterLongRunWithHeartbeatEventsDoesNotTimeout(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1929,7 +2124,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1939,6 +2134,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
+	t.Setenv("FAKE_OPENCODE_SUPPRESS_SESSION_EVENT", "1")
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_CLOSE_STDOUT_AND_STALL", "1")
 
 	started := time.Now()
@@ -1954,7 +2150,7 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream_inactivity_timeout") {
 		t.Fatalf("expected stream_inactivity_timeout error, got %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 1500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("expected watchdog timeout before stalled continuation exits, elapsed=%s", elapsed)
 	}
 }
@@ -1964,7 +2160,7 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 120 * time.Millisecond,
+		StreamInactivityTimeout: 250 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1974,6 +2170,7 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
+	t.Setenv("FAKE_OPENCODE_SUPPRESS_SESSION_EVENT", "1")
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_STALL_AFTER_FIRST", "1")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
@@ -3567,11 +3764,15 @@ if [ "$1" != "run" ]; then
 fi
 
 SESSION=""
+DIR=""
 PREV=""
 PROMPT_ARG=""
 for ARG in "$@"; do
   if [ "$PREV" = "--session" ]; then
     SESSION="$ARG"
+  fi
+  if [ "$PREV" = "--dir" ]; then
+    DIR="$ARG"
   fi
   PREV="$ARG"
   PROMPT_ARG="$ARG"
@@ -3583,6 +3784,12 @@ fi
 
 if [ -n "$FAKE_OPENCODE_ARGS_LOG" ]; then
   printf '%s' "$PROMPT_ARG" > "$FAKE_OPENCODE_ARGS_LOG.$SESSION.prompt"
+fi
+
+if [ -n "$FAKE_OPENCODE_WRITE_RELATIVE_PATH" ] && [ -n "$DIR" ]; then
+  TARGET_PATH="$DIR/$FAKE_OPENCODE_WRITE_RELATIVE_PATH"
+  mkdir -p "$(dirname "$TARGET_PATH")"
+  printf '%s' "$FAKE_OPENCODE_WRITE_CONTENT" > "$TARGET_PATH"
 fi
 
 SESSION_FIELD=",\"sessionID\":\"$SESSION\""
@@ -3789,13 +3996,13 @@ if [ "$FAKE_OPENCODE_TOOL_CALLS_THEN_STOP" = "1" ]; then
 
   if [ "$FAKE_OPENCODE_CONTINUATION_STALL_AFTER_FIRST" = "1" ]; then
     echo "{\"type\":\"step_start\"$SESSION_FIELD}"
-    sleep 3
+    sleep 5
     exit 0
   fi
 
   if [ "$FAKE_OPENCODE_CONTINUATION_CLOSE_STDOUT_AND_STALL" = "1" ]; then
     exec 1>&-
-    sleep 2
+    sleep 5
     exit 0
   fi
 

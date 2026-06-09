@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -117,6 +118,10 @@ type ExecutionStartRecordRequest struct {
 	Transition TransitionRequest
 }
 
+type ExecutionLaunchRecordRequest struct {
+	Transition TransitionRequest
+}
+
 type NodeCompletionRecordRequest struct {
 	Transition     TransitionRequest
 	PlanningOutput *CreateRunPlanningOutputRequest
@@ -133,27 +138,77 @@ type LoopCapAutoSuccessRecordRequest struct {
 }
 
 type DurableAttemptNodeProjectionRequest struct {
-	RunID      string
-	NodeRunID  string
-	AttemptID  string
-	ActorID    string
-	OccurredAt string
-	GenerateID func(string) string
+	RunID          string
+	NodeRunID      string
+	AttemptID      string
+	ActorID        string
+	OccurredAt     string
+	PlanningOutput *CreateRunPlanningOutputRequest
+	GenerateID     func(string) string
+}
+
+type SupersedeQueuedAttemptsRequest struct {
+	RunID       string
+	NodeID      string
+	KeepAttempt int
+	OccurredAt  string
+	ActorID     string
+	GenerateID  func(string) string
+}
+
+type SupersedeQueuedAttemptsResult struct {
+	Outcome          SupersedeQueuedAttemptsOutcome
+	CancelledNodeRun []string
+}
+
+func (r SupersedeQueuedAttemptsResult) AllowsCanonicalAdoption() bool {
+	switch r.Outcome {
+	case SupersedeQueuedAttemptsOutcomeNoNewerAttempts, SupersedeQueuedAttemptsOutcomeAdopted:
+		return true
+	default:
+		return false
+	}
 }
 
 type liveNodeAttempt struct {
-	RunID          string
-	NodeRunID      string
-	NodeID         string
-	Attempt        int
-	NodeStatus     string
-	RequiredRole   string
-	AgentID        string
-	AttemptID      string
-	SessionID      string
-	ExecutionMode  executionstore.ExecutionMode
-	ExecutionState string
+	RunID                      string
+	NodeRunID                  string
+	NodeID                     string
+	Attempt                    int
+	NodeStatus                 string
+	SupersededAt               string
+	FailureCode                string
+	RequiredRole               string
+	AgentID                    string
+	AttemptID                  string
+	SessionID                  string
+	ExecutionMode              executionstore.ExecutionMode
+	ExecutionState             string
+	LaunchStartedAt            string
+	StartedAt                  string
+	ProviderSessionID          string
+	ActiveProviderInvocationID string
 }
+
+type attemptSupersessionStage string
+
+type SupersedeQueuedAttemptsOutcome string
+
+type attemptSupersessionDecision struct {
+	stage          attemptSupersessionStage
+	blockedOutcome SupersedeQueuedAttemptsOutcome
+}
+
+const (
+	attemptSupersessionStageNone      attemptSupersessionStage = ""
+	attemptSupersessionStagePreLaunch attemptSupersessionStage = "pre_launch"
+	attemptSupersessionStageLaunched  attemptSupersessionStage = "launched"
+
+	SupersedeQueuedAttemptsOutcomeNoNewerAttempts               SupersedeQueuedAttemptsOutcome = "no_newer_attempts"
+	SupersedeQueuedAttemptsOutcomeAdopted                       SupersedeQueuedAttemptsOutcome = "adopted"
+	SupersedeQueuedAttemptsOutcomeBlockedByNewerLiveAttempt     SupersedeQueuedAttemptsOutcome = "blocked_by_newer_live_attempt"
+	SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt SupersedeQueuedAttemptsOutcome = "blocked_by_newer_terminal_attempt"
+)
 
 func (s *TransitionService) ReplayRunFromFailure(ctx context.Context, req ReplayRunFromFailureRequest) ([]QueuedNodeAttempt, error) {
 	var lastErr error
@@ -181,18 +236,7 @@ func (s *TransitionService) RecordNodeCompletion(ctx context.Context, req NodeCo
 		if req.PlanningOutput == nil {
 			return nil
 		}
-		if err := validateRunPlanningOutputLineageTx(ctx, tx, *req.PlanningOutput); err != nil {
-			return err
-		}
-		output, err := insertRunPlanningOutput(ctx, tx, *req.PlanningOutput)
-		if err != nil {
-			return err
-		}
-		if output.Kind != RunPlanningOutputKindPlanRevision {
-			return nil
-		}
-		_, _, err = NewRunPlanRevisionStore(s.db).refreshCurrentRunPlanRevisionTx(ctx, tx, req.Transition.RunID)
-		return err
+		return persistRunPlanningOutputTx(ctx, tx, s.db, *req.PlanningOutput)
 	})
 }
 
@@ -201,10 +245,14 @@ func validateNodeCompletionRecordRequest(req NodeCompletionRecordRequest) error 
 	if transition.Entity != EntityTypeNode {
 		return fmt.Errorf("node completion requires node transition entity")
 	}
-	if req.PlanningOutput == nil {
+	return validatePlanningOutputTransitionLineage(transition, req.PlanningOutput)
+}
+
+func validatePlanningOutputTransitionLineage(transition TransitionRequest, planningOutput *CreateRunPlanningOutputRequest) error {
+	if planningOutput == nil {
 		return nil
 	}
-	output := *req.PlanningOutput
+	output := *planningOutput
 	if strings.TrimSpace(output.RunID) != strings.TrimSpace(transition.RunID) {
 		return fmt.Errorf("planning output run id must match transition run id")
 	}
@@ -310,7 +358,7 @@ func (s *TransitionService) queuePendingNodeWaveTx(ctx context.Context, tx *sql.
 		return nil, nil
 	}
 
-	active, err := latestTargetNodeAttemptIsActiveTx(ctx, tx, runID, filterIgnoredNodeIDs(nodeIDs, ignoreActiveNodeIDs))
+	active, err := liveNodeAttemptExistsTx(ctx, tx, runID, filterIgnoredNodeIDs(nodeIDs, ignoreActiveNodeIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -752,12 +800,13 @@ func validateFinalReworkRecordRequest(req FinalReworkRecordRequest) error {
 }
 
 func (s *TransitionService) activateFirstQueuedAttemptTx(ctx context.Context, tx *sql.Tx, transition TransitionRequest, firstQueued QueuedNodeAttempt, generate func(string) string, eventType string) error {
-	payload := fmt.Sprintf(`{"reason":%q,"node_id":%q,"attempt":%d}`,
-		strings.TrimSpace(transition.ReasonText),
-		firstQueued.NodeID,
-		firstQueued.Attempt,
-	)
-	err := s.applyTx(ctx, tx, TransitionRequest{
+	payload, err := marshalQueuedNodeAttemptEventPayload(transition.RunID, firstQueued, "ready", map[string]any{
+		"reason": strings.TrimSpace(transition.ReasonText),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal queued node attempt payload: %w", err)
+	}
+	err = s.applyTx(ctx, tx, TransitionRequest{
 		TransitionID:    generateID(generate, "transition"),
 		EventID:         generateID(generate, "evt"),
 		RunID:           transition.RunID,
@@ -780,6 +829,28 @@ func (s *TransitionService) activateFirstQueuedAttemptTx(ctx context.Context, tx
 		PayloadJSON:     payload,
 	})
 	return err
+}
+
+func marshalQueuedNodeAttemptEventPayload(runID string, queued QueuedNodeAttempt, state string, extra map[string]any) (string, error) {
+	payload := map[string]any{
+		"run_id":         strings.TrimSpace(runID),
+		"node_id":        strings.TrimSpace(queued.NodeID),
+		"node_run_id":    strings.TrimSpace(queued.NodeRunID),
+		"attempt_id":     composeAttemptID(runID, queued.NodeID, queued.Attempt),
+		"attempt":        queued.Attempt,
+		"agent_id":       strings.TrimSpace(queued.AgentID),
+		"required_role":  strings.TrimSpace(queued.RequiredRole),
+		"execution_mode": string(workflow.BehaviorForNode(queued.NodeID, "").ExecutionOwnership),
+		"state":          strings.TrimSpace(state),
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func (s *TransitionService) RecordPlanDecision(ctx context.Context, req PlanDecisionRecordRequest) (PlanDecisionRecordResult, error) {
@@ -879,6 +950,29 @@ func validatePlanDecisionRecordRequest(req PlanDecisionRecordRequest) error {
 func (s *TransitionService) RecordExecutionStart(ctx context.Context, req ExecutionStartRecordRequest) error {
 	transition := req.Transition
 	if err := validateExecutionStartTransition(transition); err != nil {
+		return err
+	}
+	err := s.applyWithEffects(ctx, transition, func(ctx context.Context, tx *sql.Tx) error {
+		switch transition.ToState {
+		case "starting":
+			if err := markAttemptExecutionStartingTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
+				return err
+			}
+		case "running":
+			if err := markAttemptExecutionRunningTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("execution start does not support to_state %q", transition.ToState)
+		}
+		return insertAttemptExecutionEventTx(ctx, tx, transition)
+	})
+	return err
+}
+
+func (s *TransitionService) RecordExecutionLaunch(ctx context.Context, req ExecutionLaunchRecordRequest) error {
+	transition := req.Transition
+	if err := validateExecutionLaunchTransition(transition); err != nil {
 		return err
 	}
 	err := s.applyWithEffects(ctx, transition, func(ctx context.Context, tx *sql.Tx) error {
@@ -1013,6 +1107,18 @@ func (s *TransitionService) RecoverLoopCapAutoSuccessConflict(ctx context.Contex
 }
 
 func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Context, req DurableAttemptNodeProjectionRequest) (bool, error) {
+	var projected bool
+	err := retrySQLiteBusy(ctx, func() error {
+		current, err := s.projectNodeTerminalFromDurableAttemptOnce(ctx, req)
+		if err == nil {
+			projected = current
+		}
+		return err
+	})
+	return projected, err
+}
+
+func (s *TransitionService) projectNodeTerminalFromDurableAttemptOnce(ctx context.Context, req DurableAttemptNodeProjectionRequest) (bool, error) {
 	if strings.TrimSpace(req.RunID) == "" {
 		return false, fmt.Errorf("run id is required")
 	}
@@ -1041,7 +1147,15 @@ func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Co
 	if expectedAttemptID := strings.TrimSpace(req.AttemptID); expectedAttemptID != "" && expectedAttemptID != attempt.AttemptID {
 		return false, fmt.Errorf("attempt id %q does not match node projection lineage %q", expectedAttemptID, attempt.AttemptID)
 	}
-
+	projectionTransition := TransitionRequest{
+		RunID:      attempt.RunID,
+		NodeRunID:  sql.NullString{String: attempt.NodeRunID, Valid: true},
+		AttemptID:  attempt.AttemptID,
+		OccurredAt: req.OccurredAt,
+	}
+	if err := validatePlanningOutputTransitionLineage(projectionTransition, req.PlanningOutput); err != nil {
+		return false, err
+	}
 	var executionState string
 	var failureCode string
 	var failureText string
@@ -1068,6 +1182,11 @@ func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Co
 		"durable execution settled as failure",
 		"durable execution settled as cancelled",
 	)
+	if ok && req.PlanningOutput != nil {
+		if err := persistRunPlanningOutputTx(ctx, tx, s.db, *req.PlanningOutput); err != nil {
+			return false, err
+		}
+	}
 	if !ok || strings.TrimSpace(attempt.NodeStatus) == projection.NodeState {
 		if err := tx.Commit(); err != nil {
 			return false, fmt.Errorf("commit durable attempt projection no-op transaction: %w", err)
@@ -1075,7 +1194,7 @@ func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Co
 		committed = true
 		return false, nil
 	}
-	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeStatus, req.OccurredAt); err != nil {
+	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeRunID, attempt.NodeStatus, req.OccurredAt); err != nil {
 		return false, err
 	}
 	eventSeq, err := nextEventSeqTx(ctx, tx, attempt.AttemptID)
@@ -1122,6 +1241,146 @@ func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Co
 	return true, nil
 }
 
+func (s *TransitionService) SupersedeQueuedAttemptsBeforeLaunch(ctx context.Context, req SupersedeQueuedAttemptsRequest) (SupersedeQueuedAttemptsResult, error) {
+	result := SupersedeQueuedAttemptsResult{}
+	if strings.TrimSpace(req.RunID) == "" {
+		return result, fmt.Errorf("run id is required")
+	}
+	if strings.TrimSpace(req.NodeID) == "" {
+		return result, fmt.Errorf("node id is required")
+	}
+	if req.KeepAttempt <= 0 {
+		return result, fmt.Errorf("keep attempt must be >= 1")
+	}
+	occurredAt := strings.TrimSpace(req.OccurredAt)
+	if occurredAt == "" {
+		occurredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("begin supersede queued attempts transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT nr.run_id,
+		        nr.node_run_id,
+		        nr.node_id,
+		        nr.attempt,
+		        nr.node_status,
+		        COALESCE(nr.superseded_at, '') AS superseded_at,
+		        COALESCE(ae.failure_code, '') AS failure_code,
+		        nr.required_role,
+		        COALESCE(nr.agent_id, '') AS agent_id,
+		        COALESCE(ae.session_ref, '') AS session_ref,
+		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
+		        COALESCE(ae.state, '') AS execution_state,
+		        COALESCE(ae.launch_started_at, '') AS launch_started_at,
+		        COALESCE(ae.started_at, '') AS started_at,
+		        COALESCE(ae.provider_session_id, '') AS provider_session_id,
+		        COALESCE(ae.active_provider_invocation_id, '') AS active_provider_invocation_id
+		 FROM node_runs nr
+		 LEFT JOIN attempt_executions ae ON ae.run_id = nr.run_id AND ae.node_run_id = nr.node_run_id
+		 WHERE nr.run_id = ?
+		   AND nr.node_id = ?
+		   AND nr.attempt > ?
+		 ORDER BY nr.attempt ASC, nr.node_run_id ASC`,
+		strings.TrimSpace(req.RunID),
+		strings.TrimSpace(req.NodeID),
+		req.KeepAttempt,
+	)
+	if err != nil {
+		return result, fmt.Errorf("list newer queued attempts to supersede: %w", err)
+	}
+	defer rows.Close()
+
+	type supersededAttempt struct {
+		attempt liveNodeAttempt
+		stage   attemptSupersessionStage
+	}
+	attempts := make([]supersededAttempt, 0)
+	blockedOutcome := SupersedeQueuedAttemptsOutcome("")
+	for rows.Next() {
+		var attempt liveNodeAttempt
+		var executionMode string
+		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
+			return result, fmt.Errorf("scan newer queued attempt to supersede: %w", err)
+		}
+		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
+		attempt.AttemptID = composeAttemptID(attempt.RunID, attempt.NodeID, attempt.Attempt)
+		decision := attemptSupersessionDecisionForAttempt(attempt)
+		if decision.blockedOutcome != "" {
+			if blockedOutcome == "" || decision.blockedOutcome == SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt {
+				blockedOutcome = decision.blockedOutcome
+			}
+			continue
+		}
+		if decision.stage == attemptSupersessionStageNone {
+			continue
+		}
+		attempts = append(attempts, supersededAttempt{attempt: attempt, stage: decision.stage})
+	}
+	if err := rows.Err(); err != nil {
+		return result, fmt.Errorf("iterate newer queued attempts to supersede: %w", err)
+	}
+	if blockedOutcome != "" {
+		result.Outcome = blockedOutcome
+		if err := tx.Commit(); err != nil {
+			return result, fmt.Errorf("commit supersede queued attempts blocked transaction: %w", err)
+		}
+		committed = true
+		return result, nil
+	}
+	if len(attempts) == 0 {
+		result.Outcome = SupersedeQueuedAttemptsOutcomeNoNewerAttempts
+		if err := tx.Commit(); err != nil {
+			return result, fmt.Errorf("commit supersede queued attempts empty transaction: %w", err)
+		}
+		committed = true
+		return result, nil
+	}
+
+	for _, candidate := range attempts {
+		attempt := candidate.attempt
+		reasonCode := supersessionReasonCode(candidate.stage)
+		reasonText := supersessionReasonText(candidate.stage)
+		nodeState := supersededNodeState(candidate.stage)
+		eventType := supersededNodeEventType(candidate.stage)
+		if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeRunID, attempt.NodeStatus, occurredAt); err != nil {
+			return result, err
+		}
+		if err := cancelAttemptExecutionForSupersessionTx(ctx, tx, attempt, req.KeepAttempt, occurredAt, reasonCode, reasonText); err != nil {
+			return result, err
+		}
+		if err := queueAttemptCancelOutboxForReasonTx(ctx, tx, attempt, reasonCode, reasonText, occurredAt, req.GenerateID); err != nil {
+			return result, err
+		}
+		if err := closeAttemptSessionLeaseTx(ctx, tx, attempt.SessionID, occurredAt); err != nil {
+			return result, err
+		}
+		if err := markNodeAttemptSupersededTx(ctx, tx, attempt.NodeRunID, occurredAt); err != nil {
+			return result, err
+		}
+		if err := s.applySupersededNodeTransitionTx(ctx, tx, attempt, req, occurredAt, nodeState, eventType, reasonCode, reasonText); err != nil {
+			return result, err
+		}
+		result.CancelledNodeRun = append(result.CancelledNodeRun, attempt.NodeRunID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("commit supersede queued attempts transaction: %w", err)
+	}
+	committed = true
+	result.Outcome = SupersedeQueuedAttemptsOutcomeAdopted
+	return result, nil
+}
+
 func (s *TransitionService) TerminalizeRunAndCancelLiveNodes(ctx context.Context, req RunTerminalizationRequest) error {
 	transition := req.Transition
 	if transition.Entity != EntityTypeRun {
@@ -1148,7 +1407,7 @@ func (s *TransitionService) TerminalizeRunAndCancelLiveNodes(ctx context.Context
 		}
 	}()
 
-	liveAttempts, err := s.loadLatestLiveNodeAttemptsTx(ctx, tx, transition.RunID)
+	liveAttempts, err := s.loadLiveNodeAttemptsTx(ctx, tx, transition.RunID)
 	if err != nil {
 		return err
 	}
@@ -1203,39 +1462,31 @@ func (s *TransitionService) ReassignStaleAttemptForRetry(ctx context.Context, re
 	return QueuedNodeAttempt{}, lastErr
 }
 
-func (s *TransitionService) loadLatestLiveNodeAttemptsTx(ctx context.Context, tx *sql.Tx, runID string) ([]liveNodeAttempt, error) {
-	rows, err := tx.QueryContext(ctx,
-		`WITH latest_attempts AS (
-			SELECT run_id,
-			       node_run_id,
-			       node_id,
-			       attempt,
-			       node_status,
-			       required_role,
-			       COALESCE(agent_id, '') AS agent_id,
-			       ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY attempt DESC, node_run_id DESC) AS rn
-			FROM node_runs
-			WHERE run_id = ?
-		)
-		SELECT latest_attempts.run_id,
-		       latest_attempts.node_run_id,
-		       latest_attempts.node_id,
-		       latest_attempts.attempt,
-		       latest_attempts.node_status,
-		       latest_attempts.required_role,
-		       latest_attempts.agent_id,
-		       COALESCE(ae.session_ref, '') AS session_ref,
-		       COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
-		       COALESCE(ae.state, '') AS execution_state
-		FROM latest_attempts
-		LEFT JOIN attempt_executions ae ON ae.attempt_id = latest_attempts.run_id || ':' || latest_attempts.node_id || ':' || latest_attempts.attempt
-		WHERE rn = 1
-		  AND node_status IN ('pending', 'ready', 'running', 'blocked')
-		ORDER BY node_id ASC`,
-		runID,
-	)
+func (s *TransitionService) loadLiveNodeAttemptsTx(ctx context.Context, tx *sql.Tx, runID string) ([]liveNodeAttempt, error) {
+	query := fmt.Sprintf(`SELECT nr.run_id,
+	       nr.node_run_id,
+	       nr.node_id,
+	       nr.attempt,
+	       nr.node_status,
+	       COALESCE(nr.superseded_at, '') AS superseded_at,
+	       COALESCE(ae.failure_code, '') AS failure_code,
+	       nr.required_role,
+	       COALESCE(nr.agent_id, '') AS agent_id,
+	       COALESCE(ae.session_ref, '') AS session_ref,
+	       COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
+	       COALESCE(ae.state, '') AS execution_state,
+	       COALESCE(ae.launch_started_at, '') AS launch_started_at,
+	       COALESCE(ae.started_at, '') AS started_at,
+	       COALESCE(ae.provider_session_id, '') AS provider_session_id,
+	       COALESCE(ae.active_provider_invocation_id, '') AS active_provider_invocation_id
+	FROM node_runs nr
+	LEFT JOIN attempt_executions ae ON ae.attempt_id = nr.run_id || ':' || nr.node_id || ':' || nr.attempt
+	WHERE nr.run_id = ?
+	  AND %s
+	ORDER BY nr.node_id ASC, nr.attempt ASC, nr.node_run_id ASC`, LiveNodeAttemptStatusConditionSQL("nr"))
+	rows, err := tx.QueryContext(ctx, query, runID)
 	if err != nil {
-		return nil, fmt.Errorf("load latest live node attempts: %w", err)
+		return nil, fmt.Errorf("load live node attempts: %w", err)
 	}
 	defer rows.Close()
 
@@ -1243,20 +1494,20 @@ func (s *TransitionService) loadLatestLiveNodeAttemptsTx(ctx context.Context, tx
 	for rows.Next() {
 		var attempt liveNodeAttempt
 		var executionMode string
-		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState); err != nil {
-			return nil, fmt.Errorf("scan latest live node attempt: %w", err)
+		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
+			return nil, fmt.Errorf("scan live node attempt: %w", err)
 		}
 		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
 		attempt.AttemptID = composeAttemptID(attempt.RunID, attempt.NodeID, attempt.Attempt)
 		attempts = append(attempts, attempt)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate latest live node attempts: %w", err)
+		return nil, fmt.Errorf("iterate live node attempts: %w", err)
 	}
 	return attempts, nil
 }
 
-func latestTargetNodeAttemptIsActiveTx(ctx context.Context, tx *sql.Tx, runID string, nodeIDs []string) (bool, error) {
+func liveNodeAttemptExistsTx(ctx context.Context, tx *sql.Tx, runID string, nodeIDs []string) (bool, error) {
 	if len(nodeIDs) == 0 {
 		return false, nil
 	}
@@ -1266,26 +1517,19 @@ func latestTargetNodeAttemptIsActiveTx(ctx context.Context, tx *sql.Tx, runID st
 	for _, nodeID := range nodeIDs {
 		args = append(args, nodeID)
 	}
-	query := fmt.Sprintf(`WITH latest_attempts AS (
-		SELECT node_id,
-		       node_status,
-		       ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY attempt DESC, node_run_id DESC) AS rn
-		FROM node_runs
-		WHERE run_id = ?
-		  AND node_id IN (%s)
-	)
-	SELECT 1
-	FROM latest_attempts
-	WHERE rn = 1
-	  AND node_status IN ('pending', 'ready', 'running', 'blocked')
-	LIMIT 1`, placeholders)
+	query := fmt.Sprintf(`SELECT 1
+	FROM node_runs
+	WHERE run_id = ?
+	  AND node_id IN (%s)
+	  AND %s
+	LIMIT 1`, placeholders, LiveNodeAttemptStatusConditionSQL("node_runs"))
 	var marker int
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&marker)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("check active target node attempts: %w", err)
+		return false, fmt.Errorf("check live target node attempts: %w", err)
 	}
 	return true, nil
 }
@@ -1312,7 +1556,7 @@ func (s *TransitionService) projectLiveNodeAttemptFromDurableExecutionTx(ctx con
 	if !isDurablyTerminalAttemptExecutionState(trimmedState) {
 		return false, nil
 	}
-	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeStatus, runTransition.OccurredAt); err != nil {
+	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeRunID, attempt.NodeStatus, runTransition.OccurredAt); err != nil {
 		return false, err
 	}
 	projection, ok := durableAttemptNodeProjectionForState(
@@ -1369,7 +1613,7 @@ func (s *TransitionService) projectLiveNodeAttemptFromDurableExecutionTx(ctx con
 }
 
 func (s *TransitionService) cancelLiveNodeAttemptTx(ctx context.Context, tx *sql.Tx, runTransition TransitionRequest, attempt liveNodeAttempt, generate func(string) string) error {
-	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeStatus, runTransition.OccurredAt); err != nil {
+	if err := releaseAgentForNodeTerminalTx(ctx, tx, attempt.AgentID, attempt.NodeRunID, attempt.NodeStatus, runTransition.OccurredAt); err != nil {
 		return err
 	}
 
@@ -1410,26 +1654,151 @@ func (s *TransitionService) cancelLiveNodeAttemptTx(ctx context.Context, tx *sql
 	return err
 }
 
-func releaseAgentForNodeTerminalTx(ctx context.Context, tx *sql.Tx, agentID, nodeStatus, updatedAt string) error {
+func releaseAgentForNodeTerminalTx(ctx context.Context, tx *sql.Tx, agentID, nodeRunID, nodeStatus, updatedAt string) error {
 	agentID = strings.TrimSpace(agentID)
 	if agentID == "" {
 		return nil
 	}
-	if nodeStatus != "running" && nodeStatus != "blocked" {
+	switch strings.TrimSpace(nodeStatus) {
+	case "pending", "ready", "starting", "running", "blocked":
+	default:
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE agents
-		 SET status = 'idle',
-		     updated_at = ?
-		 WHERE agent_id = ?
-		   AND status IN ('busy', 'blocked')`,
-		updatedAt,
-		agentID,
-	); err != nil {
+	if err := syncAgentOperationalStatusForReleasedNodeTx(ctx, tx, agentID, nodeRunID, updatedAt); err != nil {
 		return fmt.Errorf("release agent for run terminalization: %w", err)
 	}
 	return nil
+}
+
+func syncAgentOperationalStatusForReleasedNodeTx(ctx context.Context, tx *sql.Tx, agentID, releasedNodeRunID, updatedAt string) error {
+	trimmedAgentID := strings.TrimSpace(agentID)
+	if trimmedAgentID == "" {
+		return nil
+	}
+	desiredStatus, err := projectedAgentStatusFromLiveNodeRunsWithQuerierExcludingNode(ctx, tx, trimmedAgentID, releasedNodeRunID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE agents
+		 SET status = ?,
+		     updated_at = ?
+		 WHERE agent_id = ?
+		   AND status NOT IN ('offline', 'failed')`,
+		desiredStatus,
+		updatedAt,
+		trimmedAgentID,
+	); err != nil {
+		return fmt.Errorf("sync agent operational status for %q: %w", trimmedAgentID, err)
+	}
+	return nil
+}
+
+func cancelAttemptExecutionForSupersessionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, keepAttempt int, occurredAt, reasonCode, reasonText string) error {
+	var state string
+	err := tx.QueryRowContext(ctx,
+		`SELECT state
+		 FROM attempt_executions
+		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?`,
+		attempt.AttemptID,
+		attempt.RunID,
+		attempt.NodeRunID,
+	).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load attempt execution for supersession: %w", err)
+	}
+	trimmedState := strings.TrimSpace(state)
+	if isDurablyTerminalAttemptExecutionState(trimmedState) {
+		return nil
+	}
+	seq, err := nextAttemptExecutionSeqTx(ctx, tx, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	payload := fmt.Sprintf(`{"node_run_id":%q,"node_id":%q,"superseded_by_attempt":%d}`,
+		attempt.NodeRunID,
+		attempt.NodeID,
+		keepAttempt,
+	)
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, 'attempt.cancelled', ?, ?, ?)`,
+		fmt.Sprintf("attempt_event:%s:%d", attempt.AttemptID, seq),
+		attempt.AttemptID,
+		attempt.RunID,
+		attempt.NodeRunID,
+		seq,
+		reasonCode,
+		payload,
+		occurredAt,
+	); err != nil {
+		return fmt.Errorf("insert superseded attempt execution event: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE attempt_executions
+		 SET state = 'committed_cancelled',
+		     terminal_observed_at = ?,
+		     committed_at = ?,
+		     lease_owner = '',
+		     lease_expires_at = NULL,
+		     failure_code = ?,
+		     failure_text = ?,
+		     updated_at = ?
+		 WHERE attempt_id = ?
+		   AND run_id = ?
+		   AND node_run_id = ?
+		   AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')`,
+		occurredAt,
+		occurredAt,
+		reasonCode,
+		reasonText,
+		occurredAt,
+		attempt.AttemptID,
+		attempt.RunID,
+		attempt.NodeRunID,
+	); err != nil {
+		return fmt.Errorf("mark attempt execution superseded: %w", err)
+	}
+	return nil
+}
+
+func (s *TransitionService) applySupersededNodeTransitionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, req SupersedeQueuedAttemptsRequest, occurredAt, toState, eventType, reasonCode, reasonText string) error {
+	eventSeq, err := nextEventSeqTx(ctx, tx, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	payload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"node_run_id":%q,"state":%q,"superseded_by_attempt":%d}`,
+		attempt.RunID,
+		attempt.NodeID,
+		attempt.NodeRunID,
+		toState,
+		req.KeepAttempt,
+	)
+	return s.applyTx(ctx, tx, TransitionRequest{
+		TransitionID:    generateID(req.GenerateID, "transition"),
+		EventID:         generateID(req.GenerateID, "evt"),
+		RunID:           attempt.RunID,
+		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+		Entity:          EntityTypeNode,
+		FromState:       attempt.NodeStatus,
+		ToState:         toState,
+		ActorID:         firstNonEmptyTrimmed(req.ActorID, "runtime_orchestrator"),
+		RoleID:          attempt.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      reasonCode,
+		ReasonText:      reasonText,
+		CorrelationID:   "corr_supersede_" + attempt.RunID,
+		CausationID:     fmt.Sprintf("caus_supersede_%s_%s", attempt.RunID, attempt.NodeRunID),
+		OccurredAt:      occurredAt,
+		AttemptID:       attempt.AttemptID,
+		SchemaVersion:   "v1",
+		EventType:       eventType,
+		EventSeq:        eventSeq,
+		PayloadJSON:     payload,
+	})
 }
 
 func durableAttemptNodeProjectionForState(executionState, failureCode, failureText, successFallback, failureFallback, cancelFallback string) (durableAttemptNodeProjection, bool) {
@@ -1471,12 +1840,12 @@ func loadNodeAttemptForProjectionTx(ctx context.Context, tx *sql.Tx, runID, node
 	var attempt liveNodeAttempt
 	var executionMode string
 	err := tx.QueryRowContext(ctx,
-		`SELECT run_id, node_run_id, node_id, attempt, node_status, required_role, COALESCE(agent_id, ''), '', '', ''
+		`SELECT run_id, node_run_id, node_id, attempt, node_status, required_role, COALESCE(agent_id, ''), '', '', '', '', '', '', ''
 		 FROM node_runs
 		 WHERE run_id = ? AND node_run_id = ?`,
 		strings.TrimSpace(runID),
 		strings.TrimSpace(nodeRunID),
-	).Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState)
+	).Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return liveNodeAttempt{}, &EntityNotFoundError{EntityType: EntityTypeNode, RunID: strings.TrimSpace(runID), NodeRunID: strings.TrimSpace(nodeRunID)}
 	}
@@ -1554,20 +1923,30 @@ func cancelAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeA
 }
 
 func queueAttemptCancelOutboxTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, runTransition TransitionRequest, generate func(string) string) error {
+	reasonCode := firstNonEmptyTrimmed(runTransition.ReasonCode, "run_terminalized")
+	reasonText := strings.TrimSpace(runTransition.ReasonText)
+	if reasonText == "" {
+		reasonText = fmt.Sprintf("run moved to %s", strings.TrimSpace(runTransition.ToState))
+	}
+	return queueAttemptCancelOutboxForReasonTx(ctx, tx, attempt, reasonCode, reasonText, runTransition.OccurredAt, generate)
+}
+
+func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, reasonCode, reasonText, occurredAt string, generate func(string) string) error {
 	if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		return nil
 	}
 	if strings.TrimSpace(attempt.SessionID) == "" {
 		return nil
 	}
-	if !attemptCancelDispatchRequired(attempt.ExecutionState) {
+	if !attemptCancelDispatchRequired(attempt) {
 		return nil
 	}
-	reasonCode := firstNonEmptyTrimmed(runTransition.ReasonCode, "run_terminalized")
-	reasonText := strings.TrimSpace(runTransition.ReasonText)
+	reasonCode = firstNonEmptyTrimmed(reasonCode, "run_terminalized")
+	reasonText = strings.TrimSpace(reasonText)
 	if reasonText == "" {
-		reasonText = fmt.Sprintf("run moved to %s", strings.TrimSpace(runTransition.ToState))
+		reasonText = reasonCode
 	}
+	occurredAt = firstNonEmptyTrimmed(occurredAt, time.Now().UTC().Format(time.RFC3339))
 	_, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, publish_attempts, last_error, created_at, updated_at, published_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`,
@@ -1578,9 +1957,9 @@ func queueAttemptCancelOutboxTx(ctx context.Context, tx *sql.Tx, attempt liveNod
 		strings.TrimSpace(attempt.SessionID),
 		reasonCode,
 		reasonText,
-		runTransition.OccurredAt,
-		runTransition.OccurredAt,
-		runTransition.OccurredAt,
+		occurredAt,
+		occurredAt,
+		occurredAt,
 	)
 	if err != nil {
 		return fmt.Errorf("queue attempt cancel outbox: %w", err)
@@ -1588,13 +1967,86 @@ func queueAttemptCancelOutboxTx(ctx context.Context, tx *sql.Tx, attempt liveNod
 	return nil
 }
 
-func attemptCancelDispatchRequired(executionState string) bool {
-	switch strings.TrimSpace(executionState) {
-	case "queued", "starting", "running":
+func attemptSupersessionDecisionForAttempt(attempt liveNodeAttempt) attemptSupersessionDecision {
+	trimmedNodeStatus := strings.TrimSpace(attempt.NodeStatus)
+	trimmedExecutionState := strings.TrimSpace(attempt.ExecutionState)
+	alreadySuperseded := attemptMarkedSuperseded(attempt)
+	if isDurablyTerminalAttemptExecutionState(trimmedExecutionState) || trimmedExecutionState == "terminal_observed" {
+		if !alreadySuperseded {
+			return attemptSupersessionDecision{blockedOutcome: SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt}
+		}
+		return attemptSupersessionDecision{}
+	}
+	switch trimmedNodeStatus {
+	case "succeeded", "failed", "cancelled", "skipped":
+		if !alreadySuperseded {
+			return attemptSupersessionDecision{blockedOutcome: SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt}
+		}
+		return attemptSupersessionDecision{}
+	case "pending", "ready", "starting":
+		if attemptCancelDispatchRequired(attempt) {
+			return attemptSupersessionDecision{stage: attemptSupersessionStageLaunched}
+		}
+		if trimmedExecutionState == "" || trimmedExecutionState == "queued" || executionstore.AttemptInPreLaunch(trimmedExecutionState, attempt.StartedAt) {
+			return attemptSupersessionDecision{stage: attemptSupersessionStagePreLaunch}
+		}
+		return attemptSupersessionDecision{blockedOutcome: SupersedeQueuedAttemptsOutcomeBlockedByNewerLiveAttempt}
+	default:
+		return attemptSupersessionDecision{blockedOutcome: SupersedeQueuedAttemptsOutcomeBlockedByNewerLiveAttempt}
+	}
+}
+
+func attemptMarkedSuperseded(attempt liveNodeAttempt) bool {
+	if strings.TrimSpace(attempt.SupersededAt) != "" {
+		return true
+	}
+	switch strings.TrimSpace(attempt.FailureCode) {
+	case supersessionReasonCode(attemptSupersessionStagePreLaunch), supersessionReasonCode(attemptSupersessionStageLaunched):
 		return true
 	default:
 		return false
 	}
+}
+
+func supersessionReasonCode(stage attemptSupersessionStage) string {
+	if stage == attemptSupersessionStageLaunched {
+		return "superseded_after_launch_handoff"
+	}
+	return "superseded_before_launch"
+}
+
+func supersessionReasonText(stage attemptSupersessionStage) string {
+	if stage == attemptSupersessionStageLaunched {
+		return "retry attempt superseded after launch handoff by an earlier successful attempt"
+	}
+	return "retry attempt superseded before launch by an earlier successful attempt"
+}
+
+func supersededNodeState(stage attemptSupersessionStage) string {
+	if stage == attemptSupersessionStageLaunched {
+		return "blocked"
+	}
+	return "cancelled"
+}
+
+func supersededNodeEventType(stage attemptSupersessionStage) string {
+	if stage == attemptSupersessionStageLaunched {
+		return "node.state_changed"
+	}
+	return "attempt.cancelled"
+}
+
+func attemptCancelDispatchRequired(attempt liveNodeAttempt) bool {
+	if strings.TrimSpace(attempt.ExecutionState) == "terminal_observed" || isDurablyTerminalAttemptExecutionState(attempt.ExecutionState) {
+		return false
+	}
+	return executionstore.AttemptReachedLaunchHandoff(
+		attempt.ExecutionState,
+		attempt.LaunchStartedAt,
+		attempt.StartedAt,
+		attempt.ProviderSessionID,
+		attempt.ActiveProviderInvocationID,
+	)
 }
 
 func isDurablyTerminalAttemptExecutionState(state string) bool {
@@ -1721,14 +2173,46 @@ func validateExecutionStartTransition(req TransitionRequest) error {
 	if strings.TrimSpace(req.AttemptID) == "" {
 		return fmt.Errorf("execution start requires attempt_id")
 	}
-	if req.FromState != "ready" || req.ToState != "running" {
-		return fmt.Errorf("execution start requires ready -> running transition")
+	if req.FromState != "ready" {
+		return fmt.Errorf("execution start requires ready from_state")
 	}
-	if strings.TrimSpace(req.EventType) != "attempt.started" {
-		return fmt.Errorf("execution start requires attempt.started event_type")
+	if req.ToState != "starting" && req.ToState != "running" {
+		return fmt.Errorf("execution start requires ready -> starting or ready -> running transition")
+	}
+	switch req.ToState {
+	case "starting":
+		if strings.TrimSpace(req.EventType) != "node.state_changed" {
+			return fmt.Errorf("execution start requires node.state_changed event_type for ready -> starting")
+		}
+	case "running":
+		if strings.TrimSpace(req.EventType) != "attempt.started" {
+			return fmt.Errorf("execution start requires attempt.started event_type for ready -> running")
+		}
 	}
 	if req.EventSeq <= 0 {
 		return fmt.Errorf("execution start requires positive event sequence")
+	}
+	return nil
+}
+
+func validateExecutionLaunchTransition(req TransitionRequest) error {
+	if req.Entity != EntityTypeNode {
+		return fmt.Errorf("execution launch requires node transition")
+	}
+	if !req.NodeRunID.Valid || strings.TrimSpace(req.NodeRunID.String) == "" {
+		return fmt.Errorf("execution launch requires node_run_id")
+	}
+	if strings.TrimSpace(req.AttemptID) == "" {
+		return fmt.Errorf("execution launch requires attempt_id")
+	}
+	if req.FromState != "starting" || req.ToState != "running" {
+		return fmt.Errorf("execution launch requires starting -> running transition")
+	}
+	if strings.TrimSpace(req.EventType) != "attempt.started" {
+		return fmt.Errorf("execution launch requires attempt.started event_type")
+	}
+	if req.EventSeq <= 0 {
+		return fmt.Errorf("execution launch requires positive event sequence")
 	}
 	return nil
 }
@@ -1867,6 +2351,42 @@ func markAttemptExecutionRunningTx(ctx context.Context, tx *sql.Tx, attemptID, r
 	return fmt.Errorf("attempt execution %q cannot start from state %q", strings.TrimSpace(attemptID), state)
 }
 
+func markAttemptExecutionStartingTx(ctx context.Context, tx *sql.Tx, attemptID, runID, nodeRunID, occurredAt string) error {
+	res, err := tx.ExecContext(ctx,
+		`UPDATE attempt_executions
+		 SET state = 'starting',
+		     launch_started_at = CASE WHEN launch_started_at IS NULL THEN ? ELSE launch_started_at END,
+		     updated_at = ?,
+		     failure_code = '',
+		     failure_text = ''
+		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
+		   AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')`,
+		occurredAt,
+		occurredAt,
+		strings.TrimSpace(attemptID),
+		strings.TrimSpace(runID),
+		strings.TrimSpace(nodeRunID),
+	)
+	if err != nil {
+		return fmt.Errorf("mark attempt execution starting: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read starting attempt execution rows affected: %w", err)
+	}
+	if rows == 1 {
+		return nil
+	}
+	state, found, err := loadAttemptExecutionStateTx(ctx, tx, attemptID, runID, nodeRunID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("attempt execution %q not found", strings.TrimSpace(attemptID))
+	}
+	return fmt.Errorf("attempt execution %q cannot start from state %q", strings.TrimSpace(attemptID), state)
+}
+
 func markAttemptExecutionTerminalTx(ctx context.Context, tx *sql.Tx, attemptID, runID, nodeRunID, nodeState, reasonCode, reasonText, occurredAt string) error {
 	terminalState, err := attemptExecutionTerminalStateForNodeState(nodeState)
 	if err != nil {
@@ -1937,21 +2457,28 @@ func ensureAttemptExecutionRowForDirectTerminalTx(ctx context.Context, tx *sql.T
 		return err
 	}
 	seedState := "queued"
-	if strings.TrimSpace(fromState) == "running" {
+	launchStartedAt := ""
+	switch strings.TrimSpace(fromState) {
+	case "starting":
+		seedState = "starting"
+		launchStartedAt = occurredAt
+	case "running":
 		seedState = "running"
+		launchStartedAt = occurredAt
 	}
 	createdAt := occurredAt
 	if strings.TrimSpace(startedAt) != "" {
 		createdAt = strings.TrimSpace(startedAt)
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, '', NULL, 0, '', NULLIF(?, ''), NULL, NULL, '', '', ?, ?)`,
+		`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, '', NULL, 0, '', NULLIF(?, ''), NULLIF(?, ''), NULL, NULL, '', '', ?, ?)`,
 		strings.TrimSpace(attemptID),
 		strings.TrimSpace(runID),
 		strings.TrimSpace(nodeRunID),
 		seedState,
 		string(executionMode),
+		strings.TrimSpace(launchStartedAt),
 		strings.TrimSpace(startedAt),
 		createdAt,
 		occurredAt,
@@ -2049,6 +2576,25 @@ func closeRunSessionLeasesTx(ctx context.Context, tx *sql.Tx, runID, updatedAt s
 	return nil
 }
 
+func closeAttemptSessionLeaseTx(ctx context.Context, tx *sql.Tx, sessionID, updatedAt string) error {
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	if trimmedSessionID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE session_leases
+		 SET status = 'closed',
+		     updated_at = ?
+		 WHERE session_id = ?
+		   AND status IN ('active', 'expired')`,
+		updatedAt,
+		trimmedSessionID,
+	); err != nil {
+		return fmt.Errorf("close attempt session lease: %w", err)
+	}
+	return nil
+}
+
 func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context, req ReassignStaleAttemptRequest) (QueuedNodeAttempt, error) {
 	attempt := req.Attempt
 	occurredAt := strings.TrimSpace(req.OccurredAt)
@@ -2075,10 +2621,11 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 		}
 	}
 
-	blockedPayload := fmt.Sprintf(`{"node_run_id":%q,"run_id":%q,"node_id":%q,"old_agent_id":%q,"new_agent_id":%q,"retry_strategy":%q}`,
+	blockedPayload := fmt.Sprintf(`{"node_run_id":%q,"run_id":%q,"node_id":%q,"state":%q,"old_agent_id":%q,"new_agent_id":%q,"retry_strategy":%q}`,
 		attempt.NodeRunID,
 		attempt.RunID,
 		attempt.NodeID,
+		"blocked",
 		attempt.AgentID,
 		req.ReplacementAgentID,
 		retryStrategyLabel(req.HasReplacement, !req.HasReplacement && req.ReplacementAgentID == attempt.AgentID),
@@ -2095,7 +2642,7 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 		RoleID:          attempt.RequiredRole,
 		AuthoritySource: "system.reconciler",
 		ReasonCode:      "agent_unresponsive",
-		ReasonText:      "stale running attempt blocked for retry",
+		ReasonText:      "stale attempt blocked for retry",
 		CorrelationID:   fmt.Sprintf("corr_reconcile_%s", attempt.RunID),
 		CausationID:     fmt.Sprintf("caus_reconcile_%s_%s", attempt.RunID, attempt.NodeRunID),
 		OccurredAt:      occurredAt,
@@ -2118,6 +2665,11 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	}
 	if nextAttempt > attemptLimit {
 		return QueuedNodeAttempt{}, &NodeAttemptLimitExceededError{RunID: attempt.RunID, NodeID: attempt.NodeID, MaxLimit: attemptLimit}
+	}
+	if req.HasReplacement {
+		if err := claimReusableAgentTx(ctx, tx, req.ReplacementAgentID, occurredAt); err != nil {
+			return QueuedNodeAttempt{}, err
+		}
 	}
 	retryNodeRunID := fmt.Sprintf("%s_retry_%d", attempt.NodeRunID, nextAttempt)
 	if err := insertNodeAttemptTx(ctx, tx, CreateNodeAttemptRequest{
@@ -2143,17 +2695,10 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 		AgentID:      req.ReplacementAgentID,
 	}
 
-	if req.HasReplacement {
-		if err := updateAgentStatusTx(ctx, tx, req.ReplacementAgentID, AgentStatusIdle, AgentStatusBusy, occurredAt); err != nil {
-			return QueuedNodeAttempt{}, err
-		}
+	readyPayload, err := marshalQueuedNodeAttemptEventPayload(attempt.RunID, queuedAttempt, "ready", nil)
+	if err != nil {
+		return QueuedNodeAttempt{}, fmt.Errorf("marshal stale retry queued payload: %w", err)
 	}
-
-	readyPayload := fmt.Sprintf(`{"node_run_id":%q,"attempt":%d,"agent_id":%q}`,
-		queuedAttempt.NodeRunID,
-		queuedAttempt.Attempt,
-		queuedAttempt.AgentID,
-	)
 	if err := s.applyTx(ctx, tx, TransitionRequest{
 		TransitionID:    fmt.Sprintf("tr_reconcile_%s_%s_%d_ready", attempt.RunID, attempt.NodeID, queuedAttempt.Attempt),
 		EventID:         fmt.Sprintf("evt_reconcile_%s_%s_%d_ready", attempt.RunID, attempt.NodeID, queuedAttempt.Attempt),
@@ -2184,6 +2729,20 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	}
 	committed = true
 	return queuedAttempt, nil
+}
+
+func claimReusableAgentTx(ctx context.Context, tx *sql.Tx, agentID, updatedAt string) error {
+	trimmedAgentID := strings.TrimSpace(agentID)
+	if trimmedAgentID == "" {
+		return nil
+	}
+	if err := syncAgentOperationalStatusWithQuerier(ctx, tx, trimmedAgentID, updatedAt); err != nil {
+		return err
+	}
+	if err := updateAgentStatusTx(ctx, tx, trimmedAgentID, AgentStatusIdle, AgentStatusBusy, updatedAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *TransitionService) insertPendingNodeAttemptTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, wave int, occurredAt string, generate func(string) string, budgetMode nodeAttemptBudgetMode) (QueuedNodeAttempt, error) {

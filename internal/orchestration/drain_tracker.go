@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -10,6 +11,7 @@ type executionDrainTracker struct {
 	mu     sync.Mutex
 	active int
 	idle   chan struct{}
+	err    error
 }
 
 func newExecutionDrainTracker() *executionDrainTracker {
@@ -45,6 +47,15 @@ func (t *executionDrainTracker) Done() {
 	}
 }
 
+func (t *executionDrainTracker) RecordError(err error) {
+	if t == nil || err == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.err = errors.Join(t.err, err)
+}
+
 func (t *executionDrainTracker) Wait(ctx context.Context) error {
 	if t == nil {
 		return nil
@@ -52,13 +63,16 @@ func (t *executionDrainTracker) Wait(ctx context.Context) error {
 	t.mu.Lock()
 	active := t.active
 	idle := t.idle
+	err := t.err
 	t.mu.Unlock()
 	if active == 0 {
-		return nil
+		return err
 	}
 	select {
 	case <-idle:
-		return nil
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		return t.err
 	case <-ctx.Done():
 		return fmt.Errorf("wait for runtime execution drain: %w", ctx.Err())
 	}

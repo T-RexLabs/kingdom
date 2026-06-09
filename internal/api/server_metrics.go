@@ -535,12 +535,11 @@ func (s *Server) buildRuntimeMetrics(ctx context.Context, q sqlReadQuerier, snap
 	if err != nil {
 		return runtimeMetricsPayload{}, fmt.Errorf("query running runs: %w", err)
 	}
-	runningNodes, err := scalarInt(ctx, q, `SELECT COUNT(1) FROM node_runs WHERE node_status = 'running'`)
+	runningNodes, err := scalarInt(ctx, q, `SELECT COUNT(1) FROM node_runs WHERE node_status IN ('starting', 'running')`)
 	if err != nil {
 		return runtimeMetricsPayload{}, fmt.Errorf("query running nodes: %w", err)
 	}
-	cutoff := snapshotAt.UTC().Add(-15 * time.Minute).Format(time.RFC3339)
-	staleRunningNodes, err := scalarInt(ctx, q, `SELECT COUNT(1) FROM node_runs WHERE node_status = 'running' AND started_at IS NOT NULL AND started_at <= ?`, cutoff)
+	staleRunningNodes, err := state.CountStaleAttemptsForMetrics(ctx, q, snapshotAt, 15*time.Minute)
 	if err != nil {
 		return runtimeMetricsPayload{}, fmt.Errorf("query stale running nodes: %w", err)
 	}
@@ -1015,7 +1014,7 @@ func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate s
 		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE %s
 		   AND %s`, predicate, nodeClassFilter),
-		args..., 
+		args...,
 	).Scan(&summary.TotalExecuted)
 	if err != nil {
 		return realmAnalyticsNodeSummaryPayload{}, fmt.Errorf("query execution node summary: %w", err)

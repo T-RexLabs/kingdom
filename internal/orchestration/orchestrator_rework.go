@@ -230,7 +230,11 @@ func (o *orchestrationLoop) validationReworkResumePlan(ctx context.Context, runI
 		if hasActiveLoopScopeAttempts(latest, replayNodeIDs) {
 			continue
 		}
-		return executionLoopResumePlan{eligible: true, nodeIDs: replayNodeIDs}, nil
+		plan := executionLoopResumePlan{eligible: true, nodeIDs: replayNodeIDs}
+		if strings.TrimSpace(failedNodeID) != "" {
+			plan.ignoreActiveNodeIDs = []string{failedNodeID}
+		}
+		return plan, nil
 	}
 	return executionLoopResumePlan{}, nil
 }
@@ -389,7 +393,7 @@ func hasActiveLoopScopeAttempts(latest map[string]nodeAttempt, nodeIDs []string)
 			continue
 		}
 		switch attempt.NodeStatus {
-		case "pending", "ready", "running":
+		case "pending", "ready", "starting", "running":
 			return true
 		}
 	}

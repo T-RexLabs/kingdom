@@ -356,7 +356,12 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 	         nr.node_status,
 	         ROW_NUMBER() OVER (
 	           PARTITION BY nr.node_id
-	           ORDER BY nr.attempt DESC, nr.node_run_id DESC
+	           ORDER BY CASE
+	             WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
+	             ELSE 1
+	           END ASC,
+	           nr.attempt DESC,
+	           nr.node_run_id DESC
 	         ) AS node_rank
 	  FROM node_runs nr
 	  WHERE nr.run_id = ?
@@ -1017,7 +1022,53 @@ func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildRunExecutionDetailItem(record))
+	item := buildRunExecutionDetailItem(record)
+	if status, summary, entries, err := s.loadRunExecutionPublication(r.Context(), attemptID); err == nil {
+		if strings.TrimSpace(status) != "" {
+			item.PublicationStatus = &status
+		}
+		if strings.TrimSpace(summary) != "" {
+			item.PublicationSummary = &summary
+		}
+		item.PublicationEntries = entries
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) loadRunExecutionPublication(ctx context.Context, attemptID string) (string, string, []runExecutionPublicationEntryItem, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(attemptID) == "" {
+		return "", "", nil, nil
+	}
+	var batchID string
+	var status string
+	var publishedCount int
+	var conflictedCount int
+	var failedCount int
+	err := s.db.QueryRowContext(ctx, `SELECT publication_batch_id, status, published_count, conflicted_count, failed_count FROM run_publication_batches WHERE attempt_id = ? ORDER BY created_at DESC LIMIT 1`, strings.TrimSpace(attemptID)).Scan(&batchID, &status, &publishedCount, &conflictedCount, &failedCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil, nil
+	}
+	if err != nil {
+		return "", "", nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT path, action, status, reason_code, reason_text FROM run_publication_entries WHERE publication_batch_id = ? ORDER BY publication_entry_id ASC`, batchID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer rows.Close()
+	entries := make([]runExecutionPublicationEntryItem, 0)
+	for rows.Next() {
+		var entry runExecutionPublicationEntryItem
+		if err := rows.Scan(&entry.Path, &entry.Action, &entry.Status, &entry.ReasonCode, &entry.ReasonText); err != nil {
+			return "", "", nil, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return "", "", nil, err
+	}
+	summary := fmt.Sprintf("Published %d path(s); %d conflicted; %d failed.", publishedCount, conflictedCount, failedCount)
+	return status, summary, entries, nil
 }
 
 func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutionItem {
@@ -1029,7 +1080,8 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 		AgentID:       record.AgentID,
 		RequiredRole:  record.RequiredRole,
 		ExecutionMode: string(record.ExecutionMode),
-		Status:        runExecutionStatus(record.State),
+		Status:        runExecutionStatus(record),
+		QueuedAt:      mustParseRFC3339(record.QueuedAt),
 		ActivityAt:    mustParseRFC3339(record.ActivityAt),
 		UpdatedAt:     mustParseRFC3339(record.UpdatedAt),
 	}
@@ -1042,6 +1094,20 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.LastHeartbeatAt.Valid {
 		parsed := mustParseRFC3339(record.LastHeartbeatAt.String)
 		item.LastHeartbeatAt = &parsed
+	}
+	if record.ProgressEventType.Valid {
+		item.ProgressEventType = &record.ProgressEventType.String
+	}
+	if record.ProgressReasonCode.Valid {
+		item.ProgressReasonCode = &record.ProgressReasonCode.String
+	}
+	if record.ProgressAt.Valid {
+		parsed := mustParseRFC3339(record.ProgressAt.String)
+		item.ProgressAt = &parsed
+	}
+	if record.LaunchStartedAt.Valid {
+		parsed := mustParseRFC3339(record.LaunchStartedAt.String)
+		item.LaunchStartedAt = &parsed
 	}
 	if record.StartedAt.Valid {
 		parsed := mustParseRFC3339(record.StartedAt.String)
@@ -1094,9 +1160,15 @@ func buildRunExecutionDetailItem(record executionstore.RunExecutionDetailRecord)
 	return item
 }
 
-func runExecutionStatus(state string) string {
-	switch strings.TrimSpace(state) {
+func runExecutionStatus(record executionstore.RunExecutionRecord) string {
+	if strings.TrimSpace(record.NodeStatus) == "blocked" {
+		return "blocked"
+	}
+	switch strings.TrimSpace(record.State) {
 	case "starting":
+		if runExecutionLaunchObserved(record) {
+			return "running"
+		}
 		return "starting"
 	case "running":
 		return "running"
@@ -1111,6 +1183,13 @@ func runExecutionStatus(state string) string {
 	default:
 		return "queued"
 	}
+}
+
+func runExecutionLaunchObserved(record executionstore.RunExecutionRecord) bool {
+	if record.StartedAt.Valid && strings.TrimSpace(record.StartedAt.String) != "" {
+		return true
+	}
+	return record.ProgressReasonCode.Valid && strings.TrimSpace(record.ProgressReasonCode.String) == "provider_invoked"
 }
 
 func runExecutionSettlementStatus(record executionstore.RunExecutionDetailRecord) string {
@@ -1336,16 +1415,14 @@ func (s *Server) handleGetRunTimeline(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowDefinitionID string) ([]gen.RunGraphNode, error) {
-	rows, err := s.db.QueryContext(
-		ctx,
-		`WITH latest_node_runs AS (
+	query := fmt.Sprintf(`WITH latest_node_runs AS (
 		  SELECT nr.node_id,
 		         nr.node_run_id,
 		         nr.attempt,
 		         nr.node_status,
 		         ROW_NUMBER() OVER (
 		           PARTITION BY nr.node_id
-		           ORDER BY nr.attempt DESC, nr.node_run_id DESC
+		           ORDER BY %s
 		         ) AS node_rank
 		  FROM node_runs nr
 		  WHERE nr.run_id = ?
@@ -1399,7 +1476,11 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		  ON lfe.node_run_id = lnr.node_run_id
 		 AND lfe.failure_rank = 1
 		WHERE wn.workflow_definition_id = ?
-		ORDER BY wn.node_id ASC`,
+		ORDER BY wn.node_id ASC`, state.VisibleNodeAttemptOrderSQL("nr"))
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		query,
 		runID,
 		runID,
 		runID,

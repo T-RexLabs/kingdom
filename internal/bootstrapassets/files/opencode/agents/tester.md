@@ -28,5 +28,3 @@ Responsibilities:
 - Validate degradation and recovery behavior, not just happy-path correctness
 - Perform targeted regression testing for failure-mode fixes
 - For validation-gate outcomes, the first non-empty line must be exactly: `VERDICT: PASS` or `VERDICT: REWORK`
-
-When the final validation response is ready, call `kingdom_complete_attempt` exactly once with the matching verdict.
