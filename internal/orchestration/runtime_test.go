@@ -393,6 +393,7 @@ func TestNewRuntimeStrictAgentResolutionRunsInConfiguredWorkDir(t *testing.T) {
 	if err := bootstrapassets.WriteScaffold(filepath.Join(workspaceRoot, ".kingdom"), workspaceRoot, false); err != nil {
 		t.Fatalf("write managed opencode scaffold: %v", err)
 	}
+	managedOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(workspaceRoot)
 	binaryPath := filepath.Join(t.TempDir(), "opencode")
 	script := `#!/bin/sh
 if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
@@ -404,6 +405,11 @@ if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
   REAL_CONFIG_DIR="$(cd "$(dirname "$OPENCODE_CONFIG_DIR")" && pwd -P)/$(basename "$OPENCODE_CONFIG_DIR")"
   if [ "$REAL_CONFIG_DIR" != "$EXPECTED_CONFIG_DIR_REAL" ]; then
     echo "unexpected config dir: $REAL_CONFIG_DIR" >&2
+    exit 1
+  fi
+  REAL_DB_PATH="$(cd "$(dirname "$OPENCODE_DB")" && pwd -P)/$(basename "$OPENCODE_DB")"
+  if [ "$REAL_DB_PATH" != "$EXPECTED_DB_PATH_REAL" ]; then
+    echo "unexpected db path: $REAL_DB_PATH" >&2
     exit 1
   fi
   echo "{}"
@@ -427,7 +433,16 @@ exit 2
 		t.Fatalf("resolve workspace root symlinks: %v", err)
 	}
 	t.Setenv("EXPECTED_WORKDIR_REAL", realWorkspaceRoot)
-	t.Setenv("EXPECTED_CONFIG_DIR_REAL", filepath.Join(realWorkspaceRoot, ".kingdom", "opencode"))
+	realManagedConfigDir, err := filepath.EvalSymlinks(managedOpenCode.ConfigDir)
+	if err != nil {
+		t.Fatalf("resolve managed config dir symlinks: %v", err)
+	}
+	realManagedDBDir, err := filepath.EvalSymlinks(filepath.Dir(managedOpenCode.DatabasePath))
+	if err != nil {
+		t.Fatalf("resolve managed db dir symlinks: %v", err)
+	}
+	t.Setenv("EXPECTED_CONFIG_DIR_REAL", realManagedConfigDir)
+	t.Setenv("EXPECTED_DB_PATH_REAL", filepath.Join(realManagedDBDir, filepath.Base(managedOpenCode.DatabasePath)))
 
 	_, err = NewRuntime(Config{
 		DB:             db,
