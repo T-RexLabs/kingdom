@@ -1,6 +1,8 @@
 package api
 
+
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -336,6 +338,8 @@ func TestCreateReplyOperationResponseCarriesRuntimeAutoTitleSessionDelta(t *test
 	if secondReply.Session.CurrentTitleOperationId == nil || strings.TrimSpace(*secondReply.Session.CurrentTitleOperationId) == "" {
 		t.Fatalf("expected second reply response to carry current_title_operation_id, got %+v", secondReply.Session)
 	}
+	awaitPlanningOperation(t, handler, secondReply.Operation.OperationId)
+	awaitPlanningOperation(t, handler, *secondReply.Session.CurrentTitleOperationId)
 }
 
 func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
@@ -395,8 +399,6 @@ func TestNewHandlerFailsFastWhenNormalizedOpencodePlannerBootstrapFails(t *testi
 }
 
 func TestPlannerSessionsApplyWorkspaceRestrictionWithoutBlockingQuestions(t *testing.T) {
-	t.Parallel()
-
 	projectRoot := t.TempDir()
 	if err := bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
 		t.Fatalf("write managed opencode scaffold: %v", err)
@@ -412,6 +414,13 @@ func TestPlannerSessionsApplyWorkspaceRestrictionWithoutBlockingQuestions(t *tes
 	if err != nil {
 		t.Fatalf("build api handler: %v", err)
 	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := handler.Close(closeCtx); err != nil {
+			t.Errorf("close api handler: %v", err)
+		}
+	})
 
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -456,7 +465,7 @@ func TestPlannerSessionsApplyWorkspaceRestrictionWithoutBlockingQuestions(t *tes
 		t.Fatalf("decode planning operation: %v", err)
 	}
 	operation := operationResult.Operation
-	completed := awaitPlanningOperationWithTimeout(t, handler, operation.OperationId, 5*time.Second)
+	completed := awaitPlanningOperationWithTimeout(t, handler, operation.OperationId, 15*time.Second)
 	if completed.Status != gen.PlanningOperationDetailStatusSucceeded {
 		t.Fatalf("expected planner operation to succeed, got %#v", completed.Status)
 	}

@@ -226,6 +226,13 @@ func newAPIServerForTestWithConfig(t *testing.T, cfg ServerConfig) (http.Handler
 	if err != nil {
 		t.Fatalf("build api handler: %v", err)
 	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := handler.Close(closeCtx); err != nil {
+			t.Errorf("close api test server: %v", err)
+		}
+	})
 
 	return handler, db
 }
