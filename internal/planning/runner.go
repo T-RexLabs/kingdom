@@ -398,12 +398,10 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
 	var autoTitleSession *state.PlanningSession
-	if request.ForceNewSession {
-		autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
-		if err != nil {
-			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
-			autoTitleSession = nil
-		}
+	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
+	if err != nil {
+		log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
+		autoTitleSession = nil
 	}
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -837,6 +835,16 @@ func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Conte
 			CreatedAt:           assistantMessage.CreatedAt,
 		})
 		donePayload["variant_count"] = 1
+		messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+		if err != nil {
+			return state.FinalizeOperationRequest{}, err
+		}
+		autoTitleSession, err := maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
+		if err != nil {
+			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
+		} else if autoTitleSession != nil {
+			donePayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
+		}
 		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, "done", donePayload)
 		if err != nil {
 			return state.FinalizeOperationRequest{}, err
@@ -1460,6 +1468,7 @@ func sessionPatchPayload(session state.PlanningSession) map[string]any {
 	if session.CurrentTitleOperationID != nil {
 		if trimmed := strings.TrimSpace(*session.CurrentTitleOperationID); trimmed != "" {
 			fields["current_title_operation_id"] = trimmed
+			fields["auto_title_eligible"] = false
 		}
 	}
 	if trimmed := strings.TrimSpace(session.UpdatedAt); trimmed != "" {

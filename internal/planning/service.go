@@ -359,6 +359,13 @@ func (s *Service) GenerateTitle(ctx context.Context, planningSessionID string) (
 	return s.sessions.GenerateTitle(ctx, planningSessionID)
 }
 
+func (s *Service) AutoTitleEligible(ctx context.Context, session state.PlanningSession) (bool, error) {
+	if s == nil || s.sessions == nil {
+		return false, fmt.Errorf("planning service session runtime is required")
+	}
+	return autoTitleEligibilityForSession(ctx, s.sessions.deps, session)
+}
+
 func (s *Service) RefreshContext(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, state.PlanningSession, error) {
 	if s == nil || s.sessions == nil {
 		return state.PlanningContextSnapshot{}, state.PlanningSession{}, fmt.Errorf("planning service session runtime is required")

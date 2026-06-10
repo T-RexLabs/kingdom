@@ -18,7 +18,7 @@ func newStreamingQuestionSanitizer(onChunk func(text string)) *streamingQuestion
 }
 
 func (s *streamingQuestionSanitizer) Write(text string) {
-	if s == nil || strings.TrimSpace(text) == "" {
+	if s == nil || text == "" {
 		return
 	}
 	_, _ = s.raw.WriteString(text)

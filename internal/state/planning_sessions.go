@@ -217,6 +217,58 @@ func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]Planning
 	return items, nil
 }
 
+func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, afterPlanningSessionID string, limit int, userMessageThreshold int) ([]PlanningSession, error) {
+	if limit <= 0 {
+		limit = DefaultPlanningOperationListLimit
+	}
+	if userMessageThreshold <= 0 {
+		return nil, fmt.Errorf("user message threshold must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT s.planning_session_id, s.title, s.title_state, s.lifecycle_state, s.conversation_state,
+		        s.current_question_message_id, s.current_operation_id, s.current_title_operation_id,
+		        s.current_draft_id, s.context_snapshot_id,
+		        s.project_root, s.model_selection_json, s.created_at, s.updated_at
+		 FROM planning_sessions s
+		 WHERE s.planning_session_id > ?
+		   AND s.title_state = ?
+		   AND s.lifecycle_state = ?
+		   AND COALESCE(NULLIF(TRIM(s.current_title_operation_id), ''), '') = ''
+		   AND (
+		     SELECT COUNT(1)
+		     FROM planning_messages m
+		     WHERE m.planning_session_id = s.planning_session_id
+		       AND m.active = 1
+		       AND m.role = ?
+		   ) >= ?
+		 ORDER BY s.planning_session_id ASC
+		 LIMIT ?`,
+		strings.TrimSpace(afterPlanningSessionID),
+		"placeholder",
+		PlanningSessionLifecycleStateActive,
+		PlanningMessageRoleUser,
+		userMessageThreshold,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list auto title eligible sessions: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]PlanningSession, 0, limit)
+	for rows.Next() {
+		var row PlanningSession
+		if err := scanPlanningSession(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan auto title eligible session: %w", err)
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate auto title eligible sessions: %w", err)
+	}
+	return items, nil
+}
+
 func scanPlanningSession(row scannable, dest *PlanningSession) error {
 	var currentQuestionMessageID sql.NullString
 	var currentOperationID sql.NullString

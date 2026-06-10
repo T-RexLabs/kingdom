@@ -47,7 +47,7 @@ func newBufferedOperationTextWriter(
 }
 
 func (w *bufferedOperationTextWriter) Write(text string) {
-	if w == nil || strings.TrimSpace(text) == "" {
+	if w == nil || text == "" {
 		return
 	}
 

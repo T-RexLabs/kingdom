@@ -53,3 +53,18 @@ func TestStreamingQuestionSanitizerEmitsOnlyVisibleProse(t *testing.T) {
 		t.Fatalf("sanitized output leaked protocol details: %q", got)
 	}
 }
+
+func TestStreamingQuestionSanitizerPreservesWhitespaceOnlyChunks(t *testing.T) {
+	t.Parallel()
+
+	var chunks []string
+	sanitizer := newStreamingQuestionSanitizer(func(text string) {
+		chunks = append(chunks, text)
+	})
+	for _, chunk := range []string{"Hello,", "\n\n", "planner."} {
+		sanitizer.Write(chunk)
+	}
+	if got := strings.Join(chunks, ""); got != "Hello,\n\nplanner." {
+		t.Fatalf("expected sanitizer to preserve whitespace-only chunks, got %q", got)
+	}
+}

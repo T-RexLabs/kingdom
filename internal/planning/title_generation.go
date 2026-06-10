@@ -22,7 +22,46 @@ const (
 	titleTriggerSourceManual                        titleTriggerSource = "manual"
 	titleTriggerSourceAutoSecondUserMessageCreate   titleTriggerSource = "auto_second_user_message_create"
 	titleTriggerSourceAutoSecondUserMessageFinalize titleTriggerSource = "auto_second_user_message_finalize"
+	titleTriggerSourceRecoveryCatchup               titleTriggerSource = "recovery_catchup"
 )
+
+func generatedTitleEligibleSession(session state.PlanningSession) bool {
+	if session.TitleState != planningSessionTitleStatePlaceholder {
+		return false
+	}
+	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
+		return false
+	}
+	if session.CurrentTitleOperationID != nil && strings.TrimSpace(*session.CurrentTitleOperationID) != "" {
+		return false
+	}
+	return true
+}
+
+func generatedTitleEligibleUserCount(userMessages int) bool {
+	return userMessages >= autoTitleUserMessageThreshold
+}
+
+func projectedUserMessageCountAfterReply(messages []state.PlanningMessage, request operationRequest) int {
+	userMessages := 1
+	for _, message := range messages {
+		if message.Role == state.PlanningMessageRoleUser && message.TurnIndex < request.TurnIndex {
+			userMessages++
+		}
+	}
+	return userMessages
+}
+
+func autoTitleEligibilityForSession(ctx context.Context, deps runtimeDeps, session state.PlanningSession) (bool, error) {
+	if !generatedTitleEligibleSession(session) {
+		return false, nil
+	}
+	userMessages, err := deps.store.CountMessagesByRole(ctx, session.PlanningSessionID, state.PlanningMessageRoleUser)
+	if err != nil {
+		return false, err
+	}
+	return generatedTitleEligibleUserCount(userMessages), nil
+}
 
 func enqueueGeneratedTitleForSession(
 	ctx context.Context,
@@ -30,14 +69,9 @@ func enqueueGeneratedTitleForSession(
 	runner *operationRunner,
 	session state.PlanningSession,
 	source titleTriggerSource,
+	startRecovered bool,
 ) (state.PlanningSession, bool, error) {
-	if session.TitleState != planningSessionTitleStatePlaceholder {
-		return session, false, nil
-	}
-	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
-		return state.PlanningSession{}, false, ErrSessionInactive
-	}
-	if session.CurrentTitleOperationID != nil && strings.TrimSpace(*session.CurrentTitleOperationID) != "" {
+	if !generatedTitleEligibleSession(session) {
 		return session, false, nil
 	}
 	if runner == nil {
@@ -74,7 +108,11 @@ func enqueueGeneratedTitleForSession(
 		}
 		return state.PlanningSession{}, false, err
 	}
-	runner.Start(operation.OperationID)
+	if startRecovered {
+		runner.StartRecovered(operation.OperationID)
+	} else {
+		runner.Start(operation.OperationID)
+	}
 	updated, _, err := deps.store.GetSession(ctx, session.PlanningSessionID)
 	if err != nil {
 		return state.PlanningSession{}, true, err
@@ -88,7 +126,7 @@ func maybeAutoGenerateTitleAfterSecondUserMessage(
 	runner *operationRunner,
 	planningSessionID string,
 	source titleTriggerSource,
-	) (*state.PlanningSession, error) {
+) (*state.PlanningSession, error) {
 	session, ok, err := deps.store.GetSession(ctx, planningSessionID)
 	if err != nil {
 		return nil, err
@@ -96,23 +134,14 @@ func maybeAutoGenerateTitleAfterSecondUserMessage(
 	if !ok {
 		return nil, nil
 	}
-	if session.TitleState != planningSessionTitleStatePlaceholder {
-		return nil, nil
-	}
-	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
-		return nil, nil
-	}
-	if session.CurrentTitleOperationID != nil && strings.TrimSpace(*session.CurrentTitleOperationID) != "" {
-		return nil, nil
-	}
-	userMessages, err := deps.store.CountMessagesByRole(ctx, planningSessionID, state.PlanningMessageRoleUser)
+	eligible, err := autoTitleEligibilityForSession(ctx, deps, session)
 	if err != nil {
 		return nil, err
 	}
-	if userMessages < autoTitleUserMessageThreshold {
+	if !eligible {
 		return nil, nil
 	}
-	updated, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source)
+	updated, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)
 	if err != nil || !created {
 		return nil, err
 	}
@@ -128,28 +157,33 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	request operationRequest,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
-	if session.TitleState != planningSessionTitleStatePlaceholder {
+	if !generatedTitleEligibleSession(session) {
 		return nil, nil
 	}
-	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
+	if !generatedTitleEligibleUserCount(projectedUserMessageCountAfterReply(messages, request)) {
 		return nil, nil
 	}
-	if session.CurrentTitleOperationID != nil && strings.TrimSpace(*session.CurrentTitleOperationID) != "" {
+	updated, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)
+	if err != nil || !created {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func maybeAutoGenerateTitleForRecoveryCatchup(
+	ctx context.Context,
+	deps runtimeDeps,
+	runner *operationRunner,
+	session state.PlanningSession,
+) (*state.PlanningSession, error) {
+	eligible, err := autoTitleEligibilityForSession(ctx, deps, session)
+	if err != nil {
+		return nil, err
+	}
+	if !eligible {
 		return nil, nil
 	}
-	if !request.ForceNewSession {
-		return nil, nil
-	}
-	userMessages := 1
-	for _, message := range messages {
-		if message.Role == state.PlanningMessageRoleUser && message.TurnIndex < request.TurnIndex {
-			userMessages++
-		}
-	}
-	if userMessages < autoTitleUserMessageThreshold {
-		return nil, nil
-	}
-	updated, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source)
+	updated, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, titleTriggerSourceRecoveryCatchup, true)
 	if err != nil || !created {
 		return nil, err
 	}
