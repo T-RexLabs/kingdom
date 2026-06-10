@@ -22,6 +22,7 @@ type SessionAdapterConfig struct {
 	BinaryPath               string
 	WorkDir                  string
 	ConfigDir                string
+	DatabasePath             string
 	InlineConfigContent      string
 	Model                    string
 	Variant                  string
@@ -42,6 +43,7 @@ type SessionAdapter struct {
 	binaryPath              string
 	workDir                 string
 	configDir               string
+	databasePath            string
 	inlineConfigContent     string
 	model                   string
 	variant                 string
@@ -448,7 +450,7 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	} else if a.workDir != "" {
 		cmd.Dir = a.workDir
 	}
-	cmd.Env = append(os.Environ(), opencodeCommandEnvironment(req, a.configDir, a.inlineConfigContent)...)
+	cmd.Env = append(os.Environ(), opencodeCommandEnvironment(req, a.configDir, a.databasePath, a.inlineConfigContent)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -546,6 +548,14 @@ func ConfigDirEnvironment(configDir string) []string {
 	return []string{"OPENCODE_CONFIG_DIR=" + trimmed}
 }
 
+func DatabasePathEnvironment(databasePath string) []string {
+	trimmed := strings.TrimSpace(databasePath)
+	if trimmed == "" {
+		return nil
+	}
+	return []string{"OPENCODE_DB=" + trimmed}
+}
+
 func configContentEnvironment(configContent string) []string {
 	trimmed := strings.TrimSpace(configContent)
 	if trimmed == "" {
@@ -554,13 +564,18 @@ func configContentEnvironment(configContent string) []string {
 	return []string{"OPENCODE_CONFIG_CONTENT=" + trimmed}
 }
 
-func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, defaultInlineConfigContent string) []string {
+func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, defaultDatabasePath string, defaultInlineConfigContent string) []string {
 	env := completionReceiptEnvironment(req)
 	configDir := strings.TrimSpace(req.ConfigDir)
 	if configDir == "" {
 		configDir = strings.TrimSpace(defaultConfigDir)
 	}
+	databasePath := strings.TrimSpace(req.DatabasePath)
+	if databasePath == "" {
+		databasePath = strings.TrimSpace(defaultDatabasePath)
+	}
 	env = append(env, ConfigDirEnvironment(configDir)...)
+	env = append(env, DatabasePathEnvironment(databasePath)...)
 	return append(env, configContentEnvironment(defaultInlineConfigContent)...)
 }
 
@@ -705,6 +720,7 @@ func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
 		binaryPath:              binaryPath,
 		workDir:                 strings.TrimSpace(cfg.WorkDir),
 		configDir:               strings.TrimSpace(cfg.ConfigDir),
+		databasePath:            strings.TrimSpace(cfg.DatabasePath),
 		inlineConfigContent:     strings.TrimSpace(cfg.InlineConfigContent),
 		model:                   strings.TrimSpace(cfg.Model),
 		variant:                 strings.TrimSpace(cfg.Variant),

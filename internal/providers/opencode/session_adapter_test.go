@@ -119,6 +119,40 @@ func TestSessionAdapterSetsConfiguredOpencodeConfigDir(t *testing.T) {
 	}
 }
 
+func TestSessionAdapterSetsConfiguredOpencodeDatabasePath(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
+	databasePath := filepath.Join(t.TempDir(), ".kingdom", "opencode", "opencode.db")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath, DatabasePath: databasePath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_database_path_default",
+		AttemptID:     "attempt_database_path_default",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: t.TempDir(),
+		Prompt:        "check database path",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	envLog := parseFakeOpenCodeEnvLog(string(raw))
+	if envLog["OPENCODE_DB"] != databasePath {
+		t.Fatalf("expected OPENCODE_DB %q, got %q", databasePath, envLog["OPENCODE_DB"])
+	}
+}
+
 func TestSessionAdapterPassesWorkspaceDirFlagForRunExecution(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	workspacePath := t.TempDir()
@@ -200,6 +234,42 @@ func TestSessionAdapterRequestConfigDirOverridesDefault(t *testing.T) {
 	}
 	if strings.Contains(envLog, "OPENCODE_CONFIG_DIR="+defaultConfigDir) {
 		t.Fatalf("expected request config dir to override adapter default, got %q", envLog)
+	}
+}
+
+func TestSessionAdapterRequestDatabasePathOverridesDefault(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
+	defaultDatabasePath := filepath.Join(t.TempDir(), ".kingdom", "opencode-default", "opencode.db")
+	overrideDatabasePath := filepath.Join(t.TempDir(), ".kingdom", "opencode-workspace", "opencode.db")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath, DatabasePath: defaultDatabasePath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_database_path_override",
+		AttemptID:     "attempt_database_path_override",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: t.TempDir(),
+		DatabasePath:  overrideDatabasePath,
+		Prompt:        "check override database path",
+		OccurredAt:    "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	envLog := parseFakeOpenCodeEnvLog(string(raw))
+	if envLog["OPENCODE_DB"] != overrideDatabasePath {
+		t.Fatalf("expected override OPENCODE_DB %q, got %q", overrideDatabasePath, envLog["OPENCODE_DB"])
 	}
 }
 
@@ -3679,6 +3749,7 @@ echo "$*" >> "$FAKE_OPENCODE_ARGS_LOG"
 if [ -n "$FAKE_OPENCODE_ENV_LOG" ]; then
   printf 'OPENCODE_CONFIG_DIR=%s\n' "$OPENCODE_CONFIG_DIR" >> "$FAKE_OPENCODE_ENV_LOG"
   printf 'OPENCODE_CONFIG_CONTENT=%s\n' "$OPENCODE_CONFIG_CONTENT" >> "$FAKE_OPENCODE_ENV_LOG"
+  printf 'OPENCODE_DB=%s\n' "$OPENCODE_DB" >> "$FAKE_OPENCODE_ENV_LOG"
 fi
 
 if [ "$1" = "export" ]; then

@@ -92,6 +92,20 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 	}
 }
 
+func TestManagedOpenCodeDatabasePath(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := filepath.Join(t.TempDir(), "workspace")
+	want := filepath.Join(projectRoot, kingdomDirName, opencodeDirName, "opencode.db")
+	if got := ManagedOpenCodeDatabasePath(projectRoot); got != want {
+		t.Fatalf("expected managed opencode db path %q, got %q", want, got)
+	}
+
+	if got := ManagedOpenCodeDatabasePath("   "); got != "" {
+		t.Fatalf("expected blank project root to return empty path, got %q", got)
+	}
+}
+
 func TestScaffoldedProviderPolicyLoadsAgainstScaffoldedSchema(t *testing.T) {
 	t.Parallel()
 

@@ -284,6 +284,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		}
 		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusCompleted})
 		cfg.ProviderSession.ConfigDir = providerConfigDir
+		cfg.ProviderSession.DatabasePath = bootstrapassets.ManagedOpenCodeDatabasePath(providerWorkDir)
 	}
 	if providerEngineName == "opencode" {
 		executionInlineConfig, err := opencode.ExecutionSessionInlineConfig()

@@ -248,6 +248,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			BinaryPath:          cfg.OpenCodeBinaryPath,
 			WorkDir:             strings.TrimSpace(cfg.ProjectRoot),
 			ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(cfg.ProjectRoot),
+			DatabasePath:        bootstrapassets.ManagedOpenCodeDatabasePath(cfg.ProjectRoot),
 			InlineConfigContent: plannerInlineConfig,
 			Agent:               "planner",
 			SkipPermissions:     true,
@@ -464,17 +465,17 @@ type runExecutionSettlementDetailItem struct {
 
 type runExecutionDetailItem struct {
 	runExecutionItem
-	ProviderInvocationID *string                           `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt *time.Time                        `json:"provider_invocation_at,omitempty"`
-	SettlementStatus     string                            `json:"settlement_status"`
-	SettlementDetail     *runExecutionSettlementDetailItem `json:"settlement_detail,omitempty"`
-	SettledAt            *time.Time                        `json:"settled_at,omitempty"`
-	OutputStatus         string                            `json:"output_status"`
-	OutputText           *string                           `json:"output_text,omitempty"`
-	OutputVerdict        *string                           `json:"output_verdict,omitempty"`
-	OutputVerdictStatus  *string                           `json:"output_verdict_status,omitempty"`
-	PublicationStatus    *string                           `json:"publication_status,omitempty"`
-	PublicationSummary   *string                           `json:"publication_summary,omitempty"`
+	ProviderInvocationID *string                            `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt *time.Time                         `json:"provider_invocation_at,omitempty"`
+	SettlementStatus     string                             `json:"settlement_status"`
+	SettlementDetail     *runExecutionSettlementDetailItem  `json:"settlement_detail,omitempty"`
+	SettledAt            *time.Time                         `json:"settled_at,omitempty"`
+	OutputStatus         string                             `json:"output_status"`
+	OutputText           *string                            `json:"output_text,omitempty"`
+	OutputVerdict        *string                            `json:"output_verdict,omitempty"`
+	OutputVerdictStatus  *string                            `json:"output_verdict_status,omitempty"`
+	PublicationStatus    *string                            `json:"publication_status,omitempty"`
+	PublicationSummary   *string                            `json:"publication_summary,omitempty"`
 	PublicationEntries   []runExecutionPublicationEntryItem `json:"publication_entries,omitempty"`
 }
 
