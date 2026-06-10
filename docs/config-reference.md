@@ -116,7 +116,7 @@ provider:
 
 - `strict`
   - default: `true`
-  - when `true`, summon validates provider startup and agent resolution before readiness
+  - when `true`, summon validates managed OpenCode assets, binary availability, and agent resolution before readiness
 
 - `governance_mode`
   - required value: `autonomous`

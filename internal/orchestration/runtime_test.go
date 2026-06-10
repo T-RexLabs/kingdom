@@ -265,7 +265,7 @@ func TestNewRuntimeOpencodeProviderFailsWhenStrict(t *testing.T) {
 	}
 }
 
-func TestNewRuntimeOpencodeProviderFailsStrictProbeWhenBinaryUnusable(t *testing.T) {
+func TestNewRuntimeStrictAgentValidationFailsWhenBinaryUnusable(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -287,10 +287,10 @@ func TestNewRuntimeOpencodeProviderFailsStrictProbeWhenBinaryUnusable(t *testing
 		},
 	})
 	if err == nil {
-		t.Fatal("expected strict runtime bootstrap to fail when probe command exits")
+		t.Fatal("expected strict runtime bootstrap to fail when agent validation command exits")
 	}
-	if !strings.Contains(err.Error(), "provider strict probe failed") && !strings.Contains(err.Error(), "provider agent") {
-		t.Fatalf("expected strict startup validation error, got %v", err)
+	if !strings.Contains(err.Error(), "provider agent") {
+		t.Fatalf("expected strict agent validation error, got %v", err)
 	}
 }
 
@@ -444,76 +444,6 @@ exit 2
 	}
 }
 
-func TestNewRuntimeExecutionInlineConfigAppliesWorkspaceAndQuestionRestrictions(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	workspaceRoot := t.TempDir()
-	if err := bootstrapassets.WriteScaffold(filepath.Join(workspaceRoot, ".kingdom"), workspaceRoot, false); err != nil {
-		t.Fatalf("write managed opencode scaffold: %v", err)
-	}
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  python3 - <<'PY'
-import json
-import os
-import sys
-
-payload = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", ""))
-permission = payload.get("permission", {})
-if payload.get("$schema") != "https://opencode.ai/config.json":
-    print("unexpected schema", file=sys.stderr)
-    sys.exit(1)
-if payload.get("share") != "disabled":
-    print("share not disabled", file=sys.stderr)
-    sys.exit(1)
-server = payload.get("server", {})
-if server.get("mdns") is not False:
-    print("mdns not disabled", file=sys.stderr)
-    sys.exit(1)
-if permission.get("external_directory") != "deny":
-    print("missing external_directory deny", file=sys.stderr)
-    sys.exit(1)
-if permission.get("question") != "deny":
-    print("missing question deny", file=sys.stderr)
-    sys.exit(1)
-PY
-  echo '{"type":"step_start","sessionID":"ses_probe"}'
-  echo '{"type":"text","sessionID":"ses_probe","part":{"text":"READY"}}'
-  echo '{"type":"step_finish","sessionID":"ses_probe","part":{"reason":"stop"}}'
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-			WorkDir:    workspaceRoot,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected strict runtime bootstrap to pass execution inline config to opencode: %v", err)
-	}
-}
-
 func TestNewRuntimeStrictAgentResolutionRunsConcurrently(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -650,208 +580,6 @@ exit 2
 	}
 }
 
-func TestNewRuntimeStrictProbeRetriesTransientTimeoutAndSucceeds(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	probeCountPath := filepath.Join(t.TempDir(), "probe-count.txt")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  if [ -n "$FAKE_PROBE_COUNT_PATH" ]; then
-    COUNT="0"
-    if [ -f "$FAKE_PROBE_COUNT_PATH" ]; then
-      COUNT="$(cat "$FAKE_PROBE_COUNT_PATH")"
-    fi
-    COUNT=$((COUNT + 1))
-    echo "$COUNT" > "$FAKE_PROBE_COUNT_PATH"
-    if [ "$COUNT" -le "${FAKE_PROBE_TRANSIENT_FAILS:-0}" ]; then
-      sleep 3
-      exit 0
-    fi
-  fi
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	t.Setenv("FAKE_PROBE_COUNT_PATH", probeCountPath)
-	t.Setenv("FAKE_PROBE_TRANSIENT_FAILS", "1")
-
-	policyPath := filepath.Join(t.TempDir(), "provider_policy.yaml")
-	policyRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "policies", "opencode_provider_policy.yaml"))
-	if err != nil {
-		t.Fatalf("read provider policy fixture: %v", err)
-	}
-	updated := strings.Replace(string(policyRaw), "strict_probe_attempt_timeout: 30s\n  strict_startup_total_timeout: 90s\n  strict_probe_backoff_schedule:\n    - 1s\n    - 5s\n    - 10s", "strict_probe_attempt_timeout: 2s\n  strict_startup_total_timeout: 15s\n  strict_probe_backoff_schedule:\n    - 1ms\n    - 1ms", 1)
-	if err := os.WriteFile(policyPath, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write provider policy fixture: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.ProviderPolicyPath = policyPath
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          paths,
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected strict runtime bootstrap to recover via transient probe retry, got %v", err)
-	}
-
-	if got := readIntegerFile(t, probeCountPath); got < 2 {
-		t.Fatalf("expected strict probe retries to invoke run at least twice, got %d", got)
-	}
-}
-
-func TestNewRuntimeStrictProbeDeterministicFailureDoesNotRetry(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	probeCountPath := filepath.Join(t.TempDir(), "probe-count.txt")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  if [ -n "$FAKE_PROBE_COUNT_PATH" ]; then
-    COUNT="0"
-    if [ -f "$FAKE_PROBE_COUNT_PATH" ]; then
-      COUNT="$(cat "$FAKE_PROBE_COUNT_PATH")"
-    fi
-    COUNT=$((COUNT + 1))
-    echo "$COUNT" > "$FAKE_PROBE_COUNT_PATH"
-  fi
-  echo "deterministic probe failure" >&2
-  exit 1
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	t.Setenv("FAKE_PROBE_COUNT_PATH", probeCountPath)
-
-	policyPath := filepath.Join(t.TempDir(), "provider_policy.yaml")
-	policyRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "policies", "opencode_provider_policy.yaml"))
-	if err != nil {
-		t.Fatalf("read provider policy fixture: %v", err)
-	}
-	updated := strings.Replace(string(policyRaw), "strict_probe_attempt_timeout: 30s\n  strict_startup_total_timeout: 90s\n  strict_probe_backoff_schedule:\n    - 1s\n    - 5s\n    - 10s", "strict_probe_attempt_timeout: 2s\n  strict_startup_total_timeout: 15s\n  strict_probe_backoff_schedule:\n    - 1ms\n    - 1ms\n    - 1ms", 1)
-	if err := os.WriteFile(policyPath, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write provider policy fixture: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.ProviderPolicyPath = policyPath
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          paths,
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected strict runtime bootstrap to fail on deterministic probe error")
-	}
-
-	if got := readIntegerFile(t, probeCountPath); got != 1 {
-		t.Fatalf("expected deterministic strict probe failure to avoid retries, got invocations=%d", got)
-	}
-}
-
-func TestNewRuntimeStrictProbeRespectsTotalStartupTimeoutBudget(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	probeCountPath := filepath.Join(t.TempDir(), "probe-count-time-budget.txt")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  if [ -n "$FAKE_PROBE_COUNT_PATH" ]; then
-    COUNT="0"
-    if [ -f "$FAKE_PROBE_COUNT_PATH" ]; then
-      COUNT="$(cat "$FAKE_PROBE_COUNT_PATH")"
-    fi
-    COUNT=$((COUNT + 1))
-    echo "$COUNT" > "$FAKE_PROBE_COUNT_PATH"
-  fi
-  sleep 3
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	t.Setenv("FAKE_PROBE_COUNT_PATH", probeCountPath)
-
-	policyPath := filepath.Join(t.TempDir(), "provider_policy.yaml")
-	policyRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "policies", "opencode_provider_policy.yaml"))
-	if err != nil {
-		t.Fatalf("read provider policy fixture: %v", err)
-	}
-	updated := strings.Replace(string(policyRaw), "strict_probe_attempt_timeout: 30s\n  strict_startup_total_timeout: 90s\n  strict_probe_backoff_schedule:\n    - 1s\n    - 5s\n    - 10s", "strict_probe_attempt_timeout: 700ms\n  strict_startup_total_timeout: 1400ms\n  strict_probe_backoff_schedule:\n    - 300ms\n    - 300ms\n    - 300ms", 1)
-	if err := os.WriteFile(policyPath, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write provider policy fixture: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.ProviderPolicyPath = policyPath
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          paths,
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected strict runtime bootstrap to fail after total startup timeout budget is exhausted")
-	}
-
-	if got := readIntegerFile(t, probeCountPath); got > 2 {
-		t.Fatalf("expected strict probe attempts to stop when total budget expires, got invocations=%d", got)
-	}
-}
-
 func readIntegerFile(t *testing.T, path string) int {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -930,7 +658,6 @@ model_policy:
   fallback_enabled: true
   fallback_strategy: disabled_for_mvp
 timeouts:
-  strict_probe_attempt_timeout: 20s
   strict_startup_total_timeout: 60s
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s

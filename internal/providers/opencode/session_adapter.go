@@ -729,58 +729,6 @@ func normalizeMaxContinuationTurns(value int) int {
 	return value
 }
 
-func (a *SessionAdapter) Probe(ctx context.Context, timeout time.Duration) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if timeout <= 0 {
-		timeout = 20 * time.Second
-	}
-
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	workspacePath := strings.TrimSpace(a.workDir)
-	cleanupWorkspace := false
-	if workspacePath == "" {
-		tempDir, err := os.MkdirTemp("", "opencode-probe-")
-		if err != nil {
-			return fmt.Errorf("create probe workspace: %w", err)
-		}
-		workspacePath = tempDir
-		cleanupWorkspace = true
-	}
-	if cleanupWorkspace {
-		defer os.RemoveAll(workspacePath)
-	}
-
-	attemptID := fmt.Sprintf("probe_%d", time.Now().UTC().UnixNano())
-	_, err := a.Execute(probeCtx, ExecuteRequest{
-		SessionID:     "probe_session",
-		AttemptID:     attemptID,
-		RunID:         "probe_run",
-		NodeRunID:     "probe_node",
-		WorkspacePath: workspacePath,
-		Prompt:        "Respond with the single word READY.",
-		OccurredAt:    time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return fmt.Errorf("opencode probe execute failed: %w", err)
-	}
-
-	events, ok := a.snapshotEvents(attemptID)
-	if !ok {
-		return fmt.Errorf("opencode probe produced no attempt record")
-	}
-	for _, event := range events {
-		if event.EventType == AttemptEventTypeSucceeded {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("opencode probe did not emit succeeded event")
-}
-
 func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error) {
 	if err := validateExecuteRequest(req); err != nil {
 		return ExecuteResponse{}, err

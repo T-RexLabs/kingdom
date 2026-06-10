@@ -63,6 +63,7 @@ func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
 type Config struct {
 	DB                  *sql.DB
 	StartupContext      context.Context
+	StartupReporter     StartupReporter
 	Paths               BootstrapPaths
 	Adapter             opencode.Adapter
 	ProviderEngine      string
@@ -76,6 +77,41 @@ type Config struct {
 	WorkspaceRoot       string
 	YoloOutputRoot      string
 	WorktreeRetention   time.Duration
+}
+
+type StartupPhase string
+
+const (
+	StartupPhaseStartingRuntime         StartupPhase = "starting_runtime"
+	StartupPhaseCheckingOpenCodeSetup   StartupPhase = "checking_opencode_setup"
+	StartupPhaseValidatingOpenCodeAgent StartupPhase = "validating_opencode_agents"
+	StartupPhaseReady                   StartupPhase = "ready"
+)
+
+type StartupEventStatus string
+
+const (
+	StartupEventStatusStarted   StartupEventStatus = "started"
+	StartupEventStatusProgress  StartupEventStatus = "progress"
+	StartupEventStatusCompleted StartupEventStatus = "completed"
+	StartupEventStatusFailed    StartupEventStatus = "failed"
+)
+
+type StartupEvent struct {
+	Phase       StartupPhase
+	Status      StartupEventStatus
+	Completed   int
+	Total       int
+	CurrentItem string
+	Message     string
+}
+
+type StartupReporter func(StartupEvent)
+
+func (r StartupReporter) Report(event StartupEvent) {
+	if r != nil {
+		r(event)
+	}
 }
 
 const (
@@ -213,10 +249,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider execution timeouts: %w", err)
 	}
-	strictProbeAttemptTimeout, err := parseStrictProbeAttemptTimeout(providerCfg.Timeouts.StrictProbeAttemptTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider strict_probe_attempt_timeout: %w", err)
-	}
 	strictStartupTotalTimeout, err := parseStrictStartupTotalTimeout(providerCfg.Timeouts.StrictStartupTotalTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("parse provider strict_startup_total_timeout: %w", err)
@@ -245,9 +277,12 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		providerEngineName = "opencode"
 	}
 	if providerEngineName == "opencode" && providerWorkDir != "" {
+		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusStarted})
 		if err := bootstrapassets.ValidateManagedOpenCodeAgentProfiles(providerConfigDir); err != nil {
+			reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusFailed, Message: err.Error()})
 			return nil, fmt.Errorf("validate managed opencode agent profiles: %w", err)
 		}
+		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusCompleted})
 		cfg.ProviderSession.ConfigDir = providerConfigDir
 	}
 	if providerEngineName == "opencode" {
@@ -258,7 +293,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		cfg.ProviderSession.InlineConfigContent = executionInlineConfig
 	}
 
-	adapter, providerEngine, err := resolveAdapter(startupCtx, cfg, providerCfg, strictProbeAttemptTimeout, strictStartupTotalTimeout)
+	adapter, providerEngine, err := resolveAdapter(startupCtx, cfg, providerCfg, strictStartupTotalTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +325,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return runtimeInstance, nil
 }
 
-func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg providerpolicy.Policy, strictProbeAttemptTimeout time.Duration, strictStartupTotalTimeout time.Duration) (opencode.Adapter, string, error) {
+func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg providerpolicy.Policy, strictStartupTotalTimeout time.Duration) (opencode.Adapter, string, error) {
 	if startupCtx == nil {
 		startupCtx = context.Background()
 	}
@@ -315,14 +350,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 		if cfg.ProviderStrict {
 			validationCtx, cancelValidation := context.WithTimeout(startupCtx, strictStartupTotalTimeout)
 			defer cancelValidation()
-			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, providerCfg.AgentPolicy); err != nil {
-				return nil, "", err
-			}
-			probeBackoffs, err := providerCfg.StrictProbeBackoffDurations()
-			if err != nil {
-				return nil, "", fmt.Errorf("parse provider strict probe backoff schedule: %w", err)
-			}
-			if err := runStrictProbeWithRetry(validationCtx, sessionAdapter, strictProbeAttemptTimeout, probeBackoffs); err != nil {
+			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
 				return nil, "", err
 			}
 		}
@@ -332,98 +360,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 	}
 }
 
-func runStrictProbeWithRetry(ctx context.Context, adapter *opencode.SessionAdapter, attemptTimeout time.Duration, backoffSchedule []time.Duration) error {
-	if adapter == nil {
-		return fmt.Errorf("provider strict probe failed: adapter is nil")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if attemptTimeout <= 0 {
-		attemptTimeout = 20 * time.Second
-	}
-
-	attempts := len(backoffSchedule) + 1
-	if attempts <= 0 {
-		attempts = 1
-	}
-
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			if lastErr != nil {
-				return fmt.Errorf("provider strict probe failed after %d attempt(s): %w", attempt, lastErr)
-			}
-			return fmt.Errorf("provider strict probe failed after %d attempt(s): %w", attempt, ctxErr)
-		}
-
-		effectiveAttemptTimeout := attemptTimeout
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				if lastErr != nil {
-					return fmt.Errorf("provider strict probe failed after %d attempt(s): %w", attempt, lastErr)
-				}
-				return fmt.Errorf("provider strict probe failed after %d attempt(s): %w", attempt, context.DeadlineExceeded)
-			}
-			if remaining < effectiveAttemptTimeout {
-				effectiveAttemptTimeout = remaining
-			}
-		}
-
-		err := adapter.Probe(ctx, effectiveAttemptTimeout)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-
-		isLastAttempt := attempt == attempts-1
-		if isLastAttempt || !isTransientStrictProbeError(err) {
-			break
-		}
-
-		delay := backoffSchedule[attempt]
-		if delay > 0 {
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				break
-			case <-timer.C:
-			}
-		}
-	}
-
-	if lastErr == nil {
-		lastErr = fmt.Errorf("probe failed with unknown error")
-	}
-
-	return fmt.Errorf("provider strict probe failed after %d attempt(s): %w", attempts, lastErr)
-}
-
-func isTransientStrictProbeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	if strings.Contains(message, "signal: killed") {
-		return true
-	}
-	if strings.Contains(message, "first_event_timeout") || strings.Contains(message, "stream_inactivity_timeout") {
-		return true
-	}
-	if strings.Contains(message, "deadline exceeded") || strings.Contains(message, "context canceled") {
-		return true
-	}
-
-	return false
-}
-
-func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, policy providerpolicy.AgentPolicy) error {
+func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
 	resolvedBinary := strings.TrimSpace(binaryPath)
 	if resolvedBinary == "" {
 		resolvedBinary = "opencode"
@@ -448,10 +385,10 @@ func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, wor
 		agents = append(agents, agent)
 	}
 	sort.Strings(agents)
-	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), agents, 4)
+	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), agents, 4, reporter)
 }
 
-func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, agents []string, workerCount int) error {
+func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, agents []string, workerCount int, reporter StartupReporter) error {
 	if len(agents) == 0 {
 		return nil
 	}
@@ -464,6 +401,7 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 	if workerCount > len(agents) {
 		workerCount = len(agents)
 	}
+	reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusStarted, Total: len(agents)})
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -471,6 +409,8 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 	jobs := make(chan string)
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
+	var completedMu sync.Mutex
+	completed := 0
 
 	worker := func() {
 		defer wg.Done()
@@ -483,6 +423,7 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 					return
 				}
 				if err := validateOpenCodeAgent(ctx, binaryPath, workDir, configDir, agent); err != nil {
+					reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusFailed, CurrentItem: agent, Total: len(agents), Message: err.Error()})
 					select {
 					case errCh <- err:
 						cancel()
@@ -490,6 +431,11 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 					}
 					return
 				}
+				completedMu.Lock()
+				completed++
+				current := completed
+				completedMu.Unlock()
+				reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusProgress, Completed: current, Total: len(agents), CurrentItem: agent})
 			}
 		}
 	}
@@ -516,8 +462,13 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 	case err := <-errCh:
 		return err
 	default:
+		reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusCompleted, Completed: len(agents), Total: len(agents)})
 		return nil
 	}
+}
+
+func reportStartup(reporter StartupReporter, event StartupEvent) {
+	reporter.Report(event)
 }
 
 func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir string, configDir string, agent string) error {
@@ -1146,17 +1097,17 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"created_at",
 			"updated_at",
 		},
-		"attempt_event_log":     nil,
-		"attempt_outbox":        nil,
-		"attempt_cancel_outbox": nil,
-		"run_execution_targets": nil,
-		"filesystem_snapshots":  nil,
+		"attempt_event_log":           nil,
+		"attempt_outbox":              nil,
+		"attempt_cancel_outbox":       nil,
+		"run_execution_targets":       nil,
+		"filesystem_snapshots":        nil,
 		"filesystem_snapshot_entries": nil,
-		"filesystem_blobs":      nil,
-		"run_publication_batches": nil,
-		"run_publication_entries": nil,
-		"run_publication_paths": nil,
-		"workflow_runs":         {"publish_mode"},
+		"filesystem_blobs":            nil,
+		"run_publication_batches":     nil,
+		"run_publication_entries":     nil,
+		"run_publication_paths":       nil,
+		"workflow_runs":               {"publish_mode"},
 		"run_worktrees": {
 			"repo_common_dir",
 			"main_worktree_root",
@@ -1282,21 +1233,6 @@ func parseNodeWallClockTimeouts(source map[string]string) (map[string]time.Durat
 		parsed[normalizedNodeID] = durationValue
 	}
 	return parsed, nil
-}
-
-func parseStrictProbeAttemptTimeout(raw string) (time.Duration, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 0, fmt.Errorf("strict_probe_attempt_timeout is required")
-	}
-	timeout, err := time.ParseDuration(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("strict_probe_attempt_timeout parse failed: %w", err)
-	}
-	if timeout <= 0 {
-		return 0, fmt.Errorf("strict_probe_attempt_timeout must be > 0")
-	}
-	return timeout, nil
 }
 
 func parseStrictStartupTotalTimeout(raw string) (time.Duration, error) {

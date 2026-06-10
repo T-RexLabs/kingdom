@@ -124,7 +124,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - OpenCode sessions run on the host against that workspace for provider-backed decree execution nodes.
 - Session identity is stable per run/node lineage and reused where the runtime contract requires it.
 - Runtime issues one invocation-scoped completion capability per provider-backed decree execution attempt and validates receipt usage server-side.
-- Strict startup validates provider readiness and agent resolution when `provider.strict=true`.
+- Strict startup validates managed OpenCode assets, binary availability, and agent resolution when `provider.strict=true`.
 - Runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown` until terminal success or failure.
 - All provider-backed decree execution sessions must call `kingdom_complete_attempt` to request terminal success settlement.
 - Canonical provider settlement for a provider-backed decree execution attempt is runtime-owned and invocation-scoped; success requires one valid receipt accepted for the active invocation, and runtime must not merge multiple final assistant answers or competing receipts into one settled output.
