@@ -183,9 +183,17 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 				var failedNodeID string
 				var failedAttempt int
 				var failedReason string
+				latestStates := make([]string, 0, 5)
 				_ = db.QueryRow(`SELECT node_id, attempt FROM node_runs WHERE run_id = 'run_rework_flow' AND node_status = 'failed' ORDER BY attempt DESC, node_id ASC LIMIT 1`).Scan(&failedNodeID, &failedAttempt)
 				_ = db.QueryRow(`SELECT reason_code FROM events WHERE run_id = 'run_rework_flow' AND event_type = 'attempt.failed' ORDER BY created_at DESC, seq DESC LIMIT 1`).Scan(&failedReason)
-				return fmt.Errorf("run_rework_flow status=%s failed_node=%s attempt=%d reason=%s", status, failedNodeID, failedAttempt, failedReason)
+				for _, nodeID := range []string{"delegated_execution_berserker", "execution_review_shieldmaiden", "validation_gates_qa_scout", "validation_gates_nightraven", "royal_closure"} {
+					var attempt int
+					var nodeStatus string
+					if err := db.QueryRow(`SELECT attempt, node_status FROM node_runs WHERE run_id = 'run_rework_flow' AND node_id = ? ORDER BY attempt DESC LIMIT 1`, nodeID).Scan(&attempt, &nodeStatus); err == nil {
+						latestStates = append(latestStates, fmt.Sprintf("%s:%d:%s", nodeID, attempt, nodeStatus))
+					}
+				}
+				return fmt.Errorf("run_rework_flow status=%s failed_node=%s attempt=%d reason=%s latest=%s", status, failedNodeID, failedAttempt, failedReason, strings.Join(latestStates, ","))
 			}
 			return fmt.Errorf("run_rework_flow status=%s", status)
 		}
