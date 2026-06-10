@@ -225,7 +225,7 @@ Important runtime behavior:
 - `decree_intake`, `execution_kickoff`, `king_plan_decision`, and `royal_closure` are runtime-owned and deterministic; they do not open OpenCode sessions.
 - execution is session-based via `opencode run --format json`
 - runtime creates a provider invocation record and single-use completion capability before dispatching any provider-backed decree execution attempt
-- strict mode validates provider startup and agent resolution
+- strict mode validates managed OpenCode assets, binary availability, and agent resolution
 - runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`
 - every provider-backed decree execution session must call `kingdom_complete_attempt` to request terminal success settlement
 - runtime settles provider-backed decree execution success only after validating the active attempt, invocation, completion capability, and any required node-specific fields from that tool call

@@ -12,13 +12,13 @@ from scripts.e2e.rework_analysis_report import (
 
 
 class ReworkAnalysisReportTests(unittest.TestCase):
-    def test_build_bootstrap_failure_analysis_should_classify_provider_probe_failure_when_probe_text_present(self) -> None:
+    def test_build_bootstrap_failure_analysis_should_classify_bootstrap_process_kill_when_signal_text_present(self) -> None:
         analysis = build_bootstrap_failure_analysis(
             "fast-iteration",
-            "runtime error: bootstrap runtime: provider strict probe failed: opencode probe execute failed: opencode run failed: signal: killed",
+            "runtime error: bootstrap runtime: provider agent \"builder\" is not resolvable: signal: killed",
         )
         self.assertEqual(analysis["profile"], "fast-iteration")
-        self.assertEqual(analysis["failure_classification"], "bootstrap_provider_probe_failed")
+        self.assertEqual(analysis["failure_classification"], "bootstrap_process_killed")
         self.assertEqual(
             analysis["attempt_metrics"]["failure_reasons"][0]["reason_code"],
             "bootstrap_runtime",

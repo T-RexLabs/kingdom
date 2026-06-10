@@ -21,7 +21,7 @@ execution.
 - Edit `role_policy.yaml` when a role's allowed tool classes, command classes, path scopes, execution authority, or forbidden command classes change.
 - Edit `network_policy.yaml` when a role or node class needs outbound network access to a specific domain.
 - Edit `retry_policy.yaml` when a runtime error code should map to a different retry class, backoff, or escalation path.
-- Edit `opencode_provider_policy.yaml` when OpenCode startup probes, dispatch timeouts, stream inactivity windows, or canonical role-to-agent mappings change.
+- Edit `opencode_provider_policy.yaml` when strict startup validation, dispatch timeouts, stream inactivity windows, or canonical role-to-agent mappings change.
 - Edit `role_communication_policy.yaml` when the shipped role prompts or mailbox templates change.
 
 ## Typical changes

@@ -60,7 +60,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "strict_probe_attempt_timeout",
         "strict_startup_total_timeout",
         "completion_reconcile_total_timeout",
         "completion_reconcile_backoff_schedule",
@@ -72,12 +71,7 @@
         "node_wall_clock"
       ],
       "properties": {
-        "strict_probe_attempt_timeout": {"type": "string", "minLength": 2},
         "strict_startup_total_timeout": {"type": "string", "minLength": 2},
-        "strict_probe_backoff_schedule": {
-          "type": "array",
-          "items": {"type": "string", "minLength": 2}
-        },
         "completion_reconcile_total_timeout": {"type": "string", "minLength": 2},
         "completion_reconcile_backoff_schedule": {
           "type": "array",

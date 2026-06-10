@@ -128,8 +128,6 @@ def build_bootstrap_failure_analysis(profile_id: str, error_text: str) -> dict[s
         failure_classification = "provider_first_event_timeout"
     elif provider_timeout_type == "stream_inactivity_timeout":
         failure_classification = "provider_stream_inactivity_timeout"
-    elif "provider strict probe failed" in error_lower:
-        failure_classification = "bootstrap_provider_probe_failed"
     elif "signal: killed" in error_lower:
         failure_classification = "bootstrap_process_killed"
 

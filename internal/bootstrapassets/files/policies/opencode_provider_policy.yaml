@@ -23,12 +23,7 @@ agent_policy:
     reviewer-shieldmaiden: reviewer
 
 timeouts:
-  strict_probe_attempt_timeout: 30s
   strict_startup_total_timeout: 90s
-  strict_probe_backoff_schedule:
-    - 1s
-    - 5s
-    - 10s
   completion_reconcile_total_timeout: 20s
   completion_reconcile_backoff_schedule:
     - 250ms
