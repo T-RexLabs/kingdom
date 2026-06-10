@@ -50,6 +50,14 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 			return nil
 		}
 
+		refreshedLatest, err := o.loadLatestAttempts(ctx, run.RunID)
+		if err != nil {
+			return err
+		}
+		if latestAttemptsChanged(latest, refreshedLatest) {
+			return nil
+		}
+
 		eventSeq := o.nextEventSeq(ctx, attemptID)
 		if err := o.transition.TerminalizeRunAndCancelLiveNodes(ctx, state.RunTerminalizationRequest{
 			Transition: state.TransitionRequest{
@@ -199,6 +207,27 @@ func summarizeRunClosure(run runSnapshot, nodes []nodeDefinition, edges []edgeDe
 	}
 	sort.Strings(summary.ReplayNodeIDs)
 	return summary
+}
+
+func latestAttemptsChanged(previous, current map[string]nodeAttempt) bool {
+	if len(previous) != len(current) {
+		return true
+	}
+	for nodeID, before := range previous {
+		after, ok := current[nodeID]
+		if !ok {
+			return true
+		}
+		if before.NodeRunID != after.NodeRunID ||
+			before.Attempt != after.Attempt ||
+			before.Wave != after.Wave ||
+			before.NodeStatus != after.NodeStatus ||
+			before.TransitionReasonCode != after.TransitionReasonCode ||
+			before.DurableState != after.DurableState {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *orchestrationLoop) repairFailedRunAfterRecoveredExecution(ctx context.Context, runID, occurredAt string) error {
