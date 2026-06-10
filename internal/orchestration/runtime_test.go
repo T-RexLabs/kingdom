@@ -5595,6 +5595,13 @@ func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(
 	if len(requests) != 2 {
 		t.Fatalf("expected two retry requests, got %d", len(requests))
 	}
+	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
+	if requests[0].ConfigDir != workspaceOpenCode.ConfigDir || requests[1].ConfigDir != workspaceOpenCode.ConfigDir {
+		t.Fatalf("expected retry requests to use workspace config dir %q, got %#v", workspaceOpenCode.ConfigDir, requests)
+	}
+	if requests[0].DatabasePath != workspaceOpenCode.DatabasePath || requests[1].DatabasePath != workspaceOpenCode.DatabasePath {
+		t.Fatalf("expected retry requests to use workspace database path %q, got %#v", workspaceOpenCode.DatabasePath, requests)
+	}
 	if requests[0].Variant != "high" || requests[1].Variant != "high" {
 		t.Fatalf("expected retry requests to preserve variant, got %#v", requests)
 	}
@@ -5709,6 +5716,13 @@ func TestCompleteExecutionFailsDelegatedExecutionAfterTwoEmptyRetries(t *testing
 	requests := adapter.requestsSnapshot()
 	if len(requests) != 2 {
 		t.Fatalf("expected two retry requests, got %d", len(requests))
+	}
+	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
+	if requests[0].ConfigDir != workspaceOpenCode.ConfigDir || requests[1].ConfigDir != workspaceOpenCode.ConfigDir {
+		t.Fatalf("expected retry requests to use workspace config dir %q, got %#v", workspaceOpenCode.ConfigDir, requests)
+	}
+	if requests[0].DatabasePath != workspaceOpenCode.DatabasePath || requests[1].DatabasePath != workspaceOpenCode.DatabasePath {
+		t.Fatalf("expected retry requests to use workspace database path %q, got %#v", workspaceOpenCode.DatabasePath, requests)
 	}
 	if requests[0].ForceNewSession {
 		t.Fatalf("expected first retry to reuse session")
@@ -13911,6 +13925,13 @@ func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) 
 	requests := adapter.recoveryRequestsSnapshot()
 	if len(requests) != 1 || requests[0].ProviderSessionID != "ses_recovery_plan" {
 		t.Fatalf("expected recovery to reuse provider session, got %#v", requests)
+	}
+	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
+	if requests[0].ConfigDir != workspaceOpenCode.ConfigDir {
+		t.Fatalf("expected recovery config dir %q, got %q", workspaceOpenCode.ConfigDir, requests[0].ConfigDir)
+	}
+	if requests[0].DatabasePath != workspaceOpenCode.DatabasePath {
+		t.Fatalf("expected recovery database path %q, got %q", workspaceOpenCode.DatabasePath, requests[0].DatabasePath)
 	}
 }
 

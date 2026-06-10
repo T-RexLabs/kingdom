@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,9 @@ import (
 
 type fakeSessionExporter struct {
 	providerSessionIDs []string
+	workDirs           []string
+	configDirs         []string
+	databasePaths      []string
 	exportModes        []sessionExportMode
 	results            []sessionExportResult
 	sanitizedResults   []sessionExportResult
@@ -25,6 +30,9 @@ type fakeSessionExporter struct {
 
 func (f *fakeSessionExporter) Export(ctx context.Context, req sessionExportRequest) (sessionExportResult, error) {
 	f.providerSessionIDs = append(f.providerSessionIDs, req.ProviderSessionID)
+	f.workDirs = append(f.workDirs, req.WorkDir)
+	f.configDirs = append(f.configDirs, req.ConfigDir)
+	f.databasePaths = append(f.databasePaths, req.DatabasePath)
 	f.exportModes = append(f.exportModes, req.Mode)
 	if f.exportFn != nil {
 		return f.exportFn(ctx, req)
@@ -118,6 +126,12 @@ func TestSessionCompletionReconcilerUsesProviderSessionIDForExport(t *testing.T)
 	if len(exporter.providerSessionIDs) != 1 || exporter.providerSessionIDs[0] != "ses_real_123" {
 		t.Fatalf("expected export to use provider session id, got %#v", exporter.providerSessionIDs)
 	}
+	if len(exporter.configDirs) != 1 || exporter.configDirs[0] != "" {
+		t.Fatalf("expected empty config dir by default, got %#v", exporter.configDirs)
+	}
+	if len(exporter.databasePaths) != 1 || exporter.databasePaths[0] != "" {
+		t.Fatalf("expected empty database path by default, got %#v", exporter.databasePaths)
+	}
 	if outcome.Result.State != attemptCompletionStateSuccess {
 		t.Fatalf("expected success result, got %q", outcome.Result.State)
 	}
@@ -126,6 +140,67 @@ func TestSessionCompletionReconcilerUsesProviderSessionIDForExport(t *testing.T)
 	}
 	if !outcome.Result.SuppressEmptyOutputRetry {
 		t.Fatal("expected reconciled success to suppress empty output retry")
+	}
+}
+
+func TestSessionCompletionReconcilerPassesManagedPathsToExporter(t *testing.T) {
+	t.Parallel()
+
+	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(successExportFixture("Recovered from export"))}}
+	reconciler := newSessionCompletionReconciler(singlePassReconcilerConfig(exporter))
+	workDir := filepath.Join(t.TempDir(), "workspace")
+	configDir := filepath.Join(workDir, ".kingdom", "opencode")
+	databasePath := filepath.Join(configDir, "opencode.db")
+
+	_, err := reconciler.Reconcile(context.Background(), sessionCompletionReconcileRequest{
+		ProviderSessionID: "ses_real_123",
+		WorkDir:           workDir,
+		ConfigDir:         configDir,
+		DatabasePath:      databasePath,
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(exporter.workDirs) != 1 || exporter.workDirs[0] != workDir {
+		t.Fatalf("expected export workdir %q, got %#v", workDir, exporter.workDirs)
+	}
+	if len(exporter.configDirs) != 1 || exporter.configDirs[0] != configDir {
+		t.Fatalf("expected export config dir %q, got %#v", configDir, exporter.configDirs)
+	}
+	if len(exporter.databasePaths) != 1 || exporter.databasePaths[0] != databasePath {
+		t.Fatalf("expected export database path %q, got %#v", databasePath, exporter.databasePaths)
+	}
+}
+
+func TestCLISessionExporterSetsManagedOpenCodeEnvironment(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", successExportFixture("Recovered from export"))
+
+	exporter := cliSessionExporter{binaryPath: binaryPath}
+	workDir := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), ".kingdom", "opencode")
+	databasePath := filepath.Join(configDir, "opencode.db")
+	_, err := exporter.Export(context.Background(), sessionExportRequest{
+		ProviderSessionID: "ses_export_env",
+		WorkDir:           workDir,
+		ConfigDir:         configDir,
+		DatabasePath:      databasePath,
+	})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	raw, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	envLog := parseFakeOpenCodeEnvLog(string(raw))
+	if envLog["OPENCODE_CONFIG_DIR"] != configDir {
+		t.Fatalf("expected OPENCODE_CONFIG_DIR %q, got %q", configDir, envLog["OPENCODE_CONFIG_DIR"])
+	}
+	if envLog["OPENCODE_DB"] != databasePath {
+		t.Fatalf("expected OPENCODE_DB %q, got %q", databasePath, envLog["OPENCODE_DB"])
 	}
 }
 

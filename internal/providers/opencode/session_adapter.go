@@ -1056,6 +1056,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			preContinuationOutcome, preContinuationErr := a.reconciler.Reconcile(attemptCtx, sessionCompletionReconcileRequest{
 				ProviderSessionID:   actualSessionID,
 				WorkDir:             firstNonEmpty(strings.TrimSpace(req.WorkspacePath), a.workDir),
+				ConfigDir:           firstNonEmpty(strings.TrimSpace(req.ConfigDir), a.configDir),
+				DatabasePath:        firstNonEmpty(strings.TrimSpace(req.DatabasePath), a.databasePath),
 				StreamOutputText:    partialCombinedText,
 				Tokens:              accumulatedTokens,
 				AttemptID:           strings.TrimSpace(req.AttemptID),
@@ -1305,6 +1307,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			reconcileOutcome, reconcileErr := a.reconciler.Reconcile(attemptCtx, sessionCompletionReconcileRequest{
 				ProviderSessionID:   actualSessionID,
 				WorkDir:             firstNonEmpty(strings.TrimSpace(req.WorkspacePath), a.workDir),
+				ConfigDir:           firstNonEmpty(strings.TrimSpace(req.ConfigDir), a.configDir),
+				DatabasePath:        firstNonEmpty(strings.TrimSpace(req.DatabasePath), a.databasePath),
 				StreamOutputText:    canonicalCombinedText,
 				Tokens:              accumulatedTokens,
 				AttemptID:           strings.TrimSpace(req.AttemptID),

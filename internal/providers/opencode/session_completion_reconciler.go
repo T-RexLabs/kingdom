@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ const (
 type sessionExportRequest struct {
 	ProviderSessionID string
 	WorkDir           string
+	ConfigDir         string
+	DatabasePath      string
 	Mode              sessionExportMode
 }
 
@@ -52,6 +55,8 @@ type sessionCompletionReconciler struct {
 type sessionCompletionReconcileRequest struct {
 	ProviderSessionID   string
 	WorkDir             string
+	ConfigDir           string
+	DatabasePath        string
 	StreamOutputText    string
 	Tokens              TokenUsage
 	AttemptID           string
@@ -151,6 +156,8 @@ func (e cliSessionExporter) Export(ctx context.Context, req sessionExportRequest
 	if strings.TrimSpace(req.WorkDir) != "" {
 		cmd.Dir = strings.TrimSpace(req.WorkDir)
 	}
+	cmd.Env = append(os.Environ(), ConfigDirEnvironment(req.ConfigDir)...)
+	cmd.Env = append(cmd.Env, DatabasePathEnvironment(req.DatabasePath)...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -263,7 +270,13 @@ func (r *sessionCompletionReconciler) reconcileExportModeOnce(ctx context.Contex
 	checkStartedAt := time.Now().UTC()
 	exportCtx, cancel := boundedReconcileExportContext(ctx, deadline)
 	defer cancel()
-	exportResult, err := r.exporter.Export(exportCtx, sessionExportRequest{ProviderSessionID: strings.TrimSpace(req.ProviderSessionID), WorkDir: workDir, Mode: mode})
+	exportResult, err := r.exporter.Export(exportCtx, sessionExportRequest{
+		ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
+		WorkDir:           workDir,
+		ConfigDir:         strings.TrimSpace(req.ConfigDir),
+		DatabasePath:      strings.TrimSpace(req.DatabasePath),
+		Mode:              mode,
+	})
 	if err != nil {
 		if ctxErr := exportCtx.Err(); ctxErr != nil {
 			check := buildExportCheck(req, mode, checkStartedAt, time.Now().UTC(), ExportCheckStatusDeadlineExceeded, sessionCompletionReconcileStatusExporterError, ctxErr.Error(), sessionExportResult{}, exportAssistantScanResult{}, false)

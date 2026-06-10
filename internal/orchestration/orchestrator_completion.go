@@ -533,6 +533,7 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 	}
 
 	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
+	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
 	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, opencode.ExecuteRequest{
 		SessionID:                 result.sessionID,
 		ProviderSessionID:         result.providerSessionID,
@@ -543,7 +544,8 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 		Variant:                   result.variant,
 		Agent:                     result.agent,
 		WorkspacePath:             result.workspacePath,
-		ConfigDir:                 bootstrapassets.ManagedOpenCodeRoot(result.workspacePath),
+		ConfigDir:                 workspaceOpenCode.ConfigDir,
+		DatabasePath:              workspaceOpenCode.DatabasePath,
 		Prompt:                    firstNonEmptyString(strings.TrimSpace(result.prompt), "completion receipt recovery"),
 		OccurredAt:                result.occurredAt,
 		InvocationID:              result.providerInvocationID,
@@ -1453,7 +1455,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 			result.completionStructuredPayloadJSON = ""
 		}
 
-		workspaceConfigDir := bootstrapassets.ManagedOpenCodeRoot(result.workspacePath)
+		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
 		retryResponse, retryErr := o.adapter.Execute(ctx, opencode.ExecuteRequest{
 			SessionID:                 result.sessionID,
 			ProviderSessionID:         result.providerSessionID,
@@ -1464,7 +1466,8 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 			Variant:                   result.variant,
 			Agent:                     result.agent,
 			WorkspacePath:             result.workspacePath,
-			ConfigDir:                 workspaceConfigDir,
+			ConfigDir:                 workspaceOpenCode.ConfigDir,
+			DatabasePath:              workspaceOpenCode.DatabasePath,
 			Prompt:                    result.prompt,
 			ForceNewSession:           forceNewSession,
 			OccurredAt:                now,
