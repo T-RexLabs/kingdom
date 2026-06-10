@@ -14,6 +14,7 @@ function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningS
     planning_session_id: "ps_1",
     title: "Planner kickoff",
     title_state: "custom",
+    auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "processing",
     current_question_message_id: "msg_question",
@@ -85,6 +86,7 @@ describe("patchPlannerTerminalCaches — field-scoped reconciliation", () => {
       buildEvent("done", {
         planning_message_id: "msg_new_question",
         session_patch: {
+          auto_title_eligible: false,
           current_title_operation_id: "op_title_auto",
           updated_at: "2026-04-21T10:06:00Z",
         },
@@ -92,6 +94,7 @@ describe("patchPlannerTerminalCaches — field-scoped reconciliation", () => {
     );
 
     const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.auto_title_eligible).toBe(false);
     expect(detail?.current_title_operation_id).toBe("op_title_auto");
     expect(detail?.updated_at).toBe("2026-04-21T10:06:00Z");
     expect(detail?.current_question_message_id).toBe("msg_new_question");

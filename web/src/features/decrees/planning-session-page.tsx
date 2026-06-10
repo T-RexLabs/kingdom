@@ -21,6 +21,7 @@ import { usePlanningSessionTitleController } from "./use-planning-session-title-
 import { usePlannerSessionController } from "./use-planner-session-controller";
 import { useGlobalFormalize } from "./use-global-formalize";
 import { usePlannerOperation } from "./use-planner-operation";
+import { usePlanningSessionAutoTitleCatchup } from "./use-planning-session-auto-title-catchup";
 import {
   applyPlanningSessionFields,
   compareAndSwapPlanningSessionTitle,
@@ -60,6 +61,7 @@ export function PlanningSessionPage() {
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
   const titleOperationQuery = usePlanningOperation(session?.current_title_operation_id);
   usePlannerOperation(titleOperationQuery.data ?? null);
+  usePlanningSessionAutoTitleCatchup(sessionId, session);
 
   // Title persistence is rooted in the explicit commit event (Enter,
   // blur with no error, or Retry). The save is the consequence of the

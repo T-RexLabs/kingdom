@@ -51,6 +51,7 @@ function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSe
     planning_session_id: "ps_1",
     title: "fresh",
     title_state: "custom",
+    auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "ready",
     current_question_message_id: "msg_1",

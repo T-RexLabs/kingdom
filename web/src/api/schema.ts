@@ -1183,6 +1183,7 @@ export interface components {
          *       "created_at": "2026-04-30T12:00:00Z",
          *       "updated_at": "2026-04-30T12:05:00Z",
          *       "project_root": "/workspace/kingdom",
+         *       "auto_title_eligible": false,
          *       "model_selection": {
          *         "model": "provider/model-id",
          *         "thinking_effort": "low"
@@ -1191,6 +1192,7 @@ export interface components {
          */
         PlanningSessionDetail: components["schemas"]["PlanningSessionSummary"] & {
             project_root: string;
+            auto_title_eligible: boolean;
             model_selection: components["schemas"]["PlanningAgentModelSelection"];
         };
         PlanningReplyOperationRequest: {

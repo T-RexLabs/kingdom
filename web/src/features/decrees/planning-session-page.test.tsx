@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { PlanningSessionPage } from "./planning-session-page";
 
 const titleMutateAsync = vi.fn(async () => ({}));
+const generateTitleMutateAsync = vi.fn(async () => ({}));
 const modelMutateAsync = vi.fn(async () => ({}));
 // .mutate is the fire-and-forget shape the model autosave + chip
 // retry now uses (errors land on hook.error instead of leaking
@@ -29,6 +30,7 @@ const mockUsePlanningSession = vi.fn();
 const mockUsePlanningSessionDraft = vi.fn();
 const mockUseUpdatePlanningSessionTitle = vi.fn();
 const mockUseUpdatePlanningSessionModelSelection = vi.fn();
+const mockUseGeneratePlanningSessionTitle = vi.fn();
 const mockUseCreatePlanningOperation = vi.fn();
 const mockUsePlanningOperation = vi.fn();
 const mockUseParams = vi.fn(() => ({ sessionId: "planning-session-1" }));
@@ -64,6 +66,7 @@ vi.mock("@/api/hooks", () => ({
   usePlanningSessionDraft: (...args: unknown[]) => mockUsePlanningSessionDraft(...args),
   useUpdatePlanningSessionTitle: (...args: unknown[]) => mockUseUpdatePlanningSessionTitle(...args),
   useUpdatePlanningSessionModelSelection: (...args: unknown[]) => mockUseUpdatePlanningSessionModelSelection(...args),
+  useGeneratePlanningSessionTitle: (...args: unknown[]) => mockUseGeneratePlanningSessionTitle(...args),
   useCreatePlanningOperation: (...args: unknown[]) => mockUseCreatePlanningOperation(...args),
   usePlanningOperation: (...args: unknown[]) => mockUsePlanningOperation(...args),
   useActivateVariant: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined) }),
@@ -97,6 +100,8 @@ describe("PlanningSessionPage", () => {
   beforeEach(() => {
     titleMutateAsync.mockReset();
     titleMutateAsync.mockResolvedValue({});
+    generateTitleMutateAsync.mockReset();
+    generateTitleMutateAsync.mockResolvedValue({});
     modelMutateAsync.mockReset();
     modelMutateAsync.mockResolvedValue({});
     modelMutate.mockReset();
@@ -133,6 +138,7 @@ describe("PlanningSessionPage", () => {
         planning_session_id: "planning-session-1",
         title: "Planner kickoff",
         title_state: "custom",
+        auto_title_eligible: false,
         lifecycle_state: "active",
         conversation_state: "ready",
         current_question_message_id: "assistant-1",
@@ -159,6 +165,10 @@ describe("PlanningSessionPage", () => {
       mutateAsync: modelMutateAsync,
       reset: modelReset,
       error: null,
+    });
+    mockUseGeneratePlanningSessionTitle.mockReturnValue({
+      mutateAsync: generateTitleMutateAsync,
+      isPending: false,
     });
     mockUseCreatePlanningOperation.mockReturnValue({
       mutateAsync: vi.fn(async () => ({ operation: { operation_id: "operation-1" } })),
@@ -214,12 +224,48 @@ describe("PlanningSessionPage", () => {
 		expect(screen.getByRole("button", { name: "Thinking Effort" })).toBeInTheDocument();
 	});
 
+  it("starts title catch-up once for an eligible placeholder session", async () => {
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        planning_session_id: "planning-session-1",
+        title: "plan_1",
+        title_state: "placeholder",
+        auto_title_eligible: true,
+        lifecycle_state: "active",
+        conversation_state: "ready",
+        current_question_message_id: "assistant-1",
+        current_operation_id: undefined,
+        current_title_operation_id: undefined,
+        current_draft_id: undefined,
+        context_snapshot_id: "planning-context-1",
+        created_at: "2026-04-21T10:00:00Z",
+        updated_at: "2026-04-21T10:05:00Z",
+        project_root: "/tmp/project",
+        model_selection: { model: "github-copilot/gpt-5.4" },
+      },
+      error: null,
+    });
+
+    const { rerender } = render(<PlanningSessionPage />);
+
+    await waitFor(() => {
+      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<PlanningSessionPage />);
+
+    await waitFor(() => {
+      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("keeps a headless subscription to the background title operation", () => {
     mockUsePlanningSession.mockReturnValue({
       data: {
         planning_session_id: "planning-session-1",
         title: "plan_1",
         title_state: "placeholder",
+        auto_title_eligible: false,
         lifecycle_state: "active",
         conversation_state: "ready",
         current_question_message_id: "assistant-1",

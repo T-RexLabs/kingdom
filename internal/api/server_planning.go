@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -48,7 +49,12 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result := gen.CreatePlanningSessionResult{Session: planningSessionDetailFromState(session)}
+	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
+	result := gen.CreatePlanningSessionResult{Session: presentedSession}
 	if optionalTrimmedString(session.CurrentQuestionMessageID) != nil {
 		messages, listErr := s.planningStore.ListMessagesPage(r.Context(), session.PlanningSessionID, 1, nil)
 		if listErr != nil {
@@ -107,7 +113,12 @@ func (s *Server) handleGetPlanningSession(w http.ResponseWriter, r *http.Request
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "planning session not found", "api.get_planning_session", map[string]any{"planning_session_id": planningSessionID})
 		return
 	}
-	writeJSON(w, http.StatusOK, planningSessionDetailFromState(session))
+	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, presentedSession)
 }
 
 func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Request) {
@@ -147,7 +158,12 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	writeJSON(w, http.StatusOK, planningSessionDetailFromState(updated))
+	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), updated)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, presentedSession)
 }
 
 func (s *Server) handleDeletePlanningSession(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +393,12 @@ func (s *Server) handleCreatePlanningSessionOperation(w http.ResponseWriter, r *
 		s.writeInternalError(w, "fetch planning operation failed")
 		return
 	}
-	writeJSON(w, http.StatusCreated, createPlanningOperationResultFromState(result, request))
+	autoTitleEligible, err := s.presentPlanningSessionAutoTitleEligible(r.Context(), result.Session)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, createPlanningOperationResultFromState(result, request, autoTitleEligible))
 }
 
 func (s *Server) handleGetPlanningOperation(w http.ResponseWriter, r *http.Request) {
@@ -427,8 +448,13 @@ func (s *Server) handleRefreshPlanningSessionContext(w http.ResponseWriter, r *h
 		handlePlanningError(w, err, "api.refresh_planning_session_context")
 		return
 	}
+	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
 	writeJSON(w, http.StatusOK, gen.RefreshPlanningSessionContextResult{
-		Session:         planningSessionDetailFromState(session),
+		Session:         presentedSession,
 		ContextSnapshot: planningContextSnapshotFromState(snapshot),
 	})
 }
@@ -451,7 +477,27 @@ func (s *Server) handleGeneratePlanningSessionTitle(w http.ResponseWriter, r *ht
 		handlePlanningError(w, err, "api.generate_planning_session_title")
 		return
 	}
-	writeJSON(w, http.StatusOK, planningSessionDetailFromState(session))
+	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
+	if err != nil {
+		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, presentedSession)
+}
+
+func (s *Server) presentPlanningSessionAutoTitleEligible(ctx context.Context, session state.PlanningSession) (bool, error) {
+	if s == nil || s.planningService == nil {
+		return false, nil
+	}
+	return s.planningService.AutoTitleEligible(ctx, session)
+}
+
+func (s *Server) presentPlanningSessionDetail(ctx context.Context, session state.PlanningSession) (gen.PlanningSessionDetail, error) {
+	autoTitleEligible, err := s.presentPlanningSessionAutoTitleEligible(ctx, session)
+	if err != nil {
+		return gen.PlanningSessionDetail{}, err
+	}
+	return planningSessionDetailFromState(session, autoTitleEligible), nil
 }
 
 func (s *Server) encodePlanningMessagesCursor(sessionID string, before int) string {

@@ -399,6 +399,9 @@ function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | nu
   }
   const candidate = value as Record<string, unknown>;
   const fields: Partial<PlanningSessionDetail> = {};
+  if (typeof candidate.auto_title_eligible === "boolean") {
+    fields.auto_title_eligible = candidate.auto_title_eligible;
+  }
   if (typeof candidate.current_title_operation_id === "string" && candidate.current_title_operation_id.trim() !== "") {
     fields.current_title_operation_id = candidate.current_title_operation_id.trim();
   }

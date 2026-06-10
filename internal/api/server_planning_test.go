@@ -338,6 +338,39 @@ func TestCreateReplyOperationResponseCarriesRuntimeAutoTitleSessionDelta(t *test
 	}
 }
 
+func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('planning_session_auto_title_eligible', 'plan_1', 'placeholder', 'active', 'ready', 'planning_message_auto_title_assistant_2', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:10:00Z', '2026-04-21T17:10:00Z')`, projectRoot)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_opening', 'planning_session_auto_title_eligible', 1, 'assistant', '', '{}', '{}', 0, 1, '2026-04-21T17:10:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_user_2', 'planning_session_auto_title_eligible', 2, 'user', 'First answer', '{}', '{"text":"First answer"}', 0, 1, '2026-04-21T17:10:01Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_assistant_2', 'planning_session_auto_title_eligible', 2, 'assistant', 'Second question', '{}', '{}', 0, 1, '2026-04-21T17:10:02Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_user_3', 'planning_session_auto_title_eligible', 3, 'user', 'Second answer', '{}', '{"text":"Second answer"}', 0, 1, '2026-04-21T17:10:03Z')`)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/planning-sessions/planning_session_auto_title_eligible",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected session 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var detail gen.PlanningSessionDetail
+	if err := json.Unmarshal(res.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode session detail: %v", err)
+	}
+	if !detail.AutoTitleEligible {
+		t.Fatalf("expected auto_title_eligible=true, got %+v", detail)
+	}
+}
+
 func TestNewHandlerFailsFastWhenNormalizedOpencodePlannerBootstrapFails(t *testing.T) {
 	t.Parallel()
 

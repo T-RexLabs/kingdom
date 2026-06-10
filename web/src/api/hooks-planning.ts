@@ -158,6 +158,7 @@ export function useGeneratePlanningSessionTitle(sessionId: string) {
       applyPlanningSessionFields(qc, sessionId, {
         title: updated.title,
         title_state: updated.title_state,
+        auto_title_eligible: updated.auto_title_eligible,
         current_title_operation_id: updated.current_title_operation_id,
         updated_at: updated.updated_at,
       });
