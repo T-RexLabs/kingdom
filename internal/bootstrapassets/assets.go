@@ -140,6 +140,26 @@ func ManagedOpenCodeRoot(projectRoot string) string {
 	return filepath.Join(filepath.Clean(trimmed), kingdomDirName, opencodeDirName)
 }
 
+func ManagedOpenCodeDatabasePath(projectRoot string) string {
+	overlayRoot := ManagedOpenCodeRoot(projectRoot)
+	if overlayRoot == "" {
+		return ""
+	}
+	return filepath.Join(overlayRoot, "opencode.db")
+}
+
+type ManagedOpenCodePaths struct {
+	ConfigDir    string
+	DatabasePath string
+}
+
+func ManagedOpenCodePathsForProjectRoot(projectRoot string) ManagedOpenCodePaths {
+	return ManagedOpenCodePaths{
+		ConfigDir:    ManagedOpenCodeRoot(projectRoot),
+		DatabasePath: ManagedOpenCodeDatabasePath(projectRoot),
+	}
+}
+
 func WriteManagedOpenCodeAssets(overlayRoot string, force bool) error {
 	if err := WriteManagedOpenCodeAgentProfiles(overlayRoot, force); err != nil {
 		return err

@@ -638,7 +638,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 	go func() {
 		defer o.clearExecutionInflight(job.attemptID)
 
-		workspaceConfigDir := bootstrapassets.ManagedOpenCodeRoot(job.workspacePath)
+		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(job.workspacePath)
 		launchObserved := false
 		launchObservedAt := ""
 		startPayloadRaw, startPayloadErr := marshalAsyncExecutionAttemptEventPayload(job, "orchestration_progress", map[string]any{
@@ -659,7 +659,8 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			Variant:                   job.variant,
 			Agent:                     job.agent,
 			WorkspacePath:             job.workspacePath,
-			ConfigDir:                 workspaceConfigDir,
+			ConfigDir:                 workspaceOpenCode.ConfigDir,
+			DatabasePath:              workspaceOpenCode.DatabasePath,
 			Prompt:                    job.prompt,
 			OccurredAt:                job.occurredAt,
 			InvocationID:              job.providerInvocationID,

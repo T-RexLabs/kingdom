@@ -88,6 +88,7 @@ type ExecuteRequest struct {
 	ForceNewSession           bool   `json:"force_new_session,omitempty"`
 	WorkspacePath             string `json:"workspace_path"`
 	ConfigDir                 string `json:"config_dir,omitempty"`
+	DatabasePath              string `json:"database_path,omitempty"`
 	Prompt                    string `json:"prompt"`
 	OccurredAt                string `json:"occurred_at"`
 	InvocationID              string `json:"invocation_id,omitempty"`

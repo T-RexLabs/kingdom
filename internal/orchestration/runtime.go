@@ -284,6 +284,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		}
 		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusCompleted})
 		cfg.ProviderSession.ConfigDir = providerConfigDir
+		cfg.ProviderSession.DatabasePath = bootstrapassets.ManagedOpenCodeDatabasePath(providerWorkDir)
 	}
 	if providerEngineName == "opencode" {
 		executionInlineConfig, err := opencode.ExecutionSessionInlineConfig()
@@ -350,7 +351,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 		if cfg.ProviderStrict {
 			validationCtx, cancelValidation := context.WithTimeout(startupCtx, strictStartupTotalTimeout)
 			defer cancelValidation()
-			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
+			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
 				return nil, "", err
 			}
 		}
@@ -360,7 +361,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 	}
 }
 
-func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
+func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
 	resolvedBinary := strings.TrimSpace(binaryPath)
 	if resolvedBinary == "" {
 		resolvedBinary = "opencode"
@@ -385,10 +386,10 @@ func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, wor
 		agents = append(agents, agent)
 	}
 	sort.Strings(agents)
-	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), agents, 4, reporter)
+	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
 }
 
-func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, agents []string, workerCount int, reporter StartupReporter) error {
+func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
 	if len(agents) == 0 {
 		return nil
 	}
@@ -422,7 +423,7 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 				if !ok {
 					return
 				}
-				if err := validateOpenCodeAgent(ctx, binaryPath, workDir, configDir, agent); err != nil {
+				if err := validateOpenCodeAgent(ctx, binaryPath, workDir, configDir, databasePath, agent); err != nil {
 					reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusFailed, CurrentItem: agent, Total: len(agents), Message: err.Error()})
 					select {
 					case errCh <- err:
@@ -471,12 +472,13 @@ func reportStartup(reporter StartupReporter, event StartupEvent) {
 	reporter.Report(event)
 }
 
-func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir string, configDir string, agent string) error {
+func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
 	cmd := exec.CommandContext(ctx, binaryPath, "debug", "agent", agent)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
 	cmd.Env = append(os.Environ(), opencode.ConfigDirEnvironment(configDir)...)
+	cmd.Env = append(cmd.Env, opencode.DatabasePathEnvironment(databasePath)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

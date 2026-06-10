@@ -92,6 +92,38 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 	}
 }
 
+func TestManagedOpenCodeDatabasePath(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := filepath.Join(t.TempDir(), "workspace")
+	want := filepath.Join(projectRoot, kingdomDirName, opencodeDirName, "opencode.db")
+	if got := ManagedOpenCodeDatabasePath(projectRoot); got != want {
+		t.Fatalf("expected managed opencode db path %q, got %q", want, got)
+	}
+
+	if got := ManagedOpenCodeDatabasePath("   "); got != "" {
+		t.Fatalf("expected blank project root to return empty path, got %q", got)
+	}
+}
+
+func TestManagedOpenCodePathsForProjectRoot(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := filepath.Join(t.TempDir(), "workspace")
+	paths := ManagedOpenCodePathsForProjectRoot(projectRoot)
+	if paths.ConfigDir != ManagedOpenCodeRoot(projectRoot) {
+		t.Fatalf("expected managed config dir %q, got %q", ManagedOpenCodeRoot(projectRoot), paths.ConfigDir)
+	}
+	if paths.DatabasePath != ManagedOpenCodeDatabasePath(projectRoot) {
+		t.Fatalf("expected managed database path %q, got %q", ManagedOpenCodeDatabasePath(projectRoot), paths.DatabasePath)
+	}
+
+	blank := ManagedOpenCodePathsForProjectRoot("   ")
+	if blank.ConfigDir != "" || blank.DatabasePath != "" {
+		t.Fatalf("expected blank managed opencode paths, got %#v", blank)
+	}
+}
+
 func TestScaffoldedProviderPolicyLoadsAgainstScaffoldedSchema(t *testing.T) {
 	t.Parallel()
 
