@@ -1065,6 +1065,19 @@ func TestServiceSecondReplyAutoGeneratesTitleInParallel(t *testing.T) {
 	if request.TriggerSource != string(titleTriggerSourceAutoSecondUserMessageCreate) {
 		t.Fatalf("expected auto title trigger source %q, got %q", titleTriggerSourceAutoSecondUserMessageCreate, request.TriggerSource)
 	}
+	operations, err := store.ListSessionOperations(context.Background(), session.PlanningSessionID, 20)
+	if err != nil {
+		t.Fatalf("list session operations: %v", err)
+	}
+	titleOps := 0
+	for _, item := range operations {
+		if item.Type == state.PlanningOperationTypeGenerateTitle {
+			titleOps++
+		}
+	}
+	if titleOps != 1 {
+		t.Fatalf("expected exactly one auto-generated title operation, got %d (%+v)", titleOps, operations)
+	}
 	metrics, err := service.RuntimeMetrics(context.Background())
 	if err != nil {
 		t.Fatalf("runtime metrics: %v", err)
@@ -1805,8 +1818,8 @@ func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T
 	if err != nil {
 		t.Fatalf("decode recovered title request payload: %v", err)
 	}
-	if request.TriggerSource != string(titleTriggerSourceAutoSecondUserMessageFinalize) {
-		t.Fatalf("expected recovered title trigger source %q, got %q", titleTriggerSourceAutoSecondUserMessageFinalize, request.TriggerSource)
+	if request.TriggerSource != string(titleTriggerSourceRecoveryCatchup) {
+		t.Fatalf("expected recovered title trigger source %q, got %q", titleTriggerSourceRecoveryCatchup, request.TriggerSource)
 	}
 }
 

@@ -157,6 +157,9 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	request operationRequest,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
+	if !request.ForceNewSession {
+		return nil, nil
+	}
 	if !generatedTitleEligibleSession(session) {
 		return nil, nil
 	}
