@@ -2,7 +2,6 @@ package planning
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -136,39 +135,8 @@ func (s *sessionService) GenerateTitle(ctx context.Context, planningSessionID st
 	if s.runner == nil {
 		return state.PlanningSession{}, fmt.Errorf("planning runner is not configured")
 	}
-	now := s.deps.nowString()
-	operationID := s.deps.nextID("planning_operation")
-	operation, err := s.deps.store.CreateGenerateTitleBundle(ctx, state.CreatePlanningGenerateTitleBundleRequest{
-		SessionID: session.PlanningSessionID,
-		Operation: state.CreatePlanningOperationRequest{
-			OperationID:        operationID,
-			PlanningSessionID:  session.PlanningSessionID,
-			Type:               state.PlanningOperationTypeGenerateTitle,
-			Status:             state.PlanningOperationStatusQueued,
-			RequestPayloadJSON: `{}`,
-			CreatedAt:          now,
-		},
-		CurrentTitleOperationID: operationID,
-		UpdatedAt:               now,
-	})
-	if err != nil {
-		if errors.Is(err, state.ErrPlanningUniqueViolation) {
-			updated, ok, loadErr := s.deps.store.GetSession(ctx, planningSessionID)
-			if loadErr != nil {
-				return state.PlanningSession{}, loadErr
-			}
-			if ok {
-				return updated, nil
-			}
-		}
-		return state.PlanningSession{}, err
-	}
-	s.runner.Start(operation.OperationID)
-	updated, _, err := s.deps.store.GetSession(ctx, planningSessionID)
-	if err != nil {
-		return state.PlanningSession{}, err
-	}
-	return updated, nil
+	updated, _, err := enqueueGeneratedTitleForSession(ctx, s.deps, s.runner, session, titleTriggerSourceManual, false)
+	return updated, err
 }
 
 func (s *sessionService) RefreshContext(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, state.PlanningSession, error) {

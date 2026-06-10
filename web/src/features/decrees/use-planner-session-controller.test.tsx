@@ -46,6 +46,7 @@ function buildSession(
     planning_session_id: "ps_1",
     title: "Planner kickoff",
     title_state: "custom",
+    auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "ready",
     current_question_message_id: "msg_1",
@@ -263,7 +264,7 @@ describe("usePlannerSessionController — retention across transient SSE failure
     const session = buildSession({ conversation_state: "ready" });
     qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), session);
 
-    createMutateAsync.mockResolvedValueOnce({ operation_id: "op_real" });
+    createMutateAsync.mockResolvedValueOnce({ operation: { operation_id: "op_real" } });
 
     // Start with an actively streaming operation.
     usePlannerOperationMock.mockReturnValue({
@@ -323,7 +324,7 @@ describe("usePlannerSessionController — retention across transient SSE failure
 		const session = buildSession({ conversation_state: "ready" });
 		qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), session);
 
-		createMutateAsync.mockResolvedValueOnce({ operation_id: "op_real" });
+		createMutateAsync.mockResolvedValueOnce({ operation: { operation_id: "op_real" } });
 		usePlannerOperationMock.mockReturnValue({
 			operation: {
 				kind: "reply",
@@ -371,7 +372,7 @@ describe("usePlannerSessionController — retention across transient SSE failure
 		const session = buildSession({ conversation_state: "ready" });
 		qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), session);
 
-		createMutateAsync.mockResolvedValueOnce({ operation_id: "op_real" });
+		createMutateAsync.mockResolvedValueOnce({ operation: { operation_id: "op_real" } });
 		usePlannerOperationMock.mockReturnValue({
 			operation: {
 				kind: "formalize",

@@ -888,6 +888,43 @@ export interface components {
             oldest_queued_created_at?: string;
             /** Format: date-time */
             oldest_running_started_at?: string;
+            dispatch: components["schemas"]["PlannerDispatchMetrics"];
+            generated_title?: components["schemas"]["GeneratedTitleRuntimeMetrics"];
+        };
+        PlannerLatencyMetric: {
+            samples: number;
+            avg_ms: number;
+        };
+        PlannerDispatchMetrics: {
+            foreground_start_requests: number;
+            recovery_start_requests: number;
+            foreground_claim_successes: number;
+            recovery_claim_successes: number;
+            claim_failure_count: number;
+            claim_retry_count: number;
+            start_failure_count: number;
+            last_start_failure?: string;
+            /** Format: date-time */
+            last_start_failure_at?: string;
+        };
+        GeneratedTitleLatencyMetrics: {
+            recent_sample_size: number;
+            queue: components["schemas"]["PlannerLatencyMetric"];
+            launch: components["schemas"]["PlannerLatencyMetric"];
+            first_output: components["schemas"]["PlannerLatencyMetric"];
+            output_to_receipt: components["schemas"]["PlannerLatencyMetric"];
+            finalize: components["schemas"]["PlannerLatencyMetric"];
+            total: components["schemas"]["PlannerLatencyMetric"];
+        };
+        GeneratedTitleRuntimeMetrics: {
+            queued_operations: number;
+            running_operations: number;
+            failed_operations: number;
+            /** Format: date-time */
+            oldest_queued_created_at?: string;
+            /** Format: date-time */
+            oldest_running_started_at?: string;
+            latency: components["schemas"]["GeneratedTitleLatencyMetrics"];
         };
         RuntimeMetrics: {
             /** @enum {string} */
@@ -1108,6 +1145,10 @@ export interface components {
             reply?: components["schemas"]["PlanningReplyOperationRequest"];
             regenerate?: components["schemas"]["PlanningRegenerateOperationRequest"];
         };
+        CreatePlanningOperationResult: {
+            operation: components["schemas"]["PlanningOperationDetail"];
+            session: components["schemas"]["PlanningSessionDetail"];
+        };
         PlanningSessionSummary: {
             planning_session_id: string;
             title: string;
@@ -1142,6 +1183,7 @@ export interface components {
          *       "created_at": "2026-04-30T12:00:00Z",
          *       "updated_at": "2026-04-30T12:05:00Z",
          *       "project_root": "/workspace/kingdom",
+         *       "auto_title_eligible": false,
          *       "model_selection": {
          *         "model": "provider/model-id",
          *         "thinking_effort": "low"
@@ -1150,6 +1192,7 @@ export interface components {
          */
         PlanningSessionDetail: components["schemas"]["PlanningSessionSummary"] & {
             project_root: string;
+            auto_title_eligible: boolean;
             model_selection: components["schemas"]["PlanningAgentModelSelection"];
         };
         PlanningReplyOperationRequest: {
@@ -2448,7 +2491,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PlanningOperationDetail"];
+                    "application/json": components["schemas"]["CreatePlanningOperationResult"];
                 };
             };
             400: components["responses"]["BadRequestError"];

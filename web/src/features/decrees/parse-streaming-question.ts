@@ -4,6 +4,17 @@ import { stripTrailingQuestion } from "./strip-trailing-question";
 const BLOCK_OPEN = "```structured_question";
 const BLOCK_CLOSE = "```";
 
+function trailingPartialBlockStart(raw: string): number {
+  const maxPartialLength = Math.min(raw.length, BLOCK_OPEN.length - 1);
+  for (let length = maxPartialLength; length > 0; length -= 1) {
+    const suffix = raw.slice(-length);
+    if (BLOCK_OPEN.startsWith(suffix)) {
+      return raw.length - length;
+    }
+  }
+  return -1;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -98,6 +109,10 @@ export function parseStreamingQuestion(raw: string): {
 } {
   const blockStart = raw.indexOf(BLOCK_OPEN);
   if (blockStart < 0) {
+    const partialStart = trailingPartialBlockStart(raw);
+    if (partialStart >= 0) {
+      return { content: raw.slice(0, partialStart).trimEnd(), question: null };
+    }
     return { content: raw, question: null };
   }
 

@@ -67,10 +67,11 @@ func TestServerRuntimeMetricsPlannerReplayAndResumeCounters(t *testing.T) {
 	if operationRes.Code != http.StatusCreated {
 		t.Fatalf("expected operation 201, got %d (%s)", operationRes.Code, operationRes.Body.String())
 	}
-	var operation gen.PlanningOperationDetail
-	if err := json.Unmarshal(operationRes.Body.Bytes(), &operation); err != nil {
+	var operationResult gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(operationRes.Body.Bytes(), &operationResult); err != nil {
 		t.Fatalf("decode planning operation: %v", err)
 	}
+	operation := operationResult.Operation
 	awaitPlanningOperation(t, handler, operation.OperationId)
 
 	initialReq := httptest.NewRequest(http.MethodGet, "/api/v1/planning-operations/"+operation.OperationId+"/events", nil)
@@ -219,6 +220,157 @@ func TestServerStartupRecoversQueuedPlanningOperations(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeMetricsExposeGeneratedTitleLatencyTelemetry(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	now := "2026-04-21T17:10:00Z"
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('planning_session_title_metrics', 'plan_telemetry', 'placeholder', 'active', 'ready', NULL, NULL, NULL, NULL, ?, '{"model":"test-model"}', ?, ?)`, projectRoot, now, now)
+	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('planning_operation_title_metrics', 'planning_session_title_metrics', 'generate_title', 'succeeded', '{}', '', NULL, 1, NULL, NULL, 'title_ref', ?, '2026-04-21T17:10:01Z', '2026-04-21T17:10:04Z')`, now)
+	mustExecSQL(t, db, `INSERT INTO planning_operation_events (event_id, operation_id, seq, event_type, payload_json, created_at) VALUES ('planning_operation_title_metrics:1', 'planning_operation_title_metrics', 1, 'provider_session_open', '{}', '2026-04-21T17:10:02Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_operation_events (event_id, operation_id, seq, event_type, payload_json, created_at) VALUES ('planning_operation_title_metrics:2', 'planning_operation_title_metrics', 2, 'text_delta', '{"text":"Auth Middleware Rework"}', '2026-04-21T17:10:03Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_operation_events (event_id, operation_id, seq, event_type, payload_json, created_at) VALUES ('planning_operation_title_metrics:3', 'planning_operation_title_metrics', 3, 'receipt_persisted', '{"evidence_id":"receipt_1"}', '2026-04-21T17:10:03Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_operation_events (event_id, operation_id, seq, event_type, payload_json, created_at) VALUES ('planning_operation_title_metrics:4', 'planning_operation_title_metrics', 4, 'finalizing', '{"status":"finalizing"}', '2026-04-21T17:10:04Z')`)
+
+	metricsRes := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/metrics/runtime",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if metricsRes.Code != http.StatusOK {
+		t.Fatalf("expected metrics 200, got %d (%s)", metricsRes.Code, metricsRes.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(metricsRes.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode runtime metrics payload: %v", err)
+	}
+	plannerPayload := payload["planner"].(map[string]any)
+	generatedTitle := plannerPayload["generated_title"].(map[string]any)
+	latency := generatedTitle["latency"].(map[string]any)
+	if int(generatedTitle["failed_operations"].(float64)) != 0 {
+		t.Fatalf("expected generated title failed_operations=0, got %#v", generatedTitle["failed_operations"])
+	}
+	if int(latency["recent_sample_size"].(float64)) < 1 {
+		t.Fatalf("expected generated title latency sample, got %#v", latency)
+	}
+	total := latency["total"].(map[string]any)
+	if int(total["samples"].(float64)) < 1 {
+		t.Fatalf("expected generated title total latency samples, got %#v", total)
+	}
+}
+
+func TestCreateReplyOperationResponseCarriesRuntimeAutoTitleSessionDelta(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	createRes := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodPost,
+		path:   "/api/v1/planning-sessions",
+		body: map[string]any{
+			"model_selection": map[string]any{"model": "gpt-5.4"},
+		},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-create-session-auto-title-contract",
+	})
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected session create 201, got %d (%s)", createRes.Code, createRes.Body.String())
+	}
+	var created gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create session result: %v", err)
+	}
+
+	firstReplyRes := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodPost,
+		path:   "/api/v1/planning-sessions/" + created.Session.PlanningSessionId + "/operations",
+		body: map[string]any{
+			"type":  "reply",
+			"reply": map[string]any{"content_markdown": "First answer", "answer_payload": map[string]any{"text": "First answer"}},
+		},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-first-reply-auto-title-contract",
+	})
+	if firstReplyRes.Code != http.StatusCreated {
+		t.Fatalf("expected first reply 201, got %d (%s)", firstReplyRes.Code, firstReplyRes.Body.String())
+	}
+	var firstReply gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(firstReplyRes.Body.Bytes(), &firstReply); err != nil {
+		t.Fatalf("decode first reply create result: %v", err)
+	}
+	if firstReply.Session.CurrentTitleOperationId != nil {
+		t.Fatalf("expected no title op after first reply, got %+v", firstReply.Session.CurrentTitleOperationId)
+	}
+	awaitPlanningOperation(t, handler, firstReply.Operation.OperationId)
+
+	secondReplyRes := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodPost,
+		path:   "/api/v1/planning-sessions/" + created.Session.PlanningSessionId + "/operations",
+		body: map[string]any{
+			"type":  "reply",
+			"reply": map[string]any{"content_markdown": "Second answer", "answer_payload": map[string]any{"text": "Second answer"}},
+		},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-second-reply-auto-title-contract",
+	})
+	if secondReplyRes.Code != http.StatusCreated {
+		t.Fatalf("expected second reply 201, got %d (%s)", secondReplyRes.Code, secondReplyRes.Body.String())
+	}
+	var secondReply gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(secondReplyRes.Body.Bytes(), &secondReply); err != nil {
+		t.Fatalf("decode second reply create result: %v", err)
+	}
+	if secondReply.Session.CurrentTitleOperationId == nil || strings.TrimSpace(*secondReply.Session.CurrentTitleOperationId) == "" {
+		t.Fatalf("expected second reply response to carry current_title_operation_id, got %+v", secondReply.Session)
+	}
+}
+
+func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('planning_session_auto_title_eligible', 'plan_1', 'placeholder', 'active', 'ready', 'planning_message_auto_title_assistant_2', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:10:00Z', '2026-04-21T17:10:00Z')`, projectRoot)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_opening', 'planning_session_auto_title_eligible', 1, 'assistant', '', '{}', '{}', 0, 1, '2026-04-21T17:10:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_user_2', 'planning_session_auto_title_eligible', 2, 'user', 'First answer', '{}', '{"text":"First answer"}', 0, 1, '2026-04-21T17:10:01Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_assistant_2', 'planning_session_auto_title_eligible', 2, 'assistant', 'Second question', '{}', '{}', 0, 1, '2026-04-21T17:10:02Z')`)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, variant_index, active, created_at) VALUES ('planning_message_auto_title_user_3', 'planning_session_auto_title_eligible', 3, 'user', 'Second answer', '{}', '{"text":"Second answer"}', 0, 1, '2026-04-21T17:10:03Z')`)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/planning-sessions/planning_session_auto_title_eligible",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected session 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var detail gen.PlanningSessionDetail
+	if err := json.Unmarshal(res.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode session detail: %v", err)
+	}
+	if !detail.AutoTitleEligible {
+		t.Fatalf("expected auto_title_eligible=true, got %+v", detail)
+	}
+}
+
 func TestNewHandlerFailsFastWhenNormalizedOpencodePlannerBootstrapFails(t *testing.T) {
 	t.Parallel()
 
@@ -299,10 +451,11 @@ func TestPlannerSessionsApplyWorkspaceRestrictionWithoutBlockingQuestions(t *tes
 	if operationRes.Code != http.StatusCreated {
 		t.Fatalf("expected operation 201, got %d (%s)", operationRes.Code, operationRes.Body.String())
 	}
-	var operation gen.PlanningOperationDetail
-	if err := json.Unmarshal(operationRes.Body.Bytes(), &operation); err != nil {
+	var operationResult gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(operationRes.Body.Bytes(), &operationResult); err != nil {
 		t.Fatalf("decode planning operation: %v", err)
 	}
+	operation := operationResult.Operation
 	completed := awaitPlanningOperationWithTimeout(t, handler, operation.OperationId, 5*time.Second)
 	if completed.Status != gen.PlanningOperationDetailStatusSucceeded {
 		t.Fatalf("expected planner operation to succeed, got %#v", completed.Status)
@@ -404,10 +557,11 @@ func TestServerPlanningMessageStreamEmitsQuestionReadyBeforeDone(t *testing.T) {
 	if operationRes.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (%s)", operationRes.Code, operationRes.Body.String())
 	}
-	var operation gen.PlanningOperationDetail
-	if err := json.Unmarshal(operationRes.Body.Bytes(), &operation); err != nil {
+	var operationResult gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(operationRes.Body.Bytes(), &operationResult); err != nil {
 		t.Fatalf("decode planning operation: %v", err)
 	}
+	operation := operationResult.Operation
 	awaitPlanningOperation(t, handler, operation.OperationId)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/planning-operations/"+operation.OperationId+"/events", nil)
@@ -595,10 +749,11 @@ func TestServerPlanningSessionLifecycleAndContextRefresh(t *testing.T) {
 	if operationRes.Code != http.StatusCreated {
 		t.Fatalf("expected create operation 201, got %d (%s)", operationRes.Code, operationRes.Body.String())
 	}
-	var replyOperation gen.PlanningOperationDetail
-	if err := json.Unmarshal(operationRes.Body.Bytes(), &replyOperation); err != nil {
+	var replyResult gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(operationRes.Body.Bytes(), &replyResult); err != nil {
 		t.Fatalf("decode reply operation: %v", err)
 	}
+	replyOperation := replyResult.Operation
 	awaitPlanningOperation(t, handler, replyOperation.OperationId)
 
 	eventsReq := httptest.NewRequest(http.MethodGet, "/api/v1/planning-operations/"+replyOperation.OperationId+"/events", nil)
@@ -662,10 +817,11 @@ func TestServerPlanningSessionLifecycleAndContextRefresh(t *testing.T) {
 	if formalizeRes.Code != http.StatusCreated {
 		t.Fatalf("expected formalize operation 201, got %d (%s)", formalizeRes.Code, formalizeRes.Body.String())
 	}
-	var formalizeOperation gen.PlanningOperationDetail
-	if err := json.Unmarshal(formalizeRes.Body.Bytes(), &formalizeOperation); err != nil {
+	var formalizeResult gen.CreatePlanningOperationResult
+	if err := json.Unmarshal(formalizeRes.Body.Bytes(), &formalizeResult); err != nil {
 		t.Fatalf("decode formalize operation: %v", err)
 	}
+	formalizeOperation := formalizeResult.Operation
 	awaitPlanningOperation(t, handler, formalizeOperation.OperationId)
 
 	draftRes := performJSONRequest(t, handler, requestSpec{

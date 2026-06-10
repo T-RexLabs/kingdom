@@ -3,6 +3,7 @@ package planning
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,9 @@ var defaultPlanningServiceTestScript = planningfixture.DefaultServiceScript()
 
 func testReceiptMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
 	metadata := ProviderExecutionMetadata{FinalText: finalText, OutcomeState: "success", CompletionStructuredPayloadJSON: "{}"}
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		input.ProviderInvocation.OnProviderSession("provider-session-1")
+	}
 	if input.ProviderInvocation == nil || input.ProviderInvocation.OnCompletionReceipt == nil {
 		return metadata, nil
 	}
@@ -98,10 +102,13 @@ func (m *mockAgent) FormalizePlanStream(_ context.Context, input AgentContext, o
 	}, nil
 }
 
-func (m *mockAgent) GenerateTitle(_ context.Context, input AgentContext) (GeneratedTitle, error) {
+func (m *mockAgent) GenerateTitle(_ context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
 	metadata, err := testReceiptMetadata(input, defaultPlanningServiceTestScript.GeneratedTitle)
 	if err != nil {
 		return GeneratedTitle{}, err
+	}
+	if onChunk != nil {
+		onChunk(defaultPlanningServiceTestScript.GeneratedTitle)
 	}
 	return GeneratedTitle{
 		Title:    defaultPlanningServiceTestScript.GeneratedTitle,
@@ -114,6 +121,17 @@ type streamingMockAgent struct {
 	question *StructuredQuestion
 	final    string
 	err      error
+}
+
+type parallelAutoTitlePlanner struct {
+	mockAgent
+	release            chan struct{}
+	secondReplyStarted chan struct{}
+	titleStarted       chan struct{}
+	replyCalls         int
+	secondReplyOnce    sync.Once
+	titleStartedOnce   sync.Once
+	mu                 sync.Mutex
 }
 
 type missingReceiptAgent struct{ mockAgent }
@@ -166,7 +184,7 @@ func (m *erroringAgent) FormalizePlanStream(_ context.Context, _ AgentContext, _
 	return FormalizedPlan{}, m.err
 }
 
-func (m *erroringAgent) GenerateTitle(_ context.Context, _ AgentContext) (GeneratedTitle, error) {
+func (m *erroringAgent) GenerateTitle(_ context.Context, _ AgentContext, _ func(text string)) (GeneratedTitle, error) {
 	return GeneratedTitle{}, m.err
 }
 
@@ -202,8 +220,80 @@ func (m *streamingMockAgent) FormalizePlanStream(_ context.Context, input AgentC
 	return (&mockAgent{}).FormalizePlanStream(context.Background(), input, onChunk)
 }
 
-func (m *streamingMockAgent) GenerateTitle(_ context.Context, input AgentContext) (GeneratedTitle, error) {
-	return (&mockAgent{}).GenerateTitle(context.Background(), input)
+func (m *streamingMockAgent) GenerateTitle(_ context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
+	return (&mockAgent{}).GenerateTitle(context.Background(), input, onChunk)
+}
+
+func newParallelAutoTitlePlanner() *parallelAutoTitlePlanner {
+	return &parallelAutoTitlePlanner{
+		release:            make(chan struct{}),
+		secondReplyStarted: make(chan struct{}),
+		titleStarted:       make(chan struct{}),
+	}
+}
+
+func (p *parallelAutoTitlePlanner) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+	p.mu.Lock()
+	p.replyCalls++
+	call := p.replyCalls
+	p.mu.Unlock()
+	if call < 2 {
+		return (&mockAgent{}).ContinueTurnStream(ctx, input, onChunk)
+	}
+	p.secondReplyOnce.Do(func() { close(p.secondReplyStarted) })
+	select {
+	case <-p.release:
+		metadata, err := testReceiptMetadata(input, "Second reply content")
+		if err != nil {
+			return AgentTurn{}, err
+		}
+		return AgentTurn{
+			ContentMarkdown: "Second reply content",
+			Question: &StructuredQuestion{
+				Prompt:  "Choose scope",
+				Type:    "single_select",
+				Options: []StructuredQuestionOption{{Label: "Lean", Value: "lean"}},
+			},
+			Metadata: metadata,
+		}, nil
+	case <-ctx.Done():
+		return AgentTurn{}, ctx.Err()
+	}
+}
+
+func (p *parallelAutoTitlePlanner) GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
+	p.titleStartedOnce.Do(func() { close(p.titleStarted) })
+	select {
+	case <-p.release:
+		metadata, err := testReceiptMetadata(input, "Parallel Title")
+		if err != nil {
+			return GeneratedTitle{}, err
+		}
+		if onChunk != nil {
+			onChunk("Parallel Title")
+		}
+		return GeneratedTitle{Title: "Parallel Title", Metadata: metadata}, nil
+	case <-ctx.Done():
+		return GeneratedTitle{}, ctx.Err()
+	}
+}
+
+func awaitParallelAutoTitleReplyStarted(t *testing.T, planner *parallelAutoTitlePlanner) {
+	t.Helper()
+	select {
+	case <-planner.secondReplyStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second reply never started")
+	}
+}
+
+func awaitParallelAutoTitleStarted(t *testing.T, planner *parallelAutoTitlePlanner) {
+	t.Helper()
+	select {
+	case <-planner.titleStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto title never started")
+	}
 }
 
 func TestServiceCreateSessionPersistsImmediateOpeningQuestion(t *testing.T) {
@@ -289,7 +379,7 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, operation.OperationID)
+	awaitOperationTerminal(t, store, operation.Operation.OperationID)
 
 	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -347,7 +437,7 @@ func TestServiceFormalizeOperationCreatesDraftWithoutPlanningMessages(t *testing
 	if err != nil {
 		t.Fatalf("create formalize operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, formalizeOperation.OperationID)
+	awaitOperationTerminal(t, store, formalizeOperation.Operation.OperationID)
 
 	afterMessages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -400,7 +490,7 @@ func TestServiceReplyOperationRequiresCompletionReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	terminal := awaitOperationTerminal(t, store, operation.OperationID)
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
 	if terminal.Status != state.PlanningOperationStatusFailed {
 		t.Fatalf("expected failed reply operation, got %+v", terminal)
 	}
@@ -436,7 +526,7 @@ func TestServiceReplyOperationRejectsInvalidCompletionReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	terminal := awaitOperationTerminal(t, store, operation.OperationID)
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
 	if terminal.Status != state.PlanningOperationStatusFailed {
 		t.Fatalf("expected failed reply operation, got %+v", terminal)
 	}
@@ -514,7 +604,7 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 			if err != nil {
 				t.Fatalf("create reply operation: %v", err)
 			}
-			terminal := awaitOperationTerminal(t, store, operation.OperationID)
+			terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
 			if terminal.Status != state.PlanningOperationStatusFailed {
 				t.Fatalf("expected failed reply operation, got %+v", terminal)
 			}
@@ -562,7 +652,7 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first reply operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, firstReply.OperationID)
+	awaitOperationTerminal(t, store, firstReply.Operation.OperationID)
 	beforeEdit, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
 		t.Fatalf("list messages before edit: %v", err)
@@ -590,7 +680,7 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 		t.Fatalf("create edited reply operation: %v", err)
 	}
 	awaitPlannerStarted(t, blocking)
-	awaitRunnerRunning(t, service.runner, operation.OperationID)
+	awaitRunnerRunning(t, service.runner, operation.Operation.OperationID)
 
 	duringEdit, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -604,7 +694,7 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 	}
 
 	close(blocking.release)
-	awaitOperationTerminal(t, store, operation.OperationID)
+	awaitOperationTerminal(t, store, operation.Operation.OperationID)
 	afterEdit, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
 		t.Fatalf("list messages after edit: %v", err)
@@ -617,6 +707,71 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 	}
 	if afterEdit[2].PlanningMessageID == beforeEdit[2].PlanningMessageID {
 		t.Fatalf("expected assistant turn to be replaced after success")
+	}
+}
+
+func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+
+	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
+		PlanningSessionID:        "ps_edit_auto_title",
+		Title:                    "plan_1",
+		TitleState:               planningSessionTitleStatePlaceholder,
+		LifecycleState:           state.PlanningSessionLifecycleStateActive,
+		ConversationState:        state.PlanningSessionConversationStateReady,
+		CurrentQuestionMessageID: "pm_edit_auto_title_assistant_3",
+		ProjectRoot:              projectRoot,
+		ModelSelectionJSON:       `{"model":"test-model"}`,
+		CreatedAt:                "2026-04-21T17:00:00Z",
+		UpdatedAt:                "2026-04-21T17:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	seedMessages := []state.AppendPlanningMessageRequest{
+		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:00Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:01Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "First response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:02Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:03Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:04Z"},
+	}
+	for _, message := range seedMessages {
+		if _, err := store.AppendMessage(context.Background(), message); err != nil {
+			t.Fatalf("append seed message %s: %v", message.PlanningMessageID, err)
+		}
+	}
+
+	editTurn := 2
+	result, err := service.CreateOperation(context.Background(), "ps_edit_auto_title", CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Replacement first answer",
+		AnswerPayloadJSON: `{"text":"Replacement first answer"}`,
+		TruncateFromTurn:  &editTurn,
+	})
+	if err != nil {
+		t.Fatalf("create edited reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, result.Operation.OperationID)
+
+	stored, ok, err := store.GetSession(context.Background(), "ps_edit_auto_title")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if stored.CurrentTitleOperationID != nil {
+		t.Fatalf("expected no generated title op after edit rewrite below threshold, got %+v", stored.CurrentTitleOperationID)
+	}
+	counts, err := store.CountOperationsByTypeAndStatus(context.Background(), state.PlanningOperationTypeGenerateTitle)
+	if err != nil {
+		t.Fatalf("count generate_title operations: %v", err)
+	}
+	if counts[state.PlanningOperationStatusQueued] != 0 || counts[state.PlanningOperationStatusRunning] != 0 || counts[state.PlanningOperationStatusSucceeded] != 0 {
+		t.Fatalf("expected no generate_title operations, got %+v", counts)
 	}
 }
 
@@ -664,6 +819,23 @@ func TestServiceGenerateTitlePersistsDurableOperationSettlement(t *testing.T) {
 	}
 	if latest.ObservedOutputText != updated.Title {
 		t.Fatalf("expected generate_title operation to persist the durable observed title, got %+v", latest)
+	}
+
+	metrics, err := service.RuntimeMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("runtime metrics: %v", err)
+	}
+	if metrics.GeneratedTitle == nil {
+		t.Fatal("expected generated_title runtime metrics to be present")
+	}
+	if metrics.GeneratedTitle.Latency.RecentSampleSize < 1 {
+		t.Fatalf("expected generated_title latency samples, got %+v", metrics.GeneratedTitle.Latency)
+	}
+	if metrics.GeneratedTitle.Latency.Total.Samples < 1 || metrics.GeneratedTitle.Latency.Total.AvgMs < 0 {
+		t.Fatalf("expected generated_title total latency metric, got %+v", metrics.GeneratedTitle.Latency.Total)
+	}
+	if metrics.Dispatch.ForegroundStartRequests < 1 || metrics.Dispatch.ForegroundClaimSuccess < 1 {
+		t.Fatalf("expected generated title to contribute foreground dispatch metrics, got %+v", metrics.Dispatch)
 	}
 }
 
@@ -815,6 +987,168 @@ func TestServiceGenerateTitleRunsAlongsideInteractiveOperation(t *testing.T) {
 	}
 }
 
+func TestServiceSecondReplyAutoGeneratesTitleInParallel(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	planner := newParallelAutoTitlePlanner()
+	service := NewService(store, planner, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "First answer",
+		AnswerPayloadJSON: `{"text":"First answer"}`,
+	})
+	if err != nil {
+		t.Fatalf("create first reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, firstReply.Operation.OperationID)
+	updatedSession, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get session after first reply: ok=%v err=%v", ok, err)
+	}
+	if updatedSession.CurrentTitleOperationID != nil {
+		t.Fatalf("expected no auto title after first reply, got %+v", updatedSession.CurrentTitleOperationID)
+	}
+
+	secondReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Second answer",
+		AnswerPayloadJSON: `{"text":"Second answer"}`,
+	})
+	if err != nil {
+		t.Fatalf("create second reply: %v", err)
+	}
+	awaitParallelAutoTitleReplyStarted(t, planner)
+	awaitParallelAutoTitleStarted(t, planner)
+
+	updatedSession, ok, err = store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get updated session: ok=%v err=%v", ok, err)
+	}
+	if updatedSession.CurrentTitleOperationID == nil || strings.TrimSpace(*updatedSession.CurrentTitleOperationID) == "" {
+		t.Fatalf("expected auto title operation to be active after second reply, got %+v", updatedSession.CurrentTitleOperationID)
+	}
+	titleOperationID := strings.TrimSpace(*updatedSession.CurrentTitleOperationID)
+	titleOperation, ok, err := store.GetOperation(context.Background(), titleOperationID)
+	if err != nil || !ok {
+		t.Fatalf("get auto title operation: ok=%v err=%v", ok, err)
+	}
+	if titleOperation.StartedAt == nil || strings.TrimSpace(*titleOperation.StartedAt) == "" {
+		t.Fatalf("expected auto title operation to start immediately, got %+v", titleOperation)
+	}
+	close(planner.release)
+	awaitOperationTerminal(t, store, secondReply.Operation.OperationID)
+	awaitOperationTerminal(t, store, titleOperationID)
+
+	titleOperation, ok, err = store.GetOperation(context.Background(), titleOperationID)
+	if err != nil || !ok {
+		t.Fatalf("get completed auto title operation: ok=%v err=%v", ok, err)
+	}
+	if titleOperation.Type != state.PlanningOperationTypeGenerateTitle || titleOperation.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected succeeded generate_title operation, got %+v", titleOperation)
+	}
+	request, err := decodeOperationRequest(titleOperation.RequestPayloadJSON)
+	if err != nil {
+		t.Fatalf("decode auto title request payload: %v", err)
+	}
+	if request.TriggerSource != string(titleTriggerSourceAutoSecondUserMessageCreate) {
+		t.Fatalf("expected auto title trigger source %q, got %q", titleTriggerSourceAutoSecondUserMessageCreate, request.TriggerSource)
+	}
+	operations, err := store.ListSessionOperations(context.Background(), session.PlanningSessionID, 20)
+	if err != nil {
+		t.Fatalf("list session operations: %v", err)
+	}
+	titleOps := 0
+	for _, item := range operations {
+		if item.Type == state.PlanningOperationTypeGenerateTitle {
+			titleOps++
+		}
+	}
+	if titleOps != 1 {
+		t.Fatalf("expected exactly one auto-generated title operation, got %d (%+v)", titleOps, operations)
+	}
+	metrics, err := service.RuntimeMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("runtime metrics: %v", err)
+	}
+	if metrics.Dispatch.ForegroundStartRequests < 3 || metrics.Dispatch.ForegroundClaimSuccess < 3 {
+		t.Fatalf("expected foreground dispatch metrics to include reply+title starts, got %+v", metrics.Dispatch)
+	}
+}
+
+func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
+
+	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
+		PlanningSessionID:        "ps_recovery_catchup",
+		Title:                    "plan_1",
+		TitleState:               planningSessionTitleStatePlaceholder,
+		LifecycleState:           state.PlanningSessionLifecycleStateActive,
+		ConversationState:        state.PlanningSessionConversationStateReady,
+		CurrentQuestionMessageID: "pm_recovery_catchup_assistant_2",
+		ProjectRoot:              projectRoot,
+		ModelSelectionJSON:       `{"model":"test-model"}`,
+		CreatedAt:                "2026-04-26T09:55:00Z",
+		UpdatedAt:                "2026-04-26T09:55:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	seedMessages := []state.AppendPlanningMessageRequest{
+		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
+		{PlanningMessageID: "pm_recovery_catchup_assistant_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_3", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
+	}
+	for _, message := range seedMessages {
+		if _, err := store.AppendMessage(context.Background(), message); err != nil {
+			t.Fatalf("append seed message %s: %v", message.PlanningMessageID, err)
+		}
+	}
+
+	if err := service.RecoverOperations(context.Background()); err != nil {
+		t.Fatalf("recover operations: %v", err)
+	}
+
+	latest := latestSessionOperation(t, store, "ps_recovery_catchup")
+	if latest.Type != state.PlanningOperationTypeGenerateTitle {
+		t.Fatalf("expected recovery catch-up to enqueue generate_title, got %+v", latest)
+	}
+	awaitOperationTerminal(t, store, latest.OperationID)
+
+	stored, ok, err := store.GetSession(context.Background(), "ps_recovery_catchup")
+	if err != nil || !ok {
+		t.Fatalf("get session: ok=%v err=%v", ok, err)
+	}
+	if stored.TitleState != planningSessionTitleStateGenerated {
+		t.Fatalf("expected catch-up title generation to settle, got %+v", stored)
+	}
+	request, err := decodeOperationRequest(latest.RequestPayloadJSON)
+	if err != nil {
+		t.Fatalf("decode catch-up title request: %v", err)
+	}
+	if request.TriggerSource != string(titleTriggerSourceRecoveryCatchup) {
+		t.Fatalf("expected recovery catch-up trigger source %q, got %q", titleTriggerSourceRecoveryCatchup, request.TriggerSource)
+	}
+}
+
 func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	t.Parallel()
 
@@ -846,9 +1180,9 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, operation.OperationID)
+	awaitOperationTerminal(t, store, operation.Operation.OperationID)
 
-	eventsAfterFirst, err := service.ListOperationEventsAfterEventID(context.Background(), operation.OperationID, operation.OperationID+":1")
+	eventsAfterFirst, err := service.ListOperationEventsAfterEventID(context.Background(), operation.Operation.OperationID, operation.Operation.OperationID+":1")
 	if err != nil {
 		t.Fatalf("list operation events after seq: %v", err)
 	}
@@ -860,6 +1194,88 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	}
 	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != "done" {
 		t.Fatalf("expected terminal done event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
+	}
+}
+
+func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &streamingMockAgent{
+		chunks: []string{"Hello,", "\n\n", "planner."},
+		question: &StructuredQuestion{
+			Prompt:  "Choose planning depth",
+			Type:    "single_select",
+			Options: []StructuredQuestionOption{{Label: "Lean", Value: "lean"}},
+		},
+		final: "Hello,\n\nplanner.",
+	}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "Lifecycle test", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Lean", AnswerPayloadJSON: `{"value":"lean","text":"Lean"}`})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	awaitOperationTerminal(t, store, operation.Operation.OperationID)
+
+	events, err := store.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected planner events")
+	}
+
+	types := make([]string, 0, len(events))
+	textDeltas := make([]string, 0)
+	for _, event := range events {
+		types = append(types, event.EventType)
+		if event.EventType == "text_delta" {
+			textDeltas = append(textDeltas, event.PayloadJSON)
+		}
+	}
+
+	for _, expected := range []string{"started", "user_message", "provider_launching", "provider_session_open", "receipt_persisted", "finalizing", "done"} {
+		if !containsString(types, expected) {
+			t.Fatalf("expected lifecycle event %q in %v", expected, types)
+		}
+	}
+	if len(textDeltas) != 1 {
+		t.Fatalf("expected one batched text_delta event, got %d (%v)", len(textDeltas), textDeltas)
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(textDeltas[0]), &payload); err != nil {
+		t.Fatalf("decode text_delta payload: %v", err)
+	}
+	if payload.Text != "Hello,\n\nplanner." {
+		t.Fatalf("expected batched text delta to preserve streamed whitespace, got %q", payload.Text)
+	}
+	if strings.Contains(textDeltas[0], "structured_question") {
+		t.Fatalf("expected streamed text delta to be sanitized, got %s", textDeltas[0])
+	}
+	if !strings.Contains(events[0].PayloadJSON, `"start_source":"foreground"`) {
+		t.Fatalf("expected started payload to record foreground source, got %s", events[0].PayloadJSON)
+	}
+	if !strings.Contains(events[0].PayloadJSON, `"queue_age_ms":`) {
+		t.Fatalf("expected started payload to record queue age, got %s", events[0].PayloadJSON)
+	}
+	metrics, err := service.RuntimeMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("runtime metrics: %v", err)
+	}
+	if metrics.Dispatch.ForegroundStartRequests < 1 || metrics.Dispatch.ForegroundClaimSuccess < 1 {
+		t.Fatalf("expected foreground dispatch metrics to be populated, got %+v", metrics.Dispatch)
 	}
 }
 
@@ -911,6 +1327,20 @@ func TestServiceRecoverOperationsRestartsQueuedWork(t *testing.T) {
 	}
 	if !ok || recovered.Status != state.PlanningOperationStatusSucceeded {
 		t.Fatalf("expected recovered operation to succeed, got %+v", recovered)
+	}
+	events, err := store.ListOperationEventsAfterEventIDPage(context.Background(), operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
+	if err != nil {
+		t.Fatalf("list recovered operation events: %v", err)
+	}
+	if len(events) == 0 || !strings.Contains(events[0].PayloadJSON, `"start_source":"recovery"`) {
+		t.Fatalf("expected recovered operation started payload to record recovery source, got %+v", events)
+	}
+	metrics, err := service.RuntimeMetrics(context.Background())
+	if err != nil {
+		t.Fatalf("runtime metrics: %v", err)
+	}
+	if metrics.Dispatch.RecoveryStartRequests < 1 || metrics.Dispatch.RecoveryClaimSuccess < 1 {
+		t.Fatalf("expected recovery dispatch metrics to be populated, got %+v", metrics.Dispatch)
 	}
 }
 
@@ -1281,6 +1711,115 @@ func TestRecoveryImmediatelyReplaysRecentReceiptPersistedOperationAsSuccess(t *t
 	}
 	if settlement.FinalText != "Planner reply recovered before the stuck threshold." {
 		t.Fatalf("expected planning settlement final text to come from receipt, got %+v", settlement)
+	}
+}
+
+func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
+
+	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
+		PlanningSessionID:        "ps_recent_receipt_auto_title",
+		Title:                    "plan_1",
+		TitleState:               planningSessionTitleStatePlaceholder,
+		LifecycleState:           state.PlanningSessionLifecycleStateActive,
+		ConversationState:        state.PlanningSessionConversationStateProcessing,
+		CurrentQuestionMessageID: "pm_recent_receipt_auto_title_assistant_2",
+		CurrentOperationID:       "po_recent_receipt_auto_title",
+		ProjectRoot:              projectRoot,
+		ModelSelectionJSON:       `{"model":"test-model"}`,
+		CreatedAt:                "2026-04-26T09:55:00Z",
+		UpdatedAt:                "2026-04-26T09:55:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	seedMessages := []state.AppendPlanningMessageRequest{
+		{PlanningMessageID: "pm_recent_receipt_auto_title_opening", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_user_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_assistant_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_user_3", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
+	}
+	for _, message := range seedMessages {
+		if _, err := store.AppendMessage(context.Background(), message); err != nil {
+			t.Fatalf("append seed message %s: %v", message.PlanningMessageID, err)
+		}
+	}
+	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
+		OperationID:        "po_recent_receipt_auto_title",
+		PlanningSessionID:  "ps_recent_receipt_auto_title",
+		Type:               state.PlanningOperationTypeReply,
+		Status:             state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{"assistant_message_id":"pm_recent_receipt_auto_title_assistant_3","assistant_created_at":"2026-04-26T09:55:05Z","turn_index":3}`,
+		LeaseOwner:         "slow-worker",
+		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-26T09:55:00Z",
+		StartedAt:          "2026-04-26T09:55:01Z",
+	}); err != nil {
+		t.Fatalf("seed running operation: %v", err)
+	}
+	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
+		PlanningOperationID:          "po_recent_receipt_auto_title",
+		PlanningSessionID:            "ps_recent_receipt_auto_title",
+		LogicalSessionID:             "planner-ps_recent_receipt_auto_title",
+		CompletionCapability:         "capability_recent_receipt_auto_title",
+		IssuedAt:                     "2026-04-26T09:55:02Z",
+		CreatedAt:                    "2026-04-26T09:55:02Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
+		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
+		PlanningOperationID:          "po_recent_receipt_auto_title",
+		ProviderSessionID:            "ses_recent_receipt_auto_title",
+		OpenedAt:                     "2026-04-26T09:55:03Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
+		EvidenceID:                   "receipt_recent_receipt_auto_title",
+		AttemptID:                    "po_recent_receipt_auto_title",
+		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
+		PlanningOperationID:          "po_recent_receipt_auto_title",
+		PlanningSessionID:            "ps_recent_receipt_auto_title",
+		ProtocolVersion:              "v1",
+		CompletionCapability:         "capability_recent_receipt_auto_title",
+		FinalText:                    "Recovered second planner reply.",
+		StructuredPayloadJSON:        `{}`,
+		ReceivedAt:                   "2026-04-26T09:55:04Z",
+	}); err != nil {
+		t.Fatalf("accept completion receipt: %v", err)
+	}
+
+	if err := service.RecoverOperations(context.Background()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	recoveredReply, ok, err := store.GetOperation(context.Background(), "po_recent_receipt_auto_title")
+	if err != nil || !ok {
+		t.Fatalf("get recovered reply: ok=%v err=%v", ok, err)
+	}
+	if recoveredReply.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected recovered reply to succeed, got %+v", recoveredReply)
+	}
+	latest := latestSessionOperation(t, store, "ps_recent_receipt_auto_title")
+	if latest.Type != state.PlanningOperationTypeGenerateTitle {
+		t.Fatalf("expected recovered reply success to enqueue generate_title, got %+v", latest)
+	}
+	awaitOperationTerminal(t, store, latest.OperationID)
+	request, err := decodeOperationRequest(latest.RequestPayloadJSON)
+	if err != nil {
+		t.Fatalf("decode recovered title request payload: %v", err)
+	}
+	if request.TriggerSource != string(titleTriggerSourceRecoveryCatchup) {
+		t.Fatalf("expected recovered title trigger source %q, got %q", titleTriggerSourceRecoveryCatchup, request.TriggerSource)
 	}
 }
 
@@ -2522,10 +3061,13 @@ func newSlowTitlePlanner() *slowTitlePlanner {
 
 // GenerateTitle is the Agent method session_service.GenerateTitle
 // invokes. Block on release so the test owns the timing.
-func (p *slowTitlePlanner) GenerateTitle(ctx context.Context, input AgentContext) (GeneratedTitle, error) {
+func (p *slowTitlePlanner) GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
 	p.startedOnce.Do(func() { close(p.started) })
 	select {
 	case <-p.release:
+		if onChunk != nil {
+			onChunk("Released Title")
+		}
 		metadata, err := testReceiptMetadata(input, "Released Title")
 		if err != nil {
 			return GeneratedTitle{}, err
@@ -2546,6 +3088,15 @@ func awaitSlowTitleStarted(t *testing.T, p *slowTitlePlanner) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("slow planner never reached GenerateTitle")
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // awaitAllSessionsAdvanced verifies that every session in the DB has
@@ -2693,9 +3244,9 @@ func startBlockingReplyForCloseTest(t *testing.T, service *Service, store *state
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	awaitRunnerRunning(t, service.runner, op.OperationID)
+	awaitRunnerRunning(t, service.runner, op.Operation.OperationID)
 	awaitPlannerStarted(t, planner)
-	return op.OperationID
+	return op.Operation.OperationID
 }
 
 // TestServiceCloseWaitsForInFlightRunnerOperation pins the cooperative

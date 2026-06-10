@@ -74,7 +74,7 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 			return err
 		}
 		if len(operations) == 0 {
-			return nil
+			break
 		}
 		if r.deps.metrics != nil {
 			r.deps.metrics.recoveryCount.Add(uint64(len(operations)))
@@ -92,13 +92,39 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 				}
 				continue
 			}
-			r.runner.Start(operation.OperationID)
+			r.runner.StartRecovered(operation.OperationID)
 		}
 		if len(operations) < state.DefaultPlanningOperationListLimit {
-			return nil
+			break
 		}
 		afterCreatedAt = last.CreatedAt
 		afterOperationID = last.OperationID
+	}
+	return r.recoverEligiblePlaceholderTitleSessions(ctx)
+}
+
+func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.Context) error {
+	if r == nil || r.deps.store == nil || r.runner == nil {
+		return nil
+	}
+	afterSessionID := ""
+	for {
+		sessions, err := r.deps.store.ListAutoTitleEligibleSessionsPage(ctx, afterSessionID, state.DefaultPlanningOperationListLimit, autoTitleUserMessageThreshold)
+		if err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			return nil
+		}
+		for _, session := range sessions {
+			if _, err := maybeAutoGenerateTitleForRecoveryCatchup(ctx, r.deps, r.runner, session); err != nil {
+				return err
+			}
+		}
+		if len(sessions) < state.DefaultPlanningOperationListLimit {
+			return nil
+		}
+		afterSessionID = sessions[len(sessions)-1].PlanningSessionID
 	}
 }
 

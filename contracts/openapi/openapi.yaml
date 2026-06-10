@@ -282,7 +282,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PlanningOperationDetail"
+                $ref: "#/components/schemas/CreatePlanningOperationResult"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -1772,6 +1772,7 @@ components:
           planning_stream_resume_count,
           planning_operation_recovery_count,
           planning_operation_failure_count,
+          dispatch,
         ]
       properties:
         queued_operations:
@@ -1807,6 +1808,100 @@ components:
         oldest_running_started_at:
           type: string
           format: date-time
+        dispatch:
+          $ref: "#/components/schemas/PlannerDispatchMetrics"
+        generated_title:
+          $ref: "#/components/schemas/GeneratedTitleRuntimeMetrics"
+
+    PlannerLatencyMetric:
+      type: object
+      additionalProperties: false
+      required: [samples, avg_ms]
+      properties:
+        samples:
+          type: integer
+          minimum: 0
+        avg_ms:
+          type: integer
+          minimum: 0
+
+    PlannerDispatchMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        [foreground_start_requests, recovery_start_requests, foreground_claim_successes, recovery_claim_successes, claim_failure_count, claim_retry_count, start_failure_count]
+      properties:
+        foreground_start_requests:
+          type: integer
+          minimum: 0
+        recovery_start_requests:
+          type: integer
+          minimum: 0
+        foreground_claim_successes:
+          type: integer
+          minimum: 0
+        recovery_claim_successes:
+          type: integer
+          minimum: 0
+        claim_failure_count:
+          type: integer
+          minimum: 0
+        claim_retry_count:
+          type: integer
+          minimum: 0
+        start_failure_count:
+          type: integer
+          minimum: 0
+        last_start_failure:
+          type: string
+        last_start_failure_at:
+          type: string
+          format: date-time
+
+    GeneratedTitleLatencyMetrics:
+      type: object
+      additionalProperties: false
+      required:
+        [recent_sample_size, queue, launch, first_output, output_to_receipt, finalize, total]
+      properties:
+        recent_sample_size:
+          type: integer
+          minimum: 0
+        queue:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+        launch:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+        first_output:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+        output_to_receipt:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+        finalize:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+        total:
+          $ref: "#/components/schemas/PlannerLatencyMetric"
+
+    GeneratedTitleRuntimeMetrics:
+      type: object
+      additionalProperties: false
+      required: [queued_operations, running_operations, failed_operations, latency]
+      properties:
+        queued_operations:
+          type: integer
+          minimum: 0
+        running_operations:
+          type: integer
+          minimum: 0
+        failed_operations:
+          type: integer
+          minimum: 0
+        oldest_queued_created_at:
+          type: string
+          format: date-time
+        oldest_running_started_at:
+          type: string
+          format: date-time
+        latency:
+          $ref: "#/components/schemas/GeneratedTitleLatencyMetrics"
 
     RuntimeMetrics:
       type: object
@@ -2381,6 +2476,16 @@ components:
         regenerate:
           $ref: "#/components/schemas/PlanningRegenerateOperationRequest"
 
+    CreatePlanningOperationResult:
+      type: object
+      additionalProperties: false
+      required: [operation, session]
+      properties:
+        operation:
+          $ref: "#/components/schemas/PlanningOperationDetail"
+        session:
+          $ref: "#/components/schemas/PlanningSessionDetail"
+
     PlanningSessionSummary:
       type: object
       additionalProperties: false
@@ -2438,6 +2543,7 @@ components:
         created_at: "2026-04-30T12:00:00Z"
         updated_at: "2026-04-30T12:05:00Z"
         project_root: /workspace/kingdom
+        auto_title_eligible: false
         model_selection:
           model: provider/model-id
           thinking_effort: low
@@ -2445,11 +2551,13 @@ components:
         - $ref: "#/components/schemas/PlanningSessionSummary"
         - type: object
           additionalProperties: false
-          required: [project_root, model_selection]
+          required: [project_root, auto_title_eligible, model_selection]
           properties:
             project_root:
               type: string
               minLength: 1
+            auto_title_eligible:
+              type: boolean
             model_selection:
               $ref: "#/components/schemas/PlanningAgentModelSelection"
 

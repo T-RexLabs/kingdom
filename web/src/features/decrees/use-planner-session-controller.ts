@@ -150,7 +150,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           });
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation_id);
+          setActiveOperationId(created.operation.operation_id);
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
@@ -199,7 +199,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           });
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation_id);
+          setActiveOperationId(created.operation.operation_id);
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
@@ -242,14 +242,14 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
             body: { type: "formalize" },
             key: newIdempotencyKey("planning-operation"),
           });
-          if (seq !== requestSeqRef.current) return created;
+          if (seq !== requestSeqRef.current) return created.operation;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation_id);
+          setActiveOperationId(created.operation.operation_id);
           applyPlanningSessionFields(queryClient, session.planning_session_id, {
-            current_operation_id: created.operation_id,
+            current_operation_id: created.operation.operation_id,
             conversation_state: "processing",
           });
-          return created;
+          return created.operation;
         } catch (err) {
           if (seq !== requestSeqRef.current) throw err;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);

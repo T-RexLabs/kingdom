@@ -41,6 +41,7 @@ function buildSession() {
     planning_session_id: "planning-session-1",
     title: "Planner kickoff",
     title_state: "custom" as const,
+    auto_title_eligible: false,
     lifecycle_state: "active" as const,
     conversation_state: "ready" as const,
     current_question_message_id: undefined,

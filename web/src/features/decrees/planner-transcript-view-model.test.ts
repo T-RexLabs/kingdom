@@ -95,6 +95,50 @@ describe("planner transcript view model", () => {
     expect(result.items[0]?.resolvedAnswer?.value).toBe("lean");
   });
 
+  it("locks in the active question answer from an optimistic reply before canonical user_message arrives", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          turn_index: 1,
+          role: "assistant",
+          content_markdown: "",
+          created_at: "2026-04-21T10:00:00Z",
+          variant_index: 0,
+          active: true,
+          question_payload: {
+            prompt: "Choose planning depth",
+            type: "single_select",
+            options: [{ label: "Lean", value: "lean" }],
+          },
+        },
+      ],
+      currentQuestionMessageId: "assistant-1",
+      conversationState: "processing",
+      operation: {
+        kind: "reply",
+        operationId: "operation-1",
+        status: "pending",
+        lastEventSeq: 0,
+        turnIndex: 2,
+        userMessageId: "optimistic-user-1",
+        userCreatedAt: "2026-04-21T10:00:01Z",
+        assistantMessageId: "optimistic-assistant-1",
+        assistantCreatedAt: "2026-04-21T10:00:02Z",
+        pendingReply: {
+          contentMarkdown: "Lean",
+          answer: { value: "lean", text: "Lean" },
+        },
+        replyText: "",
+        formalizeText: "",
+        error: null,
+      },
+    });
+
+    expect(result.items[0]?.resolvedAnswer?.value).toBe("lean");
+  });
+
   it("adds optimistic user and assistant rows from an active reply operation", () => {
     const result = buildPlannerTranscriptViewModel({
       messages: [

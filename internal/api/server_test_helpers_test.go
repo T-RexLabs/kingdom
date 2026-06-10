@@ -109,10 +109,13 @@ func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning
 	}, nil
 }
 
-func (a *testPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext) (planning.GeneratedTitle, error) {
+func (a *testPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.GeneratedTitle, error) {
 	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.GeneratedTitle)
 	if err != nil {
 		return planning.GeneratedTitle{}, err
+	}
+	if onChunk != nil {
+		onChunk(defaultPlannerAPITestScript.GeneratedTitle)
 	}
 	return planning.GeneratedTitle{
 		Title:    defaultPlannerAPITestScript.GeneratedTitle,
@@ -149,8 +152,8 @@ func (a *testStreamingPlannerAgent) FormalizePlanStream(_ context.Context, input
 	return (&testPlannerAgent{}).FormalizePlanStream(context.Background(), input, onChunk)
 }
 
-func (a *testStreamingPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext) (planning.GeneratedTitle, error) {
-	return (&testPlannerAgent{}).GenerateTitle(context.Background(), input)
+func (a *testStreamingPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.GeneratedTitle, error) {
+	return (&testPlannerAgent{}).GenerateTitle(context.Background(), input, onChunk)
 }
 
 type requestSpec struct {

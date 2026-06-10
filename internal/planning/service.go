@@ -258,12 +258,12 @@ func (s *Service) CreateSession(ctx context.Context, title string, modelSelectio
 	return s.sessions.CreateSession(ctx, title, modelSelectionJSON)
 }
 
-func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (state.PlanningOperation, error) {
+func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
 	if s == nil || s.operations == nil {
-		return state.PlanningOperation{}, fmt.Errorf("planning service operation runtime is required")
+		return CreateOperationResult{}, fmt.Errorf("planning service operation runtime is required")
 	}
 	if err := s.admitWrite(); err != nil {
-		return state.PlanningOperation{}, err
+		return CreateOperationResult{}, err
 	}
 	defer s.releaseWrite()
 	return s.operations.CreateOperation(ctx, planningSessionID, input)
@@ -357,6 +357,13 @@ func (s *Service) GenerateTitle(ctx context.Context, planningSessionID string) (
 	}
 	defer s.releaseWrite()
 	return s.sessions.GenerateTitle(ctx, planningSessionID)
+}
+
+func (s *Service) AutoTitleEligible(ctx context.Context, session state.PlanningSession) (bool, error) {
+	if s == nil || s.sessions == nil {
+		return false, fmt.Errorf("planning service session runtime is required")
+	}
+	return autoTitleEligibilityForSession(ctx, s.sessions.deps, session)
 }
 
 func (s *Service) RefreshContext(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, state.PlanningSession, error) {

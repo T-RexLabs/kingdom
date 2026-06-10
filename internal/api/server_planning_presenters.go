@@ -92,7 +92,7 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 	return result
 }
 
-func planningSessionDetailFromState(item state.PlanningSession) gen.PlanningSessionDetail {
+func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligible bool) gen.PlanningSessionDetail {
 	summary := planningSessionSummaryFromState(item)
 	modelSelection := decodePlanningAgentModelSelection(item.ModelSelectionJSON)
 	result := gen.PlanningSessionDetail{
@@ -105,6 +105,7 @@ func planningSessionDetailFromState(item state.PlanningSession) gen.PlanningSess
 		UpdatedAt:         summary.UpdatedAt,
 		ProjectRoot:       item.ProjectRoot,
 		ModelSelection:    modelSelection,
+		AutoTitleEligible: autoTitleEligible,
 	}
 	if summary.CurrentQuestionMessageId != nil {
 		result.CurrentQuestionMessageId = summary.CurrentQuestionMessageId
@@ -152,6 +153,13 @@ func planningOperationDetailFromState(item state.PlanningOperation, request map[
 		result.FinishedAt = &finishedAt
 	}
 	return result
+}
+
+func createPlanningOperationResultFromState(result planning.CreateOperationResult, request map[string]any, autoTitleEligible bool) gen.CreatePlanningOperationResult {
+	return gen.CreatePlanningOperationResult{
+		Operation: planningOperationDetailFromState(result.Operation, request),
+		Session:   planningSessionDetailFromState(result.Session, autoTitleEligible),
+	}
 }
 
 func planningOperationRequestEnvelopeFromState(operationType state.PlanningOperationType, request map[string]any) gen.PlanningOperationRequestEnvelope {

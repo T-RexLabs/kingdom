@@ -1,6 +1,5 @@
 import {
   newIdempotencyKey,
-  useGeneratePlanningSessionTitle,
   usePlanningOperation,
   usePlanningSession,
   usePlanningSessionDraft,
@@ -22,6 +21,7 @@ import { usePlanningSessionTitleController } from "./use-planning-session-title-
 import { usePlannerSessionController } from "./use-planner-session-controller";
 import { useGlobalFormalize } from "./use-global-formalize";
 import { usePlannerOperation } from "./use-planner-operation";
+import { usePlanningSessionAutoTitleCatchup } from "./use-planning-session-auto-title-catchup";
 import {
   applyPlanningSessionFields,
   compareAndSwapPlanningSessionTitle,
@@ -48,7 +48,6 @@ export function PlanningSessionPage() {
     reset: modelReset,
     error: modelError,
 	} = updateModelSelection;
-	const generateTitle = useGeneratePlanningSessionTitle(sessionId);
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
 	const messagePages = usePlannerMessagePages(sessionId);
@@ -61,11 +60,8 @@ export function PlanningSessionPage() {
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
   const titleOperationQuery = usePlanningOperation(session?.current_title_operation_id);
-  // Headless subscription: background title generation must keep streaming its
-  // terminal event into cache reconciliation even when the UI chooses not to
-  // render any dedicated loading state for it. Without this mounted listener,
-  // the generated title only appears after a full session refetch/refresh.
   usePlannerOperation(titleOperationQuery.data ?? null);
+  usePlanningSessionAutoTitleCatchup(sessionId, session);
 
   // Title persistence is rooted in the explicit commit event (Enter,
   // blur with no error, or Retry). The save is the consequence of the
@@ -136,9 +132,6 @@ export function PlanningSessionPage() {
   } = usePlanningSessionTitleController({
     sessionId,
     session,
-    userMessageCount,
-    generateTitle: () =>
-      generateTitle.mutateAsync({ key: newIdempotencyKey("generate-title") }),
   });
 
   // Single commit funnel for Enter / blur (when no error) / Retry. The

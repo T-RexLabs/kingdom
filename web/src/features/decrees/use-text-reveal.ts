@@ -34,6 +34,7 @@ export function useTextReveal(targetText: string, isStreaming: boolean) {
   const targetRef = useRef(targetText);
   const revealedRef = useRef(targetText.length);
   const rafRef = useRef(0);
+  const streamingRef = useRef(isStreaming);
 
   const [displayText, setDisplayText] = useState(targetText);
   const [isStreamActive, setIsRevealing] = useState(false);
@@ -44,108 +45,102 @@ export function useTextReveal(targetText: string, isStreaming: boolean) {
   });
 
   useEffect(() => {
-    if (!isStreaming) {
-      // Streaming ended (or was never active).
+    const wasStreaming = streamingRef.current;
+    streamingRef.current = isStreaming;
+
+    if (isStreaming && !wasStreaming) {
+      // Streaming started — capture the already-buffered baseline instantly and
+      // animate only text that arrives after this point.
       const target = targetRef.current;
-
-      if (revealedRef.current >= target.length) {
-        // Already caught up — snap.
-        revealedRef.current = target.length;
-        setDisplayText(target);
-        setIsRevealing(false);
-        return;
-      }
-
-      // Still unrevealed text — drain at an accelerated pace.
-      let lastRender = 0;
-
-      const drain = (now: number) => {
-        const t = targetRef.current;
-        const current = revealedRef.current;
-
-        // Target shrank — clamp the cursor so we don't get stuck.
-        if (current > t.length) {
-          revealedRef.current = t.length;
-          setDisplayText(t);
-          setIsRevealing(false);
-          return;
-        }
-
-        if (current >= t.length) {
-          setDisplayText(t);
-          setIsRevealing(false);
-          return;
-        }
-
-        if (now - lastRender < THROTTLE_MS) {
-          rafRef.current = requestAnimationFrame(drain);
-          return;
-        }
-        lastRender = now;
-
-        const behind = t.length - current;
-        const speed = Math.max(DRAIN_MIN_SPEED, Math.ceil(behind / DRAIN_DIVISOR));
-        revealedRef.current = Math.min(current + speed, t.length);
-        setDisplayText(t.slice(0, revealedRef.current));
-
-        rafRef.current = requestAnimationFrame(drain);
-      };
-
-      rafRef.current = requestAnimationFrame(drain);
-      return () => cancelAnimationFrame(rafRef.current);
+      revealedRef.current = target.length;
+      setDisplayText(target);
     }
 
-    // Streaming started — capture baseline (show buffered text instantly).
-    const target = targetRef.current;
-    revealedRef.current = target.length;
-    setDisplayText(target);
-    setIsRevealing(true);
+    if (isStreaming) {
+      setIsRevealing(true);
+    }
 
+    if (!isStreaming && revealedRef.current >= targetRef.current.length) {
+      revealedRef.current = targetRef.current.length;
+      setDisplayText(targetRef.current);
+      setIsRevealing(false);
+    }
+  }, [isStreaming]);
+
+  useEffect(() => {
     let lastRender = 0;
 
-    const tick = (now: number) => {
-      const t = targetRef.current;
+    const advance = (now: number) => {
+      const target = targetRef.current;
       let current = revealedRef.current;
 
-      // Target shrank (e.g. structured_question block stripped mid-stream).
-      // Clamp the cursor so we don't spin waiting for text that was removed.
-      if (current > t.length) {
-        revealedRef.current = t.length;
-        current = t.length;
-        setDisplayText(t);
+      if (current > target.length) {
+        revealedRef.current = target.length;
+        current = target.length;
+        setDisplayText(target);
       }
 
-      if (current >= t.length) {
-        // Caught up — wait for more text.
-        rafRef.current = requestAnimationFrame(tick);
+      if (current >= target.length) {
+        if (!streamingRef.current) {
+          setDisplayText(target);
+          setIsRevealing(false);
+        }
+        rafRef.current = 0;
         return;
       }
 
       if (now - lastRender < THROTTLE_MS) {
-        rafRef.current = requestAnimationFrame(tick);
+        rafRef.current = requestAnimationFrame(advance);
         return;
       }
       lastRender = now;
 
-      const behind = t.length - current;
-      const speed =
-        behind > CATCHUP_THRESHOLD
+      const behind = target.length - current;
+      const speed = streamingRef.current
+        ? behind > CATCHUP_THRESHOLD
           ? Math.max(BASE_SPEED, Math.ceil(behind / CATCHUP_DIVISOR))
-          : BASE_SPEED;
+          : BASE_SPEED
+        : Math.max(DRAIN_MIN_SPEED, Math.ceil(behind / DRAIN_DIVISOR));
 
-      revealedRef.current = Math.min(current + speed, t.length);
-      setDisplayText(t.slice(0, revealedRef.current));
-
-      rafRef.current = requestAnimationFrame(tick);
+      revealedRef.current = Math.min(current + speed, target.length);
+      setDisplayText(target.slice(0, revealedRef.current));
+      setIsRevealing(true);
+      rafRef.current = requestAnimationFrame(advance);
     };
 
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [isStreaming]);
+    const target = targetRef.current;
+    if (revealedRef.current > target.length) {
+      revealedRef.current = target.length;
+      setDisplayText(target);
+    }
+
+    if (revealedRef.current >= target.length) {
+      if (!isStreaming) {
+        setDisplayText(target);
+        setIsRevealing(false);
+      }
+      return;
+    }
+
+    if (rafRef.current === 0) {
+      rafRef.current = requestAnimationFrame(advance);
+    }
+
+    return () => {
+      if (rafRef.current !== 0) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+    };
+  }, [targetText, isStreaming]);
+
+  const safeDisplayText = isStreamActive
+    ? (targetText.startsWith(displayText) ? displayText : targetText)
+    : targetText;
 
   return {
-    displayText: isStreamActive ? displayText : targetText,
+    displayText: safeDisplayText,
     isStreamActive,
-    hasCaughtUpToTarget: !isStreamActive || displayText === targetText,
+    hasCaughtUpToTarget: !isStreamActive || safeDisplayText === targetText,
   };
 }

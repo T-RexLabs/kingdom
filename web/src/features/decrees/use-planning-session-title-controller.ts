@@ -1,9 +1,6 @@
 import type { PlanningSessionDetail } from "@/api/hooks";
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import {
-  getCanonicalPlanningSessionTitle,
-  hasPlaceholderTitle,
-} from "./planning-session-title";
+import { getCanonicalPlanningSessionTitle } from "./planning-session-title";
 
 /**
  * The previous controller stored "did the user override the title?" in a
@@ -29,8 +26,6 @@ import {
  * transitions are explicit and the keystroke regression cannot return.
  */
 
-type AutoGenState = "idle" | "requesting" | "pending" | "done" | "failed";
-
 type Reveal = { title: string; expiresAt: number };
 
 type TitleState = {
@@ -41,8 +36,6 @@ type TitleState = {
   lastRevealedFor: string | null;
   /** Drives the per-character reveal animation; null when idle. */
   revealing: Reveal | null;
-  /** Per-session generation FSM. Reset when sessionId changes. */
-  autoGen: AutoGenState;
   /** Tracks the prior session id so reset transitions are clean. */
   sessionId: string | null;
 };
@@ -54,10 +47,6 @@ type TitleAction =
   | { type: "edit_stop" }
   | { type: "abandon_edit"; canonical: string }
   | { type: "draft_sync"; canonical: string }
-  | { type: "auto_gen_requested" }
-  | { type: "auto_gen_pending" }
-  | { type: "auto_gen_succeeded" }
-  | { type: "auto_gen_failed" }
   | { type: "reveal_start"; title: string; durationMs: number; now: number }
   | { type: "reveal_end" };
 
@@ -66,7 +55,6 @@ const initialState: TitleState = {
   isEditing: false,
   lastRevealedFor: null,
   revealing: null,
-  autoGen: "idle",
   sessionId: null,
 };
 
@@ -99,14 +87,6 @@ function reducer(state: TitleState, action: TitleAction): TitleState {
       // the input bound to whatever the server believes the title is.
       if (state.isEditing) return state;
       return { ...state, draft: action.canonical };
-    case "auto_gen_requested":
-      return { ...state, autoGen: "requesting" };
-    case "auto_gen_pending":
-      return { ...state, autoGen: "pending" };
-    case "auto_gen_succeeded":
-      return { ...state, autoGen: "done" };
-    case "auto_gen_failed":
-      return { ...state, autoGen: "failed" };
     case "reveal_start":
       return {
         ...state,
@@ -128,8 +108,6 @@ function titleRevealDurationMs(title: string): number {
 interface UsePlanningSessionTitleControllerArgs {
   sessionId: string;
   session: PlanningSessionDetail | undefined;
-  userMessageCount: number;
-  generateTitle: () => Promise<PlanningSessionDetail>;
 }
 
 interface UsePlanningSessionTitleControllerResult {
@@ -160,8 +138,6 @@ interface UsePlanningSessionTitleControllerResult {
 export function usePlanningSessionTitleController({
   sessionId,
   session,
-  userMessageCount,
-  generateTitle,
 }: UsePlanningSessionTitleControllerArgs): UsePlanningSessionTitleControllerResult {
   const [state, dispatch] = useReducer(reducer, initialState);
   const canonicalTitle = useMemo(() => getCanonicalPlanningSessionTitle(session), [session]);
@@ -188,55 +164,6 @@ export function usePlanningSessionTitleController({
     if (!session) return;
     dispatch({ type: "draft_sync", canonical: canonicalTitle });
   }, [session, canonicalTitle]);
-
-  // Auto-generate when the conversation has enough turns and the server
-  // still considers the title a placeholder. Once title_state flips to
-  // "custom" or "generated" on the server, this effect short-circuits.
-  useEffect(() => {
-    if (!session) return;
-    if (!hasPlaceholderTitle(session)) return;
-    if (session.current_title_operation_id) return;
-    if (userMessageCount < 2) return;
-    if (state.autoGen !== "idle") return;
-
-    dispatch({ type: "auto_gen_requested" });
-    let cancelled = false;
-    void generateTitle()
-      .then((updated) => {
-        if (cancelled) return;
-        if (!hasPlaceholderTitle(updated)) {
-          dispatch({ type: "auto_gen_succeeded" });
-          return;
-        }
-        dispatch({
-          type: updated.current_title_operation_id ? "auto_gen_pending" : "auto_gen_failed",
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        dispatch({ type: "auto_gen_failed" });
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [session, userMessageCount, state.autoGen, generateTitle]);
-
-  useEffect(() => {
-	if (!session) return;
-	if (state.autoGen !== "requesting" && state.autoGen !== "pending") return;
-	if (!hasPlaceholderTitle(session)) {
-		dispatch({ type: "auto_gen_succeeded" });
-		return;
-	}
-	if (session.current_title_operation_id) {
-		dispatch({ type: "auto_gen_pending" });
-		return;
-	}
-	if (state.autoGen === "pending") {
-		dispatch({ type: "auto_gen_failed" });
-	}
-  }, [session, state.autoGen]);
 
   // Trigger the reveal animation on the first transition into a generated
   // title. Idempotent — `lastRevealedFor` is the guard.

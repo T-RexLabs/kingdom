@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { PlanningSessionPage } from "./planning-session-page";
 
 const titleMutateAsync = vi.fn(async () => ({}));
+const generateTitleMutateAsync = vi.fn(async () => ({}));
 const modelMutateAsync = vi.fn(async () => ({}));
 // .mutate is the fire-and-forget shape the model autosave + chip
 // retry now uses (errors land on hook.error instead of leaking
@@ -17,21 +18,6 @@ const modelMutate = vi.fn();
 // mutation state so subsequent dirty edits don't surface a stale
 // error before the new autosave fires.
 const modelReset = vi.fn();
-const generateTitleMutateAsync = vi.fn(async () => ({
-  planning_session_id: "planning-session-1",
-  title: "Mock Generated Title",
-  title_state: "generated",
-  lifecycle_state: "active",
-  conversation_state: "ready",
-  current_question_message_id: "assistant-1",
-  current_operation_id: undefined,
-  current_draft_id: undefined,
-  context_snapshot_id: "planning-context-1",
-  created_at: "2026-04-21T10:00:00Z",
-  updated_at: "2026-04-21T10:05:00Z",
-  project_root: "/tmp/project",
-  model_selection: { model: "github-copilot/gpt-5.4" },
-}));
 const invalidateQueries = vi.fn();
 const setQueryData = vi.fn();
 // setQueriesData backs the CAS rollback's list-prefix patch. Tests
@@ -44,6 +30,7 @@ const mockUsePlanningSession = vi.fn();
 const mockUsePlanningSessionDraft = vi.fn();
 const mockUseUpdatePlanningSessionTitle = vi.fn();
 const mockUseUpdatePlanningSessionModelSelection = vi.fn();
+const mockUseGeneratePlanningSessionTitle = vi.fn();
 const mockUseCreatePlanningOperation = vi.fn();
 const mockUsePlanningOperation = vi.fn();
 const mockUseParams = vi.fn(() => ({ sessionId: "planning-session-1" }));
@@ -79,13 +66,10 @@ vi.mock("@/api/hooks", () => ({
   usePlanningSessionDraft: (...args: unknown[]) => mockUsePlanningSessionDraft(...args),
   useUpdatePlanningSessionTitle: (...args: unknown[]) => mockUseUpdatePlanningSessionTitle(...args),
   useUpdatePlanningSessionModelSelection: (...args: unknown[]) => mockUseUpdatePlanningSessionModelSelection(...args),
+  useGeneratePlanningSessionTitle: (...args: unknown[]) => mockUseGeneratePlanningSessionTitle(...args),
   useCreatePlanningOperation: (...args: unknown[]) => mockUseCreatePlanningOperation(...args),
   usePlanningOperation: (...args: unknown[]) => mockUsePlanningOperation(...args),
   useActivateVariant: () => ({ mutateAsync: vi.fn().mockResolvedValue(undefined) }),
-  useGeneratePlanningSessionTitle: () => ({
-    mutateAsync: generateTitleMutateAsync,
-    isPending: false,
-  }),
 }));
 
 vi.mock("./use-planner-message-pages", () => ({
@@ -116,6 +100,8 @@ describe("PlanningSessionPage", () => {
   beforeEach(() => {
     titleMutateAsync.mockReset();
     titleMutateAsync.mockResolvedValue({});
+    generateTitleMutateAsync.mockReset();
+    generateTitleMutateAsync.mockResolvedValue({});
     modelMutateAsync.mockReset();
     modelMutateAsync.mockResolvedValue({});
     modelMutate.mockReset();
@@ -141,7 +127,6 @@ describe("PlanningSessionPage", () => {
       error: null,
       refetch: vi.fn(),
     });
-    generateTitleMutateAsync.mockClear();
     invalidateQueries.mockClear();
     setQueryData.mockClear();
     setQueriesData.mockClear();
@@ -153,6 +138,7 @@ describe("PlanningSessionPage", () => {
         planning_session_id: "planning-session-1",
         title: "Planner kickoff",
         title_state: "custom",
+        auto_title_eligible: false,
         lifecycle_state: "active",
         conversation_state: "ready",
         current_question_message_id: "assistant-1",
@@ -180,8 +166,12 @@ describe("PlanningSessionPage", () => {
       reset: modelReset,
       error: null,
     });
+    mockUseGeneratePlanningSessionTitle.mockReturnValue({
+      mutateAsync: generateTitleMutateAsync,
+      isPending: false,
+    });
     mockUseCreatePlanningOperation.mockReturnValue({
-      mutateAsync: vi.fn(async () => ({ operation_id: "operation-1" })),
+      mutateAsync: vi.fn(async () => ({ operation: { operation_id: "operation-1" } })),
       error: null,
     });
     mockUsePlanningOperation.mockReturnValue({ data: null });
@@ -234,12 +224,48 @@ describe("PlanningSessionPage", () => {
 		expect(screen.getByRole("button", { name: "Thinking Effort" })).toBeInTheDocument();
 	});
 
+  it("starts title catch-up once for an eligible placeholder session", async () => {
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        planning_session_id: "planning-session-1",
+        title: "plan_1",
+        title_state: "placeholder",
+        auto_title_eligible: true,
+        lifecycle_state: "active",
+        conversation_state: "ready",
+        current_question_message_id: "assistant-1",
+        current_operation_id: undefined,
+        current_title_operation_id: undefined,
+        current_draft_id: undefined,
+        context_snapshot_id: "planning-context-1",
+        created_at: "2026-04-21T10:00:00Z",
+        updated_at: "2026-04-21T10:05:00Z",
+        project_root: "/tmp/project",
+        model_selection: { model: "github-copilot/gpt-5.4" },
+      },
+      error: null,
+    });
+
+    const { rerender } = render(<PlanningSessionPage />);
+
+    await waitFor(() => {
+      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(1);
+    });
+
+    rerender(<PlanningSessionPage />);
+
+    await waitFor(() => {
+      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("keeps a headless subscription to the background title operation", () => {
     mockUsePlanningSession.mockReturnValue({
       data: {
         planning_session_id: "planning-session-1",
         title: "plan_1",
         title_state: "placeholder",
+        auto_title_eligible: false,
         lifecycle_state: "active",
         conversation_state: "ready",
         current_question_message_id: "assistant-1",
@@ -722,76 +748,6 @@ describe("PlanningSessionPage", () => {
     });
     expect(modelMutateAsync).not.toHaveBeenCalled();
     expect(titleMutateAsync).not.toHaveBeenCalled();
-  });
-
-  it("auto-generates a title independently for each session", async () => {
-    mockUsePlanningSession.mockReturnValue({
-      data: {
-        planning_session_id: "planning-session-1",
-        title: "plan_1",
-        title_state: "placeholder",
-        lifecycle_state: "active",
-        conversation_state: "ready",
-        current_question_message_id: "assistant-1",
-        current_operation_id: undefined,
-        current_draft_id: undefined,
-        context_snapshot_id: "planning-context-1",
-        created_at: "2026-04-21T10:00:00Z",
-        updated_at: "2026-04-21T10:05:00Z",
-        project_root: "/tmp/project",
-        model_selection: { model: "github-copilot/gpt-5.4" },
-      },
-      error: null,
-      refetch: vi.fn(),
-    });
-    mockUsePlannerMessagePages.mockReturnValue({
-      messages: [
-        { role: "assistant", content_markdown: "Opening" },
-        { role: "user", content_markdown: "First answer" },
-        { role: "assistant", content_markdown: "Second question" },
-        { role: "user", content_markdown: "Second answer" },
-      ],
-      firstItemIndex: 0,
-      totalCount: 4,
-      hasPreviousPage: false,
-      isFetchingPreviousPage: false,
-      fetchPreviousPage: vi.fn(),
-      error: null,
-      isLoading: false,
-    });
-
-    const { rerender } = render(<PlanningSessionPage />);
-
-    await waitFor(() => {
-      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(1);
-    });
-
-    mockUseParams.mockReturnValue({ sessionId: "planning-session-2" });
-    mockUsePlanningSession.mockReturnValue({
-      data: {
-        planning_session_id: "planning-session-2",
-        title: "plan_2",
-        title_state: "placeholder",
-        lifecycle_state: "active",
-        conversation_state: "ready",
-        current_question_message_id: "assistant-2",
-        current_operation_id: undefined,
-        current_draft_id: undefined,
-        context_snapshot_id: "planning-context-2",
-        created_at: "2026-04-21T10:10:00Z",
-        updated_at: "2026-04-21T10:15:00Z",
-        project_root: "/tmp/project",
-        model_selection: { model: "github-copilot/gpt-5.4" },
-      },
-      error: null,
-      refetch: vi.fn(),
-    });
-
-    rerender(<PlanningSessionPage />);
-
-    await waitFor(() => {
-      expect(generateTitleMutateAsync).toHaveBeenCalledTimes(2);
-    });
   });
 
 	it("consumes ?show_plan=true per session instead of once per component lifetime", async () => {

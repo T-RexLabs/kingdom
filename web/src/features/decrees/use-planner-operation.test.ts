@@ -14,6 +14,7 @@ function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningS
     planning_session_id: "ps_1",
     title: "Planner kickoff",
     title_state: "custom",
+    auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "processing",
     current_question_message_id: "msg_question",
@@ -73,6 +74,30 @@ describe("patchPlannerTerminalCaches — field-scoped reconciliation", () => {
     // Detail-only fields untouched.
     expect(detail?.model_selection).toEqual({ model: "github-copilot/gpt-5.4" });
     expect(detail?.project_root).toBe("/tmp/project");
+  });
+
+  it("applies authoritative session patches carried by reply terminal events", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildOp(),
+      buildEvent("done", {
+        planning_message_id: "msg_new_question",
+        session_patch: {
+          auto_title_eligible: false,
+          current_title_operation_id: "op_title_auto",
+          updated_at: "2026-04-21T10:06:00Z",
+        },
+      }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.auto_title_eligible).toBe(false);
+    expect(detail?.current_title_operation_id).toBe("op_title_auto");
+    expect(detail?.updated_at).toBe("2026-04-21T10:06:00Z");
+    expect(detail?.current_question_message_id).toBe("msg_new_question");
   });
 
   it("preserves concurrent SSE updates to non-terminal fields", () => {

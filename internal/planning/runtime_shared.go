@@ -50,6 +50,17 @@ func (d runtimeDeps) agentContext(session state.PlanningSession, snapshot state.
 	}
 }
 
+func (d runtimeDeps) titleAgentContext(session state.PlanningSession, messages []state.PlanningMessage) AgentContext {
+	return AgentContext{
+		SessionID:       session.PlanningSessionID,
+		Title:           effectiveSessionTitle(session),
+		ProjectRoot:     session.ProjectRoot,
+		Messages:        messages,
+		ModelSelection:  decodeModelSelection(session.ModelSelectionJSON),
+		ForceNewSession: false,
+	}
+}
+
 func (d runtimeDeps) refreshContextSnapshot(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, error) {
 	if strings.TrimSpace(d.projectRoot) == "" {
 		return state.PlanningContextSnapshot{}, fmt.Errorf("planning project root is required")

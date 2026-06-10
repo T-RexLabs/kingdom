@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +39,11 @@ type CreateOperationInput struct {
 	AnswerPayloadJSON string
 	TruncateFromTurn  *int
 	TargetTurnIndex   int
+}
+
+type CreateOperationResult struct {
+	Operation state.PlanningOperation
+	Session   state.PlanningSession
 }
 
 type SnapshotSummary struct {
@@ -75,6 +81,7 @@ type PlannerModelSelection struct {
 type operationRequest struct {
 	ContentMarkdown    string          `json:"content_markdown,omitempty"`
 	AnswerPayload      json.RawMessage `json:"answer_payload,omitempty"`
+	TriggerSource      string          `json:"trigger_source,omitempty"`
 	UserMessageID      string          `json:"user_message_id,omitempty"`
 	UserCreatedAt      string          `json:"user_created_at,omitempty"`
 	TurnIndex          int             `json:"turn_index,omitempty"`
@@ -95,20 +102,98 @@ type plannerMetrics struct {
 	failureCount      atomic.Uint64
 	streamReplayCount atomic.Uint64
 	streamResumeCount atomic.Uint64
+	foregroundStarts  atomic.Uint64
+	recoveryStarts    atomic.Uint64
+	foregroundClaims  atomic.Uint64
+	recoveryClaims    atomic.Uint64
+	claimFailures     atomic.Uint64
+	claimRetries      atomic.Uint64
+	startFailures     atomic.Uint64
+	mu                sync.Mutex
+	lastStartError    string
+	lastStartErrorAt  string
+}
+
+type PlannerDispatchMetrics struct {
+	ForegroundStartRequests int    `json:"foreground_start_requests"`
+	RecoveryStartRequests   int    `json:"recovery_start_requests"`
+	ForegroundClaimSuccess  int    `json:"foreground_claim_successes"`
+	RecoveryClaimSuccess    int    `json:"recovery_claim_successes"`
+	ClaimFailureCount       int    `json:"claim_failure_count"`
+	ClaimRetryCount         int    `json:"claim_retry_count"`
+	StartFailureCount       int    `json:"start_failure_count"`
+	LastStartFailure        string `json:"last_start_failure,omitempty"`
+	LastStartFailureAt      string `json:"last_start_failure_at,omitempty"`
+}
+
+type PlannerLatencyMetric struct {
+	Samples int   `json:"samples"`
+	AvgMs   int64 `json:"avg_ms"`
+}
+
+type GeneratedTitleLatencyMetrics struct {
+	RecentSampleSize int                  `json:"recent_sample_size"`
+	Queue            PlannerLatencyMetric `json:"queue"`
+	Launch           PlannerLatencyMetric `json:"launch"`
+	FirstOutput      PlannerLatencyMetric `json:"first_output"`
+	OutputToReceipt  PlannerLatencyMetric `json:"output_to_receipt"`
+	Finalize         PlannerLatencyMetric `json:"finalize"`
+	Total            PlannerLatencyMetric `json:"total"`
+}
+
+type GeneratedTitleRuntimeMetrics struct {
+	QueuedOperations       int                          `json:"queued_operations"`
+	RunningOperations      int                          `json:"running_operations"`
+	FailedOperations       int                          `json:"failed_operations"`
+	OldestQueuedCreatedAt  string                       `json:"oldest_queued_created_at,omitempty"`
+	OldestRunningStartedAt string                       `json:"oldest_running_started_at,omitempty"`
+	Latency                GeneratedTitleLatencyMetrics `json:"latency"`
 }
 
 type PlannerRuntimeMetrics struct {
-	QueuedOperations       int    `json:"queued_operations"`
-	RunningOperations      int    `json:"running_operations"`
-	FailedOperations       int    `json:"failed_operations"`
-	ActiveSessions         int    `json:"active_sessions"`
-	ProcessingSessions     int    `json:"processing_sessions"`
-	ReplayCount            uint64 `json:"planning_stream_replay_count"`
-	ResumeCount            uint64 `json:"planning_stream_resume_count"`
-	RecoveryCount          uint64 `json:"planning_operation_recovery_count"`
-	FailureCount           uint64 `json:"planning_operation_failure_count"`
-	OldestQueuedCreatedAt  string `json:"oldest_queued_created_at,omitempty"`
-	OldestRunningStartedAt string `json:"oldest_running_started_at,omitempty"`
+	QueuedOperations       int                           `json:"queued_operations"`
+	RunningOperations      int                           `json:"running_operations"`
+	FailedOperations       int                           `json:"failed_operations"`
+	ActiveSessions         int                           `json:"active_sessions"`
+	ProcessingSessions     int                           `json:"processing_sessions"`
+	ReplayCount            uint64                        `json:"planning_stream_replay_count"`
+	ResumeCount            uint64                        `json:"planning_stream_resume_count"`
+	RecoveryCount          uint64                        `json:"planning_operation_recovery_count"`
+	FailureCount           uint64                        `json:"planning_operation_failure_count"`
+	OldestQueuedCreatedAt  string                        `json:"oldest_queued_created_at,omitempty"`
+	OldestRunningStartedAt string                        `json:"oldest_running_started_at,omitempty"`
+	Dispatch               PlannerDispatchMetrics        `json:"dispatch"`
+	GeneratedTitle         *GeneratedTitleRuntimeMetrics `json:"generated_title,omitempty"`
+}
+
+func (m *plannerMetrics) snapshotDispatchMetrics() PlannerDispatchMetrics {
+	if m == nil {
+		return PlannerDispatchMetrics{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return PlannerDispatchMetrics{
+		ForegroundStartRequests: int(m.foregroundStarts.Load()),
+		RecoveryStartRequests:   int(m.recoveryStarts.Load()),
+		ForegroundClaimSuccess:  int(m.foregroundClaims.Load()),
+		RecoveryClaimSuccess:    int(m.recoveryClaims.Load()),
+		ClaimFailureCount:       int(m.claimFailures.Load()),
+		ClaimRetryCount:         int(m.claimRetries.Load()),
+		StartFailureCount:       int(m.startFailures.Load()),
+		LastStartFailure:        strings.TrimSpace(m.lastStartError),
+		LastStartFailureAt:      strings.TrimSpace(m.lastStartErrorAt),
+	}
+}
+
+func (m *plannerMetrics) recordStartFailure(now string, err error) {
+	if m == nil || err == nil {
+		return
+	}
+	m.startFailures.Add(1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastStartError = strings.TrimSpace(err.Error())
+	m.lastStartErrorAt = strings.TrimSpace(now)
 }
 
 func defaultPlanningSessionTitleState(title string) string {
