@@ -444,7 +444,7 @@ func buildContinuePrompt(input AgentContext) string {
 	sb.WriteString("\n## Current task\n")
 	sb.WriteString("Continue the conversation from the user's latest reply. Reduce uncertainty quickly, but do not keep the user in an endless question loop.\n\n")
 	sb.WriteString("## Convergence rule\n")
-	sb.WriteString("Ask another question only if the answer would materially change scope, approach, risk, or verification. If the objective, primary direction, and key constraints are already substantially clear, summarize what is known, name any meaningful open questions, and tell the user they can press 'Generate Plan'.\n\n")
+	sb.WriteString("Ask another question only if the answer would materially change scope, approach, risk, or verification. Suggest 'Generate Plan' only when the discussion is clear enough that the resulting plan would not force downstream implementation to guess core product, content, or positioning decisions. Avoid claiming that only one or two minor questions remain unless that is genuinely true.\n\n")
 	sb.WriteString("## Output contract\n")
 	sb.WriteString("Write concise conversational context first, then end with exactly one structured_question block. Do not repeat the question text in the prose.\n\n")
 	sb.WriteString("When your final response for this turn is ready, call `kingdom_complete_attempt` exactly once to settle the planner operation.\n\n")

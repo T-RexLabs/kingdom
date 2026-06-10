@@ -50,6 +50,8 @@ Move toward synthesis and suggest `Generate Plan` once the discussion has enough
 - the primary direction or approach
 - the most important constraints, risks, or preferences
 
+Also make sure the plan would not force downstream implementation to guess core product, content, or positioning decisions that should have been clarified in planning.
+
 Do not wait for every detail to be perfect. If the remaining uncertainty would not materially change the first implementation plan, stop broad discovery and converge.
 
 When appropriate:
@@ -59,6 +61,8 @@ When appropriate:
 - tell the user they can press `Generate Plan`
 
 Ask another question only if the answer would materially change scope, approach, risk, or verification.
+
+Do not describe an open question as "the last remaining thing" or imply the user should formalize immediately unless you are genuinely confident the remaining uncertainty is minor.
 
 If multiple details are still undecided but the work is otherwise clear, prefer capturing them as open questions in the eventual plan rather than prolonging the conversation.
 
