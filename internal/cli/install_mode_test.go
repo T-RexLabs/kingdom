@@ -110,6 +110,97 @@ func TestRunSummonStatusDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
 	}
 }
 
+func TestRunSummonStatusPrefersLocalSummonStateFile(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	configPath := filepath.Join(projectRoot, ".kingdom", "config.yaml")
+	cfg, err := readInstallConfig(configPath)
+	if err != nil {
+		t.Fatalf("read install config: %v", err)
+	}
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dummy summon process: %v", err)
+	}
+	processDone := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(processDone)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-processDone:
+		default:
+			_ = cmd.Process.Kill()
+			<-processDone
+		}
+	})
+	statePath := summonStatePath(cfg.KingdomHome)
+	if err := saveSummonState(statePath, summonStateRecord{
+		PID:         cmd.Process.Pid,
+		State:       summonStatusStateStarting,
+		Phase:       "validating OpenCode agents (3/9)",
+		ConfigPath:  configPath,
+		KingdomHome: cfg.KingdomHome,
+		Listen:      cfg.Server.Listen,
+		BasePath:    cfg.Server.BasePath,
+		LogPath:     summonLogPath(cfg.KingdomHome),
+		StartedAt:   "2026-06-10T10:00:00Z",
+		UpdatedAt:   "2026-06-10T10:00:03Z",
+	}); err != nil {
+		t.Fatalf("save summon state: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	if err := runSummonStatus(stdout, []string{"--config", configPath}); err != nil {
+		t.Fatalf("run summon status: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "summon status: starting (pid=") {
+		t.Fatalf("expected starting status, got %q", output)
+	}
+	if !strings.Contains(output, "phase: validating OpenCode agents (3/9)") {
+		t.Fatalf("expected summon phase in status, got %q", output)
+	}
+	if !strings.Contains(output, "logs: ") {
+		t.Fatalf("expected summon logs path in status, got %q", output)
+	}
+}
+
+func TestRunSummonStatusSurfacesFailedLocalState(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	configPath := filepath.Join(projectRoot, ".kingdom", "config.yaml")
+	cfg, err := readInstallConfig(configPath)
+	if err != nil {
+		t.Fatalf("read install config: %v", err)
+	}
+	if err := saveSummonState(summonStatePath(cfg.KingdomHome), summonStateRecord{
+		State:       summonStatusStateFailed,
+		Phase:       "validating OpenCode agents (4/9)",
+		ConfigPath:  configPath,
+		KingdomHome: cfg.KingdomHome,
+		LogPath:     summonLogPath(cfg.KingdomHome),
+		LastError:   "bootstrap runtime: provider agent \"builder\" is not resolvable",
+	}); err != nil {
+		t.Fatalf("save summon state: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	if err := runSummonStatus(stdout, []string{"--config", configPath}); err != nil {
+		t.Fatalf("run summon status: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "summon status: failed") {
+		t.Fatalf("expected failed status, got %q", output)
+	}
+	if !strings.Contains(output, "error: bootstrap runtime") {
+		t.Fatalf("expected summon error in status, got %q", output)
+	}
+}
+
 func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
 	registryPath := filepath.Join(t.TempDir(), "summon_registry.json")
 	originalRegistryPathFunc := summonRegistryPathFunc
@@ -193,7 +284,7 @@ func TestWaitForSummonReadyWithProcessReturnsExitErrorEarly(t *testing.T) {
 	processDone <- fmt.Errorf("exit status 3")
 
 	start := time.Now()
-	err := waitForSummonReadyWithProcess(cfg, 30*time.Second, processDone, nil, "")
+	err := waitForSummonReadyWithProcess(cfg, 30*time.Second, processDone, nil, "", "", nil)
 	if err == nil {
 		t.Fatal("expected readiness to fail when process exits")
 	}
@@ -258,12 +349,89 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	processDone := make(chan error, 1)
 	processDone <- fmt.Errorf("exit status 3")
 
-	err := waitForSummonReadyWithProcess(cfg, 30*time.Second, processDone, nil, logPath)
+	err := waitForSummonReadyWithProcess(cfg, 30*time.Second, processDone, nil, logPath, "", nil)
 	if err == nil {
 		t.Fatal("expected readiness to fail when process exits")
 	}
 	if !strings.Contains(err.Error(), "address already in use") {
 		t.Fatalf("expected startup log detail in error, got %v", err)
+	}
+}
+
+func TestRunSummonLogsReadsLastRequestedLines(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	configPath := filepath.Join(projectRoot, ".kingdom", "config.yaml")
+	logPath := filepath.Join(projectRoot, ".kingdom", "logs", defaultLogFileName)
+	if err := os.WriteFile(logPath, []byte("one\ntwo\nthree\nfour\n"), 0o644); err != nil {
+		t.Fatalf("write summon log: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	if err := runSummonLogs(context.Background(), stdout, []string{"--config", configPath, "--lines", "2"}); err != nil {
+		t.Fatalf("run summon logs: %v", err)
+	}
+	if got := stdout.String(); got != "three\nfour\n" {
+		t.Fatalf("expected last two log lines, got %q", got)
+	}
+}
+
+func TestRunSummonLogsFollowStreamsAppendedOutput(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	configPath := filepath.Join(projectRoot, ".kingdom", "config.yaml")
+	logPath := filepath.Join(projectRoot, ".kingdom", "logs", defaultLogFileName)
+	if err := os.WriteFile(logPath, []byte("ready\n"), 0o644); err != nil {
+		t.Fatalf("write summon log: %v", err)
+	}
+	stdout := &bytes.Buffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runSummonLogs(ctx, stdout, []string{"--config", configPath, "--follow", "--lines", "1"})
+	}()
+	time.Sleep(300 * time.Millisecond)
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open summon log for append: %v", err)
+	}
+	if _, err := file.WriteString("next\n"); err != nil {
+		_ = file.Close()
+		t.Fatalf("append summon log: %v", err)
+	}
+	_ = file.Close()
+	time.Sleep(400 * time.Millisecond)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run summon logs follow: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "ready\n") || !strings.Contains(output, "next\n") {
+		t.Fatalf("expected follow output to include initial and appended lines, got %q", output)
+	}
+}
+
+func TestSummonLogsFollowCommandOmitsConfigPath(t *testing.T) {
+	if got := summonLogsFollowCommand("/tmp/project/.kingdom/config.yaml"); got != "kd summon logs --follow" {
+		t.Fatalf("expected canonical follow command, got %q", got)
+	}
+}
+
+func TestSummonDetachedProgressTextUsesAgentProgressBar(t *testing.T) {
+	text := summonDetachedProgressText(summonStateRecord{
+		State:       summonStatusStateStarting,
+		PhaseCode:   string(kingdom.StartupPhaseValidatingOpenCodeAgent),
+		Phase:       "validating OpenCode agents",
+		ProgressNow: 3,
+		ProgressMax: 9,
+	})
+	want := "[startup] validating OpenCode agents [####--------] 3/9"
+	if text != want {
+		t.Fatalf("detached progress text = %q, want %q", text, want)
 	}
 }
 

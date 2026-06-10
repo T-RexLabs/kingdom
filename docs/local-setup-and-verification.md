@@ -103,7 +103,7 @@ Expected behavior:
 - ensures the SQLite schema exists
 - loads policies, schemas, workflows, and config from `.kingdom/`
 - seeds canonical roles
-- validates OpenCode startup in strict mode when enabled
+- validates managed OpenCode assets and agent resolution in strict mode when enabled
 - starts the API at `http://127.0.0.1:8080/api/v1`
 - serves the web UI from the same process
 
@@ -122,6 +122,7 @@ Expected behavior:
 - `summon already running with pid=<pid>`
   - use `kd summon status`, then `kd summon stop`
 - `summon readiness timeout`
+  - run `kd summon logs --follow`
   - inspect `.kingdom/logs/summon.log`
   - verify `http://127.0.0.1:8080/healthz`
   - verify authenticated `GET /api/v1/health`

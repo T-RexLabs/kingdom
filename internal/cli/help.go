@@ -98,8 +98,8 @@ var helpTopics = []*helpTopic{
 	{
 		path:        []string{"summon"},
 		summary:     "Start or manage the local runtime.",
-		usage:       []string{"kd summon [flags]", "kd summon serve [flags]", "kd summon status [flags]", "kd summon stop [flags]"},
-		subcommands: [][]string{{"summon"}, {"summon", "serve"}, {"summon", "status"}, {"summon", "stop"}},
+		usage:       []string{"kd summon [flags]", "kd summon serve [flags]", "kd summon status [flags]", "kd summon logs [flags]", "kd summon stop [flags]"},
+		subcommands: [][]string{{"summon"}, {"summon", "serve"}, {"summon", "status"}, {"summon", "logs"}, {"summon", "stop"}},
 		flags: func(flags *flag.FlagSet) {
 			bindSummonServeFlags(flags, &summonServeOptions{})
 		},
@@ -120,6 +120,14 @@ var helpTopics = []*helpTopic{
 		usage:   []string{"kd summon status [flags]"},
 		flags: func(flags *flag.FlagSet) {
 			bindSummonConfigFlags(flags, &summonConfigOptions{})
+		},
+	},
+	{
+		path:    []string{"summon", "logs"},
+		summary: "Show the local summon logs.",
+		usage:   []string{"kd summon logs [flags]"},
+		flags: func(flags *flag.FlagSet) {
+			bindSummonLogsFlags(flags, &summonLogsOptions{})
 		},
 	},
 	{

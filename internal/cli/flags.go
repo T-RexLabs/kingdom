@@ -33,6 +33,12 @@ type summonConfigOptions struct {
 	configPath string
 }
 
+type summonLogsOptions struct {
+	configPath string
+	follow     bool
+	lines      int
+}
+
 type createDecreeOptions struct {
 	title                     string
 	text                      string
@@ -131,6 +137,15 @@ func bindSummonConfigFlags(flags *flag.FlagSet, opts *summonConfigOptions) {
 		return
 	}
 	flags.StringVar(&opts.configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "summon config `path`")
+}
+
+func bindSummonLogsFlags(flags *flag.FlagSet, opts *summonLogsOptions) {
+	if flags == nil || opts == nil {
+		return
+	}
+	flags.StringVar(&opts.configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "summon config `path`")
+	flags.BoolVar(&opts.follow, "follow", false, "follow appended log output")
+	flags.IntVar(&opts.lines, "lines", 50, "show the last `n` log lines before follow")
 }
 
 func bindCreateDecreeFlags(flags *flag.FlagSet, opts *createDecreeOptions) {

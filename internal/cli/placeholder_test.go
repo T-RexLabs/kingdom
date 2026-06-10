@@ -778,6 +778,7 @@ func TestNormalizeSummonCommandArgsPreservesExplicitSubcommandsAndDetach(t *test
 	}{
 		{name: "serve unchanged", in: []string{"serve", "--config", "cfg.yaml"}, want: []string{"serve", "--config", "cfg.yaml"}},
 		{name: "status unchanged", in: []string{"status", "--config", "cfg.yaml"}, want: []string{"status", "--config", "cfg.yaml"}},
+		{name: "logs unchanged", in: []string{"logs", "--config", "cfg.yaml"}, want: []string{"logs", "--config", "cfg.yaml"}},
 		{name: "stop unchanged", in: []string{"stop", "--config", "cfg.yaml"}, want: []string{"stop", "--config", "cfg.yaml"}},
 		{name: "explicit detach unchanged", in: []string{"--detach", "--config", "cfg.yaml"}, want: []string{"--detach", "--config", "cfg.yaml"}},
 	} {
@@ -805,6 +806,9 @@ func TestExecuteSummonHelpDescribesBackgroundDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "kd summon serve [flags]") {
 		t.Fatalf("expected summon help to mention explicit foreground serve, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "kd summon logs [flags]") {
+		t.Fatalf("expected summon help to mention summon logs, got %q", stdout.String())
 	}
 }
 

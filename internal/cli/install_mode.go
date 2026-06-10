@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -39,6 +40,7 @@ const (
 	defaultConfigFileName         = "config.yaml"
 	defaultPIDFileName            = "summon.pid"
 	defaultLogFileName            = "summon.log"
+	defaultStateFileName          = "summon_state.json"
 	defaultSummonRegistryFileName = "summon_registry.json"
 
 	defaultWorkflowSeedName = "royal-decree-v1.json"
@@ -80,6 +82,32 @@ type summonInstanceRecord struct {
 
 type summonInstanceRegistry struct {
 	Instances []summonInstanceRecord `json:"instances"`
+}
+
+type summonStatusState string
+
+const (
+	summonStatusStateStarting summonStatusState = "starting"
+	summonStatusStateRunning  summonStatusState = "running"
+	summonStatusStateFailed   summonStatusState = "failed"
+	summonStatusStateStopped  summonStatusState = "stopped"
+)
+
+type summonStateRecord struct {
+	PID         int               `json:"pid"`
+	State       summonStatusState `json:"state"`
+	PhaseCode   string            `json:"phase_code,omitempty"`
+	Phase       string            `json:"phase,omitempty"`
+	ProgressNow int               `json:"progress_now,omitempty"`
+	ProgressMax int               `json:"progress_max,omitempty"`
+	ConfigPath  string            `json:"config_path,omitempty"`
+	KingdomHome string            `json:"kingdom_home,omitempty"`
+	Listen      string            `json:"listen,omitempty"`
+	BasePath    string            `json:"base_path,omitempty"`
+	LogPath     string            `json:"log_path,omitempty"`
+	StartedAt   string            `json:"started_at,omitempty"`
+	UpdatedAt   string            `json:"updated_at,omitempty"`
+	LastError   string            `json:"last_error,omitempty"`
 }
 
 type installConfig struct {
@@ -128,6 +156,256 @@ type installConfig struct {
 // centralizing here closes that drift surface.
 func summonAPIURL(cfg installConfig) string {
 	return fmt.Sprintf("http://%s%s", cfg.Server.Listen, cfg.Server.BasePath)
+}
+
+type summonStartupTracker struct {
+	writer        io.Writer
+	interactive   bool
+	statePath     string
+	state         summonStateRecord
+	lineActive    bool
+	lastLineWidth int
+	lastPhaseLine string
+	warnedStateIO bool
+}
+
+func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConfig, configPath string, pid int, startedAt string) *summonStartupTracker {
+	return &summonStartupTracker{
+		writer:      writer,
+		interactive: isInteractiveWriter(writer),
+		statePath:   strings.TrimSpace(statePath),
+		state: summonStateRecord{
+			PID:         pid,
+			State:       summonStatusStateStarting,
+			PhaseCode:   string(kingdom.StartupPhaseStartingRuntime),
+			Phase:       startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
+			ConfigPath:  strings.TrimSpace(configPath),
+			KingdomHome: strings.TrimSpace(cfg.KingdomHome),
+			Listen:      strings.TrimSpace(cfg.Server.Listen),
+			BasePath:    strings.TrimSpace(cfg.Server.BasePath),
+			LogPath:     summonLogPath(cfg.KingdomHome),
+			StartedAt:   strings.TrimSpace(startedAt),
+			UpdatedAt:   strings.TrimSpace(startedAt),
+		},
+	}
+}
+
+func (t *summonStartupTracker) Initialize() {
+	t.writeState()
+	t.printPhaseLine(t.state.Phase)
+}
+
+func (t *summonStartupTracker) Report(event kingdom.StartupEvent) {
+	if t == nil {
+		return
+	}
+	label := startupPhaseLabel(event.Phase)
+	switch event.Status {
+	case kingdom.StartupEventStatusStarted:
+		if label != "" {
+			t.state.State = summonStatusStateStarting
+			t.state.PhaseCode = string(event.Phase)
+			t.state.Phase = label
+			t.state.ProgressNow = 0
+			t.state.ProgressMax = event.Total
+			t.state.LastError = ""
+			t.writeState()
+			t.printPhaseLine(label)
+		}
+	case kingdom.StartupEventStatusProgress:
+		if label != "" {
+			t.state.State = summonStatusStateStarting
+			t.state.PhaseCode = string(event.Phase)
+			t.state.Phase = label
+			t.state.ProgressNow = event.Completed
+			t.state.ProgressMax = event.Total
+			t.state.LastError = ""
+			t.writeState()
+			t.printProgressLine(label, event.Completed, event.Total)
+		}
+	case kingdom.StartupEventStatusCompleted:
+		if label != "" {
+			t.state.PhaseCode = string(event.Phase)
+			t.state.Phase = label
+			t.state.ProgressNow = event.Completed
+			t.state.ProgressMax = event.Total
+			t.writeState()
+			if event.Phase == kingdom.StartupPhaseValidatingOpenCodeAgent {
+				t.finishProgressLine(label, event.Completed, event.Total)
+			}
+		}
+	case kingdom.StartupEventStatusFailed:
+		message := strings.TrimSpace(event.Message)
+		if message == "" {
+			message = strings.TrimSpace(label)
+		}
+		if message == "" {
+			message = "startup failed"
+		}
+		t.MarkFailed(message)
+	}
+}
+
+func (t *summonStartupTracker) MarkReady() {
+	if t == nil {
+		return
+	}
+	t.state.State = summonStatusStateRunning
+	t.state.PhaseCode = string(kingdom.StartupPhaseReady)
+	t.state.Phase = startupPhaseLabel(kingdom.StartupPhaseReady)
+	t.state.ProgressNow = 0
+	t.state.ProgressMax = 0
+	t.state.LastError = ""
+	t.writeState()
+	t.printPhaseLine(t.state.Phase)
+}
+
+func (t *summonStartupTracker) MarkFailed(message string) {
+	if t == nil {
+		return
+	}
+	t.state.State = summonStatusStateFailed
+	t.state.LastError = strings.TrimSpace(message)
+	if strings.TrimSpace(t.state.LastError) == "" {
+		t.state.LastError = "startup failed"
+	}
+	t.writeState()
+	t.printPhaseLine("startup failed")
+	if t.writer != nil {
+		_, _ = fmt.Fprintf(t.writer, "summon: %s\n", t.state.LastError)
+	}
+}
+
+func (t *summonStartupTracker) MarkStopped() {
+	if t == nil {
+		return
+	}
+	t.clearActiveLine()
+	t.state.State = summonStatusStateStopped
+	t.state.PhaseCode = ""
+	t.state.Phase = ""
+	t.state.ProgressNow = 0
+	t.state.ProgressMax = 0
+	t.state.LastError = ""
+	t.writeState()
+}
+
+func (t *summonStartupTracker) printPhaseLine(line string) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || t.writer == nil {
+		return
+	}
+	if t.interactive {
+		t.clearActiveLine()
+	}
+	if t.lastPhaseLine == trimmed {
+		return
+	}
+	t.lastPhaseLine = trimmed
+	_, _ = fmt.Fprintf(t.writer, "[startup] %s\n", trimmed)
+}
+
+func (t *summonStartupTracker) printProgressLine(label string, completed, total int) {
+	if strings.TrimSpace(label) == "" || total <= 0 || t.writer == nil {
+		return
+	}
+	text := detachedProgressBar(label, completed, total)
+	if !t.interactive {
+		_, _ = fmt.Fprintf(t.writer, "[startup] %s (%d/%d)\n", label, completed, total)
+		return
+	}
+	t.lineActive = true
+	t.lastLineWidth = maxInt(t.lastLineWidth, len(text))
+	padding := strings.Repeat(" ", t.lastLineWidth-len(text))
+	_, _ = fmt.Fprintf(t.writer, "\r%s%s", text, padding)
+}
+
+func (t *summonStartupTracker) finishProgressLine(label string, completed, total int) {
+	if strings.TrimSpace(label) == "" || total <= 0 || t.writer == nil {
+		return
+	}
+	if !t.interactive {
+		return
+	}
+	text := detachedProgressBar(label, completed, total)
+	padding := strings.Repeat(" ", maxInt(t.lastLineWidth, len(text))-len(text))
+	_, _ = fmt.Fprintf(t.writer, "\r%s%s\n", text, padding)
+	t.lineActive = false
+	t.lastLineWidth = 0
+	t.lastPhaseLine = ""
+}
+
+func (t *summonStartupTracker) clearActiveLine() {
+	if !t.interactive || !t.lineActive || t.writer == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(t.writer, "\r%s\r", strings.Repeat(" ", t.lastLineWidth))
+	t.lineActive = false
+	t.lastLineWidth = 0
+}
+
+func (t *summonStartupTracker) writeState() {
+	if t == nil || strings.TrimSpace(t.statePath) == "" {
+		return
+	}
+	t.state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := saveSummonState(t.statePath, t.state); err != nil && !t.warnedStateIO {
+		t.warnedStateIO = true
+		if t.writer != nil {
+			_, _ = fmt.Fprintf(t.writer, "summon: unable to persist local state: %v\n", err)
+		}
+	}
+}
+
+func startupPhaseLabel(phase kingdom.StartupPhase) string {
+	switch phase {
+	case kingdom.StartupPhaseStartingRuntime:
+		return "starting runtime"
+	case kingdom.StartupPhaseCheckingOpenCodeSetup:
+		return "checking Kingdom OpenCode setup"
+	case kingdom.StartupPhaseValidatingOpenCodeAgent:
+		return "validating OpenCode agents"
+	case kingdom.StartupPhaseReady:
+		return "ready"
+	default:
+		return ""
+	}
+}
+
+func summonLogPath(kingdomHome string) string {
+	return filepath.Join(strings.TrimSpace(kingdomHome), "logs", defaultLogFileName)
+}
+
+func summonStatePath(kingdomHome string) string {
+	return filepath.Join(strings.TrimSpace(kingdomHome), "run", defaultStateFileName)
+}
+
+func isInteractiveWriter(writer io.Writer) bool {
+	file, ok := writer.(*os.File)
+	if !ok || file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	term := strings.TrimSpace(os.Getenv("TERM"))
+	return !strings.EqualFold(term, "dumb")
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func summonLogsFollowCommand(configPath string) string {
+	_ = configPath
+	return "kd summon logs --follow"
 }
 
 func runInitCommand(stdout io.Writer, args []string) error {
@@ -233,6 +511,8 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 		return runSummonServe(ctx, stdout, stderr, args[1:])
 	case "status":
 		return runSummonStatus(stdout, args[1:])
+	case "logs":
+		return runSummonLogs(ctx, stdout, args[1:])
 	case "stop":
 		return runSummonStop(stdout, args[1:])
 	default:
@@ -245,7 +525,7 @@ func normalizeSummonCommandArgs(args []string) []string {
 		return nil
 	}
 	switch args[0] {
-	case "serve", "status", "stop":
+	case "serve", "status", "logs", "stop":
 		return args
 	}
 	for _, arg := range args {
@@ -283,6 +563,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 	}
 	opts.readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), opts.readyTimeout, readyTimeoutExplicit)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
+	statePath := summonStatePath(cfg.KingdomHome)
 
 	if opts.detach {
 		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts.readyTimeout)
@@ -297,6 +578,19 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		return err
 	}
 	defer releasePID()
+	startupTracker := newSummonStartupTracker(stderr, statePath, cfg, resolvedConfigPath, os.Getpid(), startedAt)
+	startupTracker.Initialize()
+	startupReady := false
+	defer func() {
+		switch {
+		case startupTracker == nil:
+			return
+		case err != nil && !startupReady && !errors.Is(err, context.Canceled) && !errors.Is(err, errSummonForcedShutdown):
+			startupTracker.MarkFailed(err.Error())
+		default:
+			startupTracker.MarkStopped()
+		}
+	}()
 
 	if err := ensureDatabaseSchema(cfg.DBPath); err != nil {
 		return err
@@ -325,6 +619,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
 		StartupContext:      ctx,
+		StartupReporter:     startupTracker.Report,
 		Paths:               bootstrapPathsFromConfig(cfg),
 		ProviderEngine:      cfg.Provider.Engine,
 		ProviderStrict:      cfg.Provider.Strict,
@@ -443,6 +738,8 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 	}); err != nil {
 		return fmt.Errorf("register summon instance: %w", err)
 	}
+	startupTracker.MarkReady()
+	startupReady = true
 	defer func() {
 		_ = unregisterSummonInstance(os.Getpid())
 	}()
@@ -677,7 +974,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return err
 	}
 
-	logPath := filepath.Join(cfg.KingdomHome, "logs", defaultLogFileName)
+	logPath := summonLogPath(cfg.KingdomHome)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open summon log file: %w", err)
@@ -694,13 +991,18 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return fmt.Errorf("start detached summon process: %w", err)
 	}
 	_ = logFile.Close()
+	if _, err := fmt.Fprintf(stdout, "kingdom starting in background (pid=%d)\n", cmd.Process.Pid); err != nil {
+		_ = cmd.Process.Kill()
+		return err
+	}
 
 	processDone := make(chan error, 1)
 	go func() {
 		processDone <- cmd.Wait()
 	}()
 
-	if err := waitForSummonReadyWithProcess(cfg, readyTimeout, processDone, nil, logPath); err != nil {
+	renderer := newSummonDetachedProgressRenderer(stdout)
+	if err := waitForSummonReadyWithProcess(cfg, readyTimeout, processDone, nil, logPath, summonStatePath(cfg.KingdomHome), renderer); err != nil {
 		_ = cmd.Process.Kill()
 		return err
 	}
@@ -720,7 +1022,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return fmt.Errorf("summon already running with pid=%d", runningPID)
 	}
 
-	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), cfg.Server.Listen, logPath)
+	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), cfg.Server.Listen, logPath, summonLogsFollowCommand(configPath))
 	return err
 }
 
@@ -773,6 +1075,13 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 		_, err = io.WriteString(stdout, "summon status: stopped (no local summon config)\n")
 		return err
 	}
+	if state, ok, err := loadSummonState(summonStatePath(cfg.KingdomHome)); err != nil {
+		return err
+	} else if ok {
+		if normalized, found := normalizeSummonState(state); found {
+			return writeSummonStateStatus(stdout, normalized, "config", "")
+		}
+	}
 
 	pidPath := filepath.Join(cfg.KingdomHome, "run", defaultPIDFileName)
 	pid, ok, err := readRunningPID(pidPath)
@@ -798,6 +1107,40 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 	}
 	_, err = io.WriteString(stdout, "summon status: stopped\n")
 	return err
+}
+
+func runSummonLogs(ctx context.Context, stdout io.Writer, args []string) error {
+	opts := summonLogsOptions{}
+	flags := newFlagSet("summon logs")
+	bindSummonLogsFlags(flags, &opts)
+	if err := flags.Parse(args); err != nil {
+		return usageError{err: err}
+	}
+	if opts.lines < 0 {
+		return usageError{err: fmt.Errorf("--lines must be >= 0")}
+	}
+	resolvedConfigPath, err := filepath.Abs(opts.configPath)
+	if err != nil {
+		return fmt.Errorf("resolve --config: %w", err)
+	}
+	cfg, err := readInstallConfig(resolvedConfigPath)
+	if err != nil {
+		return err
+	}
+	logPath := summonLogPath(cfg.KingdomHome)
+	lines, err := readLastLogLines(logPath, opts.lines)
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintln(stdout, line); err != nil {
+			return err
+		}
+	}
+	if !opts.follow {
+		return nil
+	}
+	return followLogFile(ctx, stdout, logPath)
 }
 
 func runSummonStop(stdout io.Writer, args []string) error {
@@ -839,21 +1182,56 @@ func runSummonStop(stdout io.Writer, args []string) error {
 }
 
 func writeSummonStatus(stdout io.Writer, record summonInstanceRecord, source, note string) error {
-	if _, err := fmt.Fprintf(stdout, "summon status: running (pid=%d)\n", record.PID); err != nil {
+	return writeSummonStateStatus(stdout, summonStateRecord{
+		PID:         record.PID,
+		State:       summonStatusStateRunning,
+		ConfigPath:  record.ConfigPath,
+		KingdomHome: record.KingdomHome,
+		Listen:      record.Listen,
+		BasePath:    record.BasePath,
+		LogPath:     summonLogPath(record.KingdomHome),
+		StartedAt:   record.StartedAt,
+	}, source, note)
+}
+
+func writeSummonStateStatus(stdout io.Writer, state summonStateRecord, source, note string) error {
+	statusLine := fmt.Sprintf("summon status: %s", strings.TrimSpace(string(state.State)))
+	if state.PID > 0 && (state.State == summonStatusStateRunning || state.State == summonStatusStateStarting) {
+		statusLine = fmt.Sprintf("%s (pid=%d)", statusLine, state.PID)
+	}
+	if _, err := fmt.Fprintln(stdout, statusLine); err != nil {
 		return err
 	}
-	if strings.TrimSpace(record.Listen) != "" {
-		if _, err := fmt.Fprintf(stdout, "  api: http://%s%s\n", strings.TrimSpace(record.Listen), strings.TrimSpace(record.BasePath)); err != nil {
+	if state.State == summonStatusStateStarting {
+		phaseText := summonStatePhaseDisplay(state)
+		if strings.TrimSpace(phaseText) != "" {
+			if _, err := fmt.Fprintf(stdout, "  phase: %s\n", phaseText); err != nil {
+				return err
+			}
+		}
+	}
+	if state.State == summonStatusStateRunning && strings.TrimSpace(state.Listen) != "" {
+		if _, err := fmt.Fprintf(stdout, "  api: http://%s%s\n", strings.TrimSpace(state.Listen), strings.TrimSpace(state.BasePath)); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(record.ConfigPath) != "" {
-		if _, err := fmt.Fprintf(stdout, "  config: %s\n", record.ConfigPath); err != nil {
+	if strings.TrimSpace(state.ConfigPath) != "" {
+		if _, err := fmt.Fprintf(stdout, "  config: %s\n", strings.TrimSpace(state.ConfigPath)); err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(record.KingdomHome) != "" {
-		if _, err := fmt.Fprintf(stdout, "  kingdom home: %s\n", record.KingdomHome); err != nil {
+	if strings.TrimSpace(state.KingdomHome) != "" {
+		if _, err := fmt.Fprintf(stdout, "  kingdom home: %s\n", strings.TrimSpace(state.KingdomHome)); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(state.LogPath) != "" {
+		if _, err := fmt.Fprintf(stdout, "  logs: %s\n", strings.TrimSpace(state.LogPath)); err != nil {
+			return err
+		}
+	}
+	if state.State == summonStatusStateFailed && strings.TrimSpace(state.LastError) != "" {
+		if _, err := fmt.Fprintf(stdout, "  error: %s\n", strings.TrimSpace(state.LastError)); err != nil {
 			return err
 		}
 	}
@@ -868,6 +1246,17 @@ func writeSummonStatus(stdout io.Writer, record summonInstanceRecord, source, no
 		}
 	}
 	return nil
+}
+
+func summonStatePhaseDisplay(state summonStateRecord) string {
+	phase := strings.TrimSpace(state.Phase)
+	if phase == "" {
+		return ""
+	}
+	if state.ProgressMax > 0 {
+		return fmt.Sprintf("%s (%d/%d)", phase, state.ProgressNow, state.ProgressMax)
+	}
+	return phase
 }
 
 func stopSummonRegistryRecord(stdout io.Writer, record summonInstanceRecord) error {
@@ -1014,12 +1403,15 @@ func isSummonStopped(pidPath string, pid int) (bool, error) {
 }
 
 func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error) error {
-	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, "")
+	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, "", "", nil)
 }
 
-func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string) error {
+func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string, statePath string, renderer *summonDetachedProgressRenderer) error {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
+	}
+	if renderer != nil {
+		defer renderer.Clear()
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -1027,6 +1419,13 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 	apiURL := summonAPIURL(cfg) + "/health"
 
 	for time.Now().Before(deadline) {
+		if renderer != nil {
+			if state, ok, err := loadSummonState(statePath); err == nil && ok {
+				if normalized, found := normalizeSummonState(state); found {
+					renderer.Render(normalized)
+				}
+			}
+		}
 		if err := pollSummonServerStartError(serverErrCh); err != nil {
 			return err
 		}
@@ -1151,6 +1550,250 @@ func readSummonStartupLogDetail(path string) string {
 		return text
 	}
 	return last
+}
+
+func readLastLogLines(path string, limit int) ([]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("summon log %q does not exist yet", path)
+		}
+		return nil, fmt.Errorf("open summon log %q: %w", path, err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	if limit == 0 {
+		return nil, nil
+	}
+	lines := make([]string, 0, maxInt(limit, 16))
+	for scanner.Scan() {
+		text := scanner.Text()
+		if limit > 0 && len(lines) >= limit {
+			copy(lines, lines[1:])
+			lines[len(lines)-1] = text
+			continue
+		}
+		lines = append(lines, text)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read summon log %q: %w", path, err)
+	}
+	return lines, nil
+}
+
+func followLogFile(ctx context.Context, stdout io.Writer, path string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var offset int64
+	if info, err := os.Stat(path); err == nil {
+		offset = info.Size()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat summon log %q: %w", path, err)
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := streamLogUpdates(stdout, path, &offset); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func streamLogUpdates(stdout io.Writer, path string, offset *int64) error {
+	if offset == nil {
+		return fmt.Errorf("log offset is required")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("open summon log %q: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat summon log %q: %w", path, err)
+	}
+	if *offset > info.Size() {
+		*offset = 0
+	}
+	if _, err := file.Seek(*offset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek summon log %q: %w", path, err)
+	}
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			if _, writeErr := io.WriteString(stdout, line); writeErr != nil {
+				return writeErr
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				currentOffset, seekErr := file.Seek(0, io.SeekCurrent)
+				if seekErr != nil {
+					return fmt.Errorf("capture summon log offset %q: %w", path, seekErr)
+				}
+				*offset = currentOffset
+				return nil
+			}
+			return fmt.Errorf("read summon log %q: %w", path, err)
+		}
+	}
+}
+
+func loadSummonState(path string) (summonStateRecord, bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return summonStateRecord{}, false, nil
+		}
+		return summonStateRecord{}, false, fmt.Errorf("read summon state: %w", err)
+	}
+	state := summonStateRecord{}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return summonStateRecord{}, false, fmt.Errorf("decode summon state: %w", err)
+	}
+	return state, true, nil
+}
+
+func saveSummonState(path string, state summonStateRecord) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("summon state path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create summon state directory: %w", err)
+	}
+	raw, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode summon state: %w", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		return fmt.Errorf("write summon state: %w", err)
+	}
+	return nil
+}
+
+func normalizeSummonState(state summonStateRecord) (summonStateRecord, bool) {
+	state.State = summonStatusState(strings.TrimSpace(string(state.State)))
+	if state.State == "" {
+		return summonStateRecord{}, false
+	}
+	running := state.PID > 0 && isProcessRunning(state.PID)
+	switch state.State {
+	case summonStatusStateStarting:
+		if running {
+			return state, true
+		}
+		if strings.TrimSpace(state.LastError) != "" {
+			state.State = summonStatusStateFailed
+			return state, true
+		}
+		state.State = summonStatusStateStopped
+		state.Phase = ""
+		return state, true
+	case summonStatusStateRunning:
+		if running {
+			return state, true
+		}
+		state.State = summonStatusStateStopped
+		state.Phase = ""
+		return state, true
+	case summonStatusStateFailed, summonStatusStateStopped:
+		return state, true
+	default:
+		return summonStateRecord{}, false
+	}
+}
+
+type summonDetachedProgressRenderer struct {
+	writer      io.Writer
+	interactive bool
+	lineActive  bool
+	lineWidth   int
+	lastText    string
+}
+
+func newSummonDetachedProgressRenderer(writer io.Writer) *summonDetachedProgressRenderer {
+	if writer == nil {
+		return nil
+	}
+	return &summonDetachedProgressRenderer{writer: writer, interactive: isInteractiveWriter(writer)}
+}
+
+func (r *summonDetachedProgressRenderer) Render(state summonStateRecord) {
+	if r == nil || r.writer == nil || state.State != summonStatusStateStarting {
+		return
+	}
+	text := summonDetachedProgressText(state)
+	if strings.TrimSpace(text) == "" || text == r.lastText {
+		return
+	}
+	if !r.interactive {
+		r.lastText = text
+		_, _ = fmt.Fprintln(r.writer, text)
+		return
+	}
+	r.lineActive = true
+	r.lastText = text
+	r.lineWidth = maxInt(r.lineWidth, len(text))
+	padding := strings.Repeat(" ", r.lineWidth-len(text))
+	_, _ = fmt.Fprintf(r.writer, "\r%s%s", text, padding)
+}
+
+func (r *summonDetachedProgressRenderer) Clear() {
+	if r == nil || r.writer == nil {
+		return
+	}
+	if r.interactive && r.lineActive {
+		_, _ = fmt.Fprintf(r.writer, "\r%s\r", strings.Repeat(" ", r.lineWidth))
+	}
+	r.lineActive = false
+	r.lineWidth = 0
+	r.lastText = ""
+}
+
+func summonDetachedProgressText(state summonStateRecord) string {
+	phase := strings.TrimSpace(state.Phase)
+	if phase == "" {
+		return ""
+	}
+	if state.PhaseCode == string(kingdom.StartupPhaseValidatingOpenCodeAgent) && state.ProgressMax > 0 {
+		return detachedProgressBar(phase, state.ProgressNow, state.ProgressMax)
+	}
+	return fmt.Sprintf("[startup] %s", phase)
+}
+
+func detachedProgressBar(label string, current, total int) string {
+	if total <= 0 {
+		return fmt.Sprintf("[startup] %s", label)
+	}
+	if current < 0 {
+		current = 0
+	}
+	if current > total {
+		current = total
+	}
+	const width = 12
+	filled := 0
+	if total > 0 {
+		filled = (current * width) / total
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return fmt.Sprintf("[startup] %s [%s%s] %d/%d", label, strings.Repeat("#", filled), strings.Repeat("-", width-filled), current, total)
 }
 
 func ensureWorkflowSeeds(ctx context.Context, cfg installConfig) error {
