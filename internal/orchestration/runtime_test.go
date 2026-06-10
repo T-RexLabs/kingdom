@@ -617,7 +617,25 @@ func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 	if strings.TrimSpace(cfg.ProviderEngine) == "" {
 		cfg.ProviderEngine = "opencode"
 	}
-	return NewRuntime(cfg)
+	rt, err := NewRuntime(cfg)
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() {
+		if err := rt.Close(); err != nil {
+			t.Errorf("cleanup close runtime: %v", err)
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rt.orchestrator.waitForAsyncDrain(cleanupCtx); err != nil {
+			t.Errorf("cleanup wait for async drain: %v", err)
+			return
+		}
+		if err := rt.drainExecutionOutboxUntilIdle(cleanupCtx); err != nil {
+			t.Errorf("cleanup drain execution outbox: %v", err)
+		}
+	})
+	return rt, nil
 }
 
 func TestNewRuntimeDefaultsAutonomousApprovalsToTrue(t *testing.T) {
@@ -10604,6 +10622,18 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
+	t.Cleanup(func() {
+		adapter.releaseProcessStart()
+		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
+			t.Errorf("wait for async drain: %v", err)
+			return
+		}
+		if err := rt.drainExecutionOutboxUntilIdle(drainCtx); err != nil {
+			t.Errorf("drain execution outbox: %v", err)
+		}
+	})
 
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick decree_intake: %v", err)
