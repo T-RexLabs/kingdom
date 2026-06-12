@@ -19,6 +19,65 @@ function buildOperation(overrides: Partial<PlannerOperationState>): PlannerOpera
 }
 
 describe("planner transcript view model", () => {
+  it("hides the superseded assistant turn while a regenerate streams, even if the canonical row is still cached", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        { planning_message_id: "user-2", planning_session_id: "s", turn_index: 2, role: "user", content_markdown: "Ask", created_at: "t", variant_index: 0, active: true },
+        { planning_message_id: "assistant-2-old", planning_session_id: "s", turn_index: 2, role: "assistant", content_markdown: "Old answer", created_at: "t", variant_index: 0, active: true },
+        { planning_message_id: "user-3", planning_session_id: "s", turn_index: 3, role: "user", content_markdown: "Below", created_at: "t", variant_index: 0, active: true },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "regenerate",
+        status: "streaming",
+        operationId: "op-regen",
+        targetTurnIndex: 2,
+        turnIndex: 2,
+        assistantMessageId: "pending-regen-assistant",
+        assistantCreatedAt: "t",
+        replyText: "New ans",
+      }),
+    });
+
+    const ids = result.items.map((item) => item.message.planning_message_id);
+    // Old assistant at the target turn and the turn below are hidden...
+    expect(ids).not.toContain("assistant-2-old");
+    expect(ids).not.toContain("user-3");
+    // ...the user message at the target turn stays, and the streaming ghost shows.
+    expect(ids).toContain("user-2");
+    expect(ids).toContain("pending-regen-assistant");
+    expect(result.items.find((i) => i.message.planning_message_id === "pending-regen-assistant")?.isStreaming).toBe(true);
+  });
+
+  it("hides truncated messages while an edited user reply streams", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        { planning_message_id: "user-2", planning_session_id: "s", turn_index: 2, role: "user", content_markdown: "Old question", created_at: "t", variant_index: 0, active: true },
+        { planning_message_id: "assistant-2", planning_session_id: "s", turn_index: 2, role: "assistant", content_markdown: "Old answer", created_at: "t", variant_index: 0, active: true },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "reply",
+        status: "streaming",
+        operationId: "op-edit",
+        forceNewSession: true,
+        turnIndex: 2,
+        userMessageId: "pending-user",
+        userCreatedAt: "t",
+        assistantMessageId: "pending-assistant",
+        assistantCreatedAt: "t",
+        pendingReply: { contentMarkdown: "Edited question" },
+        replyText: "New ans",
+      }),
+    });
+
+    const ids = result.items.map((item) => item.message.planning_message_id);
+    expect(ids).not.toContain("user-2");
+    expect(ids).not.toContain("assistant-2");
+    expect(ids).toContain("pending-user");
+    expect(ids).toContain("pending-assistant");
+  });
+
   it("marks only the canonical current question interactive", () => {
     const result = buildPlannerTranscriptViewModel({
       messages: [

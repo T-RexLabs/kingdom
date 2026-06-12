@@ -65,9 +65,15 @@ export function PlannerMessageCard({
     isStreaming: isAssistantStreaming,
     liveActivityItems,
   });
+  // Drive the reveal off `isAssistantStreaming` directly (not gated on thought
+  // text existing). That captures the empty baseline the moment streaming
+  // starts, so the FIRST reasoning block types in from zero like later ones.
+  // Gating on text length used to capture the baseline only once the first
+  // block had already arrived — making it snap in fully. Baseline mode still
+  // shows replayed/reconnected backlog instantly instead of re-typing it.
   const liveThoughtReveal = useTextReveal(
     messageActivity.liveThoughtText,
-    isAssistantStreaming && messageActivity.liveThoughtText.trim().length > 0,
+    isAssistantStreaming,
   );
   const [thoughtsOpen, setThoughtsOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
@@ -77,6 +83,22 @@ export function PlannerMessageCard({
   const showStreamingActivity = isAssistantStreaming && Boolean(messageActivity.currentEvent || liveThoughtReveal.displayText.trim());
   const showThoughts = isAssistant && !isAssistantStreaming && messageActivity.thoughts.length > 0;
   const showSources = isAssistant && !isAssistantStreaming && messageActivity.sources.length > 0;
+  // A short handful of sources reads cleanly inline; collapse 5+ behind a
+  // disclosure so a long research burst doesn't dominate the bubble.
+  const collapseSources = messageActivity.sources.length >= 5;
+  const sourceChips = messageActivity.sources.map((source) => (
+    <a
+      key={source.id}
+      href={source.url}
+      target="_blank"
+      rel="noreferrer"
+      title={source.url}
+      className="inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-border/40 bg-background/10 px-2.5 py-1 text-[11px] text-foreground-subtle/85 transition-colors hover:border-gold/40 hover:text-foreground"
+    >
+      <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+      <span className="truncate">{sourceHostLabel(source.url)}</span>
+    </a>
+  ));
 
   return (
     <div className={`group flex min-w-0 ${isAssistant ? "justify-start" : "justify-end"}`}>
@@ -108,16 +130,19 @@ export function PlannerMessageCard({
               <>
                 {showStreamingActivity ? (
                   <div className="space-y-2 text-left">
+                    {liveThoughtReveal.displayText.trim() ? (
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground-subtle/80 text-wrap-anywhere">
+                        {liveThoughtReveal.displayText}
+                      </p>
+                    ) : null}
+                    {/* Status line sits below the reasoning so the live activity
+                        the user is tracking stays anchored at the bottom of the
+                        bubble — no need to lift their gaze as thoughts grow. */}
                     {messageActivity.currentEvent ? (
                       <div className="flex items-center justify-between gap-3 text-xs font-medium text-foreground-subtle/90">
                         <span className="truncate">{messageActivity.currentEvent.label}</span>
                         <Feather className="h-3.5 w-3.5 shrink-0 animate-quill-write text-gold/75" />
                       </div>
-                    ) : null}
-                    {liveThoughtReveal.displayText.trim() ? (
-                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground-subtle/80 text-wrap-anywhere">
-                        {liveThoughtReveal.displayText}
-                      </p>
                     ) : null}
                   </div>
                 ) : null}
@@ -146,30 +171,24 @@ export function PlannerMessageCard({
                       <MarkdownBlock content={renderedContent} className="text-sm leading-relaxed" />
                     )
                   ) : null}
-                {showSources ? (
-                  <PlannerDisclosure
-                    title="Sources"
-                    count={messageActivity.sources.length}
-                    open={sourcesOpen}
-                    onToggle={() => setSourcesOpen((current) => !current)}
-                  >
-                    <div className="space-y-2">
-                      {messageActivity.sources.map((source) => (
-                        <a
-                          key={source.id}
-                          href={source.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="flex items-center justify-between gap-3 rounded-lg border border-border/35 bg-background/10 px-3 py-2 text-xs text-foreground-subtle/80 transition-colors hover:border-gold/25 hover:text-foreground"
-                        >
-                          <span className="truncate">{source.label}</span>
-                          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                        </a>
-                      ))}
-                    </div>
-                  </PlannerDisclosure>
-                ) : null}
                 {children}
+                {showSources ? (
+                  collapseSources ? (
+                    <PlannerDisclosure
+                      title="Sources"
+                      count={messageActivity.sources.length}
+                      open={sourcesOpen}
+                      onToggle={() => setSourcesOpen((current) => !current)}
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">{sourceChips}</div>
+                    </PlannerDisclosure>
+                  ) : (
+                    <div className="space-y-2">
+                      <span className="block text-[11px] font-medium text-foreground-subtle/82">Sources</span>
+                      <div className="flex flex-wrap items-center gap-1.5">{sourceChips}</div>
+                    </div>
+                  )
+                ) : null}
               </>
             )}
           </div>
@@ -211,6 +230,17 @@ export function PlannerMessageCard({
       </div>
     </div>
   );
+}
+
+// Compact, clickable label for a source chip: the hostname (sans leading
+// "www."), falling back to the raw URL when it can't be parsed. Keeps a row of
+// 10+ fetched sources scannable instead of hiding them behind a disclosure.
+function sourceHostLabel(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
 }
 
 function PlannerDisclosure({

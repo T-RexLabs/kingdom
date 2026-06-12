@@ -67,32 +67,14 @@ describe("PlannerMessageCard", () => {
     expect(screen.queryByText("Planner is thinking...")).not.toBeInTheDocument();
   });
 
-  it("keeps thoughts and sources collapsed until expanded", async () => {
+  it("keeps thoughts collapsed and renders a few sources inline as host links", async () => {
     const user = userEvent.setup();
     mockUseAcpRunActivity.mockReturnValue({
       data: {
         items: [
-          {
-            id: "thought-1",
-            kind: "thinking",
-            label: "Thinking",
-            detail: "Determine the best next action",
-            occurred_at: "2026-06-12T10:00:00Z",
-          },
-          {
-            id: "source-1",
-            kind: "tool",
-            label: "Fetched https://example.com",
-            input: '{"url":"https://example.com"}',
-            occurred_at: "2026-06-12T10:00:01Z",
-          },
-          {
-            id: "tool-1",
-            kind: "tool",
-            label: "Read planner-message.tsx",
-            input: '{"filePath":"planner-message.tsx"}',
-            occurred_at: "2026-06-12T10:00:02Z",
-          },
+          { id: "thought-1", kind: "thinking", label: "Thinking", detail: "Determine the best next action", occurred_at: "2026-06-12T10:00:00Z" },
+          { id: "source-1", kind: "tool", label: "Fetched https://example.com", input: '{"url":"https://example.com"}', occurred_at: "2026-06-12T10:00:01Z" },
+          { id: "tool-1", kind: "tool", label: "Read planner-message.tsx", input: '{"filePath":"planner-message.tsx"}', occurred_at: "2026-06-12T10:00:02Z" },
         ],
       },
     });
@@ -114,17 +96,56 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    // Thoughts stays a collapsible disclosure.
     expect(screen.getByRole("button", { name: /Thoughts/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Sources/ })).toBeInTheDocument();
     expect(screen.queryByText("Determine the best next action")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Fetched https://example.com" })).not.toBeInTheDocument();
-
     await user.click(screen.getByRole("button", { name: /Thoughts/ }));
     expect(screen.getByText("Determine the best next action")).toBeInTheDocument();
 
+    // A few sources show inline (no toggle), as clickable host links; only
+    // webfetches become sources — read/grep/etc. tools do not.
+    expect(screen.queryByRole("button", { name: /Sources/ })).not.toBeInTheDocument();
+    const sourceLink = screen.getByRole("link", { name: /example\.com/ });
+    expect(sourceLink).toHaveAttribute("href", "https://example.com");
+    expect(screen.queryByRole("link", { name: /planner-message\.tsx/ })).not.toBeInTheDocument();
+  });
+
+  it("collapses 5+ sources behind a Sources disclosure", async () => {
+    const user = userEvent.setup();
+    mockUseAcpRunActivity.mockReturnValue({
+      data: {
+        items: Array.from({ length: 5 }, (_, i) => ({
+          id: `source-${i}`,
+          kind: "tool" as const,
+          label: `Fetched https://site${i}.example.com`,
+          input: `{"url":"https://site${i}.example.com"}`,
+          occurred_at: `2026-06-12T10:00:0${i}Z`,
+        })),
+      },
+    });
+
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          turn_index: 1,
+          role: "assistant",
+          content_markdown: "Final answer",
+          source_run_id: "run-1",
+          created_at: "2026-06-12T10:00:00Z",
+          variant_index: 0,
+          active: true,
+        }}
+        activityRunId="run-1"
+      />,
+    );
+
+    // Collapsed until expanded once the burst gets large.
+    expect(screen.getByRole("button", { name: /Sources/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /site0\.example\.com/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Sources/ }));
-    expect(screen.getByRole("link", { name: "Fetched https://example.com" })).toHaveAttribute("href", "https://example.com");
-    expect(screen.queryByRole("link", { name: "Read planner-message.tsx" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /site0\.example\.com/ })).toHaveAttribute("href", "https://site0.example.com");
   });
 
   it("renders cumulative streaming thoughts instead of replacing earlier reasoning", () => {
@@ -151,6 +172,46 @@ describe("PlannerMessageCard", () => {
 
     expect(screen.getByText(/First reasoning step/)).toBeInTheDocument();
     expect(screen.getByText(/The provider emitted a reasoning step here, but only encrypted reasoning metadata is available\./)).toBeInTheDocument();
+  });
+
+  it("places the sources below the question and its selectables", () => {
+    mockUseAcpRunActivity.mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "source-1",
+            kind: "tool",
+            label: "Fetched https://example.com",
+            input: '{"url":"https://example.com"}',
+            occurred_at: "2026-06-12T10:00:01Z",
+          },
+        ],
+      },
+    });
+
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          turn_index: 1,
+          role: "assistant",
+          content_markdown: "Here is the answer",
+          source_run_id: "run-1",
+          created_at: "2026-06-12T10:00:00Z",
+          variant_index: 0,
+          active: true,
+        }}
+        activityRunId="run-1"
+      >
+        <div data-testid="question-choices">Which option do you prefer?</div>
+      </PlannerMessageCard>,
+    );
+
+    const question = screen.getByTestId("question-choices");
+    const sources = screen.getByRole("link", { name: /example\.com/ });
+    // Sources must come after the question/selectables in document order.
+    expect(question.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("renders specific live activity rows instead of collapsing everything to Processing", () => {

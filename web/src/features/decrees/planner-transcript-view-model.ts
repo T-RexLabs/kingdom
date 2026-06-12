@@ -45,7 +45,7 @@ type TranscriptBuildResult = {
 };
 
 export function buildPlannerTranscriptViewModel({
-  messages,
+  messages: allMessages,
   currentQuestionMessageId,
   conversationState,
   operation,
@@ -54,6 +54,13 @@ export function buildPlannerTranscriptViewModel({
   const activeOperationRunId = operation && !operation.operationId.startsWith("pending-")
     ? operation.operationId
     : undefined;
+  // While a regenerate/edit operation is in flight the server still holds the
+  // messages it will replace (truncation/deactivation only happens at finalize),
+  // so a mid-stream messages refetch can resurrect the old turn next to the
+  // streaming replacement. Derive the visible set from the active operation so
+  // the superseded turn stays hidden regardless of cache races — the streaming
+  // replacement is appended below as a ghost.
+  const messages = messagesVisibleDuringActiveOperation(allMessages, operation);
   const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages, currentQuestionMessageId, operation);
   // Resolve `parsedReply` once: prefer the caller's memoised value, fall back
   // to a single parse here if the caller did not supply one. The four call
@@ -79,7 +86,16 @@ export function buildPlannerTranscriptViewModel({
     activityRunId: message.role === "assistant" ? message.source_run_id : undefined,
   }));
 
-  if (operation?.kind === "regenerate" && operation.status !== "done" && operation.replyText.trim() !== "") {
+  // Show the regenerate replacement while it's live (even before text streams,
+  // so the target turn shows the thinking/feather instead of going briefly
+  // blank after the old answer is hidden — consistent with reply), and keep
+  // showing provisional output if a non-success terminal (cancelled/error) left
+  // partial text behind.
+  if (
+    operation?.kind === "regenerate" &&
+    operation.status !== "done" &&
+    (!isPlannerOperationTerminal(operation.status) || operation.replyText.trim() !== "")
+  ) {
     const targetTurn = operation.targetTurnIndex ?? operation.turnIndex;
     const canonicalIds = new Set(messages.map((m) => m.planning_message_id));
     if (targetTurn && operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.assistantCreatedAt) {
@@ -166,6 +182,37 @@ export function buildPlannerTranscriptViewModel({
     activeQuestion,
     activeQuestionId,
   };
+}
+
+// Messages an in-flight operation is about to supersede must be hidden from the
+// live transcript even though the server still returns them (it truncates at
+// finalize). Mirrors the optimistic filters in usePlannerSessionController so
+// the view stays correct after any refetch, and naturally reverts once the
+// operation is terminal (the server has truncated by then).
+function messagesVisibleDuringActiveOperation(
+  messages: PlanningMessage[],
+  operation: PlannerOperationState | null | undefined,
+): PlanningMessage[] {
+  if (!operation || isPlannerOperationTerminal(operation.status)) {
+    return messages;
+  }
+  if (operation.kind === "regenerate") {
+    const target = operation.targetTurnIndex ?? operation.turnIndex;
+    if (target == null) {
+      return messages;
+    }
+    // Regenerate replaces the assistant at the target turn and discards every
+    // turn below it; the user message at the target turn stays.
+    return messages.filter(
+      (m) => m.turn_index < target || (m.turn_index === target && m.role !== "assistant"),
+    );
+  }
+  if (operation.kind === "reply" && operation.forceNewSession && operation.turnIndex != null) {
+    // Editing a user message truncates from that turn onward.
+    const from = operation.turnIndex;
+    return messages.filter((m) => m.turn_index < from);
+  }
+  return messages;
 }
 
 function attachLiveOperationState(
