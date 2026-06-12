@@ -98,6 +98,17 @@ func plannerGenericPayload(operation state.PlanningOperation, kind string, extra
 	return payload
 }
 
+func plannerPhasePayload(operation state.PlanningOperation, phase string, extra map[string]any) map[string]any {
+	payload := map[string]any{"phase": strings.TrimSpace(phase)}
+	if label, ok := acp.PhaseActivityLabel(phase); ok {
+		payload["label"] = label
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	return plannerGenericPayload(operation, acp.KingdomPhaseKind, payload)
+}
+
 func plannerMessagePayload(operation state.PlanningOperation, extra map[string]any) map[string]any {
 	payload := plannerRunPayload(operation.OperationID, operation.PlanningSessionID, operation.Type)
 	for key, value := range extra {

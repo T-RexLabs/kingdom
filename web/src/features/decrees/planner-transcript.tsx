@@ -85,6 +85,8 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       currentVariantIndex={item.currentVariantIndex}
       sessionId={callbacks.sessionId}
       onActivateVariant={callbacks.onActivateVariant}
+      activityRunId={item.activityRunId}
+      liveActivityItems={item.liveActivityItems}
     >
       {item.message.role === "assistant" && question ? (
         <PlannerQuestionChoices

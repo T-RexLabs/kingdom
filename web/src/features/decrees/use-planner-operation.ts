@@ -5,9 +5,7 @@ import type { AcpRun, AcpRunEvent, PlanningMessage, PlanningSessionDetail } from
 import { subscribeSSE } from "@/lib/sse-stream";
 import {
   buildPlannerOperationState,
-  reducePlannerOperationEphemeralActivity,
   reducePlannerOperationEvent,
-  type PlannerEphemeralActivity,
   type PlannerOperationState,
 } from "./planner-operation-controller";
 import {
@@ -38,7 +36,6 @@ type OperationStreamAction =
   | { type: "reset" }
   | { type: "hydrate"; operation: AcpRun }
   | { type: "event"; event: AcpRunEvent }
-  | { type: "ephemeral-activity"; activity: PlannerEphemeralActivity }
   | { type: "connection"; connection: PlannerConnection };
 
 const initialState: OperationStreamState = {
@@ -61,14 +58,6 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
       }
       return {
         operation: reducePlannerOperationEvent(state.operation, action.event),
-        connection: state.connection,
-      };
-    case "ephemeral-activity":
-      if (!state.operation) {
-        return state;
-      }
-      return {
-        operation: reducePlannerOperationEphemeralActivity(state.operation, action.activity),
         connection: state.connection,
       };
     case "connection":
@@ -146,9 +135,10 @@ export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperat
           if (fresh.status === "completed" || fresh.status === "failed" || fresh.status === "cancelled") {
             dispatch({ type: "hydrate", operation: fresh });
             dispatch({ type: "connection", connection: { state: "idle" } });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.operation(operation.run_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.operation(operation.run_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
             void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id) });
             void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
             return;
@@ -228,11 +218,6 @@ function handleEventPayload(
   } catch {
     return false;
   }
-  const ephemeralActivity = parseEphemeralPlannerActivity(payload, eventType);
-  if (!eventId && ephemeralActivity) {
-    dispatch({ type: "ephemeral-activity", activity: ephemeralActivity });
-    return true;
-  }
   if (!isAcpEventType(eventType)) {
     return true;
   }
@@ -285,24 +270,29 @@ export function patchPlannerTerminalCaches(
           conversation_state: "ready",
           ...(event.type === "run.completed" ? { current_run_id: undefined } : {}),
         };
-  if (event.type === "run.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
-    const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
+	if (event.type === "run.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
+		const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
     if (messageId) {
       fields.current_question_message_id = messageId;
     }
     const sessionPatch = sessionPatchFields(event.payload.session_patch);
     if (sessionPatch) {
       Object.assign(fields, sessionPatch);
-    }
-    void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
-  }
-  if (event.type === "run.completed" && operation.agent_name === "planner-formalize") {
+		}
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
+	}
+	if (event.type === "run.completed" && operation.agent_name === "planner-formalize") {
     const draftId = typeof event.payload.planning_draft_id === "string" ? event.payload.planning_draft_id : undefined;
-    if (draftId) {
-      fields.current_draft_id = draftId;
-    }
-  }
-  applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+		if (draftId) {
+			fields.current_draft_id = draftId;
+		}
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+	}
+	if (event.type === "run.failed" || event.type === "run.cancelled") {
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+	}
+	applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
 }
 
 function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | null {
@@ -379,19 +369,4 @@ function planningMessageFromEvent(operation: AcpRun, event: AcpRunEvent): Planni
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseEphemeralPlannerActivity(
-  payload: Record<string, unknown>,
-  eventType: string,
-): PlannerEphemeralActivity | null {
-  if (eventType !== "generic" || payload.ephemeral !== true || payload.kind !== "kingdom.reasoning") {
-    return null;
-  }
-  const activityId = typeof payload.activity_id === "string" ? payload.activity_id.trim() : "";
-  const rawText = typeof payload.raw_reasoning_text === "string" ? payload.raw_reasoning_text.trim() : "";
-  if (!activityId || !rawText) {
-    return null;
-  }
-  return { kind: "reasoning", activityId, rawText };
 }

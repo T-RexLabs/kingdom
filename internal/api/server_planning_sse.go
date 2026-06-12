@@ -97,6 +97,9 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 			if strings.TrimSpace(event.EventType) == "" || strings.TrimSpace(event.Payload) == "" {
 				continue
 			}
+			if trimmedID := strings.TrimSpace(event.EventID); trimmedID != "" {
+				fmt.Fprintf(w, "id: %s\n", trimmedID)
+			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.EventType, event.Payload)
 			_ = rc.Flush()
 		case <-keepAliveTicker.C:

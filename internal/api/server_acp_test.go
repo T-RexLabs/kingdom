@@ -13,6 +13,8 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/acp"
+	"kingdom/internal/planning"
+	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
 
@@ -169,6 +171,59 @@ func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
 		t.Fatalf("expected auto_title_eligible=true, got %+v", detail)
 	}
 }
+
+func TestWritePlanningOperationEventsIncludesLiveEventID(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	server := handler.(*Server)
+	store := state.NewPlanningStore(db)
+	ctx := t.Context()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_live",
+		Title:              "live",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateProcessing,
+		ProjectRoot:        projectRoot,
+		ModelSelectionJSON: `{"model":"gpt-5.4"}`,
+		CreatedAt:          "2026-06-12T10:00:00Z",
+		UpdatedAt:          "2026-06-12T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID:        "op_live",
+		PlanningSessionID:  "ps_live",
+		Type:               state.PlanningOperationTypeReply,
+		Status:             state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-06-12T10:00:01Z",
+		StartedAt:          "2026-06-12T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("create live operation: %v", err)
+	}
+	liveSignals := make(chan planning.LiveOperationEvent, 1)
+	liveSignals <- planning.LiveOperationEvent{
+		EventID:   "op_live:5",
+		EventType: acp.GenericEventType,
+		Payload:   `{"kind":"kingdom.tool","label":"Fetched https://example.com"}`,
+	}
+	close(liveSignals)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_live/events", nil)
+	res := httptest.NewRecorder()
+	server.writePlanningOperationEvents(res, req, "op_live", "", nil, liveSignals, func() {})
+	body := res.Body.String()
+	if !strings.Contains(body, "id: op_live:5\n") {
+		t.Fatalf("expected live SSE event id to be emitted, got %q", body)
+	}
+	if !strings.Contains(body, "event: generic\n") {
+		t.Fatalf("expected live SSE event type to be emitted, got %q", body)
+	}
+}
+
 
 func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.Duration) gen.AcpRun {
 	t.Helper()

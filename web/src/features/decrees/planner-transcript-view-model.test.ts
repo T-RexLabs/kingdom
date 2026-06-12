@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { buildPlannerTranscriptViewModel } from "./planner-transcript-view-model";
+import type { PlannerOperationState } from "./planner-operation-controller";
+
+function buildOperation(overrides: Partial<PlannerOperationState>): PlannerOperationState {
+  return {
+    kind: "reply",
+    operationId: "operation-1",
+    status: "pending",
+    lastEventSeq: 0,
+    pendingReply: null,
+    replyText: "",
+    formalizeText: "",
+    error: null,
+    events: [],
+    activityItems: [],
+    ...overrides,
+  };
+}
 
 describe("planner transcript view model", () => {
   it("marks only the canonical current question interactive", () => {
@@ -116,11 +133,7 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
-      operation: {
-        kind: "reply",
-        operationId: "operation-1",
-        status: "pending",
-        lastEventSeq: 0,
+      operation: buildOperation({
         turnIndex: 2,
         userMessageId: "optimistic-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
@@ -130,11 +143,7 @@ describe("planner transcript view model", () => {
           contentMarkdown: "Lean",
           answer: { value: "lean", text: "Lean" },
         },
-        replyText: "",
-        formalizeText: "",
-        error: null,
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     expect(result.items[0]?.resolvedAnswer?.value).toBe("lean");
@@ -165,11 +174,7 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
-      operation: {
-        kind: "reply",
-        operationId: "operation-1",
-        status: "pending",
-        lastEventSeq: 0,
+      operation: buildOperation({
         turnIndex: 2,
         userMessageId: "optimistic-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
@@ -179,11 +184,7 @@ describe("planner transcript view model", () => {
           contentMarkdown: "Ship the planner redesign",
           answer: { text: "Ship the planner redesign" },
         },
-        replyText: "",
-        formalizeText: "",
-        error: null,
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
@@ -231,9 +232,7 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
-      operation: {
-        kind: "reply",
-        operationId: "operation-1",
+      operation: buildOperation({
         status: "streaming",
         lastEventSeq: 2,
         turnIndex: 2,
@@ -243,10 +242,7 @@ describe("planner transcript view model", () => {
         assistantCreatedAt: "2026-04-21T10:00:02Z",
         pendingReply: { contentMarkdown: "Ship the planner redesign" },
         replyText: "Streaming response...",
-        formalizeText: "",
-        error: null,
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     const ids = result.items.map((item) => item.message.planning_message_id);
@@ -275,9 +271,7 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
-      operation: {
-        kind: "reply",
-        operationId: "operation-1",
+      operation: buildOperation({
         status: "streaming",
         lastEventSeq: 2,
         turnIndex: 2,
@@ -287,10 +281,7 @@ describe("planner transcript view model", () => {
         assistantCreatedAt: "2026-04-21T10:00:02Z",
         pendingReply: { contentMarkdown: "Need a cleaner UX" },
         replyText: 'Context text.\n```structured_question\n{"prompt":"Choose planning depth","type":"single_select","options":[{"label":"Lean","value":"lean"}]}\n```',
-        formalizeText: "",
-        error: null,
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     expect(result.activeQuestionId).toBe("assistant-2");
@@ -316,8 +307,7 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: "assistant-1",
       conversationState: "ready",
-      operation: {
-        kind: "reply",
+      operation: buildOperation({
         operationId: "operation-failed",
         status: "error",
         lastEventSeq: 5,
@@ -328,10 +318,8 @@ describe("planner transcript view model", () => {
         assistantCreatedAt: "2026-04-21T10:00:01Z",
         pendingReply: { contentMarkdown: "abandoned" },
         replyText: "partial stream that never finished",
-        formalizeText: "",
         error: "missing completion receipt evidence id",
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
@@ -359,26 +347,51 @@ describe("planner transcript view model", () => {
       ],
       currentQuestionMessageId: undefined,
       conversationState: "ready",
-      operation: {
+      operation: buildOperation({
         kind: "regenerate",
         operationId: "operation-cancelled",
         status: "cancelled",
         lastEventSeq: 5,
         turnIndex: 1,
         targetTurnIndex: 1,
-        userMessageId: undefined,
-        userCreatedAt: undefined,
         assistantMessageId: "optimistic-regen-1",
         assistantCreatedAt: "2026-04-21T10:00:01Z",
-        pendingReply: null,
         replyText: "half a regeneration",
-        formalizeText: "",
         error: "operation cancelled during shutdown",
-        ephemeralReasoningByActivityId: {},
-      },
+      }),
     });
 
     expect(result.items.map((item) => item.message.planning_message_id)).toEqual(["assistant-1", "optimistic-regen-1"]);
     expect(result.items[1]?.isStreaming).toBe(false);
+  });
+
+  it("keeps the canonical assistant message live-bound until the active run finishes", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          turn_index: 1,
+          role: "assistant",
+          content_markdown: "Final text already patched",
+          source_run_id: "operation-1",
+          created_at: "2026-04-21T10:00:00Z",
+          variant_index: 0,
+          active: true,
+        },
+      ],
+      currentQuestionMessageId: undefined,
+      conversationState: "processing",
+      operation: buildOperation({
+        status: "streaming",
+        operationId: "operation-1",
+        assistantMessageId: "assistant-1",
+        activityItems: [{ id: "tool-1", kind: "tool", label: "Fetched 3 web sources" }],
+      }),
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.isStreaming).toBe(true);
+    expect(result.items[0]?.liveActivityItems?.[0]?.label).toBe("Fetched 3 web sources");
   });
 });

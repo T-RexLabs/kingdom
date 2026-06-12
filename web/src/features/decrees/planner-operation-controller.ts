@@ -8,6 +8,18 @@ export type PlannerPendingReply = {
   answer?: AnswerPayload;
 };
 
+export type PlannerActivityKind = "thinking" | "tool" | "progress";
+
+export type PlannerActivityItem = {
+  id: string;
+  kind: PlannerActivityKind;
+  label: string;
+  detail?: string;
+  input?: string;
+  output?: string;
+  occurredAt?: string;
+};
+
 export type PlannerOperationKind = "reply" | "formalize" | "regenerate" | "generate_title";
 
 /**
@@ -50,13 +62,7 @@ export type PlannerOperationState = {
   draftId?: string;
   error: string | null;
   events?: AcpRunEvent[];
-  ephemeralReasoningByActivityId: Record<string, string>;
-};
-
-export type PlannerEphemeralActivity = {
-  kind: "reasoning";
-  activityId: string;
-  rawText: string;
+  activityItems: PlannerActivityItem[];
 };
 
 export function buildPlannerOperationState(operation: AcpRun): PlannerOperationState {
@@ -78,7 +84,7 @@ export function buildPlannerOperationState(operation: AcpRun): PlannerOperationS
     formalizeText: "",
     error: operation.error ?? null,
     events: [],
-    ephemeralReasoningByActivityId: {},
+    activityItems: [],
   };
 }
 
@@ -101,8 +107,16 @@ export function reducePlannerOperationEvent(
       return applyOperationPayload({ ...next, status: "pending" }, event.payload);
     case "run.in-progress":
       return applyOperationPayload(next, event.payload);
-    case "generic":
-      return next;
+    case "generic": {
+      const activity = parsePlannerActivityEvent(event);
+      if (!activity) {
+        return next;
+      }
+      return {
+        ...next,
+        activityItems: upsertPlannerActivity(next.activityItems, activity),
+      };
+    }
     case "message.part": {
       const withPayload = applyOperationPayload(next, event.payload);
       const text = readString(event.payload.text);
@@ -127,7 +141,7 @@ export function reducePlannerOperationEvent(
         return withPayload;
       }
       if (withPayload.kind === "formalize") {
-        return { ...withPayload, formalizeText: text };
+          return { ...withPayload, formalizeText: text };
       }
       return { ...withPayload, replyText: text };
     }
@@ -166,24 +180,72 @@ export function reducePlannerOperationEvent(
   }
 }
 
-export function reducePlannerOperationEphemeralActivity(
-  state: PlannerOperationState,
-  activity: PlannerEphemeralActivity,
-): PlannerOperationState {
-  if (activity.kind !== "reasoning" || !activity.activityId.trim() || !activity.rawText.trim()) {
-    return state;
+function parsePlannerActivityEvent(event: AcpRunEvent): PlannerActivityItem | null {
+  const kind = readString(event.payload.kind);
+  const id = readString(event.payload.activity_id) ?? event.event_id;
+  if (!kind || !id) {
+    return null;
   }
-  const current = state.ephemeralReasoningByActivityId[activity.activityId];
-  if (current === activity.rawText) {
-    return state;
+  switch (kind) {
+    case "kingdom.phase": {
+      const label = readString(event.payload.label);
+      if (!label) {
+        return null;
+      }
+      return { id, kind: "progress", label, occurredAt: event.created_at };
+    }
+    case "kingdom.progress": {
+      const label = readString(event.payload.label);
+      if (!label) {
+        return null;
+      }
+      return { id, kind: "progress", label, occurredAt: event.created_at };
+    }
+    case "kingdom.tool": {
+      const label = readString(event.payload.label);
+      if (!label) {
+        return null;
+      }
+      return {
+        id,
+        kind: "tool",
+        label,
+        detail: readString(event.payload.detail),
+        input: readString(event.payload.tool_input),
+        occurredAt: event.created_at,
+      };
+    }
+    case "kingdom.reasoning": {
+      return {
+        id,
+        kind: "thinking",
+        label: readString(event.payload.label) ?? "Thinking",
+        detail: readString(event.payload.detail) ?? readString(event.payload.summary),
+        occurredAt: event.created_at,
+      };
+    }
+    default:
+      return null;
   }
-  return {
-    ...state,
-    ephemeralReasoningByActivityId: {
-      ...state.ephemeralReasoningByActivityId,
-      [activity.activityId]: activity.rawText,
-    },
-  };
+}
+
+function upsertPlannerActivity(items: PlannerActivityItem[], nextItem: PlannerActivityItem): PlannerActivityItem[] {
+  const index = items.findIndex((item) => item.id === nextItem.id);
+  if (index < 0) {
+    return [...items, nextItem];
+  }
+  const current = items[index];
+  const merged = {
+    ...current,
+    ...nextItem,
+    detail: nextItem.detail ?? current.detail,
+    input: nextItem.input ?? current.input,
+    output: nextItem.output ?? current.output,
+    occurredAt: nextItem.occurredAt ?? current.occurredAt,
+  } satisfies PlannerActivityItem;
+  const copy = items.slice();
+  copy[index] = merged;
+  return copy;
 }
 
 function applyOperationPayload(

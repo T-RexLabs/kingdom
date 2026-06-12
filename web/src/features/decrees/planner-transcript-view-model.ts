@@ -2,6 +2,7 @@ import type { PlanningMessage } from "@/api/hooks";
 import {
   isPlannerOperationTerminal,
   type AnswerPayload,
+  type PlannerActivityItem,
   type PlannerOperationState,
   type QuestionPayload,
 } from "./planner-operation-controller";
@@ -19,6 +20,8 @@ export type TranscriptItem = {
   contentMarkdown?: string;
   variantCount?: number;
   currentVariantIndex?: number;
+  activityRunId?: string;
+  liveActivityItems?: PlannerActivityItem[];
 };
 
 type BuildPlannerTranscriptInput = {
@@ -48,6 +51,9 @@ export function buildPlannerTranscriptViewModel({
   operation,
   parsedReply,
 }: BuildPlannerTranscriptInput): TranscriptBuildResult {
+  const activeOperationRunId = operation && !operation.operationId.startsWith("pending-")
+    ? operation.operationId
+    : undefined;
   const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages, currentQuestionMessageId, operation);
   // Resolve `parsedReply` once: prefer the caller's memoised value, fall back
   // to a single parse here if the caller did not supply one. The four call
@@ -70,6 +76,7 @@ export function buildPlannerTranscriptViewModel({
       message.planning_message_id === activeQuestionId,
     variantCount: message.variant_count,
     currentVariantIndex: message.variant_index,
+    activityRunId: message.role === "assistant" ? message.source_run_id : undefined,
   }));
 
   if (operation?.kind === "regenerate" && operation.status !== "done" && operation.replyText.trim() !== "") {
@@ -86,6 +93,7 @@ export function buildPlannerTranscriptViewModel({
           turn_index: targetTurn,
           role: "assistant",
           content_markdown: parsed.content,
+          source_run_id: activeOperationRunId,
           created_at: operation.assistantCreatedAt,
           question_payload: parsed.question ?? undefined,
           variant_index: 0,
@@ -95,6 +103,8 @@ export function buildPlannerTranscriptViewModel({
         isInteractive: false,
         isStreaming: operation.status === "streaming" || operation.status === "pending",
         contentMarkdown: parsed.content,
+        activityRunId: activeOperationRunId,
+        liveActivityItems: operation.activityItems,
       });
     }
   }
@@ -133,6 +143,7 @@ export function buildPlannerTranscriptViewModel({
           turn_index: operation.turnIndex,
           role: "assistant",
           content_markdown: parsed.content,
+          source_run_id: activeOperationRunId,
           created_at: operation.assistantCreatedAt,
           question_payload: parsed.question ?? undefined,
           variant_index: 0,
@@ -142,15 +153,50 @@ export function buildPlannerTranscriptViewModel({
         isInteractive: false,
         isStreaming: operation.status === "streaming" || operation.status === "pending",
         contentMarkdown: parsed.content,
+        activityRunId: activeOperationRunId,
+        liveActivityItems: operation.activityItems,
       });
     }
   }
 
+  const itemsWithLiveOperation = attachLiveOperationState(items, operation, activeOperationRunId);
+
   return {
-    items,
+    items: itemsWithLiveOperation,
     activeQuestion,
     activeQuestionId,
   };
+}
+
+function attachLiveOperationState(
+  items: TranscriptItem[],
+  operation: PlannerOperationState | null | undefined,
+  activeOperationRunId: string | undefined,
+): TranscriptItem[] {
+  if (!operation || isPlannerOperationTerminal(operation.status)) {
+    return items;
+  }
+  const assistantMessageId = operation.assistantMessageId?.trim();
+  if (!assistantMessageId && !activeOperationRunId) {
+    return items;
+  }
+
+  return items.map((item) => {
+    if (item.message.role !== "assistant") {
+      return item;
+    }
+    const matchesAssistantMessage = assistantMessageId != null && item.message.planning_message_id === assistantMessageId;
+    const matchesRun = activeOperationRunId != null && item.message.source_run_id === activeOperationRunId;
+    if (!matchesAssistantMessage && !matchesRun) {
+      return item;
+    }
+    return {
+      ...item,
+      isStreaming: operation.status === "streaming" || operation.status === "pending",
+      activityRunId: activeOperationRunId,
+      liveActivityItems: operation.activityItems,
+    };
+  });
 }
 
 function resolveActiveQuestionId(

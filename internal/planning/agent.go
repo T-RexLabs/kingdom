@@ -34,9 +34,10 @@ type CompletionReceiptAcceptance struct {
 }
 
 type ProviderActivity struct {
-	Kind       string
-	OccurredAt string
-	ToolName   string
+	Kind           string
+	ProviderPartID string
+	OccurredAt     string
+	ToolName       string
 	ToolStatus string
 	ToolTitle  string
 	ToolInput  string

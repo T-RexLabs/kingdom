@@ -120,9 +120,10 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 				return
 			}
 			providerInvocation.OnActivity(ProviderActivity{
-				Kind:       strings.TrimSpace(string(observation.Kind)),
-				OccurredAt: strings.TrimSpace(observation.OccurredAt),
-				ToolName:   strings.TrimSpace(observation.ToolName),
+				Kind:           strings.TrimSpace(string(observation.Kind)),
+				ProviderPartID: strings.TrimSpace(observation.ProviderPartID),
+				OccurredAt:     strings.TrimSpace(observation.OccurredAt),
+				ToolName:       strings.TrimSpace(observation.ToolName),
 				ToolStatus: strings.TrimSpace(observation.ToolStatus),
 				ToolTitle:  strings.TrimSpace(observation.ToolTitle),
 				ToolInput:  strings.TrimSpace(observation.ToolInput),

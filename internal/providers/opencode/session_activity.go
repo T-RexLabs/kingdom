@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"kingdom/internal/acp"
 )
 
 type SessionActivityRequest struct {
@@ -180,9 +182,9 @@ func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string)
 		status := extractToolState(node)
 		toolTitle := nestedStringValue(node, "state", "title")
 		input := formatActivityValue(nestedAny(node, "state", "input"))
-		label := formatToolActivityLabel(toolName, status, toolTitle, input)
+		label := acp.ToolActivityLabel(toolName, status, toolTitle, input)
 		output := formatActivityValue(nestedAny(node, "state", "output"))
-		detail := formatToolActivityDetail(status)
+		detail := acp.ToolActivityDetail(status)
 		return SessionActivityItem{ID: id, Kind: "tool", Label: label, Detail: detail, Input: input, Output: output, OccurredAt: occurredAt}, true
 	case partType == "step-start":
 		return SessionActivityItem{ID: id, Kind: "progress", Label: "Processing", OccurredAt: occurredAt}, true
@@ -191,176 +193,11 @@ func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string)
 	}
 }
 
-func formatToolActivityLabel(toolName string, status string, toolTitle string, toolInput string) string {
-	trimmedToolName := strings.TrimSpace(toolName)
-	target := toolActivityTarget(trimmedToolName, toolTitle, toolInput)
-	switch strings.TrimSpace(status) {
-	case "completed":
-		if target != "" {
-			return completedToolActivityLabel(trimmedToolName, target)
-		}
-		return fmt.Sprintf("Completed %s", trimmedToolName)
-	case "failed", "error":
-		if target != "" {
-			return fmt.Sprintf("%s failed for %s", trimmedToolName, target)
-		}
-		return fmt.Sprintf("%s failed", trimmedToolName)
-	default:
-		if target != "" {
-			return activeToolActivityLabel(trimmedToolName, target)
-		}
-		return fmt.Sprintf("Calling %s", trimmedToolName)
-	}
-}
-
-func formatToolActivityDetail(status string) string {
-	switch strings.TrimSpace(status) {
-	case "", "running", "completed":
-		return ""
-	case "failed", "error":
-		return "The tool returned a failure state."
-	default:
-		return strings.TrimSpace(status)
-	}
-}
-
 func redactedReasoningDetail(node map[string]any) string {
-	if encrypted := nestedStringValue(node, "metadata", "openai", "reasoningEncryptedContent"); strings.TrimSpace(encrypted) != "" {
-		return "The provider emitted a reasoning step here, but only encrypted reasoning metadata is available."
-	}
-	if redacted := nestedStringValue(node, "metadata", "redacted"); strings.TrimSpace(redacted) != "" {
-		return "Reasoning was emitted, but only sanitized reasoning metadata is available for this step."
-	}
-	return ""
-}
-
-func toolActivityTarget(toolName string, toolTitle string, toolInput string) string {
-	if title := sanitizeToolTitle(toolTitle); title != "" {
-		return title
-	}
-	return toolTargetFromInput(toolName, toolInput)
-}
-
-func sanitizeToolTitle(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" || strings.Contains(trimmed, "[redacted:") {
-		return ""
-	}
-	if idx := strings.Index(trimmed, " ("); idx > 0 {
-		return strings.TrimSpace(trimmed[:idx])
-	}
-	return trimmed
-}
-
-func toolTargetFromInput(toolName string, toolInput string) string {
-	trimmedInput := strings.TrimSpace(toolInput)
-	if trimmedInput == "" || strings.Contains(trimmedInput, `"redacted"`) {
-		return ""
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(trimmedInput), &payload); err != nil {
-		return ""
-	}
-	switch strings.TrimSpace(toolName) {
-	case "webfetch":
-		if value := previewField(payload, "url"); value != "" {
-			return value
-		}
-	case "grep":
-		pattern := previewField(payload, "pattern")
-		path := previewField(payload, "path")
-		if pattern != "" && path != "" {
-			return pattern + " in " + path
-		}
-		return firstNonEmpty(pattern, path)
-	case "glob":
-		pattern := previewField(payload, "pattern")
-		path := previewField(payload, "path")
-		if pattern != "" && path != "" {
-			return pattern + " in " + path
-		}
-		return firstNonEmpty(pattern, path)
-	case "bash":
-		if value := previewField(payload, "command"); value != "" {
-			return value
-		}
-	}
-	if value := previewField(payload, "description", "prompt", "question", "filePath", "path", "url", "pattern", "command", "query", "name", "value"); value != "" {
-		return value
-	}
-	return compactToolPayloadPreview(payload)
-}
-
-func previewField(payload map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value := strings.TrimSpace(stringValue(payload[key]))
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func compactToolPayloadPreview(payload map[string]any) string {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return ""
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if len(trimmed) <= 96 {
-		return trimmed
-	}
-	return trimmed[:93] + "..."
-}
-
-func activeToolActivityLabel(toolName string, target string) string {
-	switch strings.TrimSpace(toolName) {
-	case "webfetch":
-		return fmt.Sprintf("Fetching %s", target)
-	case "grep":
-		return fmt.Sprintf("Searching %s", target)
-	case "glob":
-		return fmt.Sprintf("Listing %s", target)
-	case "bash":
-		return fmt.Sprintf("Running %s", target)
-	case "read":
-		return fmt.Sprintf("Reading %s", target)
-	case "write":
-		return fmt.Sprintf("Writing %s", target)
-	case "edit", "apply_patch":
-		return fmt.Sprintf("Editing %s", target)
-	case "task":
-		return fmt.Sprintf("Starting agent for %s", target)
-	case "question":
-		return fmt.Sprintf("Asking for %s", target)
-	default:
-		return fmt.Sprintf("Calling %s for %s", toolName, target)
-	}
-}
-
-func completedToolActivityLabel(toolName string, target string) string {
-	switch strings.TrimSpace(toolName) {
-	case "webfetch":
-		return fmt.Sprintf("Fetched %s", target)
-	case "grep":
-		return fmt.Sprintf("Searched %s", target)
-	case "glob":
-		return fmt.Sprintf("Listed %s", target)
-	case "bash":
-		return fmt.Sprintf("Ran %s", target)
-	case "read":
-		return fmt.Sprintf("Read %s", target)
-	case "write":
-		return fmt.Sprintf("Wrote %s", target)
-	case "edit", "apply_patch":
-		return fmt.Sprintf("Edited %s", target)
-	case "task":
-		return fmt.Sprintf("Started agent for %s", target)
-	case "question":
-		return fmt.Sprintf("Asked for %s", target)
-	default:
-		return fmt.Sprintf("Completed %s for %s", toolName, target)
-	}
+	return reasoningDetailFromMetadata(
+		nestedStringValue(node, "metadata", "redacted"),
+		nestedStringValue(node, "metadata", "openai", "reasoningEncryptedContent"),
+	)
 }
 
 func activityTimestampRFC3339(node map[string]any, fallback string) string {

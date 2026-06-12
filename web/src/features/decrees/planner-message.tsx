@@ -1,8 +1,11 @@
 import type { PlanningMessage } from "@/api/hooks";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { formatTimestamp } from "@/lib/utils";
-import { Feather, RefreshCw, ScrollText, User } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ExternalLink, Feather, RefreshCw, ScrollText, User } from "lucide-react";
 import { PlannerEditAction } from "./planner-message-actions";
+import { usePlannerMessageActivity } from "./planner-message-activity";
+import type { PlannerActivityItem } from "./planner-operation-controller";
 import { PlannerMessageEditor } from "./planner-message-editor";
 import { PlannerVariantNavigator } from "./planner-variant-navigator";
 import { useTextReveal } from "./use-text-reveal";
@@ -24,6 +27,8 @@ export function PlannerMessageCard({
   currentVariantIndex,
   sessionId,
   onActivateVariant,
+  activityRunId,
+  liveActivityItems,
 }: {
   message: PlanningMessage;
   children?: React.ReactNode;
@@ -41,6 +46,8 @@ export function PlannerMessageCard({
   currentVariantIndex?: number;
   sessionId?: string;
   onActivateVariant?: (messageId: string) => void;
+  activityRunId?: string;
+  liveActivityItems?: PlannerActivityItem[];
 }) {
   const isAssistant = message.role === "assistant";
   const renderedContent = contentMarkdown ?? message.content_markdown;
@@ -52,9 +59,24 @@ export function PlannerMessageCard({
   const reveal = useTextReveal(isAssistant ? renderedContent : "", isAssistantStreaming);
   const displayText = isAssistant ? reveal.displayText : renderedContent;
   const isStreamActive = isAssistant ? reveal.isStreamActive : false;
+  const messageActivity = usePlannerMessageActivity({
+    activityRunId,
+    isAssistant,
+    isStreaming: isAssistantStreaming,
+    liveActivityItems,
+  });
+  const liveThoughtReveal = useTextReveal(
+    messageActivity.liveThoughtText,
+    isAssistantStreaming && messageActivity.liveThoughtText.trim().length > 0,
+  );
+  const [thoughtsOpen, setThoughtsOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
 
   const hasVariants = isAssistant && variantCount != null && variantCount > 1 && currentVariantIndex != null && sessionId && onActivateVariant;
   const showRegenerate = isAssistant && !isFirstAssistant && !(isProcessing ?? false) && onRegenerate;
+  const showStreamingActivity = isAssistantStreaming && Boolean(messageActivity.currentEvent || liveThoughtReveal.displayText.trim());
+  const showThoughts = isAssistant && !isAssistantStreaming && messageActivity.thoughts.length > 0;
+  const showSources = isAssistant && !isAssistantStreaming && messageActivity.sources.length > 0;
 
   return (
     <div className={`group flex min-w-0 ${isAssistant ? "justify-start" : "justify-end"}`}>
@@ -84,20 +106,68 @@ export function PlannerMessageCard({
               />
             ) : (
               <>
+                {showStreamingActivity ? (
+                  <div className="space-y-2 text-left">
+                    {messageActivity.currentEvent ? (
+                      <div className="flex items-center justify-between gap-3 text-xs font-medium text-foreground-subtle/90">
+                        <span className="truncate">{messageActivity.currentEvent.label}</span>
+                        <Feather className="h-3.5 w-3.5 shrink-0 animate-quill-write text-gold/75" />
+                      </div>
+                    ) : null}
+                    {liveThoughtReveal.displayText.trim() ? (
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground-subtle/80 text-wrap-anywhere">
+                        {liveThoughtReveal.displayText}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                {showThoughts ? (
+                  <PlannerDisclosure
+                    title="Thoughts"
+                    count={messageActivity.thoughts.length}
+                    open={thoughtsOpen}
+                    onToggle={() => setThoughtsOpen((current) => !current)}
+                  >
+                    <div className="space-y-3 text-xs leading-relaxed text-foreground-subtle/78">
+                      {messageActivity.thoughts.map((thought) => (
+                        <p key={thought.id} className="whitespace-pre-wrap text-wrap-anywhere">
+                          {thought.detail}
+                        </p>
+                      ))}
+                    </div>
+                  </PlannerDisclosure>
+                ) : null}
                 {displayText.trim() ? (
                   isStreamActive ? (
                     <div data-streaming>
                       <p className="text-sm leading-relaxed whitespace-pre-wrap text-wrap-anywhere">{displayText}</p>
                     </div>
                   ) : (
-                    <MarkdownBlock content={renderedContent} className="text-sm leading-relaxed" />
-                  )
-                ) : null}
-                {isAssistant && isStreaming && !displayText.trim() ? (
-                  <span className="inline-flex items-center gap-2 text-gold/70">
-                    <Feather className="h-4 w-4 animate-quill-write" />
-                    <span className="text-xs font-medium">Planner is thinking...</span>
-                  </span>
+                      <MarkdownBlock content={renderedContent} className="text-sm leading-relaxed" />
+                    )
+                  ) : null}
+                {showSources ? (
+                  <PlannerDisclosure
+                    title="Sources"
+                    count={messageActivity.sources.length}
+                    open={sourcesOpen}
+                    onToggle={() => setSourcesOpen((current) => !current)}
+                  >
+                    <div className="space-y-2">
+                      {messageActivity.sources.map((source) => (
+                        <a
+                          key={source.id}
+                          href={source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center justify-between gap-3 rounded-lg border border-border/35 bg-background/10 px-3 py-2 text-xs text-foreground-subtle/80 transition-colors hover:border-gold/25 hover:text-foreground"
+                        >
+                          <span className="truncate">{source.label}</span>
+                          <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                        </a>
+                      ))}
+                    </div>
+                  </PlannerDisclosure>
                 ) : null}
                 {children}
               </>
@@ -139,6 +209,38 @@ export function PlannerMessageCard({
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function PlannerDisclosure({
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border/35 bg-background/6">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[11px] font-medium text-foreground-subtle/82 transition-colors hover:text-foreground-subtle"
+        aria-expanded={open}
+      >
+        <span>{title}</span>
+        <span className="flex items-center gap-2">
+          <span>{count}</span>
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+        </span>
+      </button>
+      {open ? <div className="border-t border-border/35 p-3">{children}</div> : null}
     </div>
   );
 }

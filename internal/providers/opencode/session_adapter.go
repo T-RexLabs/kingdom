@@ -69,19 +69,29 @@ type opencodeRunEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	ErrorText string `json:"-"`
-	Text      string `json:"text,omitempty"`
-	Tool      string `json:"tool,omitempty"`
-	State     struct {
-		Status string          `json:"status,omitempty"`
-		Title  string          `json:"title,omitempty"`
-		Input  json.RawMessage `json:"input,omitempty"`
-	} `json:"state,omitempty"`
-	Part struct {
-		Text          string  `json:"text"`
-		Reason        string  `json:"reason"`
-		ReasonPresent bool    `json:"-"`
-		Cost          float64 `json:"cost"`
-		Tokens        *struct {
+	Part      struct {
+		Type          string `json:"type"`
+		ID            string `json:"id"`
+		Text          string `json:"text"`
+		Tool          string `json:"tool"`
+		Reason        string `json:"reason"`
+		ReasonPresent bool   `json:"-"`
+		State         struct {
+			Status string          `json:"status"`
+			Title  string          `json:"title"`
+			Input  json.RawMessage `json:"input"`
+		} `json:"state"`
+		Metadata struct {
+			OpenAI struct {
+				ReasoningEncryptedContent string `json:"reasoningEncryptedContent"`
+			} `json:"openai"`
+			Redacted string `json:"redacted"`
+		} `json:"metadata"`
+		Time struct {
+			Start *int64 `json:"start"`
+			End   *int64 `json:"end"`
+		} `json:"time"`
+		Tokens *struct {
 			Total     int64 `json:"total"`
 			Input     int64 `json:"input"`
 			Output    int64 `json:"output"`
@@ -414,7 +424,12 @@ func accumulateTokenUsage(total *TokenUsage, delta TokenUsage) {
 }
 
 func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteRequest, sessionID, prompt string) (startedOpencodeRun, error) {
-	args := []string{"run", "--format", "json"}
+	// `--thinking` makes `opencode run --format json` emit `reasoning` parts on
+	// the event stream. Without it the stream carries only text/tool/step parts
+	// and reasoning is reachable only via a post-hoc `opencode export`, so the
+	// planner can never surface live "thinking". For non-reasoning models the
+	// flag is a no-op (no reasoning parts exist to print).
+	args := []string{"run", "--format", "json", "--thinking"}
 	if a.skipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
@@ -1590,17 +1605,33 @@ func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
 	if req.OnActivity == nil {
 		return
 	}
-	observation := ExecuteActivityObservation{OccurredAt: time.Now().UTC().Format(time.RFC3339)}
+	observation := ExecuteActivityObservation{
+		ProviderPartID: strings.TrimSpace(event.Part.ID),
+		OccurredAt:     activityObservationOccurredAt(event),
+	}
 	switch normalizeActivityEventType(event.Type) {
-	case "tool", "tool_call", "tool_result":
+	case "tool", "tool_call", "tool_result", "tool_use":
+		toolName := strings.TrimSpace(event.Part.Tool)
+		// kingdom_complete_attempt is the runtime's internal completion-receipt
+		// plumbing, not operator-visible work; the export reconciliation path
+		// filters it too, so keep both paths consistent.
+		if toolName == "" || toolName == "kingdom_complete_attempt" {
+			return
+		}
 		observation.Kind = ExecuteActivityKindTool
-		observation.ToolName = strings.TrimSpace(event.Tool)
-		observation.ToolStatus = firstNonEmpty(strings.TrimSpace(event.State.Status), strings.TrimSpace(event.Part.Reason))
-		observation.ToolTitle = strings.TrimSpace(event.State.Title)
-		observation.ToolInput = formatToolActivityInput(event.State.Input)
+		observation.ToolName = toolName
+		observation.ToolStatus = firstNonEmpty(strings.TrimSpace(event.Part.State.Status), strings.TrimSpace(event.Part.Reason))
+		observation.ToolTitle = strings.TrimSpace(event.Part.State.Title)
+		observation.ToolInput = formatToolActivityInput(event.Part.State.Input)
 	case "reasoning":
 		observation.Kind = ExecuteActivityKindReasoning
-		observation.RawText = firstNonEmpty(strings.TrimSpace(event.Text), strings.TrimSpace(event.Part.Text))
+		observation.RawText = strings.TrimSpace(event.Part.Text)
+		if observation.RawText == "" {
+			observation.Summary = reasoningDetailFromMetadata(
+				strings.TrimSpace(event.Part.Metadata.Redacted),
+				strings.TrimSpace(event.Part.Metadata.OpenAI.ReasoningEncryptedContent),
+			)
+		}
 	case "step_start":
 		observation.Kind = ExecuteActivityKindProgress
 		observation.Label = "Provider step started"
@@ -1608,6 +1639,19 @@ func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
 		return
 	}
 	req.OnActivity(observation)
+}
+
+// activityObservationOccurredAt prefers the part's own end/start timestamp
+// (epoch millis) so live activity shares the same occurred-at as the part the
+// post-hoc export reconciliation reads, falling back to wall-clock when the
+// provider omits a part time.
+func activityObservationOccurredAt(event opencodeRunEvent) string {
+	for _, ms := range []*int64{event.Part.Time.End, event.Part.Time.Start} {
+		if ms != nil && *ms > 0 {
+			return time.UnixMilli(*ms).UTC().Format(time.RFC3339)
+		}
+	}
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func normalizeActivityEventType(value string) string {

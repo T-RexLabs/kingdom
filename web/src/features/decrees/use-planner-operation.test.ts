@@ -59,14 +59,17 @@ describe("patchPlannerTerminalCaches", () => {
     const qc = new QueryClient();
     qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
     qc.setQueryData(plannerKeys.messages("ps_1"), { pages: [], pageParams: [] });
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
 
     patchPlannerTerminalCaches(qc, buildRun(), buildEvent());
 
     const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
     const messagesState = qc.getQueryState(plannerKeys.messages("ps_1"));
+    const activityState = qc.getQueryState(plannerKeys.activity("run_1"));
     expect(detail?.conversation_state).toBe("ready");
     expect(detail?.current_run_id).toBeUndefined();
     expect(detail?.current_question_message_id).toBe("msg_new");
     expect(messagesState?.isInvalidated).toBe(true);
+    expect(activityState?.isInvalidated).toBe(true);
   });
 });

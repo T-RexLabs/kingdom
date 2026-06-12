@@ -151,8 +151,9 @@ const (
 )
 
 type ExecuteActivityObservation struct {
-	Kind       ExecuteActivityKind `json:"kind"`
-	OccurredAt string              `json:"occurred_at,omitempty"`
+	Kind          ExecuteActivityKind `json:"kind"`
+	ProviderPartID string             `json:"provider_part_id,omitempty"`
+	OccurredAt    string              `json:"occurred_at,omitempty"`
 	ToolName   string              `json:"tool_name,omitempty"`
 	ToolStatus string              `json:"tool_status,omitempty"`
 	ToolTitle  string              `json:"tool_title,omitempty"`

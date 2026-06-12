@@ -134,7 +134,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           formalizeText: "",
           error: null,
           events: [],
-          ephemeralReasoningByActivityId: {},
+          activityItems: [],
         });
         applyPlanningSessionFields(queryClient, session.planning_session_id, {
           conversation_state: "processing",
@@ -191,7 +191,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           formalizeText: "",
           error: null,
           events: [],
-          ephemeralReasoningByActivityId: {},
+          activityItems: [],
         });
         applyPlanningSessionFields(queryClient, session.planning_session_id, {
           conversation_state: "processing",
@@ -245,7 +245,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           formalizeText: "",
           error: null,
           events: [],
-          ephemeralReasoningByActivityId: {},
+          activityItems: [],
         });
         try {
           const created = await createOperation.mutateAsync({

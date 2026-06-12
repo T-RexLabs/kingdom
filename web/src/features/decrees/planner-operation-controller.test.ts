@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPlannerOperationState,
-  reducePlannerOperationEphemeralActivity,
   reducePlannerOperationEvent,
 } from "./planner-operation-controller";
 import type { AcpRun, AcpRunEvent } from "@/api/hooks";
@@ -56,15 +55,25 @@ describe("planner operation controller", () => {
     expect(reduced.assistantMessageId).toBe("msg_assistant_2");
   });
 
-  it("retains ephemeral reasoning text without persisting it into ACP events", () => {
+  it("captures live reasoning from canonical kingdom.reasoning activity events", () => {
     const initial = buildPlannerOperationState(buildRun({ status: "in-progress" }));
-    const withReasoning = reducePlannerOperationEphemeralActivity(initial, {
-      kind: "reasoning",
-      activityId: "activity_1",
-      rawText: "I am comparing the current transcript branch against the regenerated branch.",
-    });
+    const withReasoning = reducePlannerOperationEvent(
+      initial,
+      buildEvent({
+        event_id: "run:5",
+        seq: 5,
+        type: "generic",
+        payload: {
+          kind: "kingdom.reasoning",
+          activity_id: "prt_reason_1",
+          label: "Thinking",
+          detail: "I am comparing the current transcript branch against the regenerated branch.",
+        },
+      }),
+    );
 
-    expect(withReasoning.ephemeralReasoningByActivityId.activity_1).toContain("current transcript branch");
-    expect(withReasoning.events).toEqual([]);
+    const thought = withReasoning.activityItems.find((item) => item.id === "prt_reason_1");
+    expect(thought?.kind).toBe("thinking");
+    expect(thought?.detail).toContain("current transcript branch");
   });
 });

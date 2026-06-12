@@ -3,6 +3,7 @@ package planning
 import "sync"
 
 type LiveOperationEvent struct {
+	EventID   string
 	EventType string
 	Payload   string
 }

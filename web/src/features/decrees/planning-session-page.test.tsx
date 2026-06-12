@@ -346,7 +346,7 @@ describe("PlanningSessionPage", () => {
         replyText: "",
         formalizeText: "drafting",
         error: null,
-        ephemeralReasoningByActivityId: {},
+        activityItems: [],
       },
       connection: { state: "open", attempt: 1 },
     });
@@ -402,7 +402,7 @@ describe("PlanningSessionPage", () => {
         replyText: "",
         formalizeText: "partial draft",
         error: "operation cancelled during shutdown",
-        ephemeralReasoningByActivityId: {},
+        activityItems: [],
       },
       connection: { state: "idle", attempt: 0 },
     });
@@ -472,7 +472,7 @@ describe("PlanningSessionPage", () => {
 				replyText: "",
 				formalizeText: "partial draft",
 				error: "formalize failed",
-				ephemeralReasoningByActivityId: {},
+				activityItems: [],
 			},
 			connection: { state: "idle", attempt: 0 },
 		});
