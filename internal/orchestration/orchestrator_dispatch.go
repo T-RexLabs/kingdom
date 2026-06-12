@@ -724,7 +724,6 @@ func (o *orchestrationLoop) observeExecutionLaunchAsync(ctx context.Context, job
 }
 
 func (o *orchestrationLoop) retryLaunchObservation(ctx context.Context, job asyncExecutionResult, observe func(context.Context) error) error {
-	var lastErr error
 	for attempt := 0; ; attempt++ {
 		if o.forceCloseActive() {
 			return nil
@@ -738,7 +737,6 @@ func (o *orchestrationLoop) retryLaunchObservation(ctx context.Context, job asyn
 		if err == nil {
 			return nil
 		}
-		lastErr = err
 		if attempt == 0 || (attempt+1)%5 == 0 {
 			slog.Warn("retrying execution launch persistence", "attempt_id", job.attemptID, "retry", attempt+1, "error", err)
 		}
@@ -753,7 +751,6 @@ func (o *orchestrationLoop) retryLaunchObservation(ctx context.Context, job asyn
 			return err
 		}
 	}
-	return lastErr
 }
 
 func (o *orchestrationLoop) attemptEventRecorded(ctx context.Context, attemptID, eventType, reasonCode string) (bool, error) {

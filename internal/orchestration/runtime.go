@@ -478,7 +478,12 @@ func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir strin
 		cmd.Dir = workDir
 	}
 	cmd.Env = append(os.Environ(), opencode.ConfigDirEnvironment(configDir)...)
-	cmd.Env = append(cmd.Env, opencode.DatabasePathEnvironment(databasePath)...)
+	isolatedDBPath, cleanupDBPath, err := isolatedValidationDatabasePath(databasePath)
+	if err != nil {
+		return fmt.Errorf("prepare isolated validation database for %q: %w", agent, err)
+	}
+	defer cleanupDBPath()
+	cmd.Env = append(cmd.Env, opencode.DatabasePathEnvironment(isolatedDBPath)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -491,6 +496,21 @@ func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir strin
 		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, err)
 	}
 	return nil
+}
+
+func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
+	trimmed := strings.TrimSpace(databasePath)
+	if trimmed == "" {
+		return "", func() {}, nil
+	}
+	tmpDir, err := os.MkdirTemp("", "kingdom-opencode-validate-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tmpDir)
+	}
+	return filepath.Join(tmpDir, filepath.Base(trimmed)), cleanup, nil
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
