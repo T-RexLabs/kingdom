@@ -1265,8 +1265,8 @@ func TestFinalizeOperationCancel(t *testing.T) {
 	if session.ConversationState != PlanningSessionConversationStateReady {
 		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)
 	}
-	if session.CurrentOperationID != nil {
-		t.Fatalf("expected current_operation_id cleared, got %q", *session.CurrentOperationID)
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_cancel" {
+		t.Fatalf("expected current_operation_id to retain the cancelled lineage, got %+v", session.CurrentOperationID)
 	}
 
 	events, err := store.ListOperationEventsAfterEventIDPage(ctx, "po_cancel", "", DefaultPlanningOperationEventListLimit)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -121,8 +122,11 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	if err != nil {
 		return CreateOperationResult{}, fmt.Errorf("marshal planning operation request: %w", err)
 	}
+	operationID := operationReqID(s.deps)
+	acpRunID := acp.PlannerRunID(operationID)
 	operationReq := state.CreatePlanningOperationRequest{
-		OperationID:        s.deps.nextID("planning_operation"),
+		OperationID:        operationID,
+		AcpRunID:           acpRunID,
 		PlanningSessionID:  planningSessionID,
 		Type:               operationType,
 		Status:             state.PlanningOperationStatusQueued,
@@ -133,6 +137,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	}
 
 	var operation state.PlanningOperation
+	initialEvent := plannerAcpRunCreatedEvent(operationReq.OperationID, planningSessionID, operationType, request, now)
 	switch operationType {
 	case state.PlanningOperationTypeReply:
 		conversationState := state.PlanningSessionConversationStateProcessing
@@ -152,6 +157,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 				CreatedAt:           request.UserCreatedAt,
 			},
 			Operation:         operationReq,
+			InitialEvent:      initialEvent,
 			ConversationState: conversationState,
 			UpdatedAt:         now,
 		})
@@ -160,6 +166,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		operation, err = s.deps.store.CreateFormalizeBundle(ctx, state.CreatePlanningFormalizeBundleRequest{
 			SessionID:          planningSessionID,
 			Operation:          operationReq,
+			InitialEvent:       initialEvent,
 			ConversationState:  conversationState,
 			CurrentOperationID: operationReq.OperationID,
 			UpdatedAt:          now,
@@ -170,6 +177,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			SessionID:         planningSessionID,
 			TargetTurnIndex:   input.TargetTurnIndex,
 			Operation:         operationReq,
+			InitialEvent:      initialEvent,
 			ConversationState: conversationState,
 			UpdatedAt:         now,
 		})
@@ -201,6 +209,10 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	return CreateOperationResult{Operation: operation, Session: updatedSession}, nil
 }
 
+func operationReqID(deps runtimeDeps) string {
+	return deps.nextID("planning_operation")
+}
+
 func (s *operationService) GetOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, map[string]any, error) {
 	operation, ok, err := s.deps.store.GetOperation(ctx, operationID)
 	if err != nil || !ok {
@@ -212,6 +224,101 @@ func (s *operationService) GetOperation(ctx context.Context, operationID string)
 		request["type"] = operation.Type
 	}
 	return operation, true, request, nil
+}
+
+func (s *operationService) GetOperationByAcpRunID(ctx context.Context, acpRunID string) (state.PlanningOperation, bool, map[string]any, error) {
+	operation, ok, err := s.deps.store.GetOperationByAcpRunID(ctx, acpRunID)
+	if err != nil || !ok {
+		return operation, ok, nil, err
+	}
+	request := map[string]any{}
+	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)
+	if strings.TrimSpace(fmt.Sprint(request["type"])) == "" {
+		request["type"] = operation.Type
+	}
+	return operation, true, request, nil
+}
+
+func (s *operationService) CancelOperationByAcpRunID(ctx context.Context, acpRunID, reason string) (state.PlanningOperation, error) {
+	operation, ok, _, err := s.GetOperationByAcpRunID(ctx, acpRunID)
+	if err != nil {
+		return state.PlanningOperation{}, err
+	}
+	if !ok {
+		return state.PlanningOperation{}, ErrOperationNotFound
+	}
+	if operation.Status == state.PlanningOperationStatusSucceeded || operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
+		return operation, nil
+	}
+	trimmedReason := strings.TrimSpace(reason)
+	if trimmedReason == "" {
+		trimmedReason = "operation cancelled"
+	}
+	if operation.Status == state.PlanningOperationStatusQueued {
+		now := s.deps.nowString()
+		terminalEvent, eventErr := s.runner.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCancelledEventType, plannerMessagePayload(operation, map[string]any{"reason": trimmedReason}))
+		if eventErr != nil {
+			return state.PlanningOperation{}, eventErr
+		}
+		err = s.deps.store.CancelQueuedOperation(ctx, state.CancelQueuedPlanningOperationRequest{
+			OperationID:   operation.OperationID,
+			ErrorMessage:  trimmedReason,
+			UpdatedAt:     now,
+			FinishedAt:    now,
+			TerminalEvent: terminalEvent,
+		})
+		if err == nil {
+			updated, found, getErr := s.deps.store.GetOperation(ctx, operation.OperationID)
+			if getErr != nil {
+				return state.PlanningOperation{}, getErr
+			}
+			if !found {
+				return state.PlanningOperation{}, ErrOperationNotFound
+			}
+			return updated, nil
+		}
+		if !errors.Is(err, state.ErrPlanningLeaseConflict) {
+			return state.PlanningOperation{}, err
+		}
+		operation, ok, err = s.deps.store.GetOperation(ctx, operation.OperationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !ok {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		if operation.Status == state.PlanningOperationStatusCancelled {
+			return operation, nil
+		}
+	}
+	if s.runner == nil || !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
+		return operation, nil
+	}
+	return s.waitForTerminalOperation(ctx, operation.OperationID)
+}
+
+func (s *operationService) waitForTerminalOperation(ctx context.Context, operationID string) (state.PlanningOperation, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		operation, ok, err := s.deps.store.GetOperation(ctx, operationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !ok {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		if operation.Status == state.PlanningOperationStatusSucceeded || operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
+			return operation, nil
+		}
+		if time.Now().After(deadline) {
+			return operation, nil
+		}
+		select {
+		case <-ctx.Done():
+			return state.PlanningOperation{}, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (s *operationService) RuntimeMetrics(ctx context.Context) (PlannerRuntimeMetrics, error) {

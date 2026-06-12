@@ -152,6 +152,61 @@ func TestPlanningStoreAcceptPlanningProviderCompletionReceiptConflictPersistsInv
 	}
 }
 
+func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, operation := newPlanningProviderSettlementTestStore(t)
+	if _, err := store.db.Exec(`UPDATE planning_operations SET status = 'succeeded', active_provider_invocation_id = NULL WHERE operation_id = ?`, operation.OperationID); err != nil {
+		t.Fatalf("mark initial planning operation terminal: %v", err)
+	}
+	secondOperation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_planning_receipt_2",
+		PlanningSessionID:  operation.PlanningSessionID,
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"content_markdown":"follow-up"}`,
+		CreatedAt:          "2026-04-21T16:04:59Z",
+	})
+	if err != nil {
+		t.Fatalf("create second planning operation: %v", err)
+	}
+
+	if _, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: "ppinv_test_2",
+		PlanningOperationID:          secondOperation.OperationID,
+		PlanningSessionID:            secondOperation.PlanningSessionID,
+		LogicalSessionID:             "planner-ps_planning_receipt",
+		CompletionCapability:         "planning-capability-2",
+		IssuedAt:                     "2026-04-21T16:05:00Z",
+		CreatedAt:                    "2026-04-21T16:05:00Z",
+	}); err != nil {
+		t.Fatalf("create second planning provider invocation: %v", err)
+	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
+		PlanningProviderInvocationID: "ppinv_test_2",
+		PlanningOperationID:          secondOperation.OperationID,
+		ProviderSessionID:            "ses_planning_receipt_2",
+		OpenedAt:                     "2026-04-21T16:05:01Z",
+	}); err != nil {
+		t.Fatalf("mark second planning provider invocation open: %v", err)
+	}
+
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_receipt")
+	if err != nil {
+		t.Fatalf("get latest reusable planning provider invocation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected reusable planning provider invocation to be found")
+	}
+	if invocation.PlanningProviderInvocationID != "ppinv_test_2" {
+		t.Fatalf("expected latest reusable invocation ppinv_test_2, got %#v", invocation)
+	}
+	if invocation.ProviderSessionID != "ses_planning_receipt_2" {
+		t.Fatalf("expected latest reusable provider session ses_planning_receipt_2, got %#v", invocation)
+	}
+}
+
 func TestPlanningStoreAcceptPlanningProviderCompletionReceiptRejectsDuplicateWhenInvocationNoLongerActive(t *testing.T) {
 	t.Parallel()
 

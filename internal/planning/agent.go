@@ -33,15 +33,29 @@ type CompletionReceiptAcceptance struct {
 	RejectedReason        string
 }
 
+type ProviderActivity struct {
+	Kind       string
+	OccurredAt string
+	ToolName   string
+	ToolStatus string
+	ToolTitle  string
+	ToolInput  string
+	Label      string
+	Summary    string
+	RawText    string
+}
+
 type ProviderInvocationContext struct {
 	AttemptID                 string
 	LogicalSessionID          string
+	ProviderSessionID         string
 	InvocationID              string
 	InvocationIssuedAt        string
 	CompletionProtocolVersion string
 	CompletionCapability      string
 	CompletionReceiptDir      string
 	OnProviderSession         func(sessionID string)
+	OnActivity                func(activity ProviderActivity)
 	OnCompletionReceipt       func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error)
 }
 

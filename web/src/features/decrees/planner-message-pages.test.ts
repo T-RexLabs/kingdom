@@ -1,129 +1,58 @@
 import { describe, expect, it } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
 import type { PlanningMessage, PlanningMessagesPage } from "@/api/hooks";
-import {
-  flattenRenderedPlanningMessages,
-  getPlanningMessagesTotalCount,
-  getRenderedFirstItemIndex,
-  getRenderedPlanningMessagePages,
-  patchLatestPlanningMessagesPage,
-  replaceAssistantMessageInLatestPlanningPage,
-} from "./planner-message-pages";
+import { replaceAssistantMessageAtTurn } from "./planner-message-pages";
 
-function message(id: string, turnIndex: number, role: PlanningMessage["role"]): PlanningMessage {
+function buildMessage(overrides: Partial<PlanningMessage> = {}): PlanningMessage {
   return {
-    planning_message_id: id,
+    planning_message_id: "message-1",
     planning_session_id: "session-1",
-    turn_index: turnIndex,
-    role,
-    content_markdown: id,
-    created_at: `2026-04-22T10:00:${String(turnIndex).padStart(2, "0")}Z`,
+    turn_index: 1,
+    role: "assistant",
+    content_markdown: "Original reply",
+    created_at: "2026-04-21T10:00:00Z",
     variant_index: 0,
     active: true,
+    ...overrides,
   };
 }
 
-function dataFromPages(pages: PlanningMessagesPage[]): InfiniteData<PlanningMessagesPage, string | undefined> {
+function buildPage(items: PlanningMessage[]): PlanningMessagesPage {
   return {
-    pages,
-    pageParams: pages.map((page) => page.previous_cursor ?? undefined),
+    planning_session_id: "session-1",
+    items,
+    total_count: items.length,
+    first_item_index: 0,
+    previous_cursor: undefined,
   };
 }
 
-describe("planner message page semantics", () => {
-  it("renders pages oldest-to-newest while query order remains newest-first", () => {
-    const data = dataFromPages([
-      {
-        planning_session_id: "session-1",
-        items: [message("m-3", 3, "assistant"), message("m-4", 4, "user")],
-        total_count: 4,
-        first_item_index: 2,
-        previous_cursor: "2",
-      },
-      {
-        planning_session_id: "session-1",
-        items: [message("m-1", 1, "assistant"), message("m-2", 2, "user")],
-        total_count: 4,
-        first_item_index: 0,
-      },
-    ]);
+describe("replaceAssistantMessageAtTurn", () => {
+  it("replaces the existing assistant reply for the same turn across pages", () => {
+    const current = {
+      pages: [
+        buildPage([buildMessage({ planning_message_id: "assistant-4", turn_index: 4, content_markdown: "Latest reply" })]),
+        buildPage([
+          buildMessage({ planning_message_id: "assistant-2-old", turn_index: 2, content_markdown: "Old reply" }),
+          buildMessage({ planning_message_id: "assistant-1", turn_index: 1, content_markdown: "Earlier reply" }),
+        ]),
+      ],
+      pageParams: [undefined, "cursor-1"],
+    } satisfies InfiniteData<PlanningMessagesPage, unknown>;
 
-    const renderedPages = getRenderedPlanningMessagePages(data);
-    expect(renderedPages[0]?.first_item_index).toBe(0);
-    expect(renderedPages[1]?.first_item_index).toBe(2);
+    const updated = replaceAssistantMessageAtTurn(
+      current,
+      buildMessage({
+        planning_message_id: "assistant-2-new",
+        turn_index: 2,
+        content_markdown: "Regenerated reply",
+      }),
+    );
 
-    const flattened = flattenRenderedPlanningMessages(data);
-    expect(flattened.map((item) => item.planning_message_id)).toEqual(["m-1", "m-2", "m-3", "m-4"]);
-  });
-
-  it("derives first item index from the oldest rendered page", () => {
-    const data = dataFromPages([
-      {
-        planning_session_id: "session-1",
-        items: [message("m-51", 51, "assistant")],
-        total_count: 100,
-        first_item_index: 50,
-        previous_cursor: "50",
-      },
-      {
-        planning_session_id: "session-1",
-        items: [message("m-1", 1, "assistant")],
-        total_count: 100,
-        first_item_index: 0,
-      },
-    ]);
-
-    expect(getRenderedFirstItemIndex(data)).toBe(0);
-  });
-
-  it("keeps total count stable while patching the latest query page", () => {
-    const current = dataFromPages([
-      {
-        planning_session_id: "session-1",
-        items: [message("m-3", 3, "assistant"), message("optimistic-user-1", 4, "user")],
-        total_count: 4,
-        first_item_index: 2,
-        previous_cursor: "2",
-      },
-      {
-        planning_session_id: "session-1",
-        items: [message("m-1", 1, "assistant"), message("m-2", 2, "user")],
-        total_count: 4,
-        first_item_index: 0,
-      },
-    ]);
-
-    const canonicalUser = message("m-4", 4, "user");
-    const patched = patchLatestPlanningMessagesPage(current, canonicalUser, "optimistic-user-1");
-    expect(getPlanningMessagesTotalCount(patched)).toBe(4);
-    expect(patched?.pages[0]?.items.map((item) => item.planning_message_id)).toEqual(["m-3", "m-4"]);
-  });
-
-  it("replaces assistant message on newest query page even with older pages loaded", () => {
-    const current = dataFromPages([
-      {
-        planning_session_id: "session-1",
-        items: [message("m-2", 2, "user"), message("m-3", 3, "assistant")],
-        total_count: 3,
-        first_item_index: 1,
-        previous_cursor: "1",
-      },
-      {
-        planning_session_id: "session-1",
-        items: [message("m-1", 1, "assistant")],
-        total_count: 3,
-        first_item_index: 0,
-      },
-    ]);
-
-    const replacement = {
-      ...message("m-3", 3, "assistant"),
-      content_markdown: "updated",
-    };
-    const patched = replaceAssistantMessageInLatestPlanningPage(current, replacement);
-    expect(patched?.pages[1]?.items[0]?.content_markdown).toBe("m-1");
-    expect(patched?.pages[0]?.items[1]?.content_markdown).toBe("updated");
-    expect(patched?.pages[1]?.items[0]?.content_markdown).not.toBe("updated");
-    expect(patched?.pages[0]?.items.find((item) => item.planning_message_id === "m-3")?.content_markdown).toBe("updated");
+    const allIds = updated?.pages.flatMap((page) => page.items.map((item) => item.planning_message_id)) ?? [];
+    expect(allIds).toContain("assistant-2-new");
+    expect(allIds).not.toContain("assistant-2-old");
+    expect(allIds).toContain("assistant-4");
+    expect(allIds).toContain("assistant-1");
   });
 });

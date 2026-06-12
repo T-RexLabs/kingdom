@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -26,6 +27,7 @@ type bufferedOperationTextWriter struct {
 	operationID string
 	cursor      *sequenceCursor
 	appendEvent appendOperationEventFunc
+	payload      map[string]any
 	timer       *time.Timer
 	buffer      strings.Builder
 	closed      bool
@@ -36,12 +38,14 @@ func newBufferedOperationTextWriter(
 	ctx context.Context,
 	operationID string,
 	cursor *sequenceCursor,
+	payload map[string]any,
 	appendEvent appendOperationEventFunc,
 ) *bufferedOperationTextWriter {
 	return &bufferedOperationTextWriter{
 		ctx:         ctx,
 		operationID: strings.TrimSpace(operationID),
 		cursor:      cursor,
+		payload:     cloneOperationEventPayload(payload),
 		appendEvent: appendEvent,
 	}
 }
@@ -96,13 +100,15 @@ func (w *bufferedOperationTextWriter) Flush() error {
 	ctx := w.ctx
 	operationID := w.operationID
 	cursor := w.cursor
+	payload := cloneOperationEventPayload(w.payload)
 	appendEvent := w.appendEvent
 	w.mu.Unlock()
 
 	if text == "" {
 		return nil
 	}
-	_, err := appendEvent(ctx, operationID, cursor, "text_delta", map[string]any{"text": text})
+	payload["text"] = text
+	_, err := appendEvent(ctx, operationID, cursor, acp.MessagePartEventType, payload)
 	if err != nil {
 		w.mu.Lock()
 		if w.err == nil {
@@ -121,4 +127,15 @@ func (w *bufferedOperationTextWriter) Close() error {
 	w.closed = true
 	w.mu.Unlock()
 	return w.Flush()
+}
+
+func cloneOperationEventPayload(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(payload))
+	for key, value := range payload {
+		cloned[key] = value
+	}
+	return cloned
 }

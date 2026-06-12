@@ -50,6 +50,7 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 	clock := clockFunc(nowRFC3339)
 	ids := idFunc(idGenerator)
 	broker := newOperationEventBroker()
+	liveBroker := newLiveOperationEventBroker()
 	metrics := &plannerMetrics{}
 	shared := runtimeDeps{
 		store:       store,
@@ -59,6 +60,7 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 		projectRoot: projectRoot,
 		leaseOwner:  plannerLeaseOwner(),
 		broker:      broker,
+		liveBroker:  liveBroker,
 		metrics:     metrics,
 	}
 	// One service-owned context drives both the recovery loop and every
@@ -276,6 +278,24 @@ func (s *Service) GetOperation(ctx context.Context, operationID string) (state.P
 	return s.operations.GetOperation(ctx, operationID)
 }
 
+func (s *Service) GetOperationByAcpRunID(ctx context.Context, acpRunID string) (state.PlanningOperation, bool, map[string]any, error) {
+	if s == nil || s.operations == nil {
+		return state.PlanningOperation{}, false, nil, fmt.Errorf("planning service operation runtime is required")
+	}
+	return s.operations.GetOperationByAcpRunID(ctx, acpRunID)
+}
+
+func (s *Service) CancelOperationByAcpRunID(ctx context.Context, acpRunID, reason string) (state.PlanningOperation, error) {
+	if s == nil || s.operations == nil {
+		return state.PlanningOperation{}, fmt.Errorf("planning service operation runtime is required")
+	}
+	if err := s.admitWrite(); err != nil {
+		return state.PlanningOperation{}, err
+	}
+	defer s.releaseWrite()
+	return s.operations.CancelOperationByAcpRunID(ctx, acpRunID, reason)
+}
+
 func (s *Service) ListOperationEventsAfterEventID(ctx context.Context, operationID string, afterEventID string) ([]state.PlanningOperationEvent, error) {
 	if s == nil || s.events == nil {
 		return nil, fmt.Errorf("planning service event runtime is required")
@@ -290,6 +310,15 @@ func (s *Service) SubscribeOperationEvents(operationID string) (<-chan struct{},
 		return ch, func() {}
 	}
 	return s.events.SubscribeOperationEvents(operationID)
+}
+
+func (s *Service) SubscribeLiveOperationEvents(operationID string) (<-chan LiveOperationEvent, func()) {
+	if s == nil || s.events == nil {
+		ch := make(chan LiveOperationEvent)
+		close(ch)
+		return ch, func() {}
+	}
+	return s.events.SubscribeLiveOperationEvents(operationID)
 }
 
 func (s *Service) RecoverOperations(ctx context.Context) error {
@@ -357,6 +386,17 @@ func (s *Service) GenerateTitle(ctx context.Context, planningSessionID string) (
 	}
 	defer s.releaseWrite()
 	return s.sessions.GenerateTitle(ctx, planningSessionID)
+}
+
+func (s *Service) CreateGenerateTitleOperation(ctx context.Context, planningSessionID string) (state.PlanningSession, state.PlanningOperation, error) {
+	if s == nil || s.sessions == nil {
+		return state.PlanningSession{}, state.PlanningOperation{}, fmt.Errorf("planning service session runtime is required")
+	}
+	if err := s.admitWrite(); err != nil {
+		return state.PlanningSession{}, state.PlanningOperation{}, err
+	}
+	defer s.releaseWrite()
+	return s.sessions.CreateGenerateTitleOperation(ctx, planningSessionID)
 }
 
 func (s *Service) AutoTitleEligible(ctx context.Context, session state.PlanningSession) (bool, error) {

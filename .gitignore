@@ -19,3 +19,4 @@ kd-sandbox/
 web/dist/
 .claude
 .playwright*
+kingdom-artifacts*

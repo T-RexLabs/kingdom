@@ -112,3 +112,44 @@ export function replaceAssistantMessageInLatestPlanningPage(
 
   return { ...data, pages };
 }
+
+export function replaceAssistantMessageAtTurn(
+  data: PlanningMessagesInfiniteData | undefined,
+  message: PlanningMessage
+): PlanningMessagesInfiniteData | undefined {
+  if (!data?.pages?.length) {
+    return data;
+  }
+
+  let inserted = false;
+  const pages = data.pages.map((page) => {
+    let replacementIndex = -1;
+    const nextItems = page.items.filter((item, index) => {
+      if (item.planning_message_id === message.planning_message_id) {
+        replacementIndex = index;
+        return false;
+      }
+      const isSupersededAssistant = item.role === "assistant" && item.turn_index === message.turn_index;
+      if (isSupersededAssistant) {
+        replacementIndex = index;
+        return false;
+      }
+      return true;
+    });
+    if (!inserted && replacementIndex >= 0) {
+      const boundedIndex = Math.min(replacementIndex, nextItems.length);
+      nextItems.splice(boundedIndex, 0, message);
+      inserted = true;
+    }
+    return { ...page, items: nextItems };
+  });
+
+  if (!inserted) {
+    pages[0] = {
+      ...pages[0],
+      items: [...pages[0].items, message],
+    };
+  }
+
+  return { ...data, pages };
+}

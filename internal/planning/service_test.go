@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
@@ -1192,8 +1193,8 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if eventsAfterFirst[0].Seq != 2 {
 		t.Fatalf("expected first resumed seq 2, got %d", eventsAfterFirst[0].Seq)
 	}
-	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != "done" {
-		t.Fatalf("expected terminal done event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
+	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != acp.RunCompletedEventType {
+		t.Fatalf("expected terminal run.completed event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
 	}
 }
 
@@ -1239,18 +1240,18 @@ func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testin
 	textDeltas := make([]string, 0)
 	for _, event := range events {
 		types = append(types, event.EventType)
-		if event.EventType == "text_delta" {
+		if event.EventType == acp.MessagePartEventType {
 			textDeltas = append(textDeltas, event.PayloadJSON)
 		}
 	}
 
-	for _, expected := range []string{"started", "user_message", "provider_launching", "provider_session_open", "receipt_persisted", "finalizing", "done"} {
+	for _, expected := range []string{acp.RunCreatedEventType, acp.RunInProgressEventType, acp.GenericEventType, acp.MessagePartEventType, acp.MessageDoneEventType, acp.RunCompletedEventType} {
 		if !containsString(types, expected) {
 			t.Fatalf("expected lifecycle event %q in %v", expected, types)
 		}
 	}
 	if len(textDeltas) != 1 {
-		t.Fatalf("expected one batched text_delta event, got %d (%v)", len(textDeltas), textDeltas)
+		t.Fatalf("expected one batched message.part event, got %d (%v)", len(textDeltas), textDeltas)
 	}
 	var payload struct {
 		Text string `json:"text"`
@@ -1264,11 +1265,11 @@ func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testin
 	if strings.Contains(textDeltas[0], "structured_question") {
 		t.Fatalf("expected streamed text delta to be sanitized, got %s", textDeltas[0])
 	}
-	if !strings.Contains(events[0].PayloadJSON, `"start_source":"foreground"`) {
-		t.Fatalf("expected started payload to record foreground source, got %s", events[0].PayloadJSON)
+	if !containsEventPayload(events, acp.RunInProgressEventType, `"start_source":"foreground"`) {
+		t.Fatalf("expected run.in-progress payload to record foreground source, got %v", types)
 	}
-	if !strings.Contains(events[0].PayloadJSON, `"queue_age_ms":`) {
-		t.Fatalf("expected started payload to record queue age, got %s", events[0].PayloadJSON)
+	if !containsEventPayload(events, acp.RunInProgressEventType, `"queue_age_ms":`) {
+		t.Fatalf("expected run.in-progress payload to record queue age, got %v", types)
 	}
 	metrics, err := service.RuntimeMetrics(context.Background())
 	if err != nil {
@@ -2772,8 +2773,8 @@ func TestFinaliseIfStuckTerminalizesInvalidRecoveredGeneratedTitle(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("get recovered title session: ok=%v err=%v", found, err)
 	}
-	if session.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title lane to clear after invalid recovered title failure, got %#v", session)
+	if session.CurrentTitleOperationID == nil || *session.CurrentTitleOperationID != "po_invalid_title_recovery" {
+		t.Fatalf("expected title lane to retain failed run lineage, got %#v", session)
 	}
 }
 
@@ -2872,8 +2873,8 @@ func TestFinaliseIfStuckImmediatelyTerminalizesInvalidRecoveredGeneratedTitleBef
 	if err != nil || !found {
 		t.Fatalf("get recovered title session: ok=%v err=%v", found, err)
 	}
-	if session.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title lane to clear after invalid recovered title failure, got %#v", session)
+	if session.CurrentTitleOperationID == nil || *session.CurrentTitleOperationID != "po_invalid_title_recent" {
+		t.Fatalf("expected title lane to retain failed run lineage, got %#v", session)
 	}
 }
 
@@ -3093,6 +3094,15 @@ func awaitSlowTitleStarted(t *testing.T, p *slowTitlePlanner) {
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEventPayload(events []state.PlanningOperationEvent, eventType, fragment string) bool {
+	for _, event := range events {
+		if event.EventType == eventType && strings.Contains(event.PayloadJSON, fragment) {
 			return true
 		}
 	}
@@ -3328,8 +3338,8 @@ func TestServiceCloseFinalizesInFlightOperationAsCancelled(t *testing.T) {
 	if session.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected session conversation_state=ready after cancel, got %q", session.ConversationState)
 	}
-	if session.CurrentOperationID != nil {
-		t.Fatalf("expected session current_operation_id cleared, got %q", *session.CurrentOperationID)
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != opID {
+		t.Fatalf("expected session current_operation_id to retain cancelled lineage, got %+v", session.CurrentOperationID)
 	}
 
 	// Terminal event must be the dedicated "cancelled" event type so the
@@ -3342,8 +3352,8 @@ func TestServiceCloseFinalizesInFlightOperationAsCancelled(t *testing.T) {
 		t.Fatal("expected at least one operation event")
 	}
 	terminal := events[len(events)-1]
-	if terminal.EventType != "cancelled" {
-		t.Fatalf("expected terminal event type=cancelled, got %q", terminal.EventType)
+	if terminal.EventType != acp.RunCancelledEventType {
+		t.Fatalf("expected terminal event type=%s, got %q", acp.RunCancelledEventType, terminal.EventType)
 	}
 }
 
@@ -3521,8 +3531,8 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 		t.Fatal("expected at least one terminal event")
 	}
 	terminal := events[len(events)-1]
-	if terminal.EventType != "cancelled" {
-		t.Fatalf("expected terminal event type=cancelled, got %q", terminal.EventType)
+	if terminal.EventType != acp.RunCancelledEventType {
+		t.Fatalf("expected terminal event type=%s, got %q", acp.RunCancelledEventType, terminal.EventType)
 	}
 }
 
@@ -3668,8 +3678,8 @@ func TestServiceCloseCancelsInFlightGenerateTitleOperation(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get session after close: ok=%v err=%v", ok, err)
 	}
-	if stored.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title slot cleared after shutdown cancel, got %+v", stored.CurrentTitleOperationID)
+	if stored.CurrentTitleOperationID == nil {
+		t.Fatalf("expected title slot to retain cancelled lineage, got %+v", stored.CurrentTitleOperationID)
 	}
 	if stored.CurrentOperationID != nil {
 		t.Fatalf("expected interactive slot to remain empty, got %+v", stored.CurrentOperationID)

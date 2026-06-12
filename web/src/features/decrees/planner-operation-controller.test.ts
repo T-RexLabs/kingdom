@@ -1,161 +1,70 @@
 import { describe, expect, it } from "vitest";
-import type { PlanningOperationDetail, PlanningOperationEvent } from "@/api/hooks";
 import {
   buildPlannerOperationState,
-  isPlannerOperationTerminal,
+  reducePlannerOperationEphemeralActivity,
   reducePlannerOperationEvent,
-  type PlannerOperationState,
 } from "./planner-operation-controller";
+import type { AcpRun, AcpRunEvent } from "@/api/hooks";
 
-function buildPolledOp(overrides: Partial<PlanningOperationDetail> = {}): PlanningOperationDetail {
+function buildRun(overrides: Partial<AcpRun> = {}): AcpRun {
   return {
-    operation_id: "op_1",
+    run_id: "96b0d561-cbe7-5c50-bf54-cd1dc3c76d47",
+    session_id: "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
     planning_session_id: "ps_1",
-    type: "reply",
-    status: "running",
-    request: {
-      content_markdown: "Tell me more",
-      turn_index: 2,
-      user_message_id: "msg_user",
-      user_created_at: "2026-04-26T12:00:00Z",
-      assistant_message_id: "msg_assistant",
-      assistant_created_at: "2026-04-26T12:00:01Z",
-    },
-    error: null,
-    result_ref: null,
-    observed_output_text: null,
-    created_at: "2026-04-26T12:00:00Z",
-    finished_at: null,
-    ...overrides,
-  } as PlanningOperationDetail;
-}
-
-function buildBaseState(overrides: Partial<PlannerOperationState> = {}): PlannerOperationState {
-  return {
-    kind: "reply",
-    operationId: "op_1",
-    status: "streaming",
-    lastEventSeq: 4,
-    turnIndex: 2,
-    userMessageId: "msg_user",
-    userCreatedAt: "2026-04-26T12:00:00Z",
-    assistantMessageId: "msg_assistant",
-    assistantCreatedAt: "2026-04-26T12:00:01Z",
-    pendingReply: { contentMarkdown: "Tell me more" },
-    replyText: "partial reply",
-    formalizeText: "",
-    error: null,
+    agent_name: "planner-reply",
+    status: "created",
+    created_at: "2026-04-21T10:00:00Z",
     ...overrides,
   };
 }
 
-function buildEvent(overrides: Partial<PlanningOperationEvent> = {}): PlanningOperationEvent {
+function buildEvent(overrides: Partial<AcpRunEvent> = {}): AcpRunEvent {
   return {
-    event_id: "op_1:5",
-    operation_id: "op_1",
-    seq: 5,
-    event_type: "cancelled",
-    payload: { reason: "operation cancelled during shutdown" },
-    created_at: "2026-04-26T12:00:05Z",
+    event_id: "run:1",
+    run_id: "96b0d561-cbe7-5c50-bf54-cd1dc3c76d47",
+    seq: 1,
+    type: "run.created",
+    payload: {
+      turn_index: 2,
+      assistant_message_id: "msg_assistant_2",
+      assistant_created_at: "2026-04-21T10:00:01Z",
+      content_markdown: "Need planner help",
+      answer_payload: { text: "Need planner help" },
+    },
+    created_at: "2026-04-21T10:00:00Z",
     ...overrides,
-  } as PlanningOperationEvent;
+  };
 }
 
-describe("isPlannerOperationTerminal", () => {
-  it("returns true for every terminal status", () => {
-    expect(isPlannerOperationTerminal("done")).toBe(true);
-    expect(isPlannerOperationTerminal("error")).toBe(true);
-    expect(isPlannerOperationTerminal("cancelled")).toBe(true);
+describe("planner operation controller", () => {
+  it("hydrates reply lineage from ACP run.created payload", () => {
+    const initial = buildPlannerOperationState(buildRun());
+    const reduced = reducePlannerOperationEvent(initial, buildEvent({ payload: { ...buildEvent().payload, force_new_session: true } }));
+
+    expect(reduced.turnIndex).toBe(2);
+    expect(reduced.assistantMessageId).toBe("msg_assistant_2");
+    expect(reduced.assistantCreatedAt).toBe("2026-04-21T10:00:01Z");
+    expect(reduced.pendingReply?.contentMarkdown).toBe("Need planner help");
+    expect(reduced.forceNewSession).toBe(true);
   });
 
-  it("returns false for in-flight statuses", () => {
-    expect(isPlannerOperationTerminal("pending")).toBe(false);
-    expect(isPlannerOperationTerminal("streaming")).toBe(false);
-  });
-});
+  it("accumulates streamed response text on message.part", () => {
+    const initial = buildPlannerOperationState(buildRun({ status: "in-progress" }));
+    const reduced = reducePlannerOperationEvent(initial, buildEvent({ type: "message.part", payload: { text: "hello", planning_message_id: "msg_assistant_2", turn_index: 2 } }));
 
-describe("PlannerOperationController — cancelled handling", () => {
-  it("buildPlannerOperationState maps backend cancelled status to local cancelled (not error)", () => {
-    const state = buildPlannerOperationState(
-      buildPolledOp({ status: "cancelled", error: "operation cancelled during shutdown" }),
-    );
-    // Distinct local status — the banner uses this to render neutrally.
-    // Mapping cancelled → "error" was the duct-tape-shaped option; we
-    // chose the clean version so failure-rate metrics derived from
-    // PlannerOperationState aren't polluted by graceful shutdowns.
-    expect(state.status).toBe("cancelled");
-    expect(state.error).toBe("operation cancelled during shutdown");
+    expect(reduced.replyText).toBe("hello");
+    expect(reduced.assistantMessageId).toBe("msg_assistant_2");
   });
 
-  it("buildPlannerOperationState still maps failed → error (regression guard)", () => {
-    const state = buildPlannerOperationState(
-      buildPolledOp({ status: "failed", error: "boom" }),
-    );
-    expect(state.status).toBe("error");
-    expect(state.error).toBe("boom");
+  it("retains ephemeral reasoning text without persisting it into ACP events", () => {
+    const initial = buildPlannerOperationState(buildRun({ status: "in-progress" }));
+    const withReasoning = reducePlannerOperationEphemeralActivity(initial, {
+      kind: "reasoning",
+      activityId: "activity_1",
+      rawText: "I am comparing the current transcript branch against the regenerated branch.",
+    });
+
+    expect(withReasoning.ephemeralReasoningByActivityId.activity_1).toContain("current transcript branch");
+    expect(withReasoning.events).toEqual([]);
   });
-
-  it("buildPlannerOperationState hydrates observed output text for failed replies", () => {
-    const state = buildPlannerOperationState(
-      buildPolledOp({
-        status: "failed",
-        error: "provider_incomplete_turn",
-        observed_output_text: "Provisional planner reply",
-      }),
-    );
-    expect(state.status).toBe("error");
-    expect(state.replyText).toBe("Provisional planner reply");
-  });
-
-  it("buildPlannerOperationState still maps succeeded → done (regression guard)", () => {
-    const state = buildPlannerOperationState(buildPolledOp({ status: "succeeded" }));
-    expect(state.status).toBe("done");
-  });
-
-  it("reducePlannerOperationEvent transitions to cancelled on a cancelled event", () => {
-    const next = reducePlannerOperationEvent(buildBaseState(), buildEvent());
-    expect(next.status).toBe("cancelled");
-    expect(next.error).toBe("operation cancelled during shutdown");
-    // Pending reply is cleared so the composer doesn't mistakenly
-    // re-send the same payload after recovery.
-    expect(next.pendingReply).toBeNull();
-  });
-
-  it("reducePlannerOperationEvent falls back to neutral copy when reason payload is missing", () => {
-    const next = reducePlannerOperationEvent(buildBaseState(), buildEvent({ payload: {} }));
-    expect(next.status).toBe("cancelled");
-    expect(next.error).toBe("Operation cancelled");
-  });
-
-  it("reducePlannerOperationEvent on a cancelled event preserves accumulated streaming text", () => {
-    // The reply text the user already saw shouldn't disappear just
-    // because the operation got cancelled — the composer re-enables
-    // and the assistant's mid-stream output stays visible until the
-    // session refetches canonical truth.
-    const next = reducePlannerOperationEvent(buildBaseState({ replyText: "the partial answer was…" }), buildEvent());
-    expect(next.replyText).toBe("the partial answer was…");
-  });
-
-  it("reducePlannerOperationEvent error case still produces error status (regression guard)", () => {
-    const next = reducePlannerOperationEvent(
-      buildBaseState(),
-      buildEvent({ event_type: "error", payload: { error: "boom" }, seq: 6 }),
-    );
-    expect(next.status).toBe("error");
-    expect(next.error).toBe("boom");
-  });
-
-	it("reduces lifecycle progress events into visible planner stages", () => {
-		const launching = reducePlannerOperationEvent(
-			buildBaseState({ status: "pending", replyText: "" }),
-			buildEvent({ event_type: "provider_launching", payload: {}, seq: 6 }),
-		);
-		expect(launching.status).toBe("streaming");
-
-		const finalizing = reducePlannerOperationEvent(
-			launching,
-			buildEvent({ event_type: "receipt_persisted", payload: { evidence_id: "receipt_1" }, seq: 7 }),
-		);
-		expect(finalizing.status).toBe("streaming");
-	});
 });

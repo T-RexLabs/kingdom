@@ -1,4 +1,4 @@
-import type { PlanningMessage, PlanningOperationDetail, PlanningOperationEvent } from "@/api/hooks";
+import type { AcpRun, AcpRunEvent, PlanningMessage } from "@/api/hooks";
 
 export type QuestionPayload = NonNullable<PlanningMessage["question_payload"]>;
 export type AnswerPayload = NonNullable<PlanningMessage["answer_payload"]>;
@@ -39,6 +39,7 @@ export type PlannerOperationState = {
   lastEventSeq: number;
   turnIndex?: number;
   targetTurnIndex?: number;
+  forceNewSession?: boolean;
   userMessageId?: string;
   userCreatedAt?: string;
   assistantMessageId?: string;
@@ -48,83 +49,89 @@ export type PlannerOperationState = {
   formalizeText: string;
   draftId?: string;
   error: string | null;
+  events?: AcpRunEvent[];
+  ephemeralReasoningByActivityId: Record<string, string>;
 };
 
-export function buildPlannerOperationState(operation: PlanningOperationDetail): PlannerOperationState {
+export type PlannerEphemeralActivity = {
+  kind: "reasoning";
+  activityId: string;
+  rawText: string;
+};
+
+export function buildPlannerOperationState(operation: AcpRun): PlannerOperationState {
   const kind: PlannerOperationKind =
-    operation.type === "generate_title" ? "generate_title" :
-    operation.type === "formalize" ? "formalize" :
-    operation.type === "regenerate" ? "regenerate" : "reply";
-  const observedOutputText = typeof operation.observed_output_text === "string" ? operation.observed_output_text : "";
+    operation.agent_name === "planner-generate-title" ? "generate_title" :
+    operation.agent_name === "planner-formalize" ? "formalize" :
+    operation.agent_name === "planner-regenerate" ? "regenerate" : "reply";
   return {
     kind,
-    operationId: operation.operation_id,
-    // Map the persisted operation status to the local PlannerOperationState
-    // status. `cancelled` is preserved as its own state so the UI can
-    // render it neutrally (server restart, not a planner failure).
+    operationId: operation.run_id,
     status:
       operation.status === "failed" ? "error" :
       operation.status === "cancelled" ? "cancelled" :
-      operation.status === "succeeded" ? "done" : "pending",
+      operation.status === "completed" ? "done" :
+      operation.status === "in-progress" ? "streaming" : "pending",
     lastEventSeq: 0,
-    turnIndex: readNumber(operation.request.turn_index),
-    targetTurnIndex:
-      operation.type === "regenerate"
-        ? readNumber(operation.request.turn_index)
-        : undefined,
-    userMessageId: readString(operation.request.user_message_id),
-    userCreatedAt: readDateString(operation.request.user_created_at),
-    assistantMessageId: readString(operation.request.assistant_message_id),
-    assistantCreatedAt: readDateString(operation.request.assistant_created_at),
-    pendingReply:
-      operation.type === "reply"
-        ? {
-            contentMarkdown: String(operation.request.content_markdown ?? ""),
-            answer: parseAnswerPayload(operation.request.answer_payload),
-          }
-        : null,
-    replyText: kind === "formalize" ? "" : observedOutputText,
-    formalizeText: kind === "formalize" ? observedOutputText : "",
-    draftId: typeof operation.result_ref === "string" ? operation.result_ref : undefined,
+    pendingReply: null,
+    replyText: "",
+    formalizeText: "",
     error: operation.error ?? null,
+    events: [],
+    ephemeralReasoningByActivityId: {},
   };
 }
 
 export function reducePlannerOperationEvent(
   state: PlannerOperationState,
-  event: PlanningOperationEvent
+  event: AcpRunEvent
 ): PlannerOperationState {
+  if (event.seq <= state.lastEventSeq) {
+    return state;
+  }
   const next = {
     ...state,
     status: state.status === "pending" ? "streaming" : state.status,
-    lastEventSeq: Math.max(state.lastEventSeq, event.seq),
+    lastEventSeq: event.seq,
+    events: [...(state.events ?? []), event],
   } satisfies PlannerOperationState;
 
-  switch (event.event_type) {
-    case "user_message":
-    case "started":
-    case "provider_launching":
-    case "provider_session_open":
-    case "receipt_persisted":
-    case "finalizing":
+  switch (event.type) {
+    case "run.created":
+      return applyOperationPayload({ ...next, status: "pending" }, event.payload);
+    case "run.in-progress":
+      return applyOperationPayload(next, event.payload);
+    case "generic":
       return next;
-    case "text_delta": {
+    case "message.part": {
+      const withPayload = applyOperationPayload(next, event.payload);
       const text = readString(event.payload.text);
       if (!text) {
-        return next;
+        return withPayload;
       }
-      if (next.kind === "formalize") {
+      if (withPayload.kind === "formalize") {
         return {
-          ...next,
-          formalizeText: `${next.formalizeText}${text}`,
+          ...withPayload,
+          formalizeText: `${withPayload.formalizeText}${text}`,
         };
       }
       return {
-        ...next,
-        replyText: `${next.replyText}${text}`,
+        ...withPayload,
+        replyText: `${withPayload.replyText}${text}`,
       };
     }
-    case "done": {
+    case "message.completed": {
+      const withPayload = applyOperationPayload(next, event.payload);
+      const text = readString(event.payload.text);
+      if (!text) {
+        return withPayload;
+      }
+      if (withPayload.kind === "formalize") {
+        return { ...withPayload, formalizeText: text };
+      }
+      return { ...withPayload, replyText: text };
+    }
+    case "run.completed": {
       if (next.kind === "formalize") {
         return {
           ...next,
@@ -138,6 +145,7 @@ export function reducePlannerOperationEvent(
         pendingReply: null,
       };
     }
+    case "run.failed":
     case "error": {
       return {
         ...next,
@@ -145,11 +153,7 @@ export function reducePlannerOperationEvent(
         error: readString(event.payload.error) ?? "Planner operation failed",
       };
     }
-    case "cancelled": {
-      // Distinct from `error` so the banner can render neutrally and
-      // metrics derived from this status don't conflate shutdown with
-      // genuine failure. The reason carries through `error` (the
-      // payload field name reflects the column on the operation row).
+    case "run.cancelled": {
       return {
         ...next,
         status: "cancelled",
@@ -162,6 +166,76 @@ export function reducePlannerOperationEvent(
   }
 }
 
+export function reducePlannerOperationEphemeralActivity(
+  state: PlannerOperationState,
+  activity: PlannerEphemeralActivity,
+): PlannerOperationState {
+  if (activity.kind !== "reasoning" || !activity.activityId.trim() || !activity.rawText.trim()) {
+    return state;
+  }
+  const current = state.ephemeralReasoningByActivityId[activity.activityId];
+  if (current === activity.rawText) {
+    return state;
+  }
+  return {
+    ...state,
+    ephemeralReasoningByActivityId: {
+      ...state.ephemeralReasoningByActivityId,
+      [activity.activityId]: activity.rawText,
+    },
+  };
+}
+
+function applyOperationPayload(
+  state: PlannerOperationState,
+  payload: AcpRunEvent["payload"],
+): PlannerOperationState {
+  const next = { ...state };
+  const turnIndex = readNumber(payload.turn_index);
+  if (turnIndex != null) {
+    next.turnIndex = turnIndex;
+  }
+  const targetTurnIndex = readNumber(payload.target_turn_index);
+  if (targetTurnIndex != null) {
+    next.targetTurnIndex = targetTurnIndex;
+  }
+  const forceNewSession = readBoolean(payload.force_new_session);
+  if (forceNewSession != null) {
+    next.forceNewSession = forceNewSession;
+  }
+  const userMessageId = readString(payload.user_message_id);
+  if (userMessageId) {
+    next.userMessageId = userMessageId;
+  }
+  const userCreatedAt = readString(payload.user_created_at);
+  if (userCreatedAt) {
+    next.userCreatedAt = userCreatedAt;
+  }
+  const assistantMessageId = readString(payload.assistant_message_id) ?? readString(payload.planning_message_id);
+  if (assistantMessageId) {
+    next.assistantMessageId = assistantMessageId;
+  }
+  const assistantCreatedAt = readString(payload.assistant_created_at) ?? readString(payload.created_at);
+  if (assistantCreatedAt) {
+    next.assistantCreatedAt = assistantCreatedAt;
+  }
+  const draftId = readString(payload.planning_draft_id);
+  if (draftId) {
+    next.draftId = draftId;
+  }
+  if (next.kind === "reply") {
+    const contentMarkdown = readString(payload.content_markdown);
+    const answer = parseAnswerPayload(payload.answer_payload);
+    if (contentMarkdown || answer) {
+      next.pendingReply = {
+        contentMarkdown: contentMarkdown ?? next.pendingReply?.contentMarkdown ?? "",
+        ...(answer ? { answer } : next.pendingReply?.answer ? { answer: next.pendingReply.answer } : {}),
+      };
+    }
+  }
+  return next;
+}
+
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
@@ -170,8 +244,8 @@ function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function readDateString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function parseAnswerPayload(value: unknown): AnswerPayload | undefined {

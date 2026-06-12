@@ -1083,6 +1083,7 @@ ON planning_context_snapshots (planning_session_id, created_at DESC, planning_co
 
 CREATE TABLE planning_operations (
   operation_id TEXT PRIMARY KEY,
+  acp_run_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('bootstrap_context', 'reply', 'formalize', 'regenerate', 'generate_title')),
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
@@ -1107,6 +1108,9 @@ CREATE TABLE planning_operations (
 
 CREATE INDEX idx_planning_operations_session_created
 ON planning_operations (planning_session_id, created_at DESC, operation_id);
+
+CREATE UNIQUE INDEX idx_planning_operations_acp_run_id
+ON planning_operations (acp_run_id);
 
 CREATE INDEX idx_planning_operations_status_created
 ON planning_operations (status, created_at ASC, operation_id);

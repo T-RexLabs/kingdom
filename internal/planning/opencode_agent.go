@@ -115,6 +115,22 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 				providerInvocation.OnProviderSession(providerSessionID)
 			}
 		},
+		OnActivity: func(observation opencode.ExecuteActivityObservation) {
+			if providerInvocation == nil || providerInvocation.OnActivity == nil {
+				return
+			}
+			providerInvocation.OnActivity(ProviderActivity{
+				Kind:       strings.TrimSpace(string(observation.Kind)),
+				OccurredAt: strings.TrimSpace(observation.OccurredAt),
+				ToolName:   strings.TrimSpace(observation.ToolName),
+				ToolStatus: strings.TrimSpace(observation.ToolStatus),
+				ToolTitle:  strings.TrimSpace(observation.ToolTitle),
+				ToolInput:  strings.TrimSpace(observation.ToolInput),
+				Label:      strings.TrimSpace(observation.Label),
+				Summary:    strings.TrimSpace(observation.Summary),
+				RawText:    strings.TrimSpace(observation.RawText),
+			})
+		},
 		OnCompletionReceipt: func(receipt opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
 			if providerInvocation == nil || providerInvocation.OnCompletionReceipt == nil {
 				return opencode.CompletionReceiptAcceptance{}, nil
@@ -157,7 +173,7 @@ func providerSessionIDForInvocation(invocation *ProviderInvocationContext) strin
 	if invocation == nil {
 		return ""
 	}
-	return ""
+	return strings.TrimSpace(invocation.ProviderSessionID)
 }
 
 func invocationIDForPlanner(invocation *ProviderInvocationContext) string {

@@ -49,13 +49,14 @@ vi.mock("./client", () => ({
 function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSessionDetail {
   return {
     planning_session_id: "ps_1",
+    acp_session_id: "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
     title: "fresh",
     title_state: "custom",
     auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "ready",
     current_question_message_id: "msg_1",
-    current_operation_id: undefined,
+    current_run_id: undefined,
     current_draft_id: undefined,
     context_snapshot_id: "snap_1",
     created_at: "2026-04-21T10:00:00Z",

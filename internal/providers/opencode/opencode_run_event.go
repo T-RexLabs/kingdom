@@ -12,6 +12,13 @@ const maxOpencodeRunEventLineBytes = 8 * 1024 * 1024
 type opencodeRunEventWire struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
+	Text      string `json:"text"`
+	Tool      string `json:"tool"`
+	State     struct {
+		Status string          `json:"status"`
+		Title  string          `json:"title"`
+		Input  json.RawMessage `json:"input"`
+	} `json:"state"`
 	Part      struct {
 		Text   string  `json:"text"`
 		Reason *string `json:"reason"`
@@ -68,7 +75,12 @@ func decodeNextOpencodeRunEvent(decoder *json.Decoder) (opencodeRunEvent, error)
 	event := opencodeRunEvent{
 		Type:      strings.TrimSpace(envelope.Type),
 		SessionID: strings.TrimSpace(envelope.SessionID),
+		Text:      strings.TrimSpace(envelope.Text),
+		Tool:      strings.TrimSpace(envelope.Tool),
 	}
+	event.State.Status = strings.TrimSpace(envelope.State.Status)
+	event.State.Title = strings.TrimSpace(envelope.State.Title)
+	event.State.Input = append(json.RawMessage(nil), envelope.State.Input...)
 	event.Part.Text = envelope.Part.Text
 	if envelope.Part.Reason != nil {
 		event.Part.ReasonPresent = true

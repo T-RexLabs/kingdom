@@ -618,27 +618,27 @@ func TestMigrationConstraints(t *testing.T) {
 			t.Fatalf("insert planning session seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_reply_active', 'ps_bootstrap', 'reply', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:01Z', NULL, NULL)`)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_reply_active', 'po_reply_active', 'ps_bootstrap', 'reply', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:01Z', NULL, NULL)`)
 		if err != nil {
 			t.Fatalf("insert interactive operation seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_bootstrap_active', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_bootstrap_active', 'po_bootstrap_active', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
 		if err != nil {
 			t.Fatalf("expected bootstrap_context operation to coexist with the active interactive slot, got %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_formalize_blocked', 'ps_bootstrap', 'formalize', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:03Z', NULL, NULL)`)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_formalize_blocked', 'po_formalize_blocked', 'ps_bootstrap', 'formalize', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:03Z', NULL, NULL)`)
 		if err == nil {
 			t.Fatal("expected second interactive planning operation to violate the single-active-interactive index")
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_title_active', 'ps_bootstrap', 'generate_title', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:04Z', NULL, NULL)`)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_title_active', 'po_title_active', 'ps_bootstrap', 'generate_title', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:04Z', NULL, NULL)`)
 		if err != nil {
 			t.Fatalf("expected generate_title operation to coexist with the active interactive slot, got %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_title_blocked', 'ps_bootstrap', 'generate_title', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:05Z', NULL, NULL)`)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_title_blocked', 'po_title_blocked', 'ps_bootstrap', 'generate_title', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:05Z', NULL, NULL)`)
 		if err == nil {
 			t.Fatal("expected second generate_title planning operation to violate the single-active-title index")
 		}

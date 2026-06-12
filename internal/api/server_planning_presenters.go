@@ -9,9 +9,11 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/acp"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // handlePlanningError maps planning-domain errors to canonical HTTP responses.
@@ -67,6 +69,7 @@ func optionalTrimmedString(value *string) *string {
 func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSessionSummary {
 	result := gen.PlanningSessionSummary{
 		PlanningSessionId: item.PlanningSessionID,
+		AcpSessionId:      openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerSessionID(item.PlanningSessionID))),
 		Title:             item.Title,
 		TitleState:        gen.PlanningSessionSummaryTitleState(item.TitleState),
 		LifecycleState:    gen.PlanningSessionSummaryLifecycleState(item.LifecycleState),
@@ -78,10 +81,12 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 		result.CurrentQuestionMessageId = value
 	}
 	if value := optionalTrimmedString(item.CurrentOperationID); value != nil {
-		result.CurrentOperationId = value
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerRunID(*value)))
+		result.CurrentRunId = &runID
 	}
 	if value := optionalTrimmedString(item.CurrentTitleOperationID); value != nil {
-		result.CurrentTitleOperationId = value
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerRunID(*value)))
+		result.CurrentTitleRunId = &runID
 	}
 	if value := optionalTrimmedString(item.CurrentDraftID); value != nil {
 		result.CurrentDraftId = value
@@ -110,11 +115,11 @@ func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligibl
 	if summary.CurrentQuestionMessageId != nil {
 		result.CurrentQuestionMessageId = summary.CurrentQuestionMessageId
 	}
-	if summary.CurrentOperationId != nil {
-		result.CurrentOperationId = summary.CurrentOperationId
+	if summary.CurrentRunId != nil {
+		result.CurrentRunId = summary.CurrentRunId
 	}
-	if summary.CurrentTitleOperationId != nil {
-		result.CurrentTitleOperationId = summary.CurrentTitleOperationId
+	if summary.CurrentTitleRunId != nil {
+		result.CurrentTitleRunId = summary.CurrentTitleRunId
 	}
 	if summary.CurrentDraftId != nil {
 		result.CurrentDraftId = summary.CurrentDraftId
@@ -123,77 +128,6 @@ func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligibl
 		result.ContextSnapshotId = summary.ContextSnapshotId
 	}
 	return result
-}
-
-func planningOperationDetailFromState(item state.PlanningOperation, request map[string]any) gen.PlanningOperationDetail {
-	requestEnvelope := planningOperationRequestEnvelopeFromState(item.Type, request)
-	result := gen.PlanningOperationDetail{
-		OperationId:       item.OperationID,
-		PlanningSessionId: item.PlanningSessionID,
-		Type:              gen.PlanningOperationDetailType(item.Type),
-		Status:            gen.PlanningOperationDetailStatus(item.Status),
-		Request:           requestEnvelope,
-		CreatedAt:         mustParseRFC3339(item.CreatedAt),
-	}
-	if value := optionalTrimmedString(item.Error); value != nil {
-		result.Error = value
-	}
-	if value := optionalTrimmedString(item.ResultRef); value != nil {
-		result.ResultRef = value
-	}
-	if trimmed := strings.TrimSpace(item.ObservedOutputText); trimmed != "" {
-		result.ObservedOutputText = &trimmed
-	}
-	if value := optionalTrimmedString(item.StartedAt); value != nil {
-		startedAt := mustParseRFC3339(*value)
-		result.StartedAt = &startedAt
-	}
-	if value := optionalTrimmedString(item.FinishedAt); value != nil {
-		finishedAt := mustParseRFC3339(*value)
-		result.FinishedAt = &finishedAt
-	}
-	return result
-}
-
-func createPlanningOperationResultFromState(result planning.CreateOperationResult, request map[string]any, autoTitleEligible bool) gen.CreatePlanningOperationResult {
-	return gen.CreatePlanningOperationResult{
-		Operation: planningOperationDetailFromState(result.Operation, request),
-		Session:   planningSessionDetailFromState(result.Session, autoTitleEligible),
-	}
-}
-
-func planningOperationRequestEnvelopeFromState(operationType state.PlanningOperationType, request map[string]any) gen.PlanningOperationRequestEnvelope {
-	envelope := gen.PlanningOperationRequestEnvelope{
-		Type: gen.PlanningOperationRequestEnvelopeType(operationType),
-	}
-	if value := readStringMap(request, "content_markdown"); value != nil {
-		envelope.ContentMarkdown = value
-	}
-	if answer := structuredAnswerFromAny(request["answer_payload"]); answer != nil {
-		envelope.AnswerPayload = answer
-	}
-	if value := readStringMap(request, "user_message_id"); value != nil {
-		envelope.UserMessageId = value
-	}
-	if value := readRFC3339Map(request, "user_created_at"); value != nil {
-		envelope.UserCreatedAt = value
-	}
-	if value := readIntMap(request, "turn_index"); value != nil {
-		envelope.TurnIndex = value
-	}
-	if value := readStringMap(request, "assistant_message_id"); value != nil {
-		envelope.AssistantMessageId = value
-	}
-	if value := readRFC3339Map(request, "assistant_created_at"); value != nil {
-		envelope.AssistantCreatedAt = value
-	}
-	if value := readStringMap(request, "draft_id"); value != nil {
-		envelope.DraftId = value
-	}
-	if value := readRFC3339Map(request, "draft_created_at"); value != nil {
-		envelope.DraftCreatedAt = value
-	}
-	return envelope
 }
 
 func planningMessageFromState(item state.PlanningMessage) (gen.PlanningMessage, error) {

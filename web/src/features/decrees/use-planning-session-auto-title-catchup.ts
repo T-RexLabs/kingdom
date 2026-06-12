@@ -19,7 +19,7 @@ export function usePlanningSessionAutoTitleCatchup(sessionId: string, session: P
     if (session.title_state !== "placeholder") {
       return;
     }
-    if (session.current_title_operation_id) {
+    if (session.current_title_run_id) {
       return;
     }
     if (attemptedSessionIdRef.current === sessionId || generateTitle.isPending) {

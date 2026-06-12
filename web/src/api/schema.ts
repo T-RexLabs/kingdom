@@ -126,7 +126,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/planning-sessions/{id}/operations": {
+    "/acp/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List planner ACP agents. */
+        get: operations["listAcpAgents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acp/agents/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get planner ACP agent metadata. */
+        get: operations["getAcpAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acp/runs": {
         parameters: {
             query?: never;
             header?: never;
@@ -135,23 +169,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a durable planner operation. */
-        post: operations["createPlanningSessionOperation"];
+        /** Create a planner ACP run backed by a durable planner operation. */
+        post: operations["createAcpRun"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/planning-operations/{id}": {
+    "/acp/runs/{runId}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get planner operation status and result references. */
-        get: operations["getPlanningOperation"];
+        /** Get planner ACP run status and metadata. */
+        get: operations["getAcpRun"];
         put?: never;
         post?: never;
         delete?: never;
@@ -160,17 +194,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/planning-operations/{id}/events": {
+    "/acp/runs/{runId}/events": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Stream durable planner operation events with Last-Event-ID resume. */
-        get: operations["streamPlanningOperationEvents"];
+        /** Stream durable planner ACP run events with Last-Event-ID resume. */
+        get: operations["streamAcpRunEvents"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acp/runs/{runId}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get planner ACP run activity history for display. */
+        get: operations["getAcpRunActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acp/runs/{runId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel a planner ACP run. */
+        post: operations["cancelAcpRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -188,23 +256,6 @@ export interface paths {
         put?: never;
         /** Refresh the sanitized planning context snapshot for a session. */
         post: operations["refreshPlanningSessionContext"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/planning-sessions/{id}/generate-title": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Auto-generate a title from the conversation so far. */
-        post: operations["generatePlanningSessionTitle"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1139,18 +1190,10 @@ export interface components {
             title?: string;
             model_selection?: components["schemas"]["PlanningAgentModelSelection"];
         };
-        CreatePlanningOperationRequest: {
-            /** @enum {string} */
-            type: "reply" | "formalize" | "regenerate";
-            reply?: components["schemas"]["PlanningReplyOperationRequest"];
-            regenerate?: components["schemas"]["PlanningRegenerateOperationRequest"];
-        };
-        CreatePlanningOperationResult: {
-            operation: components["schemas"]["PlanningOperationDetail"];
-            session: components["schemas"]["PlanningSessionDetail"];
-        };
         PlanningSessionSummary: {
             planning_session_id: string;
+            /** Format: uuid */
+            acp_session_id: string;
             title: string;
             /** @enum {string} */
             title_state: "placeholder" | "generated" | "custom";
@@ -1159,8 +1202,10 @@ export interface components {
             /** @enum {string} */
             conversation_state: "ready" | "processing";
             current_question_message_id?: string;
-            current_operation_id?: string;
-            current_title_operation_id?: string;
+            /** Format: uuid */
+            current_run_id?: string;
+            /** Format: uuid */
+            current_title_run_id?: string;
             current_draft_id?: string;
             context_snapshot_id?: string;
             /** Format: date-time */
@@ -1171,13 +1216,14 @@ export interface components {
         /**
          * @example {
          *       "planning_session_id": "ps_123",
+         *       "acp_session_id": "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
          *       "title": "Harden the run approval path",
          *       "title_state": "custom",
          *       "lifecycle_state": "active",
          *       "conversation_state": "ready",
          *       "current_question_message_id": "msg_123",
-         *       "current_operation_id": "op_123",
-         *       "current_title_operation_id": "op_title_123",
+         *       "current_run_id": "96b0d561-cbe7-5c50-bf54-cd1dc3c76d47",
+         *       "current_title_run_id": "61b3f4e0-8bb2-5dd0-89a1-9b084688c17d",
          *       "current_draft_id": "draft_123",
          *       "context_snapshot_id": "ctx_123",
          *       "created_at": "2026-04-30T12:00:00Z",
@@ -1203,15 +1249,46 @@ export interface components {
         PlanningRegenerateOperationRequest: {
             target_turn_index: number;
         };
-        PlanningOperationSummary: {
-            operation_id: string;
+        AcpAgent: {
+            /** @enum {string} */
+            name: "planner-reply" | "planner-regenerate" | "planner-formalize" | "planner-generate-title";
+            title: string;
+            description: string;
+            /** @enum {string} */
+            operation_type: "reply" | "regenerate" | "formalize" | "generate_title";
+        };
+        AcpAgentListResponse: {
+            items: components["schemas"]["AcpAgent"][];
+        };
+        CreateAcpRunRequest: {
+            /** @enum {string} */
+            agent_name: "planner-reply" | "planner-regenerate" | "planner-formalize" | "planner-generate-title";
+            planning_session_id: string;
+            reply?: components["schemas"]["PlanningReplyOperationRequest"];
+            regenerate?: components["schemas"]["PlanningRegenerateOperationRequest"];
+        };
+        /**
+         * @example {
+         *       "run_id": "96b0d561-cbe7-5c50-bf54-cd1dc3c76d47",
+         *       "session_id": "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
+         *       "planning_session_id": "ps_123",
+         *       "agent_name": "planner-reply",
+         *       "status": "in-progress",
+         *       "created_at": "2026-04-30T12:03:00Z",
+         *       "started_at": "2026-04-30T12:03:01Z"
+         *     }
+         */
+        AcpRun: {
+            /** Format: uuid */
+            run_id: string;
+            /** Format: uuid */
+            session_id: string;
             planning_session_id: string;
             /** @enum {string} */
-            type: "bootstrap_context" | "reply" | "formalize" | "regenerate" | "generate_title";
+            agent_name: "planner-reply" | "planner-regenerate" | "planner-formalize" | "planner-generate-title";
             /** @enum {string} */
-            status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+            status: "created" | "in-progress" | "awaiting" | "completed" | "failed" | "cancelled";
             error?: string;
-            result_ref?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1219,56 +1296,21 @@ export interface components {
             /** Format: date-time */
             finished_at?: string;
         };
-        /**
-         * @example {
-         *       "operation_id": "op_123",
-         *       "planning_session_id": "ps_123",
-         *       "type": "reply",
-         *       "status": "succeeded",
-         *       "request": {
-         *         "type": "reply",
-         *         "content_markdown": "Please narrow the scope to API error-contract work only.",
-         *         "answer_payload": {
-         *           "text": "Focus on API canonical errors and OpenAPI examples."
-         *         },
-         *         "user_message_id": "msg_user_123",
-         *         "user_created_at": "2026-04-30T12:03:00Z"
-         *       },
-         *       "created_at": "2026-04-30T12:03:00Z",
-         *       "started_at": "2026-04-30T12:03:01Z",
-         *       "finished_at": "2026-04-30T12:03:08Z"
-         *     }
-         */
-        PlanningOperationDetail: components["schemas"]["PlanningOperationSummary"] & {
-            request: components["schemas"]["PlanningOperationRequestEnvelope"];
-            observed_output_text?: string;
-        };
-        PlanningOperationEvent: {
+        AcpRunEvent: {
             event_id: string;
-            operation_id: string;
+            /** Format: uuid */
+            run_id: string;
             seq: number;
-            event_type: string;
+            /** @enum {string} */
+            type: "run.created" | "run.in-progress" | "message.part" | "message.completed" | "run.completed" | "run.failed" | "run.cancelled" | "error" | "generic";
             payload: {
                 [key: string]: unknown;
             };
             /** Format: date-time */
             created_at: string;
         };
-        PlanningOperationRequestEnvelope: {
-            /** @enum {string} */
-            type: "bootstrap_context" | "reply" | "formalize" | "regenerate" | "generate_title";
-            content_markdown?: string;
-            answer_payload?: components["schemas"]["StructuredQuestionAnswer"];
-            user_message_id?: string;
-            /** Format: date-time */
-            user_created_at?: string;
-            turn_index?: number;
-            assistant_message_id?: string;
-            /** Format: date-time */
-            assistant_created_at?: string;
-            draft_id?: string;
-            /** Format: date-time */
-            draft_created_at?: string;
+        CancelAcpRunRequest: {
+            reason?: string;
         };
         PlanningAgentModelSelection: {
             model: string;
@@ -1322,8 +1364,24 @@ export interface components {
             variant_index: number;
             active: boolean;
             variant_count?: number;
+            /** Format: uuid */
+            source_run_id?: string;
             /** Format: date-time */
             created_at: string;
+        };
+        AcpRunActivityItem: {
+            id: string;
+            /** @enum {string} */
+            kind: "thinking" | "tool" | "progress";
+            label: string;
+            detail?: string;
+            input?: string;
+            output?: string;
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        AcpRunActivityResponse: {
+            items: components["schemas"]["AcpRunActivityItem"][];
         };
         PlanningMessagesPage: {
             planning_session_id: string;
@@ -1364,7 +1422,6 @@ export interface components {
             session: components["schemas"]["PlanningSessionDetail"];
             context_snapshot: components["schemas"]["PlanningContextSnapshot"];
         };
-        GeneratePlanningSessionTitleResult: components["schemas"]["PlanningSessionDetail"];
         PublishWorkflowRequest: {
             workflow_id: string;
             version: string;
@@ -2168,6 +2225,8 @@ export interface components {
         PollMs: number;
         PlanningSessionId: string;
         PlanningOperationId: string;
+        AcpAgentName: "planner-reply" | "planner-regenerate" | "planner-formalize" | "planner-generate-title";
+        AcpRunId: string;
         PlanningMessagesBefore: string;
         LastEventId: string;
     };
@@ -2466,7 +2525,62 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    createPlanningSessionOperation: {
+    listAcpAgents: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Actor-Id": components["parameters"]["ActorId"];
+                "X-Role-Id": components["parameters"]["RoleId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available planner ACP agents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcpAgentListResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getAcpAgent: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Actor-Id": components["parameters"]["ActorId"];
+                "X-Role-Id": components["parameters"]["RoleId"];
+            };
+            path: {
+                name: components["parameters"]["AcpAgentName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Planner ACP agent metadata. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcpAgent"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    createAcpRun: {
         parameters: {
             query?: never;
             header: {
@@ -2474,24 +2588,22 @@ export interface operations {
                 "X-Role-Id": components["parameters"]["RoleId"];
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
             };
-            path: {
-                id: components["parameters"]["PlanningSessionId"];
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreatePlanningOperationRequest"];
+                "application/json": components["schemas"]["CreateAcpRunRequest"];
             };
         };
         responses: {
-            /** @description Planner operation created. */
+            /** @description ACP run created. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreatePlanningOperationResult"];
+                    "application/json": components["schemas"]["AcpRun"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -2500,7 +2612,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    getPlanningOperation: {
+    getAcpRun: {
         parameters: {
             query?: never;
             header: {
@@ -2508,19 +2620,19 @@ export interface operations {
                 "X-Role-Id": components["parameters"]["RoleId"];
             };
             path: {
-                id: components["parameters"]["PlanningOperationId"];
+                runId: components["parameters"]["AcpRunId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Planner operation detail. */
+            /** @description ACP run detail. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PlanningOperationDetail"];
+                    "application/json": components["schemas"]["AcpRun"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -2529,7 +2641,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    streamPlanningOperationEvents: {
+    streamAcpRunEvents: {
         parameters: {
             query?: never;
             header: {
@@ -2538,19 +2650,82 @@ export interface operations {
                 "Last-Event-ID"?: components["parameters"]["LastEventId"];
             };
             path: {
-                id: components["parameters"]["PlanningOperationId"];
+                runId: components["parameters"]["AcpRunId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description SSE stream of durable planner operation events. */
+            /** @description SSE stream of durable ACP run events. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "text/event-stream": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getAcpRunActivity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Actor-Id": components["parameters"]["ActorId"];
+                "X-Role-Id": components["parameters"]["RoleId"];
+            };
+            path: {
+                runId: components["parameters"]["AcpRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ACP run activity history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcpRunActivityResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    cancelAcpRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Actor-Id": components["parameters"]["ActorId"];
+                "X-Role-Id": components["parameters"]["RoleId"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                runId: components["parameters"]["AcpRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CancelAcpRunRequest"];
+            };
+        };
+        responses: {
+            /** @description ACP run cancelled or cancellation acknowledged. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcpRun"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -2581,36 +2756,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RefreshPlanningSessionContextResult"];
-                };
-            };
-            400: components["responses"]["BadRequestError"];
-            401: components["responses"]["UnauthorizedError"];
-            404: components["responses"]["NotFoundError"];
-            default: components["responses"]["ErrorResponse"];
-        };
-    };
-    generatePlanningSessionTitle: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: components["parameters"]["PlanningSessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Generated title. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GeneratePlanningSessionTitleResult"];
                 };
             };
             400: components["responses"]["BadRequestError"];

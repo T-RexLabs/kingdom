@@ -18,8 +18,8 @@ const LIST_MIRRORED_FIELDS = [
   "lifecycle_state",
   "conversation_state",
   "current_question_message_id",
-  "current_operation_id",
-  "current_title_operation_id",
+  "current_run_id",
+  "current_title_run_id",
   "current_draft_id",
   "context_snapshot_id",
   "updated_at",
@@ -33,10 +33,10 @@ type ListItem = PlanningSessionListResponse["items"][number];
  * list-prefix slices receive only fields in LIST_MIRRORED_FIELDS so
  * detail-only fields can't pollute summary items.
  *
- * Spread is presence-based, so passing `{ current_operation_id:
+ * Spread is presence-based, so passing `{ current_run_id:
  * undefined }` explicitly clears the field — required for the SSE
  * terminal-event reconciliation path that needs to clear
- * current_operation_id on done/error/cancelled.
+ * current_run_id on done/error/cancelled.
  *
  * Reference stability: each cache entry returns its current reference
  * unchanged if no field actually changes, so React-query consumers

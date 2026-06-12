@@ -79,7 +79,7 @@ func sanitizePlannerToken(raw string) string {
 	return value
 }
 
-func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation) (*ProviderInvocationContext, error) {
+func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) (*ProviderInvocationContext, error) {
 	if r == nil || r.deps.store == nil {
 		return nil, fmt.Errorf("planning store is required for provider invocation creation")
 	}
@@ -87,6 +87,16 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	issuedAt := now.Format(time.RFC3339)
 	invocationID := newPlanningProviderInvocationID(operation.OperationID, now)
 	logicalSessionID := planningLogicalSessionID(session.PlanningSessionID, operation.Type)
+	reusedProviderSessionID := ""
+	if reuseExistingProviderSession {
+		invocation, found, err := r.deps.store.GetLatestReusablePlanningProviderInvocation(ctx, logicalSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("load latest reusable planning provider invocation: %w", err)
+		}
+		if found {
+			reusedProviderSessionID = strings.TrimSpace(invocation.ProviderSessionID)
+		}
+	}
 	capability, err := generatePlanningCompletionCapability()
 	if err != nil {
 		return nil, err
@@ -103,7 +113,7 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            session.PlanningSessionID,
 		LogicalSessionID:             logicalSessionID,
-		ProviderSessionID:            "",
+		ProviderSessionID:            reusedProviderSessionID,
 		CompletionCapability:         capability,
 		IssuedAt:                     issuedAt,
 		CreatedAt:                    issuedAt,
@@ -111,23 +121,41 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	}); err != nil {
 		return nil, err
 	}
-	return &ProviderInvocationContext{
+	if err := r.deps.store.UpdateOperation(ctx, state.UpdatePlanningOperationRequest{
+		OperationID:                operation.OperationID,
+		ActiveProviderInvocationID: &invocationID,
+	}); err != nil {
+		return nil, fmt.Errorf("persist planning provider invocation linkage: %w", err)
+	}
+	var invocationContext *ProviderInvocationContext
+	invocationContext = &ProviderInvocationContext{
 		AttemptID:                 operation.OperationID,
 		LogicalSessionID:          logicalSessionID,
+		ProviderSessionID:         reusedProviderSessionID,
 		InvocationID:              invocationID,
 		InvocationIssuedAt:        issuedAt,
 		CompletionProtocolVersion: "v1",
 		CompletionCapability:      capability,
 		CompletionReceiptDir:      receiptDir,
 		OnProviderSession: func(providerSessionID string) {
+			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
+			if trimmedProviderSessionID != "" {
+				invocationContext.ProviderSessionID = trimmedProviderSessionID
+			}
 			markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
 			_, _ = r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
 				PlanningProviderInvocationID: invocationID,
 				PlanningOperationID:          operation.OperationID,
-				ProviderSessionID:            strings.TrimSpace(providerSessionID),
+				ProviderSessionID:            trimmedProviderSessionID,
 				OpenedAt:                     r.deps.nowString(),
 			})
+			if trimmedProviderSessionID != "" {
+				_ = r.deps.store.UpdateOperation(markCtx, state.UpdatePlanningOperationRequest{
+					OperationID:       operation.OperationID,
+					ProviderSessionID: &trimmedProviderSessionID,
+				})
+			}
 		},
 		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
 			acceptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -157,7 +185,8 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 				Idempotent:            accepted.Idempotent,
 			}, nil
 		},
-	}, nil
+	}
+	return invocationContext, nil
 }
 
 func planningLogicalSessionID(sessionID string, operationType state.PlanningOperationType) string {

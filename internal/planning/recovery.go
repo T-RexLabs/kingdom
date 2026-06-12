@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -134,7 +135,7 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 // whether to call us; this function unconditionally finalises.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
 	cause := fmt.Errorf("operation exceeded heartbeat deadline (idle for %s)", idleFor.Round(time.Second))
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, "error", map[string]any{"error": cause.Error()})
+	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, acp.RunFailedEventType, plannerMessagePayload(op, map[string]any{"error": cause.Error()}))
 	if err != nil {
 		return err
 	}
@@ -164,7 +165,7 @@ func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOper
 	}
 	if r.deps.broker != nil {
 		// Wake any subscribed SSE consumers so they observe the terminal
-		// "error" event without waiting for the keep-alive tick.
+		// failure event without waiting for the keep-alive tick.
 		r.deps.broker.Publish(op.OperationID)
 	}
 	return nil
@@ -252,7 +253,7 @@ func (r *operationRecovery) finalizeRecoveredReceiptFailure(ctx context.Context,
 		return false, cause
 	}
 	now := r.deps.nowString()
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, "error", map[string]any{"error": cause.Error()})
+	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, acp.RunFailedEventType, plannerMessagePayload(op, map[string]any{"error": cause.Error()}))
 	if err != nil {
 		return false, err
 	}

@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  type CreateAcpRunRequest,
   newIdempotencyKey,
   useActivateVariant,
   useCreatePlanningOperation,
@@ -71,7 +72,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
   const [optimisticOperation, setOptimisticOperation] = useState<PlannerOperationState | null>(null);
   const requestSeqRef = useRef(0);
 
-  const operationId = activeOperationId ?? session?.current_operation_id ?? undefined;
+  const operationId = activeOperationId ?? session?.current_run_id ?? undefined;
   const activeOperationQuery = usePlanningOperation(operationId);
   const { operation: streamedOperation, connection } = usePlannerOperation(activeOperationQuery.data ?? null);
   const activeOperation = streamedOperation ?? optimisticOperation;
@@ -123,6 +124,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           status: "pending",
           lastEventSeq: 0,
           turnIndex: optimisticTurn,
+          forceNewSession: truncateFromTurn != null,
           userMessageId: optimisticUserMessageId,
           userCreatedAt: now,
           assistantMessageId: optimisticAssistantMessageId,
@@ -131,6 +133,8 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          events: [],
+          ephemeralReasoningByActivityId: {},
         });
         applyPlanningSessionFields(queryClient, session.planning_session_id, {
           conversation_state: "processing",
@@ -139,18 +143,19 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         try {
           const created = await createOperation.mutateAsync({
             body: {
-              type: "reply",
+              agent_name: "planner-reply",
+              planning_session_id: session.planning_session_id,
               reply: {
                 content_markdown: text,
                 ...(answer ? { answer_payload: answer } : {}),
                 ...(truncateFromTurn != null ? { truncate_from_turn: truncateFromTurn } : {}),
               },
-            },
+            } satisfies CreateAcpRunRequest,
             key: newIdempotencyKey("planning-operation"),
           });
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation.operation_id);
+          setActiveOperationId(created.run_id);
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
@@ -185,6 +190,8 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          events: [],
+          ephemeralReasoningByActivityId: {},
         });
         applyPlanningSessionFields(queryClient, session.planning_session_id, {
           conversation_state: "processing",
@@ -192,14 +199,15 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         try {
           const created = await createOperation.mutateAsync({
             body: {
-              type: "regenerate",
+              agent_name: "planner-regenerate",
+              planning_session_id: session.planning_session_id,
               regenerate: { target_turn_index: turnIndex },
-            },
+            } satisfies CreateAcpRunRequest,
             key: newIdempotencyKey("planning-operation"),
           });
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation.operation_id);
+          setActiveOperationId(created.run_id);
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
@@ -236,20 +244,25 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          events: [],
+          ephemeralReasoningByActivityId: {},
         });
         try {
           const created = await createOperation.mutateAsync({
-            body: { type: "formalize" },
+            body: {
+              agent_name: "planner-formalize",
+              planning_session_id: session.planning_session_id,
+            } satisfies CreateAcpRunRequest,
             key: newIdempotencyKey("planning-operation"),
           });
-          if (seq !== requestSeqRef.current) return created.operation;
+          if (seq !== requestSeqRef.current) return created;
           setOptimisticOperation(null);
-          setActiveOperationId(created.operation.operation_id);
+          setActiveOperationId(created.run_id);
           applyPlanningSessionFields(queryClient, session.planning_session_id, {
-            current_operation_id: created.operation.operation_id,
+            current_run_id: created.run_id,
             conversation_state: "processing",
           });
-          return created.operation;
+          return created;
         } catch (err) {
           if (seq !== requestSeqRef.current) throw err;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);

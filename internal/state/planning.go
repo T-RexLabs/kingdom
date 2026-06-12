@@ -113,6 +113,7 @@ type PlanningContextSnapshot struct {
 
 type PlanningOperation struct {
 	OperationID                string
+	AcpRunID                   string
 	PlanningSessionID          string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
@@ -217,6 +218,7 @@ type CreatePlanningContextSnapshotRequest struct {
 
 type CreatePlanningOperationRequest struct {
 	OperationID                string
+	AcpRunID                   string
 	PlanningSessionID          string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
@@ -262,6 +264,14 @@ type AppendPlanningOperationEventRequest struct {
 	CreatedAt   string
 }
 
+type CancelQueuedPlanningOperationRequest struct {
+	OperationID   string
+	ErrorMessage  string
+	UpdatedAt     string
+	FinishedAt    string
+	TerminalEvent *AppendPlanningOperationEventRequest
+}
+
 type CreatePlanningSessionBundleRequest struct {
 	Session            CreatePlanningSessionRequest
 	OpeningMessage     AppendPlanningMessageRequest
@@ -273,6 +283,7 @@ type CreatePlanningReplyBundleRequest struct {
 	TruncateFromTurn  *int
 	UserMessage       AppendPlanningMessageRequest
 	Operation         CreatePlanningOperationRequest
+	InitialEvent      *AppendPlanningOperationEventRequest
 	ConversationState PlanningSessionConversationState
 	UpdatedAt         string
 }
@@ -281,6 +292,7 @@ type CreateRegenerateBundleRequest struct {
 	SessionID         string
 	TargetTurnIndex   int
 	Operation         CreatePlanningOperationRequest
+	InitialEvent      *AppendPlanningOperationEventRequest
 	ConversationState PlanningSessionConversationState
 	UpdatedAt         string
 }
@@ -288,6 +300,7 @@ type CreateRegenerateBundleRequest struct {
 type CreatePlanningGenerateTitleBundleRequest struct {
 	SessionID               string
 	Operation               CreatePlanningOperationRequest
+	InitialEvent            *AppendPlanningOperationEventRequest
 	CurrentTitleOperationID string
 	UpdatedAt               string
 }
@@ -295,6 +308,7 @@ type CreatePlanningGenerateTitleBundleRequest struct {
 type CreatePlanningFormalizeBundleRequest struct {
 	SessionID          string
 	Operation          CreatePlanningOperationRequest
+	InitialEvent       *AppendPlanningOperationEventRequest
 	ConversationState  PlanningSessionConversationState
 	CurrentOperationID string
 	UpdatedAt          string

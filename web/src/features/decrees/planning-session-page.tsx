@@ -59,7 +59,7 @@ export function PlanningSessionPage() {
     usePlannerSessionController(session);
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
-  const titleOperationQuery = usePlanningOperation(session?.current_title_operation_id);
+  const titleOperationQuery = usePlanningOperation(session?.current_title_run_id);
   usePlannerOperation(titleOperationQuery.data ?? null);
   usePlanningSessionAutoTitleCatchup(sessionId, session);
 
@@ -83,8 +83,8 @@ export function PlanningSessionPage() {
       // Field-scoped optimistic write via the shared helper. Patches
       // detail + every list slice with only title + title_state.
       // Spreading a closure-captured `session` would clobber any
-      // concurrently-applied SSE updates (e.g. current_operation_id
-      // from a parallel formalize) AND would change the session
+      // concurrently-applied SSE updates (e.g. current_run_id
+          // from a parallel formalize) AND would change the session
       // reference enough to refire the model-sync useEffect, which
       // would reset the user's in-progress model dropdown selection
       // back to server-canonical state. Field-scoped here, narrow
@@ -306,8 +306,8 @@ export function PlanningSessionPage() {
 
   const handleFormalizePlan = async () => {
     const operation = await startFormalize();
-    setActiveOperationId(operation.operation_id);
-    trackFormalize(sessionId, operation.operation_id, displayTitle);
+    setActiveOperationId(operation.run_id);
+    trackFormalize(sessionId, operation.run_id, displayTitle);
   };
 
 	const visibleDisplayTitle = getPlanningSessionDisplayTitleValue(displayTitle, "New session");

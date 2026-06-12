@@ -556,6 +556,32 @@ func (s *PlanningStore) GetPlanningProviderInvocation(ctx context.Context, plann
 	return getPlanningProviderInvocation(ctx, s.db, planningProviderInvocationID)
 }
 
+func (s *PlanningStore) GetLatestReusablePlanningProviderInvocation(ctx context.Context, logicalSessionID string) (PlanningProviderInvocation, bool, error) {
+	if s == nil || s.db == nil {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("planning store database is required")
+	}
+	trimmedLogicalSessionID := strings.TrimSpace(logicalSessionID)
+	if trimmedLogicalSessionID == "" {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("logical_session_id is required")
+	}
+	row := s.db.QueryRowContext(ctx, planningProviderInvocationSelect+`
+		 WHERE logical_session_id = ?
+		   AND TRIM(provider_session_id) <> ''
+		   AND invocation_state IN (?, ?, ?)
+		 ORDER BY created_at DESC, planning_provider_invocation_id DESC
+		 LIMIT 1`,
+		trimmedLogicalSessionID,
+		string(PlanningProviderInvocationStateOpen),
+		string(PlanningProviderInvocationStateReceiptPersisted),
+		string(PlanningProviderInvocationStateSettledSuccess),
+	)
+	invocation, found, err := scanPlanningProviderInvocation(row)
+	if err != nil {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("get latest reusable planning provider invocation %q: %w", trimmedLogicalSessionID, err)
+	}
+	return invocation, found, nil
+}
+
 func (s *PlanningStore) GetPlanningProviderCompletionSettlement(ctx context.Context, settlementID string) (PlanningProviderCompletionSettlement, bool, error) {
 	if s == nil || s.db == nil {
 		return PlanningProviderCompletionSettlement{}, false, fmt.Errorf("planning store database is required")

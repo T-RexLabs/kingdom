@@ -69,7 +69,14 @@ type opencodeRunEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	ErrorText string `json:"-"`
-	Part      struct {
+	Text      string `json:"text,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	State     struct {
+		Status string          `json:"status,omitempty"`
+		Title  string          `json:"title,omitempty"`
+		Input  json.RawMessage `json:"input,omitempty"`
+	} `json:"state,omitempty"`
+	Part struct {
 		Text          string  `json:"text"`
 		Reason        string  `json:"reason"`
 		ReasonPresent bool    `json:"-"`
@@ -878,6 +885,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			accumulatedTokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
 		}
 
+		emitActivityObservation(req, event)
+
 		if event.Type != "text" || strings.TrimSpace(event.Part.Text) == "" {
 			return nil
 		}
@@ -1575,6 +1584,59 @@ func emitExecuteLifecycleObservation(req ExecuteRequest, observation ExecuteLife
 		observation.OccurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	req.OnLifecycle(observation)
+}
+
+func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
+	if req.OnActivity == nil {
+		return
+	}
+	observation := ExecuteActivityObservation{OccurredAt: time.Now().UTC().Format(time.RFC3339)}
+	switch normalizeActivityEventType(event.Type) {
+	case "tool", "tool_call", "tool_result":
+		observation.Kind = ExecuteActivityKindTool
+		observation.ToolName = strings.TrimSpace(event.Tool)
+		observation.ToolStatus = firstNonEmpty(strings.TrimSpace(event.State.Status), strings.TrimSpace(event.Part.Reason))
+		observation.ToolTitle = strings.TrimSpace(event.State.Title)
+		observation.ToolInput = formatToolActivityInput(event.State.Input)
+	case "reasoning":
+		observation.Kind = ExecuteActivityKindReasoning
+		observation.RawText = firstNonEmpty(strings.TrimSpace(event.Text), strings.TrimSpace(event.Part.Text))
+	case "step_start":
+		observation.Kind = ExecuteActivityKindProgress
+		observation.Label = "Provider step started"
+	default:
+		return
+	}
+	req.OnActivity(observation)
+}
+
+func normalizeActivityEventType(value string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" {
+		return ""
+	}
+	return strings.ReplaceAll(trimmed, "-", "_")
+}
+
+func formatToolActivityInput(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return trimmed
+	}
+	switch typed := decoded.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		formatted, err := json.MarshalIndent(decoded, "", "  ")
+		if err != nil {
+			return trimmed
+		}
+		return strings.TrimSpace(string(formatted))
+	}
 }
 
 func (a *SessionAdapter) Cancel(_ context.Context, req CancelRequest) error {

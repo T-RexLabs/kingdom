@@ -21,6 +21,16 @@ const components = {
       {children}
     </ol>
   ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-gold underline underline-offset-4 transition-colors hover:text-gold/80"
+    >
+      {children}
+    </a>
+  ),
   li: ({ children }: { children?: React.ReactNode }) => (
     <li className="mb-1">{children}</li>
   ),

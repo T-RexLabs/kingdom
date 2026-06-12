@@ -116,27 +116,45 @@ func (s *sessionService) UpdateSession(ctx context.Context, planningSessionID st
 }
 
 func (s *sessionService) GenerateTitle(ctx context.Context, planningSessionID string) (state.PlanningSession, error) {
+	updated, _, err := s.CreateGenerateTitleOperation(ctx, planningSessionID)
+	return updated, err
+}
+
+func (s *sessionService) CreateGenerateTitleOperation(ctx context.Context, planningSessionID string) (state.PlanningSession, state.PlanningOperation, error) {
 	session, ok, err := s.deps.store.GetSession(ctx, planningSessionID)
 	if err != nil {
-		return state.PlanningSession{}, err
+		return state.PlanningSession{}, state.PlanningOperation{}, err
 	}
 	if !ok {
-		return state.PlanningSession{}, ErrSessionNotFound
+		return state.PlanningSession{}, state.PlanningOperation{}, ErrSessionNotFound
 	}
 	if session.TitleState != planningSessionTitleStatePlaceholder {
-		return session, nil
+		return session, state.PlanningOperation{}, nil
 	}
 	if session.LifecycleState != state.PlanningSessionLifecycleStateActive {
-		return state.PlanningSession{}, ErrSessionInactive
+		return state.PlanningSession{}, state.PlanningOperation{}, ErrSessionInactive
 	}
 	if session.CurrentTitleOperationID != nil && strings.TrimSpace(*session.CurrentTitleOperationID) != "" {
-		return session, nil
+		operation, found, getErr := s.deps.store.GetOperation(ctx, strings.TrimSpace(*session.CurrentTitleOperationID))
+		if getErr != nil {
+			return state.PlanningSession{}, state.PlanningOperation{}, getErr
+		}
+		if found {
+			return session, operation, nil
+		}
+		return session, state.PlanningOperation{}, nil
 	}
 	if s.runner == nil {
-		return state.PlanningSession{}, fmt.Errorf("planning runner is not configured")
+		return state.PlanningSession{}, state.PlanningOperation{}, fmt.Errorf("planning runner is not configured")
 	}
-	updated, _, err := enqueueGeneratedTitleForSession(ctx, s.deps, s.runner, session, titleTriggerSourceManual, false)
-	return updated, err
+	updated, operation, _, err := enqueueGeneratedTitleForSession(ctx, s.deps, s.runner, session, titleTriggerSourceManual, false)
+	if err != nil {
+		return state.PlanningSession{}, state.PlanningOperation{}, err
+	}
+	if operation == nil {
+		return updated, state.PlanningOperation{}, nil
+	}
+	return updated, *operation, nil
 }
 
 func (s *sessionService) RefreshContext(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, state.PlanningSession, error) {

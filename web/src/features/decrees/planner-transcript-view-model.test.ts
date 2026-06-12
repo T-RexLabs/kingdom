@@ -133,6 +133,7 @@ describe("planner transcript view model", () => {
         replyText: "",
         formalizeText: "",
         error: null,
+        ephemeralReasoningByActivityId: {},
       },
     });
 
@@ -181,6 +182,7 @@ describe("planner transcript view model", () => {
         replyText: "",
         formalizeText: "",
         error: null,
+        ephemeralReasoningByActivityId: {},
       },
     });
 
@@ -243,6 +245,7 @@ describe("planner transcript view model", () => {
         replyText: "Streaming response...",
         formalizeText: "",
         error: null,
+        ephemeralReasoningByActivityId: {},
       },
     });
 
@@ -286,6 +289,7 @@ describe("planner transcript view model", () => {
         replyText: 'Context text.\n```structured_question\n{"prompt":"Choose planning depth","type":"single_select","options":[{"label":"Lean","value":"lean"}]}\n```',
         formalizeText: "",
         error: null,
+        ephemeralReasoningByActivityId: {},
       },
     });
 
@@ -326,6 +330,7 @@ describe("planner transcript view model", () => {
         replyText: "partial stream that never finished",
         formalizeText: "",
         error: "missing completion receipt evidence id",
+        ephemeralReasoningByActivityId: {},
       },
     });
 
@@ -369,6 +374,7 @@ describe("planner transcript view model", () => {
         replyText: "half a regeneration",
         formalizeText: "",
         error: "operation cancelled during shutdown",
+        ephemeralReasoningByActivityId: {},
       },
     });
 
