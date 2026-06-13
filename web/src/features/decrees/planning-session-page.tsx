@@ -503,10 +503,10 @@ export function PlanningSessionPage() {
         session={session}
         operation={activeOperation}
         connection={connection}
-        onSubmitReply={({ text, answer, truncateFromTurn }) =>
-          submitReply({ text, answer, truncateFromTurn })
+        onSubmitReply={({ text, answer, parentMessageId }) =>
+          submitReply({ text, answer, parentMessageId })
         }
-        onRegenerate={({ turnIndex }) => regenerate({ turnIndex })}
+        onRegenerate={({ messageId, parentMessageId }) => regenerate({ messageId, parentMessageId })}
         onActivateVariant={({ messageId }) => activateVariant({ messageId })}
       />
 

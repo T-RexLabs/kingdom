@@ -13,7 +13,7 @@ function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningS
     auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "processing",
-    current_question_message_id: "msg_old",
+    active_leaf_message_id: "msg_old",
     current_run_id: "run_1",
     current_draft_id: undefined,
     context_snapshot_id: "snap_1",
@@ -47,7 +47,6 @@ function buildEvent(overrides: Partial<AcpRunEvent> = {}): AcpRunEvent {
     payload: {
       planning_message_id: "msg_new",
       result_ref: "msg_new",
-      turn_index: 2,
     },
     created_at: "2026-04-21T10:05:00Z",
     ...overrides,
@@ -68,7 +67,7 @@ describe("patchPlannerTerminalCaches", () => {
     const activityState = qc.getQueryState(plannerKeys.activity("run_1"));
     expect(detail?.conversation_state).toBe("ready");
     expect(detail?.current_run_id).toBeUndefined();
-    expect(detail?.current_question_message_id).toBe("msg_new");
+    expect(detail?.active_leaf_message_id).toBe("msg_new");
     expect(messagesState?.isInvalidated).toBe(true);
     expect(activityState?.isInvalidated).toBe(true);
   });

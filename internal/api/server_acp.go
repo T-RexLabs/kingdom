@@ -72,7 +72,7 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 			Type:              state.PlanningOperationTypeReply,
 			ReplyMarkdown:     trimmedReplyMarkdown(req.Reply),
 			AnswerPayloadJSON: answerPayloadJSON(req.Reply),
-			TruncateFromTurn:  truncateFromTurn(req.Reply),
+			ParentMessageID:   replyParentMessageID(req.Reply),
 		})
 		if createErr == nil {
 			operation = result.Operation
@@ -85,7 +85,7 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 		}
 		result, createErr := s.planningService.CreateOperation(r.Context(), planningSessionID, planning.CreateOperationInput{
 			Type:            state.PlanningOperationTypeRegenerate,
-			TargetTurnIndex: int(req.Regenerate.TargetTurnIndex),
+			TargetMessageID: strings.TrimSpace(req.Regenerate.TargetMessageId),
 		})
 		if createErr == nil {
 			operation = result.Operation
@@ -459,10 +459,13 @@ func answerPayloadJSON(reply *gen.PlanningReplyOperationRequest) string {
 	return string(raw)
 }
 
-func truncateFromTurn(reply *gen.PlanningReplyOperationRequest) *int {
-	if reply == nil || reply.TruncateFromTurn == nil {
+func replyParentMessageID(reply *gen.PlanningReplyOperationRequest) *string {
+	if reply == nil || reply.ParentMessageId == nil {
 		return nil
 	}
-	value := int(*reply.TruncateFromTurn)
-	return &value
+	trimmed := strings.TrimSpace(*reply.ParentMessageId)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }

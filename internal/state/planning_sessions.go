@@ -25,7 +25,7 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 		TitleState:               strings.TrimSpace(req.TitleState),
 		LifecycleState:           req.LifecycleState,
 		ConversationState:        req.ConversationState,
-		CurrentQuestionMessageID: nullableString(req.CurrentQuestionMessageID),
+		ActiveLeafMessageID: nullableString(req.ActiveLeafMessageID),
 		CurrentOperationID:       nullableString(req.CurrentOperationID),
 		CurrentTitleOperationID:  nullableString(req.CurrentTitleOperationID),
 		CurrentDraftID:           nullableString(req.CurrentDraftID),
@@ -38,7 +38,7 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 	_, err := exec.ExecContext(ctx,
 		`INSERT INTO planning_sessions (
 			planning_session_id, title, title_state, lifecycle_state, conversation_state,
-			current_question_message_id, current_operation_id, current_title_operation_id,
+			active_leaf_message_id, current_operation_id, current_title_operation_id,
 			current_draft_id, context_snapshot_id, project_root, model_selection_json,
 			created_at, updated_at
 		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -47,7 +47,7 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 		row.TitleState,
 		row.LifecycleState,
 		row.ConversationState,
-		nullableStringValue(row.CurrentQuestionMessageID),
+		nullableStringValue(row.ActiveLeafMessageID),
 		nullableStringValue(row.CurrentOperationID),
 		nullableStringValue(row.CurrentTitleOperationID),
 		nullableStringValue(row.CurrentDraftID),
@@ -136,8 +136,8 @@ func updatePlanningSession(ctx context.Context, exec sqlExecutor, req UpdatePlan
 	if conversationState := conversationStatePtrValue(req.ConversationState); conversationState != nil {
 		builder.Set("conversation_state", *conversationState)
 	}
-	if req.CurrentQuestionMessageID != nil {
-		builder.Set("current_question_message_id", finalizeNullable(*req.CurrentQuestionMessageID))
+	if req.ActiveLeafMessageID != nil {
+		builder.Set("active_leaf_message_id", finalizeNullable(*req.ActiveLeafMessageID))
 	}
 	if req.CurrentOperationID != nil {
 		builder.Set("current_operation_id", finalizeNullable(*req.CurrentOperationID))
@@ -168,7 +168,7 @@ func (s *PlanningStore) GetSession(ctx context.Context, planningSessionID string
 	var row PlanningSession
 	err := scanPlanningSession(s.db.QueryRowContext(ctx,
 		`SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
-		        current_question_message_id, current_operation_id, current_title_operation_id,
+		        active_leaf_message_id, current_operation_id, current_title_operation_id,
 		        current_draft_id, context_snapshot_id,
 		        project_root, model_selection_json, created_at, updated_at
 		 FROM planning_sessions
@@ -190,7 +190,7 @@ func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]Planning
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
-		        current_question_message_id, current_operation_id, current_title_operation_id,
+		        active_leaf_message_id, current_operation_id, current_title_operation_id,
 		        current_draft_id, context_snapshot_id,
 		        project_root, model_selection_json, created_at, updated_at
 		 FROM planning_sessions
@@ -226,7 +226,7 @@ func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, a
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.planning_session_id, s.title, s.title_state, s.lifecycle_state, s.conversation_state,
-		        s.current_question_message_id, s.current_operation_id, s.current_title_operation_id,
+		        s.active_leaf_message_id, s.current_operation_id, s.current_title_operation_id,
 		        s.current_draft_id, s.context_snapshot_id,
 		        s.project_root, s.model_selection_json, s.created_at, s.updated_at
 		 FROM planning_sessions s
@@ -238,7 +238,6 @@ func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, a
 		     SELECT COUNT(1)
 		     FROM planning_messages m
 		     WHERE m.planning_session_id = s.planning_session_id
-		       AND m.active = 1
 		       AND m.role = ?
 		   ) >= ?
 		 ORDER BY s.planning_session_id ASC
@@ -270,7 +269,7 @@ func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, a
 }
 
 func scanPlanningSession(row scannable, dest *PlanningSession) error {
-	var currentQuestionMessageID sql.NullString
+	var activeLeafMessageID sql.NullString
 	var currentOperationID sql.NullString
 	var currentTitleOperationID sql.NullString
 	var currentDraftID sql.NullString
@@ -282,7 +281,7 @@ func scanPlanningSession(row scannable, dest *PlanningSession) error {
 		&dest.TitleState,
 		&dest.LifecycleState,
 		&dest.ConversationState,
-		&currentQuestionMessageID,
+		&activeLeafMessageID,
 		&currentOperationID,
 		&currentTitleOperationID,
 		&currentDraftID,
@@ -295,7 +294,7 @@ func scanPlanningSession(row scannable, dest *PlanningSession) error {
 		return err
 	}
 
-	dest.CurrentQuestionMessageID = nullableStringFromSQL(currentQuestionMessageID)
+	dest.ActiveLeafMessageID = nullableStringFromSQL(activeLeafMessageID)
 	dest.CurrentOperationID = nullableStringFromSQL(currentOperationID)
 	dest.CurrentTitleOperationID = nullableStringFromSQL(currentTitleOperationID)
 	dest.CurrentDraftID = nullableStringFromSQL(currentDraftID)

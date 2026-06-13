@@ -425,7 +425,7 @@ func (s *Service) ActivateVariant(ctx context.Context, planningSessionID, planni
 		return state.PlanningMessage{}, err
 	}
 	defer s.releaseWrite()
-	return s.sessions.deps.store.ActivateVariant(ctx, planningSessionID, planningMessageID)
+	return s.sessions.deps.store.SetActiveBranch(ctx, planningSessionID, planningMessageID)
 }
 
 // DeleteSession routes through the Service so admission gating is
@@ -456,16 +456,11 @@ func (s *Service) GetMessageInSession(ctx context.Context, planningSessionID, pl
 	return s.sessions.deps.store.GetMessageInSession(ctx, planningSessionID, planningMessageID)
 }
 
-func (s *Service) ListMessageVariants(ctx context.Context, planningSessionID string, turnIndex int, role state.PlanningMessageRole) ([]state.PlanningMessage, error) {
+// ListMessageBranches returns the branch alternatives at a message — every
+// sibling sharing its parent — so the UI can offer switching between them.
+func (s *Service) ListMessageBranches(ctx context.Context, planningSessionID, planningMessageID string) ([]state.PlanningMessage, error) {
 	if s == nil || s.sessions == nil {
 		return nil, fmt.Errorf("planning service session runtime is required")
 	}
-	return s.sessions.deps.store.ListVariantsAtTurn(ctx, planningSessionID, turnIndex, role)
-}
-
-func (s *Service) VariantCountAtTurn(ctx context.Context, planningSessionID string, turnIndex int, role state.PlanningMessageRole) (int, error) {
-	if s == nil || s.sessions == nil {
-		return 0, fmt.Errorf("planning service session runtime is required")
-	}
-	return s.sessions.deps.store.VariantCountAtTurn(ctx, planningSessionID, turnIndex, role)
+	return s.sessions.deps.store.SiblingsOf(ctx, planningSessionID, planningMessageID)
 }

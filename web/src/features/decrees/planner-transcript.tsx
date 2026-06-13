@@ -19,7 +19,7 @@ export type TranscriptCallbacks = {
   onEditMessage?: (messageId: string) => void;
   onEditSubmit?: (text: string) => void;
   onEditCancel?: () => void;
-  onRegenerate?: (turnIndex: number) => void;
+  onRegenerate?: (messageId: string, parentMessageId?: string) => void;
   onActivateVariant?: (messageId: string) => void;
   sessionId?: string;
   isProcessing?: boolean;
@@ -75,7 +75,7 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       isStreaming={item.isStreaming}
       contentMarkdown={item.contentMarkdown}
       onEdit={callbacks.onEditMessage ? () => callbacks.onEditMessage?.(item.message.planning_message_id) : undefined}
-      onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.turn_index) : undefined}
+      onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.planning_message_id, item.message.parent_message_id) : undefined}
       isEditing={isEditing}
       onEditSubmit={callbacks.onEditSubmit}
       onEditCancel={callbacks.onEditCancel}

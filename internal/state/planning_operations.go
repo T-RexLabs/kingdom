@@ -96,10 +96,11 @@ func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlannin
 		return PlanningOperation{}, fmt.Errorf("begin create planning reply bundle: %w", err)
 	}
 
-	if req.TruncateFromTurn == nil {
-		if _, err := insertPlanningMessage(ctx, tx, req.UserMessage); err != nil {
-			return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
-		}
+	// The user message is appended under its parent up front (the operation's
+	// optimistic anchor); the assistant reply is appended at finalize. Editing
+	// a message just supplies a different parent — no truncation.
+	if _, err := insertPlanningMessage(ctx, tx, req.UserMessage); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
 	}
 	operation, err := insertPlanningOperation(ctx, tx, req.Operation)
 	if err != nil {
@@ -114,11 +115,15 @@ func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlannin
 			return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
 		}
 	}
+	// Move the active leaf onto the new user message so the operator and the
+	// planner prompt immediately see the new branch (the assistant reply is
+	// appended under it at finalize).
 	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
-		PlanningSessionID:  req.SessionID,
-		ConversationState:  &req.ConversationState,
-		CurrentOperationID: stringPtr(req.Operation.OperationID),
-		UpdatedAt:          req.UpdatedAt,
+		PlanningSessionID:   req.SessionID,
+		ConversationState:   &req.ConversationState,
+		CurrentOperationID:  stringPtr(req.Operation.OperationID),
+		ActiveLeafMessageID: stringPtr(req.UserMessage.PlanningMessageID),
+		UpdatedAt:           req.UpdatedAt,
 	}); err != nil {
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
 	}
@@ -228,9 +233,6 @@ func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRe
 	if strings.TrimSpace(req.SessionID) == "" {
 		return PlanningOperation{}, fmt.Errorf("planning session id is required")
 	}
-	if req.TargetTurnIndex < 1 {
-		return PlanningOperation{}, fmt.Errorf("target turn index must be >= 1")
-	}
 	if err := validatePlanningOperationCreate(req.Operation); err != nil {
 		return PlanningOperation{}, err
 	}
@@ -264,11 +266,15 @@ func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRe
 			return PlanningOperation{}, rollbackPlanningTx(tx, "create regenerate bundle", err)
 		}
 	}
+	// Move the active leaf to the fork point (the target's parent) so the run is
+	// prompted with the conversation up to that message; the regenerated answer
+	// is appended as a sibling branch at finalize.
 	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
-		PlanningSessionID:  req.SessionID,
-		ConversationState:  &req.ConversationState,
-		CurrentOperationID: stringPtr(req.Operation.OperationID),
-		UpdatedAt:          req.UpdatedAt,
+		PlanningSessionID:   req.SessionID,
+		ConversationState:   &req.ConversationState,
+		CurrentOperationID:  stringPtr(req.Operation.OperationID),
+		ActiveLeafMessageID: stringPtr(req.ActiveLeafMessageID),
+		UpdatedAt:           req.UpdatedAt,
 	}); err != nil {
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create regenerate bundle", err)
 	}
@@ -534,7 +540,7 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		switch req.Kind {
 		case FinalizeReply, FinalizeRegenerate:
 			sessionUpdate.Set("current_operation_id", nil)
-			sessionUpdate.Set("current_question_message_id", finalizeNullable(req.CurrentQuestionMessageID))
+			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(req.ActiveLeafMessageID))
 		case FinalizeFormalize:
 			sessionUpdate.Set("current_operation_id", nil)
 			sessionUpdate.Set("current_draft_id", finalizeNullable(req.CurrentDraftID))
@@ -559,13 +565,11 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 	// surfacing raw unique-constraint errors from canonical tables.
 	switch req.Kind {
 	case FinalizeReply:
-		if req.DeleteMessagesFromTurn != nil {
-			if err := deleteMessagesFromTurn(ctx, tx, req.SessionID, *req.DeleteMessagesFromTurn); err != nil {
-				return rollbackPlanningTx(tx, "finalize planning operation", err)
-			}
-		}
+		// Append-only into the tree. The user message was inserted at create
+		// time, but a recovered/re-finalized reply tolerates re-inserting it
+		// idempotently; the assistant reply is appended now under that user.
 		if req.UserMessage != nil {
-			if _, err := insertPlanningMessage(ctx, tx, *req.UserMessage); err != nil {
+			if _, err := insertPlanningMessage(ctx, tx, *req.UserMessage); err != nil && !IsUniqueViolation(err) {
 				return rollbackPlanningTx(tx, "finalize planning operation", err)
 			}
 		}
@@ -573,16 +577,9 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}
 	case FinalizeRegenerate:
-		if req.DeleteMessagesAfterTurn != nil {
-			if err := deleteMessagesAfterTurn(ctx, tx, req.SessionID, *req.DeleteMessagesAfterTurn); err != nil {
-				return rollbackPlanningTx(tx, "finalize planning operation", err)
-			}
-		}
-		if req.DeactivateVariantsAtTurn != nil {
-			if err := deactivateVariantsAtTurn(ctx, tx, req.SessionID, *req.DeactivateVariantsAtTurn, PlanningMessageRoleAssistant); err != nil {
-				return rollbackPlanningTx(tx, "finalize planning operation", err)
-			}
-		}
+		// Regenerate appends a new assistant sibling under the same parent as
+		// the message it regenerates. Nothing is deleted — the prior answer and
+		// its downstream remain a selectable branch.
 		if _, err := insertPlanningMessage(ctx, tx, *req.AssistantMessage); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}

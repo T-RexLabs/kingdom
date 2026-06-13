@@ -9,11 +9,10 @@ import {
   type PlanningSessionDetail,
 } from "@/api/hooks";
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
-import type { PlanningMessage, PlanningMessagesPage } from "@/api/hooks";
+import type { PlanningMessagesPage } from "@/api/hooks";
 import { isPlannerOperationTerminal, type AnswerPayload, type PlannerOperationState } from "./planner-operation-controller";
 import { usePlannerOperation } from "./use-planner-operation";
 import { applyPlanningSessionFields } from "./planner-session-cache";
-import { filterPlanningMessages } from "./planner-message-pages";
 import { plannerKeys } from "./planner-query-keys";
 
 /**
@@ -94,40 +93,26 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       connection,
       setActiveOperationId,
       createOperation,
-      submitReply: async ({ text, answer, truncateFromTurn }: { text: string; answer?: AnswerPayload; truncateFromTurn?: number }) => {
+      submitReply: async ({ text, answer, parentMessageId }: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => {
         if (!session) throw new Error("Planning session is required");
         requestSeqRef.current += 1;
         const seq = requestSeqRef.current;
-        // Reply touches conversation_state optimistically (see the
-        // applyPlanningSessionFields call below). Capturing only that
-        // field means a concurrent SSE update to current_operation_id
-        // (e.g. from a sibling formalize) survives this rollback.
         const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
         const now = new Date().toISOString();
-        const optimisticUserMessageId = `pending-user-${seq}`;
-        const optimisticAssistantMessageId = `pending-assistant-${seq}`;
-
-        // Fresh replies should append at the next turn after the latest
-        // existing message; the prior implementation hardcoded turnIndex=1
-        // which made optimistic bubbles render out of order on long sessions.
-        const optimisticTurn = truncateFromTurn ?? deriveNextTurnIndex(snap.messages);
-
-        if (truncateFromTurn != null) {
-          queryClient.setQueryData<InfiniteData<PlanningMessagesPage, unknown>>(
-            plannerKeys.messages(session.planning_session_id),
-            (data) => filterPlanningMessages(data, (m) => m.turn_index < truncateFromTurn),
-          );
-        }
+        // The new user message branches off the explicit parent (editing an
+        // earlier message) or, by default, the session's active leaf (a normal
+        // reply). Nothing is truncated; the server moves the active leaf so the
+        // new branch loads on the next messages refetch.
+        const branchParentId = parentMessageId ?? session.active_leaf_message_id ?? undefined;
         setOptimisticOperation({
           kind: "reply",
           operationId: `pending-operation-${seq}`,
           status: "pending",
           lastEventSeq: 0,
-          turnIndex: optimisticTurn,
-          forceNewSession: truncateFromTurn != null,
-          userMessageId: optimisticUserMessageId,
+          parentMessageId: branchParentId,
+          userMessageId: `pending-user-${seq}`,
           userCreatedAt: now,
-          assistantMessageId: optimisticAssistantMessageId,
+          assistantMessageId: `pending-assistant-${seq}`,
           assistantCreatedAt: now,
           pendingReply: { contentMarkdown: text, answer },
           replyText: "",
@@ -148,7 +133,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
               reply: {
                 content_markdown: text,
                 ...(answer ? { answer_payload: answer } : {}),
-                ...(truncateFromTurn != null ? { truncate_from_turn: truncateFromTurn } : {}),
+                ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
               },
             } satisfies CreateAcpRunRequest,
             key: newIdempotencyKey("planning-operation"),
@@ -156,34 +141,29 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
           setActiveOperationId(created.run_id);
+          // The server appended the user message and moved the active leaf;
+          // refetch so the new branch (user turn) replaces the optimistic ghost.
+          void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(session.planning_session_id) });
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
           throw err;
         }
       },
-      regenerate: async ({ turnIndex }: { turnIndex: number }) => {
+      regenerate: async ({ messageId, parentMessageId }: { messageId: string; parentMessageId?: string }) => {
         if (!session) throw new Error("Planning session is required");
         requestSeqRef.current += 1;
         const seq = requestSeqRef.current;
-        // Same shape as submitReply — only conversation_state is
-        // touched optimistically pre-mutate.
         const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
         const now = new Date().toISOString();
-        queryClient.setQueryData<InfiniteData<PlanningMessagesPage, unknown>>(
-          plannerKeys.messages(session.planning_session_id),
-          (data) =>
-            filterPlanningMessages(data, (m) =>
-              m.turn_index < turnIndex || (m.turn_index === turnIndex && m.role !== "assistant"),
-            ),
-        );
         setOptimisticOperation({
           kind: "regenerate",
           operationId: `pending-regenerate-${seq}`,
           status: "pending",
           lastEventSeq: 0,
-          targetTurnIndex: turnIndex,
-          turnIndex,
+          // The new answer branches off the same parent as the message it
+          // regenerates; the prior answer is preserved as a sibling.
+          parentMessageId,
           assistantMessageId: `pending-regenerate-assistant-${seq}`,
           assistantCreatedAt: now,
           pendingReply: null,
@@ -201,13 +181,16 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
             body: {
               agent_name: "planner-regenerate",
               planning_session_id: session.planning_session_id,
-              regenerate: { target_turn_index: turnIndex },
+              regenerate: { target_message_id: messageId },
             } satisfies CreateAcpRunRequest,
             key: newIdempotencyKey("planning-operation"),
           });
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
           setActiveOperationId(created.run_id);
+          // Server moved the active leaf to the fork point; refetch so the
+          // active path reflects the regenerated branch.
+          void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(session.planning_session_id) });
         } catch (err) {
           if (seq !== requestSeqRef.current) return;
           restoreSnapshot(queryClient, snap, setOptimisticOperation);
@@ -321,17 +304,4 @@ function restoreSnapshot(
   // pre-mutate-success) skips the detail write entirely.
   applyPlanningSessionFields(queryClient, snap.sessionId, snap.sessionBefore);
   setOptimistic(snap.optimistic);
-}
-
-function deriveNextTurnIndex(
-  data: InfiniteData<PlanningMessagesPage, unknown> | undefined,
-): number {
-  if (!data) return 1;
-  let max = 0;
-  for (const page of data.pages) {
-    for (const message of page.items as PlanningMessage[]) {
-      if (message.turn_index > max) max = message.turn_index;
-    }
-  }
-  return max + 1;
 }

@@ -77,8 +77,8 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 		CreatedAt:         mustParseRFC3339(item.CreatedAt),
 		UpdatedAt:         mustParseRFC3339(item.UpdatedAt),
 	}
-	if value := optionalTrimmedString(item.CurrentQuestionMessageID); value != nil {
-		result.CurrentQuestionMessageId = value
+	if value := optionalTrimmedString(item.ActiveLeafMessageID); value != nil {
+		result.ActiveLeafMessageId = value
 	}
 	if value := optionalTrimmedString(item.CurrentOperationID); value != nil {
 		runID := openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerRunID(*value)))
@@ -112,8 +112,8 @@ func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligibl
 		ModelSelection:    modelSelection,
 		AutoTitleEligible: autoTitleEligible,
 	}
-	if summary.CurrentQuestionMessageId != nil {
-		result.CurrentQuestionMessageId = summary.CurrentQuestionMessageId
+	if summary.ActiveLeafMessageId != nil {
+		result.ActiveLeafMessageId = summary.ActiveLeafMessageId
 	}
 	if summary.CurrentRunId != nil {
 		result.CurrentRunId = summary.CurrentRunId
@@ -134,12 +134,13 @@ func planningMessageFromState(item state.PlanningMessage) (gen.PlanningMessage, 
 	result := gen.PlanningMessage{
 		PlanningMessageId: item.PlanningMessageID,
 		PlanningSessionId: item.PlanningSessionID,
-		TurnIndex:         item.TurnIndex,
+		ParentMessageId:   item.ParentMessageID,
 		Role:              gen.PlanningMessageRole(item.Role),
 		ContentMarkdown:   item.ContentMarkdown,
-		VariantIndex:      item.VariantIndex,
-		Active:            item.Active,
-		CreatedAt:         mustParseRFC3339(item.CreatedAt),
+		// Branch position is omitted here; list handlers enrich it from
+		// BranchInfoBySession so the navigator can render forks. Absent = a lone
+		// branch (the client treats it as index 0 / count 1).
+		CreatedAt: mustParseRFC3339(item.CreatedAt),
 	}
 	if question := structuredQuestionFromJSON(item.QuestionPayloadJSON); question != nil {
 		result.QuestionPayload = question

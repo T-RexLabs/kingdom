@@ -314,7 +314,7 @@ func TestServiceCreateSessionPersistsImmediateOpeningQuestion(t *testing.T) {
 	if session.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected ready conversation state, got %q", session.ConversationState)
 	}
-	if session.CurrentQuestionMessageID == nil {
+	if session.ActiveLeafMessageID == nil {
 		t.Fatal("expected current question message id to be set immediately")
 	}
 
@@ -403,8 +403,8 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 	if updated.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected ready conversation state, got %q", updated.ConversationState)
 	}
-	if updated.CurrentQuestionMessageID == nil || *updated.CurrentQuestionMessageID != messages[2].PlanningMessageID {
-		t.Fatalf("expected latest assistant question to be active, got %+v", updated.CurrentQuestionMessageID)
+	if updated.ActiveLeafMessageID == nil || *updated.ActiveLeafMessageID != messages[2].PlanningMessageID {
+		t.Fatalf("expected latest assistant question to be active, got %+v", updated.ActiveLeafMessageID)
 	}
 }
 
@@ -629,7 +629,7 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 	}
 }
 
-func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
+func TestServiceEditedReplyBranchesNonDestructively(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -670,12 +670,14 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 
 	blocking := newBlockingPlanner(false)
 	service = NewService(store, blocking, projectRoot, func() string { return "2026-04-21T17:10:01Z" }, ids)
-	editTurn := 2
+	// Edit the first user turn: branch a new sibling off the opening message
+	// (the first user turn's parent) instead of truncating.
+	editParent := beforeEdit[0].PlanningMessageID
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     "Replacement user turn",
 		AnswerPayloadJSON: `{"text":"Replacement user turn"}`,
-		TruncateFromTurn:  &editTurn,
+		ParentMessageID:   &editParent,
 	})
 	if err != nil {
 		t.Fatalf("create edited reply operation: %v", err)
@@ -683,15 +685,18 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 	awaitPlannerStarted(t, blocking)
 	awaitRunnerRunning(t, service.runner, operation.Operation.OperationID)
 
+	// The edit immediately makes the new branch active: the active path is now
+	// opening + the replacement user turn (the assistant reply is still
+	// streaming), and the original answer is off the active path.
 	duringEdit, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
 		t.Fatalf("list messages during edit: %v", err)
 	}
-	if len(duringEdit) != len(beforeEdit) {
-		t.Fatalf("expected transcript unchanged while edited reply is unsettled, before=%d during=%d", len(beforeEdit), len(duringEdit))
+	if len(duringEdit) != 2 {
+		t.Fatalf("expected active path = opening + replacement user while streaming, got %d", len(duringEdit))
 	}
-	if duringEdit[1].ContentMarkdown != beforeEdit[1].ContentMarkdown || duringEdit[2].PlanningMessageID != beforeEdit[2].PlanningMessageID {
-		t.Fatalf("expected original turn to remain canonical before success, before=%+v during=%+v", beforeEdit, duringEdit)
+	if duringEdit[1].ContentMarkdown != "Replacement user turn" {
+		t.Fatalf("expected replacement user turn active during edit, got %+v", duringEdit[1])
 	}
 
 	close(blocking.release)
@@ -701,13 +706,22 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 		t.Fatalf("list messages after edit: %v", err)
 	}
 	if len(afterEdit) != 3 {
-		t.Fatalf("expected rewritten transcript to stay compact after success, got %d", len(afterEdit))
+		t.Fatalf("expected active path opening + replacement user + new assistant, got %d", len(afterEdit))
 	}
 	if afterEdit[1].ContentMarkdown != "Replacement user turn" {
 		t.Fatalf("expected replacement user turn after success, got %+v", afterEdit[1])
 	}
 	if afterEdit[2].PlanningMessageID == beforeEdit[2].PlanningMessageID {
-		t.Fatalf("expected assistant turn to be replaced after success")
+		t.Fatalf("expected a new assistant message on the edited branch")
+	}
+	// Non-destructive: the original user turn is preserved as a sibling branch
+	// of the replacement, so the operator can switch back to it.
+	siblings, err := store.SiblingsOf(context.Background(), session.PlanningSessionID, afterEdit[1].PlanningMessageID)
+	if err != nil {
+		t.Fatalf("list siblings of replacement: %v", err)
+	}
+	if len(siblings) != 2 {
+		t.Fatalf("expected original + replacement user branches preserved, got %d", len(siblings))
 	}
 }
 
@@ -727,7 +741,7 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 		TitleState:               planningSessionTitleStatePlaceholder,
 		LifecycleState:           state.PlanningSessionLifecycleStateActive,
 		ConversationState:        state.PlanningSessionConversationStateReady,
-		CurrentQuestionMessageID: "pm_edit_auto_title_assistant_3",
+		ActiveLeafMessageID: "pm_edit_auto_title_assistant_3",
 		ProjectRoot:              projectRoot,
 		ModelSelectionJSON:       `{"model":"test-model"}`,
 		CreatedAt:                "2026-04-21T17:00:00Z",
@@ -735,12 +749,13 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	// Linear seed chain: opening -> user_2 -> assistant_2 -> user_3 -> assistant_3.
 	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:00Z"},
-		{PlanningMessageID: "pm_edit_auto_title_user_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:01Z"},
-		{PlanningMessageID: "pm_edit_auto_title_assistant_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "First response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:02Z"},
-		{PlanningMessageID: "pm_edit_auto_title_user_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:03Z"},
-		{PlanningMessageID: "pm_edit_auto_title_assistant_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:04Z"},
+		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:00Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_2", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-21T17:00:01Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_2", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_user_2", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "First response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:02Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_3", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_assistant_2", Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, CreatedAt: "2026-04-21T17:00:03Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_3", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_user_3", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:04Z"},
 	}
 	for _, message := range seedMessages {
 		if _, err := store.AppendMessage(context.Background(), message); err != nil {
@@ -748,12 +763,15 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 		}
 	}
 
-	editTurn := 2
+	// Edit the first user turn: branch off the opening message. The new branch
+	// has a single user message, so auto-title must not fire from the stale
+	// (longer) prior branch.
+	editParent := "pm_edit_auto_title_opening"
 	result, err := service.CreateOperation(context.Background(), "ps_edit_auto_title", CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     "Replacement first answer",
 		AnswerPayloadJSON: `{"text":"Replacement first answer"}`,
-		TruncateFromTurn:  &editTurn,
+		ParentMessageID:   &editParent,
 	})
 	if err != nil {
 		t.Fatalf("create edited reply: %v", err)
@@ -928,12 +946,10 @@ func TestServiceGenerateTitleRunsAlongsideInteractiveOperation(t *testing.T) {
 		UserMessage: state.AppendPlanningMessageRequest{
 			PlanningMessageID:   "planning_message_reply_seed",
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           2,
 			Role:                state.PlanningMessageRoleUser,
 			ContentMarkdown:     "Keep the planner busy",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{"text":"Keep the planner busy"}`,
-			Active:              true,
 			CreatedAt:           "2026-04-21T17:10:01Z",
 		},
 		Operation: state.CreatePlanningOperationRequest{
@@ -1104,7 +1120,7 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 		TitleState:               planningSessionTitleStatePlaceholder,
 		LifecycleState:           state.PlanningSessionLifecycleStateActive,
 		ConversationState:        state.PlanningSessionConversationStateReady,
-		CurrentQuestionMessageID: "pm_recovery_catchup_assistant_2",
+		ActiveLeafMessageID:      "pm_recovery_catchup_user_3",
 		ProjectRoot:              projectRoot,
 		ModelSelectionJSON:       `{"model":"test-model"}`,
 		CreatedAt:                "2026-04-26T09:55:00Z",
@@ -1113,10 +1129,10 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 		t.Fatalf("create session: %v", err)
 	}
 	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
-		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
-		{PlanningMessageID: "pm_recovery_catchup_assistant_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
-		{PlanningMessageID: "pm_recovery_catchup_user_3", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
+		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:00Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-26T09:55:01Z"},
+		{PlanningMessageID: "pm_recovery_catchup_assistant_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_user_2", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:02Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_3", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_assistant_2", Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, CreatedAt: "2026-04-26T09:55:03Z"},
 	}
 	for _, message := range seedMessages {
 		if _, err := store.AppendMessage(context.Background(), message); err != nil {
@@ -1731,7 +1747,7 @@ func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T
 		TitleState:               planningSessionTitleStatePlaceholder,
 		LifecycleState:           state.PlanningSessionLifecycleStateActive,
 		ConversationState:        state.PlanningSessionConversationStateProcessing,
-		CurrentQuestionMessageID: "pm_recent_receipt_auto_title_assistant_2",
+		ActiveLeafMessageID: "pm_recent_receipt_auto_title_assistant_2",
 		CurrentOperationID:       "po_recent_receipt_auto_title",
 		ProjectRoot:              projectRoot,
 		ModelSelectionJSON:       `{"model":"test-model"}`,
@@ -1741,10 +1757,10 @@ func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T
 		t.Fatalf("create session: %v", err)
 	}
 	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_recent_receipt_auto_title_opening", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_user_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_assistant_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_user_3", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_opening", PlanningSessionID: "ps_recent_receipt_auto_title", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:00Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_user_2", PlanningSessionID: "ps_recent_receipt_auto_title", ParentMessageID: "pm_recent_receipt_auto_title_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-26T09:55:01Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_assistant_2", PlanningSessionID: "ps_recent_receipt_auto_title", ParentMessageID: "pm_recent_receipt_auto_title_user_2", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:02Z"},
+		{PlanningMessageID: "pm_recent_receipt_auto_title_user_3", PlanningSessionID: "ps_recent_receipt_auto_title", ParentMessageID: "pm_recent_receipt_auto_title_assistant_2", Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, CreatedAt: "2026-04-26T09:55:03Z"},
 	}
 	for _, message := range seedMessages {
 		if _, err := store.AppendMessage(context.Background(), message); err != nil {
@@ -1756,7 +1772,7 @@ func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T
 		PlanningSessionID:  "ps_recent_receipt_auto_title",
 		Type:               state.PlanningOperationTypeReply,
 		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{"assistant_message_id":"pm_recent_receipt_auto_title_assistant_3","assistant_created_at":"2026-04-26T09:55:05Z","turn_index":3}`,
+		RequestPayloadJSON: `{"assistant_message_id":"pm_recent_receipt_auto_title_assistant_3","assistant_created_at":"2026-04-26T09:55:05Z","user_message_id":"pm_recent_receipt_auto_title_user_3","parent_message_id":"pm_recent_receipt_auto_title_assistant_2"}`,
 		LeaseOwner:         "slow-worker",
 		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
 		LeaseVersion:       1,
@@ -3461,12 +3477,10 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 		UserMessage: state.AppendPlanningMessageRequest{
 			PlanningMessageID:   "pm_user_failroute",
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           1,
 			Role:                state.PlanningMessageRoleUser,
 			ContentMarkdown:     "ping",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           "2026-04-26T13:00:01Z",
 		},
 		Operation: state.CreatePlanningOperationRequest{

@@ -43,11 +43,20 @@ func generatedTitleEligibleUserCount(userMessages int) bool {
 	return userMessages >= autoTitleUserMessageThreshold
 }
 
+// projectedUserMessageCountAfterReply counts the user messages the new branch
+// will have: those on the active path up to (and including) the branch's parent,
+// plus the reply being appended. For a normal reply the parent is the active
+// leaf, so this counts the whole conversation; for an edit it stops at the
+// branch point so messages on the superseded branch are not counted.
 func projectedUserMessageCountAfterReply(messages []state.PlanningMessage, request operationRequest) int {
-	userMessages := 1
+	parentID := strings.TrimSpace(request.ParentMessageID)
+	userMessages := 1 // the reply being appended
 	for _, message := range messages {
-		if message.Role == state.PlanningMessageRoleUser && message.TurnIndex < request.TurnIndex {
+		if message.Role == state.PlanningMessageRoleUser {
 			userMessages++
+		}
+		if parentID != "" && message.PlanningMessageID == parentID {
+			break
 		}
 	}
 	return userMessages

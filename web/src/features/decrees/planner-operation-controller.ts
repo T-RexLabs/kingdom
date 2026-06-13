@@ -49,9 +49,9 @@ export type PlannerOperationState = {
    */
   status: "pending" | "streaming" | "done" | "error" | "cancelled";
   lastEventSeq: number;
-  turnIndex?: number;
-  targetTurnIndex?: number;
-  forceNewSession?: boolean;
+  // Parent the operation's new branch attaches to: the user message's parent
+  // for reply/edit, or the regenerated assistant's parent for regenerate.
+  parentMessageId?: string;
   userMessageId?: string;
   userCreatedAt?: string;
   assistantMessageId?: string;
@@ -253,17 +253,9 @@ function applyOperationPayload(
   payload: AcpRunEvent["payload"],
 ): PlannerOperationState {
   const next = { ...state };
-  const turnIndex = readNumber(payload.turn_index);
-  if (turnIndex != null) {
-    next.turnIndex = turnIndex;
-  }
-  const targetTurnIndex = readNumber(payload.target_turn_index);
-  if (targetTurnIndex != null) {
-    next.targetTurnIndex = targetTurnIndex;
-  }
-  const forceNewSession = readBoolean(payload.force_new_session);
-  if (forceNewSession != null) {
-    next.forceNewSession = forceNewSession;
+  const parentMessageId = readString(payload.parent_message_id);
+  if (parentMessageId) {
+    next.parentMessageId = parentMessageId;
   }
   const userMessageId = readString(payload.user_message_id);
   if (userMessageId) {
@@ -300,14 +292,6 @@ function applyOperationPayload(
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function readBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function parseAnswerPayload(value: unknown): AnswerPayload | undefined {

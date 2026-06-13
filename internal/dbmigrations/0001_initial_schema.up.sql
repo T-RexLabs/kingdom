@@ -1016,7 +1016,7 @@ CREATE TABLE planning_sessions (
   title_state TEXT NOT NULL CHECK (title_state IN ('placeholder', 'generated', 'custom')),
   lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('active', 'archived')),
   conversation_state TEXT NOT NULL CHECK (conversation_state IN ('ready', 'processing')),
-  current_question_message_id TEXT,
+  active_leaf_message_id TEXT,
   current_operation_id TEXT,
   current_title_operation_id TEXT,
   current_draft_id TEXT,
@@ -1033,27 +1033,29 @@ ON planning_sessions (updated_at DESC, planning_session_id);
 CREATE INDEX idx_planning_sessions_lifecycle_updated_at
 ON planning_sessions (lifecycle_state, updated_at DESC, planning_session_id);
 
+-- Planner messages form a persistent tree: each message points at its parent
+-- (NULL = conversation root). Regenerate/edit append sibling branches and the
+-- session's active_leaf_message_id selects the visible root->leaf path. Nothing
+-- is ever deleted, so every branch and its downstream stay recoverable.
 CREATE TABLE planning_messages (
   planning_message_id TEXT PRIMARY KEY,
   planning_session_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL CHECK (turn_index >= 1),
+  parent_message_id TEXT,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   content_markdown TEXT NOT NULL,
   question_payload_json TEXT NOT NULL,
   answer_payload_json TEXT NOT NULL,
-  variant_index INTEGER NOT NULL DEFAULT 0 CHECK (variant_index >= 0),
-  active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
   created_at TEXT NOT NULL,
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
-  UNIQUE (planning_session_id, turn_index, role, variant_index)
+  FOREIGN KEY (parent_message_id) REFERENCES planning_messages(planning_message_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_planning_messages_session_created
 ON planning_messages (planning_session_id, created_at, planning_message_id);
 
-CREATE UNIQUE INDEX idx_planning_messages_single_active
-ON planning_messages (planning_session_id, turn_index, role)
-WHERE active = 1;
+-- Sibling/child lookups (branch metadata, active-path descent) query by parent.
+CREATE INDEX idx_planning_messages_parent
+ON planning_messages (planning_session_id, parent_message_id, created_at);
 
 CREATE TABLE planning_drafts (
   planning_draft_id TEXT PRIMARY KEY,

@@ -1201,7 +1201,8 @@ export interface components {
             lifecycle_state: "active" | "archived";
             /** @enum {string} */
             conversation_state: "ready" | "processing";
-            current_question_message_id?: string;
+            /** @description Leaf of the active conversation path; the visible transcript ends here. */
+            active_leaf_message_id?: string;
             /** Format: uuid */
             current_run_id?: string;
             /** Format: uuid */
@@ -1221,7 +1222,7 @@ export interface components {
          *       "title_state": "custom",
          *       "lifecycle_state": "active",
          *       "conversation_state": "ready",
-         *       "current_question_message_id": "msg_123",
+         *       "active_leaf_message_id": "msg_123",
          *       "current_run_id": "96b0d561-cbe7-5c50-bf54-cd1dc3c76d47",
          *       "current_title_run_id": "61b3f4e0-8bb2-5dd0-89a1-9b084688c17d",
          *       "current_draft_id": "draft_123",
@@ -1244,10 +1245,12 @@ export interface components {
         PlanningReplyOperationRequest: {
             content_markdown: string;
             answer_payload?: components["schemas"]["StructuredQuestionAnswer"];
-            truncate_from_turn?: number;
+            /** @description Branch the reply off this message (editing an earlier message creates a sibling). Omitted = continue from the session's active leaf. */
+            parent_message_id?: string;
         };
         PlanningRegenerateOperationRequest: {
-            target_turn_index: number;
+            /** @description The assistant message to fork a new sibling branch from. */
+            target_message_id: string;
         };
         AcpAgent: {
             /** @enum {string} */
@@ -1355,15 +1358,17 @@ export interface components {
         PlanningMessage: {
             planning_message_id: string;
             planning_session_id: string;
-            turn_index: number;
+            /** @description Parent in the conversation tree; omitted for the root message. */
+            parent_message_id?: string;
             /** @enum {string} */
             role: "user" | "assistant";
             content_markdown: string;
             question_payload?: components["schemas"]["StructuredQuestion"];
             answer_payload?: components["schemas"]["StructuredQuestionAnswer"];
-            variant_index: number;
-            active: boolean;
-            variant_count?: number;
+            /** @description Zero-based position of this message among its siblings (same parent). */
+            branch_index?: number;
+            /** @description Number of sibling branches at this point; the navigator shows when > 1. */
+            branch_count?: number;
             /** Format: uuid */
             source_run_id?: string;
             /** Format: date-time */

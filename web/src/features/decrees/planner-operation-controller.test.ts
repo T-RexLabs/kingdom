@@ -24,7 +24,6 @@ function buildEvent(overrides: Partial<AcpRunEvent> = {}): AcpRunEvent {
     seq: 1,
     type: "run.created",
     payload: {
-      turn_index: 2,
       assistant_message_id: "msg_assistant_2",
       assistant_created_at: "2026-04-21T10:00:01Z",
       content_markdown: "Need planner help",
@@ -38,18 +37,17 @@ function buildEvent(overrides: Partial<AcpRunEvent> = {}): AcpRunEvent {
 describe("planner operation controller", () => {
   it("hydrates reply lineage from ACP run.created payload", () => {
     const initial = buildPlannerOperationState(buildRun());
-    const reduced = reducePlannerOperationEvent(initial, buildEvent({ payload: { ...buildEvent().payload, force_new_session: true } }));
+    const reduced = reducePlannerOperationEvent(initial, buildEvent({ payload: { ...buildEvent().payload, parent_message_id: "msg_parent_1" } }));
 
-    expect(reduced.turnIndex).toBe(2);
+    expect(reduced.parentMessageId).toBe("msg_parent_1");
     expect(reduced.assistantMessageId).toBe("msg_assistant_2");
     expect(reduced.assistantCreatedAt).toBe("2026-04-21T10:00:01Z");
     expect(reduced.pendingReply?.contentMarkdown).toBe("Need planner help");
-    expect(reduced.forceNewSession).toBe(true);
   });
 
   it("accumulates streamed response text on message.part", () => {
     const initial = buildPlannerOperationState(buildRun({ status: "in-progress" }));
-    const reduced = reducePlannerOperationEvent(initial, buildEvent({ type: "message.part", payload: { text: "hello", planning_message_id: "msg_assistant_2", turn_index: 2 } }));
+    const reduced = reducePlannerOperationEvent(initial, buildEvent({ type: "message.part", payload: { text: "hello", planning_message_id: "msg_assistant_2", } }));
 
     expect(reduced.replyText).toBe("hello");
     expect(reduced.assistantMessageId).toBe("msg_assistant_2");

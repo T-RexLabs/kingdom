@@ -22,6 +22,13 @@ func newOperationService(deps runtimeDeps, runner *operationRunner) *operationSe
 	return &operationService{deps: deps, runner: runner}
 }
 
+func stringValueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
 func (s *operationService) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
 	session, ok, err := s.deps.store.GetSession(ctx, planningSessionID)
 	if err != nil {
@@ -46,28 +53,21 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		if trimmedReply == "" {
 			return CreateOperationResult{}, fmt.Errorf("planning reply content is required")
 		}
-		// Cross-check `truncate_from_turn` against the actual transcript so a
-		// client cannot submit `truncate_from_turn = 99` against a 3-turn
-		// session and create a gapful sequence. The plain `>= 1` validation
-		// at the store layer is necessary but not sufficient.
-		messages, err := s.deps.store.ListMessages(ctx, planningSessionID)
-		if err != nil {
-			return CreateOperationResult{}, err
+		// The new user message attaches under an explicit parent (editing an
+		// earlier message → a new sibling branch) or, by default, the session's
+		// active leaf (a normal reply continuing the conversation). No
+		// truncation: editing simply forks a branch.
+		activeLeaf := strings.TrimSpace(stringValueOrEmpty(session.ActiveLeafMessageID))
+		parentMessageID := activeLeaf
+		if input.ParentMessageID != nil {
+			parentMessageID = strings.TrimSpace(*input.ParentMessageID)
 		}
-		maxTurn := 0
-		if len(messages) > 0 {
-			maxTurn = messages[len(messages)-1].TurnIndex
-		}
-		turnIndex := 0
-		if input.TruncateFromTurn != nil {
-			if *input.TruncateFromTurn < 1 || *input.TruncateFromTurn > maxTurn {
-				return CreateOperationResult{}, ErrTurnIndexOutOfRange
-			}
-			turnIndex = *input.TruncateFromTurn
-		} else {
-			turnIndex = 1
-			if maxTurn > 0 {
-				turnIndex = maxTurn + 1
+		if parentMessageID != "" {
+			if _, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, parentMessageID); err != nil {
+				if errors.Is(err, state.ErrPlanningMessageNotFound) {
+					return CreateOperationResult{}, ErrMessageNotFound
+				}
+				return CreateOperationResult{}, err
 			}
 		}
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(input.AnswerPayloadJSON), `{}`)
@@ -76,10 +76,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			AnswerPayload:      json.RawMessage(answerPayloadJSON),
 			UserMessageID:      s.deps.nextID("planning_message"),
 			UserCreatedAt:      now,
-			TurnIndex:          turnIndex,
+			ParentMessageID:    parentMessageID,
 			AssistantMessageID: s.deps.nextID("planning_message"),
 			AssistantCreatedAt: now,
-			ForceNewSession:    input.TruncateFromTurn != nil,
+			// A reply that does not continue from the current active leaf (an
+			// edit) starts a new branch, so the provider session must restart.
+			ForceNewSession: parentMessageID != activeLeaf,
 		}
 	case state.PlanningOperationTypeFormalize:
 		request = operationRequest{
@@ -87,29 +89,22 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			DraftCreatedAt: now,
 		}
 	case state.PlanningOperationTypeRegenerate:
-		if input.TargetTurnIndex < 1 {
-			return CreateOperationResult{}, ErrTurnIndexOutOfRange
+		targetID := strings.TrimSpace(input.TargetMessageID)
+		if targetID == "" {
+			return CreateOperationResult{}, ErrMessageNotFound
 		}
-		// Reject regenerate against turns that don't exist in the canonical
-		// transcript — the partial unique index would catch some collisions
-		// but not gapful turn creation when no assistant message exists yet
-		// at that turn.
-		maxTurn, err := s.deps.store.GetMaxTurnIndex(ctx, planningSessionID)
+		target, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, targetID)
 		if err != nil {
+			if errors.Is(err, state.ErrPlanningMessageNotFound) {
+				return CreateOperationResult{}, ErrMessageNotFound
+			}
 			return CreateOperationResult{}, err
 		}
-		if input.TargetTurnIndex > maxTurn {
-			return CreateOperationResult{}, ErrTurnIndexOutOfRange
-		}
-		maxVariant, err := s.deps.store.GetMaxVariantIndex(ctx, planningSessionID, input.TargetTurnIndex, state.PlanningMessageRoleAssistant)
-		if err != nil {
-			return CreateOperationResult{}, err
-		}
-		nextVariant := maxVariant + 1
+		// Regenerate forks a new assistant sibling under the same parent as the
+		// message it replaces; the old answer and its downstream are preserved.
 		request = operationRequest{
-			TargetTurnIndex:    input.TargetTurnIndex,
-			TurnIndex:          input.TargetTurnIndex,
-			VariantIndex:       nextVariant,
+			TargetMessageID:    targetID,
+			ParentMessageID:    strings.TrimSpace(stringValueOrEmpty(target.ParentMessageID)),
 			AssistantMessageID: s.deps.nextID("planning_message"),
 			AssistantCreatedAt: now,
 			ForceNewSession:    true,
@@ -143,17 +138,15 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		conversationState := state.PlanningSessionConversationStateProcessing
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(string(request.AnswerPayload)), `{}`)
 		operation, err = s.deps.store.CreateReplyBundle(ctx, state.CreatePlanningReplyBundleRequest{
-			SessionID:        planningSessionID,
-			TruncateFromTurn: input.TruncateFromTurn,
+			SessionID: planningSessionID,
 			UserMessage: state.AppendPlanningMessageRequest{
 				PlanningMessageID:   request.UserMessageID,
 				PlanningSessionID:   planningSessionID,
-				TurnIndex:           request.TurnIndex,
+				ParentMessageID:     request.ParentMessageID,
 				Role:                state.PlanningMessageRoleUser,
 				ContentMarkdown:     request.ContentMarkdown,
 				QuestionPayloadJSON: `{}`,
 				AnswerPayloadJSON:   answerPayloadJSON,
-				Active:              true,
 				CreatedAt:           request.UserCreatedAt,
 			},
 			Operation:         operationReq,
@@ -174,12 +167,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	case state.PlanningOperationTypeRegenerate:
 		conversationState := state.PlanningSessionConversationStateProcessing
 		operation, err = s.deps.store.CreateRegenerateBundle(ctx, state.CreateRegenerateBundleRequest{
-			SessionID:         planningSessionID,
-			TargetTurnIndex:   input.TargetTurnIndex,
-			Operation:         operationReq,
-			InitialEvent:      initialEvent,
-			ConversationState: conversationState,
-			UpdatedAt:         now,
+			SessionID:           planningSessionID,
+			ActiveLeafMessageID: request.ParentMessageID,
+			Operation:           operationReq,
+			InitialEvent:        initialEvent,
+			ConversationState:   conversationState,
+			UpdatedAt:           now,
 		})
 	}
 	if err != nil {

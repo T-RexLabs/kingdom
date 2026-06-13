@@ -56,7 +56,7 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	result := gen.CreatePlanningSessionResult{Session: presentedSession}
-	if optionalTrimmedString(session.CurrentQuestionMessageID) != nil {
+	if optionalTrimmedString(session.ActiveLeafMessageID) != nil {
 		messages, listErr := s.planningStore.ListMessagesPage(r.Context(), session.PlanningSessionID, 1, nil)
 		if listErr != nil {
 			s.writeInternalError(w, "list planning session messages failed")
@@ -233,9 +233,9 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 		previousCursor := s.encodePlanningMessagesCursor(planningSessionID, page.FirstItemIndex)
 		response.PreviousCursor = &previousCursor
 	}
-	variantCounts, err := s.planningStore.VariantCountsBySession(r.Context(), planningSessionID)
+	branchInfo, err := s.planningStore.BranchInfoBySession(r.Context(), planningSessionID)
 	if err != nil {
-		s.writeInternalError(w, "fetch variant counts failed")
+		s.writeInternalError(w, "fetch branch info failed")
 		return
 	}
 	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID)
@@ -249,8 +249,10 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 			s.writeInternalError(w, "decode planning session messages failed")
 			return
 		}
-		if count, ok := variantCounts[item.TurnIndex]; ok && item.Role == state.PlanningMessageRoleAssistant {
-			msg.VariantCount = &count
+		if branch, ok := branchInfo[item.PlanningMessageID]; ok {
+			index, count := branch.Index, branch.Count
+			msg.BranchIndex = &index
+			msg.BranchCount = &count
 		}
 		if runID, ok := messageRunIDs[item.PlanningMessageID]; ok {
 			msg.SourceRunId = &runID
@@ -330,14 +332,13 @@ func (s *Server) handleListPlanningMessageVariants(w http.ResponseWriter, r *htt
 		s.writeBadRequest(w, "message id is required")
 		return
 	}
-	message, err := s.planningService.GetMessageInSession(r.Context(), planningSessionID, messageID)
-	if err != nil {
+	if _, err := s.planningService.GetMessageInSession(r.Context(), planningSessionID, messageID); err != nil {
 		handlePlanningError(w, err, "api.list_planning_message_variants")
 		return
 	}
-	variants, err := s.planningService.ListMessageVariants(r.Context(), planningSessionID, message.TurnIndex, message.Role)
+	variants, err := s.planningService.ListMessageBranches(r.Context(), planningSessionID, messageID)
 	if err != nil {
-		s.writeInternalError(w, "list planning message variants failed")
+		s.writeInternalError(w, "list planning message branches failed")
 		return
 	}
 	response := gen.PlanningMessageVariantsResponse{Items: make([]gen.PlanningMessage, 0, len(variants))}

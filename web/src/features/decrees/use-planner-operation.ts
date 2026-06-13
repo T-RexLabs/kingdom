@@ -273,7 +273,7 @@ export function patchPlannerTerminalCaches(
 	if (event.type === "run.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
 		const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
     if (messageId) {
-      fields.current_question_message_id = messageId;
+      fields.active_leaf_message_id = messageId;
     }
     const sessionPatch = sessionPatchFields(event.payload.session_patch);
     if (sessionPatch) {
@@ -348,22 +348,22 @@ function planningMessageFromEvent(operation: AcpRun, event: AcpRunEvent): Planni
       ? event.payload.text
       : "";
   const createdAt = typeof event.payload.created_at === "string" ? event.payload.created_at : event.created_at;
-  const turnIndex = typeof event.payload.turn_index === "number" ? event.payload.turn_index : 0;
-  if (!planningMessageId || !contentMarkdown || turnIndex < 1) {
+  if (!planningMessageId || !contentMarkdown) {
     return null;
   }
   return {
     planning_message_id: planningMessageId,
     planning_session_id: operation.planning_session_id,
-    turn_index: turnIndex,
+    parent_message_id: typeof event.payload.parent_message_id === "string" ? event.payload.parent_message_id : undefined,
     role: (typeof event.payload.role === "string" ? event.payload.role : "assistant") as PlanningMessage["role"],
     content_markdown: contentMarkdown,
     source_run_id: operation.run_id,
     created_at: createdAt,
-    variant_index: typeof event.payload.variant_index === "number" ? event.payload.variant_index : 0,
-    active: typeof event.payload.active === "boolean" ? event.payload.active : true,
+    // A freshly produced reply/regenerate is the newest branch at its point;
+    // the authoritative branch_count arrives on the messages refetch.
+    branch_index: 0,
+    branch_count: 1,
     question_payload: isObject(event.payload.question_payload) ? (event.payload.question_payload as PlanningMessage["question_payload"]) : undefined,
-    variant_count: typeof event.payload.variant_count === "number" ? event.payload.variant_count : undefined,
   };
 }
 

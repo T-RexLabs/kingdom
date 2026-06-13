@@ -17,7 +17,7 @@ const LIST_MIRRORED_FIELDS = [
   "title_state",
   "lifecycle_state",
   "conversation_state",
-  "current_question_message_id",
+  "active_leaf_message_id",
   "current_run_id",
   "current_title_run_id",
   "current_draft_id",

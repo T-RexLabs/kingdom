@@ -2580,8 +2580,9 @@ components:
         conversation_state:
           type: string
           enum: [ready, processing]
-        current_question_message_id:
+        active_leaf_message_id:
           type: string
+          description: Leaf of the active conversation path; the visible transcript ends here.
           minLength: 1
         current_run_id:
           type: string
@@ -2610,7 +2611,7 @@ components:
         title_state: custom
         lifecycle_state: active
         conversation_state: ready
-        current_question_message_id: msg_123
+        active_leaf_message_id: msg_123
         current_run_id: 96b0d561-cbe7-5c50-bf54-cd1dc3c76d47
         current_title_run_id: 61b3f4e0-8bb2-5dd0-89a1-9b084688c17d
         current_draft_id: draft_123
@@ -2646,18 +2647,22 @@ components:
           minLength: 1
         answer_payload:
           $ref: "#/components/schemas/StructuredQuestionAnswer"
-        truncate_from_turn:
-          type: integer
-          minimum: 1
+        parent_message_id:
+          type: string
+          description: >-
+            Branch the reply off this message (editing an earlier message creates
+            a sibling). Omitted = continue from the session's active leaf.
+          minLength: 1
 
     PlanningRegenerateOperationRequest:
       type: object
       additionalProperties: false
-      required: [target_turn_index]
+      required: [target_message_id]
       properties:
-        target_turn_index:
-          type: integer
-          minimum: 1
+        target_message_id:
+          type: string
+          description: The assistant message to fork a new sibling branch from.
+          minLength: 1
 
     AcpAgent:
       type: object
@@ -2869,7 +2874,7 @@ components:
     PlanningMessage:
       type: object
       additionalProperties: false
-      required: [planning_message_id, planning_session_id, turn_index, role, content_markdown, variant_index, active, created_at]
+      required: [planning_message_id, planning_session_id, role, content_markdown, created_at]
       properties:
         planning_message_id:
           type: string
@@ -2877,9 +2882,9 @@ components:
         planning_session_id:
           type: string
           minLength: 1
-        turn_index:
-          type: integer
-          minimum: 1
+        parent_message_id:
+          type: string
+          description: Parent in the conversation tree; omitted for the root message.
         role:
           type: string
           enum: [user, assistant]
@@ -2889,14 +2894,14 @@ components:
           $ref: "#/components/schemas/StructuredQuestion"
         answer_payload:
           $ref: "#/components/schemas/StructuredQuestionAnswer"
-        variant_index:
+        branch_index:
           type: integer
           minimum: 0
-        active:
-          type: boolean
-        variant_count:
+          description: Zero-based position of this message among its siblings (same parent).
+        branch_count:
           type: integer
           minimum: 1
+          description: Number of sibling branches at this point; the navigator shows when > 1.
         source_run_id:
           type: string
           format: uuid

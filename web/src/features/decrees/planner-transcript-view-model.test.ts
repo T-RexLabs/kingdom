@@ -19,63 +19,33 @@ function buildOperation(overrides: Partial<PlannerOperationState>): PlannerOpera
 }
 
 describe("planner transcript view model", () => {
-  it("hides the superseded assistant turn while a regenerate streams, even if the canonical row is still cached", () => {
+  it("renders the active path directly and appends a streaming ghost for an active reply", () => {
     const result = buildPlannerTranscriptViewModel({
       messages: [
-        { planning_message_id: "user-2", planning_session_id: "s", turn_index: 2, role: "user", content_markdown: "Ask", created_at: "t", variant_index: 0, active: true },
-        { planning_message_id: "assistant-2-old", planning_session_id: "s", turn_index: 2, role: "assistant", content_markdown: "Old answer", created_at: "t", variant_index: 0, active: true },
-        { planning_message_id: "user-3", planning_session_id: "s", turn_index: 3, role: "user", content_markdown: "Below", created_at: "t", variant_index: 0, active: true },
-      ],
-      conversationState: "processing",
-      operation: buildOperation({
-        kind: "regenerate",
-        status: "streaming",
-        operationId: "op-regen",
-        targetTurnIndex: 2,
-        turnIndex: 2,
-        assistantMessageId: "pending-regen-assistant",
-        assistantCreatedAt: "t",
-        replyText: "New ans",
-      }),
-    });
-
-    const ids = result.items.map((item) => item.message.planning_message_id);
-    // Old assistant at the target turn and the turn below are hidden...
-    expect(ids).not.toContain("assistant-2-old");
-    expect(ids).not.toContain("user-3");
-    // ...the user message at the target turn stays, and the streaming ghost shows.
-    expect(ids).toContain("user-2");
-    expect(ids).toContain("pending-regen-assistant");
-    expect(result.items.find((i) => i.message.planning_message_id === "pending-regen-assistant")?.isStreaming).toBe(true);
-  });
-
-  it("hides truncated messages while an edited user reply streams", () => {
-    const result = buildPlannerTranscriptViewModel({
-      messages: [
-        { planning_message_id: "user-2", planning_session_id: "s", turn_index: 2, role: "user", content_markdown: "Old question", created_at: "t", variant_index: 0, active: true },
-        { planning_message_id: "assistant-2", planning_session_id: "s", turn_index: 2, role: "assistant", content_markdown: "Old answer", created_at: "t", variant_index: 0, active: true },
+        { planning_message_id: "opening", planning_session_id: "s", role: "assistant", content_markdown: "Hi", created_at: "t" },
+        { planning_message_id: "user-1", planning_session_id: "s", parent_message_id: "opening", role: "user", content_markdown: "Q", created_at: "t" },
+        { planning_message_id: "assistant-1", planning_session_id: "s", parent_message_id: "user-1", role: "assistant", content_markdown: "A", created_at: "t" },
       ],
       conversationState: "processing",
       operation: buildOperation({
         kind: "reply",
         status: "streaming",
-        operationId: "op-edit",
-        forceNewSession: true,
-        turnIndex: 2,
+        operationId: "op-reply",
+        parentMessageId: "assistant-1",
         userMessageId: "pending-user",
         userCreatedAt: "t",
         assistantMessageId: "pending-assistant",
         assistantCreatedAt: "t",
-        pendingReply: { contentMarkdown: "Edited question" },
-        replyText: "New ans",
+        pendingReply: { contentMarkdown: "Next question" },
+        replyText: "Streaming answer",
       }),
     });
 
     const ids = result.items.map((item) => item.message.planning_message_id);
-    expect(ids).not.toContain("user-2");
-    expect(ids).not.toContain("assistant-2");
-    expect(ids).toContain("pending-user");
-    expect(ids).toContain("pending-assistant");
+    // The active path renders verbatim, with the optimistic user + streaming
+    // assistant ghosts appended.
+    expect(ids).toEqual(["opening", "user-1", "assistant-1", "pending-user", "pending-assistant"]);
+    expect(result.items.find((i) => i.message.planning_message_id === "pending-assistant")?.isStreaming).toBe(true);
   });
 
   it("marks only the canonical current question interactive", () => {
@@ -84,12 +54,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "Choose planning depth",
             type: "single_select",
@@ -99,23 +66,17 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "user-1",
           planning_session_id: "session-1",
-          turn_index: 2,
           role: "user",
           content_markdown: "Lean",
           created_at: "2026-04-21T10:01:00Z",
-          variant_index: 0,
-          active: true,
           answer_payload: { value: "lean", text: "Lean" },
         },
         {
           planning_message_id: "assistant-2",
           planning_session_id: "session-1",
-          turn_index: 3,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:02:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "Choose output format",
             type: "single_select",
@@ -139,12 +100,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "Choose planning depth",
             type: "single_select",
@@ -154,12 +112,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "user-1",
           planning_session_id: "session-1",
-          turn_index: 2,
           role: "user",
           content_markdown: "Lean",
           created_at: "2026-04-21T10:01:00Z",
-          variant_index: 0,
-          active: true,
           answer_payload: { value: "lean", text: "Lean" },
         },
       ],
@@ -177,12 +132,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "Choose planning depth",
             type: "single_select",
@@ -193,7 +145,6 @@ describe("planner transcript view model", () => {
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
       operation: buildOperation({
-        turnIndex: 2,
         userMessageId: "optimistic-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
         assistantMessageId: "optimistic-assistant-1",
@@ -214,12 +165,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "How would you like to start?",
             type: "single_select",
@@ -234,7 +182,6 @@ describe("planner transcript view model", () => {
       currentQuestionMessageId: "assistant-1",
       conversationState: "processing",
       operation: buildOperation({
-        turnIndex: 2,
         userMessageId: "optimistic-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
         assistantMessageId: "optimistic-assistant-1",
@@ -261,12 +208,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "How would you like to start?",
             type: "single_select",
@@ -280,12 +224,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "real-user-1",
           planning_session_id: "session-1",
-          turn_index: 2,
           role: "user",
           content_markdown: "Ship the planner redesign",
           created_at: "2026-04-21T10:00:01Z",
-          variant_index: 0,
-          active: true,
           answer_payload: { text: "Ship the planner redesign" },
         },
       ],
@@ -294,7 +235,6 @@ describe("planner transcript view model", () => {
       operation: buildOperation({
         status: "streaming",
         lastEventSeq: 2,
-        turnIndex: 2,
         userMessageId: "real-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
         assistantMessageId: "real-assistant-2",
@@ -316,12 +256,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: {
             prompt: "Opening question",
             type: "long_text",
@@ -333,7 +270,6 @@ describe("planner transcript view model", () => {
       operation: buildOperation({
         status: "streaming",
         lastEventSeq: 2,
-        turnIndex: 2,
         userMessageId: "user-2",
         userCreatedAt: "2026-04-21T10:00:01Z",
         assistantMessageId: "assistant-2",
@@ -355,12 +291,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
           question_payload: { prompt: "Pick one", type: "long_text" },
         },
       ],
@@ -370,7 +303,6 @@ describe("planner transcript view model", () => {
         operationId: "operation-failed",
         status: "error",
         lastEventSeq: 5,
-        turnIndex: 2,
         userMessageId: "optimistic-user-1",
         userCreatedAt: "2026-04-21T10:00:01Z",
         assistantMessageId: "optimistic-assistant-1",
@@ -396,12 +328,9 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "stable",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
         },
       ],
       currentQuestionMessageId: undefined,
@@ -411,8 +340,6 @@ describe("planner transcript view model", () => {
         operationId: "operation-cancelled",
         status: "cancelled",
         lastEventSeq: 5,
-        turnIndex: 1,
-        targetTurnIndex: 1,
         assistantMessageId: "optimistic-regen-1",
         assistantCreatedAt: "2026-04-21T10:00:01Z",
         replyText: "half a regeneration",
@@ -430,13 +357,10 @@ describe("planner transcript view model", () => {
         {
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "Final text already patched",
           source_run_id: "operation-1",
           created_at: "2026-04-21T10:00:00Z",
-          variant_index: 0,
-          active: true,
         },
       ],
       currentQuestionMessageId: undefined,

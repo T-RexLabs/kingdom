@@ -71,7 +71,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Provider-backed planning operations (`reply`, `regenerate`, `formalize`, and generated title work) get runtime-owned invocation identity and single-use completion capability before provider dispatch.
 - Provider-backed planning success requires one valid `kingdom_complete_attempt` receipt accepted for the active planner invocation; clean provider exit without a valid receipt is terminal planner-operation failure.
 - Provider-backed planning settlement is runtime-owned and invocation-scoped; `opencode export` is diagnostic and repair evidence only for planning just as it is for decree execution.
-- Planning operations are durable and recoverable, and support reply, regenerate, formalize, generated-title, and assistant-message-variant flows.
+- Planning operations are durable and recoverable, and support reply, regenerate, formalize, generated-title, and branch-navigation (active-leaf selection) flows.
 - Planning lineage (`planning_session_id`, `planning_draft_id`, `planning_context_snapshot_id`) is attached to a decree only when the operator explicitly issues a decree from a plan.
 - ACP is the single canonical protocol for planner execution and activity semantics: planner runs, statuses, event streams, cancellation, message parts, and provider activity all flow through `/api/v1/acp`.
 - Kingdom REST remains the single canonical API for planner domain resources: planning sessions, planning messages, drafts, context snapshots, and decree issuance remain under the Kingdom resource model.
@@ -106,13 +106,14 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 - Planning sessions persist independently from decrees and runs.
 - Planning state has explicit lifecycle and conversation fields.
-- Planning messages are the canonical transcript.
+- Planning messages form a persistent tree: each message has a `parent_message_id` (null at the conversation root), and the session's `active_leaf_message_id` selects the visible root-to-leaf path that is the canonical transcript.
 - Provider-backed planner activity is exposed as ACP runs and ACP events, not as a parallel planner-specific lifecycle surface.
 - Reply, regenerate, formalize, and generate-title work are durable planner operations projected as ACP runs, not request-scoped streaming handlers.
 - Planner ACP events stream over SSE with replay/resume.
-- Assistant responses can have multiple variants, and one variant can be activated as canonical for the session.
+- Regenerate and user-message edits are non-destructive: they append a new sibling branch under the relevant parent and move the active leaf onto it; the prior branch and its entire downstream are preserved and re-selectable. Nothing is deleted or truncated.
+- Branches at any message are operator-navigable; an `activate` sets the active leaf to a chosen branch's most recent leaf.
 - Context snapshots are durable and refreshable through the API.
-- Planner canonical state persists through planning messages, variants, drafts, and session fields.
+- Planner canonical state persists through the planning message tree, the session active-leaf pointer, drafts, and session fields.
 - Provider-backed planner canonicalization is runtime-settled through planner-specific invocation, evidence, and settlement records before the canonical planning tables are updated.
 
 ### Workflow and Orchestration Plane
@@ -218,7 +219,7 @@ Important clarifications:
   - explicit allfather confirmation when `governance.autonomous_approvals=false`
 - Artifact presence supports auditability and observability but does not determine terminal success.
 - Run and planning SSE streams must preserve replay semantics through stable event ids and `Last-Event-ID`.
-- Planning transcript truth comes from persisted planning messages, not transient client state.
+- Planning transcript truth comes from the persisted message tree resolved through the session active-leaf pointer, not transient client state; planner operations are append-only and never delete or truncate prior branches.
 - Planning operations must be durable enough to recover after refresh, disconnect, or restart.
 - ACP run state is the canonical planner activity lifecycle visible to operators; Kingdom planner session fields may point to the active ACP run, but they do not define an alternate public lifecycle protocol.
 - Planner tool, reasoning, and progress activity may only be shown when projected from real provider observations.

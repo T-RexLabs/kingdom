@@ -55,7 +55,7 @@ function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSe
     auto_title_eligible: false,
     lifecycle_state: "active",
     conversation_state: "ready",
-    current_question_message_id: "msg_1",
+    active_leaf_message_id: "msg_1",
     current_run_id: undefined,
     current_draft_id: undefined,
     context_snapshot_id: "snap_1",

@@ -7,12 +7,9 @@ function buildMessage(overrides: Partial<PlanningMessage> = {}): PlanningMessage
   return {
     planning_message_id: "message-1",
     planning_session_id: "session-1",
-    turn_index: 1,
     role: "assistant",
     content_markdown: "Original reply",
     created_at: "2026-04-21T10:00:00Z",
-    variant_index: 0,
-    active: true,
     ...overrides,
   };
 }
@@ -28,13 +25,13 @@ function buildPage(items: PlanningMessage[]): PlanningMessagesPage {
 }
 
 describe("replaceAssistantMessageAtTurn", () => {
-  it("replaces the existing assistant reply for the same turn across pages", () => {
+  it("replaces the existing assistant reply sharing the new message's parent across pages", () => {
     const current = {
       pages: [
-        buildPage([buildMessage({ planning_message_id: "assistant-4", turn_index: 4, content_markdown: "Latest reply" })]),
+        buildPage([buildMessage({ planning_message_id: "assistant-4", parent_message_id: "user-4", content_markdown: "Latest reply" })]),
         buildPage([
-          buildMessage({ planning_message_id: "assistant-2-old", turn_index: 2, content_markdown: "Old reply" }),
-          buildMessage({ planning_message_id: "assistant-1", turn_index: 1, content_markdown: "Earlier reply" }),
+          buildMessage({ planning_message_id: "assistant-2-old", parent_message_id: "user-2", content_markdown: "Old reply" }),
+          buildMessage({ planning_message_id: "assistant-1", parent_message_id: "user-1", content_markdown: "Earlier reply" }),
         ]),
       ],
       pageParams: [undefined, "cursor-1"],
@@ -44,7 +41,7 @@ describe("replaceAssistantMessageAtTurn", () => {
       current,
       buildMessage({
         planning_message_id: "assistant-2-new",
-        turn_index: 2,
+        parent_message_id: "user-2",
         content_markdown: "Regenerated reply",
       }),
     );

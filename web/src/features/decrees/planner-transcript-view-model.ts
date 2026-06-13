@@ -45,7 +45,7 @@ type TranscriptBuildResult = {
 };
 
 export function buildPlannerTranscriptViewModel({
-  messages: allMessages,
+  messages,
   currentQuestionMessageId,
   conversationState,
   operation,
@@ -54,13 +54,11 @@ export function buildPlannerTranscriptViewModel({
   const activeOperationRunId = operation && !operation.operationId.startsWith("pending-")
     ? operation.operationId
     : undefined;
-  // While a regenerate/edit operation is in flight the server still holds the
-  // messages it will replace (truncation/deactivation only happens at finalize),
-  // so a mid-stream messages refetch can resurrect the old turn next to the
-  // streaming replacement. Derive the visible set from the active operation so
-  // the superseded turn stays hidden regardless of cache races — the streaming
-  // replacement is appended below as a ghost.
-  const messages = messagesVisibleDuringActiveOperation(allMessages, operation);
+  // `messages` is the server-computed active path (root -> active leaf), already
+  // linear and correct — sibling branches off the active path are excluded. No
+  // client-side truncation/superseding is needed: a regenerate/edit moves the
+  // active leaf server-side at create time, so the active path is the new branch
+  // immediately and the prior branch is simply not on it.
   const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages, currentQuestionMessageId, operation);
   // Resolve `parsedReply` once: prefer the caller's memoised value, fall back
   // to a single parse here if the caller did not supply one. The four call
@@ -81,97 +79,68 @@ export function buildPlannerTranscriptViewModel({
       message.role === "assistant" &&
       Boolean(message.question_payload) &&
       message.planning_message_id === activeQuestionId,
-    variantCount: message.variant_count,
-    currentVariantIndex: message.variant_index,
+    variantCount: message.branch_count,
+    currentVariantIndex: message.branch_index,
     activityRunId: message.role === "assistant" ? message.source_run_id : undefined,
   }));
 
-  // Show the regenerate replacement while it's live (even before text streams,
-  // so the target turn shows the thinking/feather instead of going briefly
-  // blank after the old answer is hidden — consistent with reply), and keep
-  // showing provisional output if a non-success terminal (cancelled/error) left
-  // partial text behind.
+  const sessionID = messages[messages.length - 1]?.planning_session_id ?? "";
+
+  // Regenerate streams a new assistant branch; show its ghost while live (even
+  // before text arrives, so the slot shows the thinking/feather), and keep
+  // provisional output if a non-success terminal left partial text behind.
   if (
     operation?.kind === "regenerate" &&
     operation.status !== "done" &&
     (!isPlannerOperationTerminal(operation.status) || operation.replyText.trim() !== "")
   ) {
-    const targetTurn = operation.targetTurnIndex ?? operation.turnIndex;
     const canonicalIds = new Set(messages.map((m) => m.planning_message_id));
-    if (targetTurn && operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.assistantCreatedAt) {
+    if (operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.assistantCreatedAt) {
       const parsed = reply ?? parseStreamingQuestion(operation.replyText);
-      items.push({
-        kind: "message",
-        key: `message-${operation.assistantMessageId}`,
-        message: {
-          planning_message_id: operation.assistantMessageId,
-          planning_session_id: messages[messages.length - 1]?.planning_session_id ?? "",
-          turn_index: targetTurn,
-          role: "assistant",
-          content_markdown: parsed.content,
-          source_run_id: activeOperationRunId,
-          created_at: operation.assistantCreatedAt,
-          question_payload: parsed.question ?? undefined,
-          variant_index: 0,
-          active: true,
-        },
-        resolvedAnswer: undefined,
-        isInteractive: false,
-        isStreaming: operation.status === "streaming" || operation.status === "pending",
-        contentMarkdown: parsed.content,
+      items.push(buildGhostMessage({
+        messageId: operation.assistantMessageId,
+        parentMessageId: operation.parentMessageId,
+        sessionID,
+        role: "assistant",
+        content: parsed.content,
+        question: parsed.question ?? undefined,
+        createdAt: operation.assistantCreatedAt,
+        streaming: operation.status === "streaming" || operation.status === "pending",
         activityRunId: activeOperationRunId,
-        liveActivityItems: operation.activityItems,
-      });
+        activityItems: operation.activityItems,
+      }));
     }
   }
 
   if (operation?.kind === "reply" && operation.status !== "done") {
     const canonicalIds = new Set(messages.map((m) => m.planning_message_id));
 
-    if (operation.pendingReply && operation.userMessageId && !canonicalIds.has(operation.userMessageId) && operation.turnIndex && operation.userCreatedAt) {
-      items.push({
-        kind: "message",
-        key: `message-${operation.userMessageId}`,
-        message: {
-          planning_message_id: operation.userMessageId,
-          planning_session_id: messages[messages.length - 1]?.planning_session_id ?? "",
-          turn_index: operation.turnIndex,
-          role: "user",
-          content_markdown: operation.pendingReply.contentMarkdown,
-          created_at: operation.userCreatedAt,
-          answer_payload: operation.pendingReply.answer,
-          variant_index: 0,
-          active: true,
-        },
-        resolvedAnswer: undefined,
-        isInteractive: false,
-      });
+    if (operation.pendingReply && operation.userMessageId && !canonicalIds.has(operation.userMessageId) && operation.userCreatedAt) {
+      items.push(buildGhostMessage({
+        messageId: operation.userMessageId,
+        parentMessageId: operation.parentMessageId,
+        sessionID,
+        role: "user",
+        content: operation.pendingReply.contentMarkdown,
+        answer: operation.pendingReply.answer,
+        createdAt: operation.userCreatedAt,
+      }));
     }
 
-    if (operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.turnIndex && operation.assistantCreatedAt) {
+    if (operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.assistantCreatedAt) {
       const parsed = reply ?? parseStreamingQuestion(operation.replyText);
-      items.push({
-        kind: "message",
-        key: `message-${operation.assistantMessageId}`,
-        message: {
-          planning_message_id: operation.assistantMessageId,
-          planning_session_id: messages[messages.length - 1]?.planning_session_id ?? "",
-          turn_index: operation.turnIndex,
-          role: "assistant",
-          content_markdown: parsed.content,
-          source_run_id: activeOperationRunId,
-          created_at: operation.assistantCreatedAt,
-          question_payload: parsed.question ?? undefined,
-          variant_index: 0,
-          active: true,
-        },
-        resolvedAnswer: undefined,
-        isInteractive: false,
-        isStreaming: operation.status === "streaming" || operation.status === "pending",
-        contentMarkdown: parsed.content,
+      items.push(buildGhostMessage({
+        messageId: operation.assistantMessageId,
+        parentMessageId: operation.userMessageId,
+        sessionID,
+        role: "assistant",
+        content: parsed.content,
+        question: parsed.question ?? undefined,
+        createdAt: operation.assistantCreatedAt,
+        streaming: operation.status === "streaming" || operation.status === "pending",
         activityRunId: activeOperationRunId,
-        liveActivityItems: operation.activityItems,
-      });
+        activityItems: operation.activityItems,
+      }));
     }
   }
 
@@ -184,35 +153,46 @@ export function buildPlannerTranscriptViewModel({
   };
 }
 
-// Messages an in-flight operation is about to supersede must be hidden from the
-// live transcript even though the server still returns them (it truncates at
-// finalize). Mirrors the optimistic filters in usePlannerSessionController so
-// the view stays correct after any refetch, and naturally reverts once the
-// operation is terminal (the server has truncated by then).
-function messagesVisibleDuringActiveOperation(
-  messages: PlanningMessage[],
-  operation: PlannerOperationState | null | undefined,
-): PlanningMessage[] {
-  if (!operation || isPlannerOperationTerminal(operation.status)) {
-    return messages;
-  }
-  if (operation.kind === "regenerate") {
-    const target = operation.targetTurnIndex ?? operation.turnIndex;
-    if (target == null) {
-      return messages;
-    }
-    // Regenerate replaces the assistant at the target turn and discards every
-    // turn below it; the user message at the target turn stays.
-    return messages.filter(
-      (m) => m.turn_index < target || (m.turn_index === target && m.role !== "assistant"),
-    );
-  }
-  if (operation.kind === "reply" && operation.forceNewSession && operation.turnIndex != null) {
-    // Editing a user message truncates from that turn onward.
-    const from = operation.turnIndex;
-    return messages.filter((m) => m.turn_index < from);
-  }
-  return messages;
+// buildGhostMessage produces an optimistic transcript item for an in-flight
+// operation (the user message before the messages refetch lands, and the
+// streaming assistant reply). It attaches under the given parent and defaults
+// to a lone branch; authoritative branch metadata arrives on the next refetch.
+function buildGhostMessage(args: {
+  messageId: string;
+  parentMessageId?: string;
+  sessionID: string;
+  role: PlanningMessage["role"];
+  content: string;
+  question?: QuestionPayload;
+  answer?: AnswerPayload;
+  createdAt: string;
+  streaming?: boolean;
+  activityRunId?: string;
+  activityItems?: PlannerActivityItem[];
+}): TranscriptItem {
+  return {
+    kind: "message",
+    key: `message-${args.messageId}`,
+    message: {
+      planning_message_id: args.messageId,
+      planning_session_id: args.sessionID,
+      parent_message_id: args.parentMessageId,
+      role: args.role,
+      content_markdown: args.content,
+      source_run_id: args.role === "assistant" ? args.activityRunId : undefined,
+      created_at: args.createdAt,
+      question_payload: args.question,
+      answer_payload: args.answer,
+      branch_index: 0,
+      branch_count: 1,
+    },
+    resolvedAnswer: undefined,
+    isInteractive: false,
+    isStreaming: args.streaming,
+    contentMarkdown: args.role === "assistant" ? args.content : undefined,
+    activityRunId: args.streaming ? args.activityRunId : undefined,
+    liveActivityItems: args.streaming ? args.activityItems : undefined,
+  };
 }
 
 function attachLiveOperationState(

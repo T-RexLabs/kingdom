@@ -507,29 +507,25 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	assistantMessage := state.AppendPlanningMessageRequest{
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
-		TurnIndex:           request.TurnIndex,
+		ParentMessageID:     request.UserMessageID,
 		Role:                state.PlanningMessageRoleAssistant,
 		ContentMarkdown:     turn.ContentMarkdown,
 		QuestionPayloadJSON: questionPayloadJSON,
 		AnswerPayloadJSON:   `{}`,
-		Active:              true,
 		CreatedAt:           request.AssistantCreatedAt,
 	}
 	messageCompletedPayload := planningMessagePayload(state.PlanningMessage{
 		PlanningMessageID:   assistantMessage.PlanningMessageID,
 		PlanningSessionID:   assistantMessage.PlanningSessionID,
-		TurnIndex:           assistantMessage.TurnIndex,
+		ParentMessageID:     &request.UserMessageID,
 		Role:                assistantMessage.Role,
 		ContentMarkdown:     assistantMessage.ContentMarkdown,
 		QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
 		AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-		VariantIndex:        0,
-		Active:              true,
 		CreatedAt:           assistantMessage.CreatedAt,
 	})
 	messageCompletedPayload = plannerMessagePayload(operation, messageCompletedPayload)
 	messageCompletedPayload["text"] = assistantMessage.ContentMarkdown
-	messageCompletedPayload["variant_count"] = 1
 	if autoTitleSession != nil {
 		messageCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
 	}
@@ -539,7 +535,6 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	runCompletedPayload := plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
-		"turn_index":          assistantMessage.TurnIndex,
 	})
 	if autoTitleSession != nil {
 		runCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
@@ -549,34 +544,22 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	now := r.deps.nowString()
+	// The user message was appended at create time; finalize appends the
+	// assistant under it and moves the active leaf onto the new reply.
 	finalizeReq := state.FinalizeOperationRequest{
-		Kind:                     state.FinalizeReply,
-		SessionID:                session.PlanningSessionID,
-		OperationID:              operation.OperationID,
-		LeaseOwner:               operation.LeaseOwner,
-		LeaseVersion:             operation.LeaseVersion,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		UpdatedAt:                now,
-		FinishedAt:               now,
-		AssistantMessage:         &assistantMessage,
-		CurrentQuestionMessageID: request.AssistantMessageID,
-		ResultRef:                request.AssistantMessageID,
-		ProviderSettlement:       providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:            terminalEvent,
-	}
-	if request.ForceNewSession {
-		finalizeReq.UserMessage = &state.AppendPlanningMessageRequest{
-			PlanningMessageID:   request.UserMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TurnIndex,
-			Role:                state.PlanningMessageRoleUser,
-			ContentMarkdown:     request.ContentMarkdown,
-			QuestionPayloadJSON: `{}`,
-			AnswerPayloadJSON:   firstNonEmpty(string(request.AnswerPayload), `{}`),
-			Active:              true,
-			CreatedAt:           request.UserCreatedAt,
-		}
-		finalizeReq.DeleteMessagesFromTurn = &request.TurnIndex
+		Kind:                state.FinalizeReply,
+		SessionID:           session.PlanningSessionID,
+		OperationID:         operation.OperationID,
+		LeaseOwner:          operation.LeaseOwner,
+		LeaseVersion:        operation.LeaseVersion,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		UpdatedAt:           now,
+		FinishedAt:          now,
+		AssistantMessage:    &assistantMessage,
+		ActiveLeafMessageID: request.AssistantMessageID,
+		ResultRef:           request.AssistantMessageID,
+		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		TerminalEvent:       terminalEvent,
 	}
 	if err := r.deps.store.FinalizeOperation(ctx, finalizeReq); err != nil {
 		return err
@@ -637,61 +620,54 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 
+	regenParentID := nilIfEmpty(request.ParentMessageID)
 	assistantMessage := state.AppendPlanningMessageRequest{
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
-		TurnIndex:           request.TargetTurnIndex,
+		ParentMessageID:     request.ParentMessageID,
 		Role:                state.PlanningMessageRoleAssistant,
 		ContentMarkdown:     turn.ContentMarkdown,
 		QuestionPayloadJSON: regenQuestionPayloadJSON,
 		AnswerPayloadJSON:   `{}`,
-		VariantIndex:        request.VariantIndex,
-		Active:              true,
 		CreatedAt:           request.AssistantCreatedAt,
 	}
 	messageCompletedPayload := planningMessagePayload(state.PlanningMessage{
 		PlanningMessageID:   assistantMessage.PlanningMessageID,
 		PlanningSessionID:   assistantMessage.PlanningSessionID,
-		TurnIndex:           assistantMessage.TurnIndex,
+		ParentMessageID:     regenParentID,
 		Role:                assistantMessage.Role,
 		ContentMarkdown:     assistantMessage.ContentMarkdown,
 		QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
 		AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-		VariantIndex:        assistantMessage.VariantIndex,
-		Active:              assistantMessage.Active,
 		CreatedAt:           assistantMessage.CreatedAt,
 	})
 	messageCompletedPayload = plannerMessagePayload(operation, messageCompletedPayload)
 	messageCompletedPayload["text"] = assistantMessage.ContentMarkdown
-	messageCompletedPayload["variant_count"] = request.VariantIndex + 1
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
-		"turn_index":          assistantMessage.TurnIndex,
 	}))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	now := r.deps.nowString()
 	if err := r.deps.store.FinalizeOperation(ctx, state.FinalizeOperationRequest{
-		Kind:                     state.FinalizeRegenerate,
-		SessionID:                session.PlanningSessionID,
-		OperationID:              operation.OperationID,
-		LeaseOwner:               operation.LeaseOwner,
-		LeaseVersion:             operation.LeaseVersion,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		UpdatedAt:                now,
-		FinishedAt:               now,
-		AssistantMessage:         &assistantMessage,
-		CurrentQuestionMessageID: request.AssistantMessageID,
-		DeleteMessagesAfterTurn:  &request.TargetTurnIndex,
-		DeactivateVariantsAtTurn: &request.TargetTurnIndex,
-		ResultRef:                request.AssistantMessageID,
-		ProviderSettlement:       providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:            terminalEvent,
+		Kind:                state.FinalizeRegenerate,
+		SessionID:           session.PlanningSessionID,
+		OperationID:         operation.OperationID,
+		LeaseOwner:          operation.LeaseOwner,
+		LeaseVersion:        operation.LeaseVersion,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		UpdatedAt:           now,
+		FinishedAt:          now,
+		AssistantMessage:    &assistantMessage,
+		ActiveLeafMessageID: request.AssistantMessageID,
+		ResultRef:           request.AssistantMessageID,
+		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		TerminalEvent:       terminalEvent,
 	}); err != nil {
 		return err
 	}
@@ -961,18 +937,16 @@ func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Conte
 		assistantMessage := state.AppendPlanningMessageRequest{
 			PlanningMessageID:   assistantMessageID,
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TurnIndex,
+			ParentMessageID:     request.UserMessageID,
 			Role:                state.PlanningMessageRoleAssistant,
 			ContentMarkdown:     cleanMarkdown,
 			QuestionPayloadJSON: questionPayloadJSON,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
 		}
 		runCompletedPayload := plannerMessagePayload(operation, map[string]any{
 			"result_ref":          assistantMessage.PlanningMessageID,
 			"planning_message_id": assistantMessage.PlanningMessageID,
-			"turn_index":          assistantMessage.TurnIndex,
 		})
 		messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
 		if err != nil {
@@ -990,27 +964,12 @@ func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Conte
 		}
 		base.Kind = state.FinalizeReply
 		base.AssistantMessage = &assistantMessage
-		base.CurrentQuestionMessageID = assistantMessage.PlanningMessageID
+		base.ActiveLeafMessageID = assistantMessage.PlanningMessageID
 		base.ResultRef = assistantMessage.PlanningMessageID
 		base.TerminalEvent = terminalEvent
-		if request.ForceNewSession {
-			userMessageID := strings.TrimSpace(request.UserMessageID)
-			if userMessageID == "" {
-				return state.FinalizeOperationRequest{}, fmt.Errorf("reply recovery requires user_message_id when force_new_session is set")
-			}
-			base.UserMessage = &state.AppendPlanningMessageRequest{
-				PlanningMessageID:   userMessageID,
-				PlanningSessionID:   session.PlanningSessionID,
-				TurnIndex:           request.TurnIndex,
-				Role:                state.PlanningMessageRoleUser,
-				ContentMarkdown:     request.ContentMarkdown,
-				QuestionPayloadJSON: `{}`,
-				AnswerPayloadJSON:   firstNonEmpty(string(request.AnswerPayload), `{}`),
-				Active:              true,
-				CreatedAt:           firstNonEmpty(strings.TrimSpace(request.UserCreatedAt), now),
-			}
-			base.DeleteMessagesFromTurn = &request.TurnIndex
-		}
+		// The user message was appended at create time, so recovery only needs to
+		// append the assistant reply under it (assistantMessage.ParentMessageID =
+		// request.UserMessageID).
 		return base, nil
 	case state.PlanningOperationTypeRegenerate:
 		assistantMessageID := strings.TrimSpace(request.AssistantMessageID)
@@ -1025,28 +984,23 @@ func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Conte
 		assistantMessage := state.AppendPlanningMessageRequest{
 			PlanningMessageID:   assistantMessageID,
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TargetTurnIndex,
+			ParentMessageID:     request.ParentMessageID,
 			Role:                state.PlanningMessageRoleAssistant,
 			ContentMarkdown:     cleanMarkdown,
 			QuestionPayloadJSON: questionPayloadJSON,
 			AnswerPayloadJSON:   `{}`,
-			VariantIndex:        request.VariantIndex,
-			Active:              true,
 			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
 		}
 		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 			"result_ref":          assistantMessage.PlanningMessageID,
 			"planning_message_id": assistantMessage.PlanningMessageID,
-			"turn_index":          assistantMessage.TurnIndex,
 		}))
 		if err != nil {
 			return state.FinalizeOperationRequest{}, err
 		}
 		base.Kind = state.FinalizeRegenerate
 		base.AssistantMessage = &assistantMessage
-		base.CurrentQuestionMessageID = assistantMessage.PlanningMessageID
-		base.DeleteMessagesAfterTurn = &request.TargetTurnIndex
-		base.DeactivateVariantsAtTurn = &request.TargetTurnIndex
+		base.ActiveLeafMessageID = assistantMessage.PlanningMessageID
 		base.ResultRef = assistantMessage.PlanningMessageID
 		base.TerminalEvent = terminalEvent
 		return base, nil
@@ -1869,16 +1823,25 @@ func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.Pl
 	return result
 }
 
+// nilIfEmpty returns a *string for a possibly-empty parent id (nil = root).
+func nilIfEmpty(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 func planningMessagePayload(message state.PlanningMessage) map[string]any {
 	payload := map[string]any{
 		"planning_message_id": message.PlanningMessageID,
 		"planning_session_id": message.PlanningSessionID,
-		"turn_index":          message.TurnIndex,
 		"role":                message.Role,
 		"content_markdown":    message.ContentMarkdown,
-		"variant_index":       message.VariantIndex,
-		"active":              message.Active,
 		"created_at":          message.CreatedAt,
+	}
+	if message.ParentMessageID != nil {
+		payload["parent_message_id"] = *message.ParentMessageID
 	}
 	if question := questionPayloadFromJSON(message.QuestionPayloadJSON); question != nil {
 		payload["question_payload"] = structuredQuestionPayload(question)
@@ -1896,8 +1859,8 @@ func streamingMessagePartPayload(operation state.PlanningOperation, request oper
 		if trimmed := strings.TrimSpace(request.AssistantMessageID); trimmed != "" {
 			payload["planning_message_id"] = trimmed
 		}
-		if request.TurnIndex > 0 {
-			payload["turn_index"] = request.TurnIndex
+		if trimmed := strings.TrimSpace(request.ParentMessageID); trimmed != "" {
+			payload["parent_message_id"] = trimmed
 		}
 		payload["role"] = state.PlanningMessageRoleAssistant
 		if trimmed := strings.TrimSpace(request.AssistantCreatedAt); trimmed != "" {

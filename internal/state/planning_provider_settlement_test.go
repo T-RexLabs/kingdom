@@ -1048,15 +1048,13 @@ func finalizePlanningSettlementTestReplySuccess(t *testing.T, store *PlanningSto
 		AssistantMessage: &AppendPlanningMessageRequest{
 			PlanningMessageID:   "msg_reply_success",
 			PlanningSessionID:   operation.PlanningSessionID,
-			TurnIndex:           1,
 			Role:                PlanningMessageRoleAssistant,
 			ContentMarkdown:     "Planner completed successfully.",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           "2026-04-21T16:02:05Z",
 		},
-		CurrentQuestionMessageID: "msg_reply_success",
+		ActiveLeafMessageID: "msg_reply_success",
 		ResultRef:                "msg_reply_success",
 	})
 	if err != nil {

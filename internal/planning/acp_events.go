@@ -39,8 +39,8 @@ func plannerRunCreatedRequestPayload(operationType state.PlanningOperationType, 
 		if trimmed := strings.TrimSpace(request.UserCreatedAt); trimmed != "" {
 			payload["user_created_at"] = trimmed
 		}
-		if request.TurnIndex > 0 {
-			payload["turn_index"] = request.TurnIndex
+		if trimmed := strings.TrimSpace(request.ParentMessageID); trimmed != "" {
+			payload["parent_message_id"] = trimmed
 		}
 		if trimmed := strings.TrimSpace(request.AssistantMessageID); trimmed != "" {
 			payload["assistant_message_id"] = trimmed
@@ -52,12 +52,11 @@ func plannerRunCreatedRequestPayload(operationType state.PlanningOperationType, 
 			payload["force_new_session"] = true
 		}
 	case state.PlanningOperationTypeRegenerate:
-		if request.TargetTurnIndex > 0 {
-			payload["target_turn_index"] = request.TargetTurnIndex
-			payload["turn_index"] = request.TargetTurnIndex
+		if trimmed := strings.TrimSpace(request.TargetMessageID); trimmed != "" {
+			payload["target_message_id"] = trimmed
 		}
-		if request.VariantIndex >= 0 {
-			payload["variant_index"] = request.VariantIndex
+		if trimmed := strings.TrimSpace(request.ParentMessageID); trimmed != "" {
+			payload["parent_message_id"] = trimmed
 		}
 		if trimmed := strings.TrimSpace(request.AssistantMessageID); trimmed != "" {
 			payload["assistant_message_id"] = trimmed

@@ -62,7 +62,7 @@ type PlanningSession struct {
 	TitleState               string
 	LifecycleState           PlanningSessionLifecycleState
 	ConversationState        PlanningSessionConversationState
-	CurrentQuestionMessageID *string
+	ActiveLeafMessageID      *string
 	CurrentOperationID       *string
 	CurrentTitleOperationID  *string
 	CurrentDraftID           *string
@@ -76,14 +76,20 @@ type PlanningSession struct {
 type PlanningMessage struct {
 	PlanningMessageID   string
 	PlanningSessionID   string
-	TurnIndex           int
+	ParentMessageID     *string
 	Role                PlanningMessageRole
 	ContentMarkdown     string
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
-	VariantIndex        int
-	Active              bool
 	CreatedAt           string
+}
+
+// PlanningMessageBranchInfo positions a message among its siblings (messages
+// sharing a parent, ordered by created_at). Derived, never stored; drives the
+// `‹ k/n ›` branch navigator wherever Count > 1.
+type PlanningMessageBranchInfo struct {
+	Index int
+	Count int
 }
 
 type PlanningMessagePage struct {
@@ -159,7 +165,7 @@ type CreatePlanningSessionRequest struct {
 	TitleState               string
 	LifecycleState           PlanningSessionLifecycleState
 	ConversationState        PlanningSessionConversationState
-	CurrentQuestionMessageID string
+	ActiveLeafMessageID      string
 	CurrentOperationID       string
 	CurrentTitleOperationID  string
 	CurrentDraftID           string
@@ -176,7 +182,7 @@ type UpdatePlanningSessionRequest struct {
 	TitleState               *string
 	LifecycleState           *PlanningSessionLifecycleState
 	ConversationState        *PlanningSessionConversationState
-	CurrentQuestionMessageID *string
+	ActiveLeafMessageID      *string
 	CurrentOperationID       *string
 	CurrentTitleOperationID  *string
 	CurrentDraftID           *string
@@ -188,13 +194,11 @@ type UpdatePlanningSessionRequest struct {
 type AppendPlanningMessageRequest struct {
 	PlanningMessageID   string
 	PlanningSessionID   string
-	TurnIndex           int
+	ParentMessageID     string
 	Role                PlanningMessageRole
 	ContentMarkdown     string
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
-	VariantIndex        int
-	Active              bool
 	CreatedAt           string
 }
 
@@ -280,7 +284,6 @@ type CreatePlanningSessionBundleRequest struct {
 
 type CreatePlanningReplyBundleRequest struct {
 	SessionID         string
-	TruncateFromTurn  *int
 	UserMessage       AppendPlanningMessageRequest
 	Operation         CreatePlanningOperationRequest
 	InitialEvent      *AppendPlanningOperationEventRequest
@@ -289,12 +292,15 @@ type CreatePlanningReplyBundleRequest struct {
 }
 
 type CreateRegenerateBundleRequest struct {
-	SessionID         string
-	TargetTurnIndex   int
-	Operation         CreatePlanningOperationRequest
-	InitialEvent      *AppendPlanningOperationEventRequest
-	ConversationState PlanningSessionConversationState
-	UpdatedAt         string
+	SessionID string
+	// ActiveLeafMessageID is the regenerate target's parent: the active leaf
+	// moves here for the duration of the run so the planner is prompted with the
+	// conversation up to the fork point (empty = the conversation root).
+	ActiveLeafMessageID string
+	Operation           CreatePlanningOperationRequest
+	InitialEvent        *AppendPlanningOperationEventRequest
+	ConversationState   PlanningSessionConversationState
+	UpdatedAt           string
 }
 
 type CreatePlanningGenerateTitleBundleRequest struct {
@@ -349,13 +355,11 @@ type FinalizeOperationRequest struct {
 	UpdatedAt         string
 	FinishedAt        string
 
-	// Reply / Regenerate
-	UserMessage              *AppendPlanningMessageRequest
-	AssistantMessage         *AppendPlanningMessageRequest
-	CurrentQuestionMessageID string
-	DeleteMessagesFromTurn   *int
-	DeleteMessagesAfterTurn  *int
-	DeactivateVariantsAtTurn *int
+	// Reply / Regenerate — append-only into the message tree; the active leaf
+	// pointer selects the newly produced branch.
+	UserMessage         *AppendPlanningMessageRequest
+	AssistantMessage    *AppendPlanningMessageRequest
+	ActiveLeafMessageID string
 
 	// Formalize
 	Draft          *CreatePlanningDraftRequest
@@ -454,6 +458,14 @@ type sqlExecutor interface {
 }
 
 type sqlQueryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// sqlQuerier is satisfied by both *sql.DB and *sql.Tx, so read/walk helpers can
+// run against the pool or inside a transaction.
+type sqlQuerier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
@@ -595,9 +607,6 @@ func validatePlanningMessageAppend(req AppendPlanningMessageRequest) error {
 	}
 	if strings.TrimSpace(req.PlanningSessionID) == "" {
 		return fmt.Errorf("planning session id is required")
-	}
-	if req.TurnIndex < 1 {
-		return fmt.Errorf("planning message turn index must be >= 1")
 	}
 	if !isValidPlanningMessageRole(req.Role) {
 		return fmt.Errorf("invalid planning message role: %q", req.Role)

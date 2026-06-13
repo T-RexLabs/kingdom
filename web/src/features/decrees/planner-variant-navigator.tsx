@@ -10,32 +10,30 @@ export function PlannerVariantNavigator({
 }: {
   sessionId: string;
   messageId: string;
+  // Zero-based branch_index of the active message among its siblings, and the
+  // total sibling (branch) count at this point in the conversation tree.
   currentVariantIndex: number;
   variantCount: number;
   onActivateVariant: (messageId: string) => void;
 }) {
   const { data } = useListMessageVariants(sessionId, messageId);
-  const variants = data?.items ?? [];
+  // Siblings are returned oldest-first, so branch_index is a direct array index.
+  const branches = data?.items ?? [];
 
   if (variantCount <= 1) return null;
 
-  const handlePrevious = () => {
-    const target = variants.find((v) => v.variant_index === currentVariantIndex - 1);
+  const switchTo = (index: number) => {
+    const target = branches[index];
     if (target) onActivateVariant(target.planning_message_id);
   };
 
-  const handleNext = () => {
-    const target = variants.find((v) => v.variant_index === currentVariantIndex + 1);
-    if (target) onActivateVariant(target.planning_message_id);
-  };
-
-  const variantsLoaded = variants.length > 0;
+  const variantsLoaded = branches.length > 0;
 
   return (
     <div className="flex items-center gap-1">
       <button
         type="button"
-        onClick={handlePrevious}
+        onClick={() => switchTo(currentVariantIndex - 1)}
         disabled={currentVariantIndex <= 0 || !variantsLoaded}
         className="flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-gold disabled:opacity-30 disabled:hover:text-foreground-subtle"
       >
@@ -46,7 +44,7 @@ export function PlannerVariantNavigator({
       </span>
       <button
         type="button"
-        onClick={handleNext}
+        onClick={() => switchTo(currentVariantIndex + 1)}
         disabled={currentVariantIndex >= variantCount - 1 || !variantsLoaded}
         className="flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-gold disabled:opacity-30 disabled:hover:text-foreground-subtle"
       >

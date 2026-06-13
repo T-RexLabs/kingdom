@@ -161,12 +161,9 @@ function assistantItem(id: string, content: string): TranscriptItem {
     message: {
       planning_message_id: id,
       planning_session_id: "session-1",
-      turn_index: 1,
       role: "assistant",
       content_markdown: content,
       created_at: "2026-04-22T10:00:00Z",
-      variant_index: 0,
-      active: true,
     },
     isInteractive: false,
   };
@@ -179,12 +176,9 @@ function userItem(id: string, content: string): TranscriptItem {
     message: {
       planning_message_id: id,
       planning_session_id: "session-1",
-      turn_index: 1,
       role: "user",
       content_markdown: content,
       created_at: "2026-04-22T10:00:00Z",
-      variant_index: 0,
-      active: true,
     },
     isInteractive: false,
   };

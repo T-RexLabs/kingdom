@@ -49,13 +49,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         isStreaming
         activityRunId="run-1"
@@ -84,13 +81,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "Final answer",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         activityRunId="run-1"
       />,
@@ -129,13 +123,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "Final answer",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         activityRunId="run-1"
       />,
@@ -154,13 +145,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         isStreaming
         liveActivityItems={[
@@ -194,13 +182,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "Here is the answer",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         activityRunId="run-1"
       >
@@ -220,13 +205,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         isStreaming
         liveActivityItems={[
@@ -248,13 +230,10 @@ describe("PlannerMessageCard", () => {
         message={{
           planning_message_id: "assistant-1",
           planning_session_id: "session-1",
-          turn_index: 1,
           role: "assistant",
           content_markdown: "",
           source_run_id: "run-1",
           created_at: "2026-06-12T10:00:00Z",
-          variant_index: 0,
-          active: true,
         }}
         isStreaming
         liveActivityItems={[

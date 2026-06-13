@@ -589,31 +589,40 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("planning_session_conversation_state_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bad', 'bad', 'custom', 'active', 'done', NULL, NULL, NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bad', 'bad', 'custom', 'active', 'done', NULL, NULL, NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for planning_sessions.conversation_state")
 		}
 	})
 
-	t.Run("planning_message_unique_turn_role", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_1', 'session', 'custom', 'active', 'ready', NULL, NULL, NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	t.Run("planning_message_tree_parent_fk_and_siblings", func(t *testing.T) {
+		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_1', 'session', 'custom', 'active', 'ready', NULL, NULL, NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert planning session seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_1', 'ps_1', 1, 'assistant', 'hello', '{}', '{}', '2026-03-01T12:01:00Z')`)
-		if err != nil {
-			t.Fatalf("insert planning message seed row: %v", err)
+		// A root message (NULL parent) is allowed.
+		if _, err := db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_root', 'ps_1', NULL, 'assistant', 'hello', '{}', '{}', '2026-03-01T12:01:00Z')`); err != nil {
+			t.Fatalf("insert root planning message: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, turn_index, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_2', 'ps_1', 1, 'assistant', 'dup', '{}', '{}', '2026-03-01T12:02:00Z')`)
-		if err == nil {
-			t.Fatal("expected unique constraint failure for planning_messages(planning_session_id, turn_index, role)")
+		// A non-existent parent must be rejected by the FK.
+		if _, err := db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_orphan', 'ps_1', 'pm_missing', 'user', 'x', '{}', '{}', '2026-03-01T12:01:30Z')`); err == nil {
+			t.Fatal("expected FOREIGN KEY failure for a non-existent parent_message_id")
+		}
+
+		// Two siblings under the same parent are explicitly allowed — branching
+		// is the core of the tree model.
+		if _, err := db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_child_a', 'ps_1', 'pm_root', 'user', 'a', '{}', '{}', '2026-03-01T12:02:00Z')`); err != nil {
+			t.Fatalf("insert first sibling: %v", err)
+		}
+		if _, err := db.Exec(`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_child_b', 'ps_1', 'pm_root', 'user', 'b', '{}', '{}', '2026-03-01T12:03:00Z')`); err != nil {
+			t.Fatalf("expected sibling branches to be allowed, got: %v", err)
 		}
 	})
 
 	t.Run("planning_operations_allow_bootstrap_context_alongside_interactive_operation", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, current_question_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bootstrap', 'session', 'custom', 'active', 'processing', NULL, 'po_reply_active', NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z')`)
+		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bootstrap', 'session', 'custom', 'active', 'processing', NULL, 'po_reply_active', NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z')`)
 		if err != nil {
 			t.Fatalf("insert planning session seed row: %v", err)
 		}
