@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func (s *PlanningStore) AppendMessage(ctx context.Context, req AppendPlanningMessageRequest) (PlanningMessage, error) {
@@ -188,7 +189,7 @@ func (s *PlanningStore) SetActiveBranch(ctx context.Context, planningSessionID, 
 	if err := updatePlanningSession(ctx, tx, UpdatePlanningSessionRequest{
 		PlanningSessionID:   trimmedSession,
 		ActiveLeafMessageID: stringPtr(leafID),
-		UpdatedAt:           target.CreatedAt,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339),
 	}); err != nil {
 		return PlanningMessage{}, rollbackPlanningTx(tx, "set active branch", fmt.Errorf("update session after branch switch: %w", err))
 	}

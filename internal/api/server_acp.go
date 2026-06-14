@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -201,10 +200,8 @@ func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	liveSignals, unsubscribeLive := s.planningService.SubscribeLiveOperationEvents(operation.OperationID)
 	events, err := s.planningService.ListOperationEventsAfterEventID(r.Context(), operation.OperationID, afterEventID)
 	if err != nil {
-		unsubscribeLive()
 		if errors.Is(err, state.ErrPlanningOperationEventNotFound) {
 			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "invalid Last-Event-ID header", "api.stream_acp_run_events", nil)
 			return
@@ -213,7 +210,7 @@ func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.planningService.ObserveOperationEventReplay(afterEventID)
-	s.writePlanningOperationEvents(w, r, operation.OperationID, afterEventID, events, liveSignals, unsubscribeLive)
+	s.writePlanningOperationEvents(w, r, operation.OperationID, afterEventID, events)
 }
 
 func (s *Server) handleGetAcpRunActivity(w http.ResponseWriter, r *http.Request) {
@@ -244,12 +241,6 @@ func (s *Server) handleGetAcpRunActivity(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	items := acpRunActivityItemsFromEvents(storedEvents)
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].OccurredAt.Equal(items[j].OccurredAt) {
-			return items[i].Id < items[j].Id
-		}
-		return items[i].OccurredAt.Before(items[j].OccurredAt)
-	})
 	writeJSON(w, http.StatusOK, gen.AcpRunActivityResponse{Items: dedupeAcpRunActivityItems(items)})
 }
 
@@ -277,6 +268,9 @@ func acpRunFromOperation(operation state.PlanningOperation) gen.AcpRun {
 	}
 	if value := optionalTrimmedString(operation.Error); value != nil {
 		result.Error = value
+	}
+	if trimmed := strings.TrimSpace(operation.ObservedOutputText); trimmed != "" {
+		result.OutputText = &trimmed
 	}
 	if value := optionalTrimmedString(operation.StartedAt); value != nil {
 		startedAt := mustParseRFC3339(*value)
@@ -390,7 +384,10 @@ func dedupeAcpRunActivityItems(items []gen.AcpRunActivityItem) []gen.AcpRunActiv
 	result := make([]gen.AcpRunActivityItem, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		key := strings.Join([]string{string(item.Kind), item.Label, nullableStringValue(item.Detail), nullableStringValue(item.Input), nullableStringValue(item.Output), item.OccurredAt.Format(time.RFC3339)}, "\x00")
+		key := strings.TrimSpace(item.Id)
+		if key == "" {
+			key = strings.Join([]string{string(item.Kind), item.Label, nullableStringValue(item.Detail), nullableStringValue(item.Input), nullableStringValue(item.Output), item.OccurredAt.Format(time.RFC3339)}, "\x00")
+		}
 		if _, exists := seen[key]; exists {
 			continue
 		}

@@ -115,6 +115,14 @@ type streamingMockAgent struct {
 	err      error
 }
 
+type rotatingSessionPlanner struct {
+	mockAgent
+	mu                     sync.Mutex
+	sessions               []string
+	continueCalls          int
+	continueProviderInputs []string
+}
+
 type parallelAutoTitlePlanner struct {
 	mockAgent
 	release            chan struct{}
@@ -188,6 +196,43 @@ func (m *streamingMockAgent) FormalizePlanStream(_ context.Context, input AgentC
 
 func (m *streamingMockAgent) GenerateTitle(_ context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
 	return (&mockAgent{}).GenerateTitle(context.Background(), input, onChunk)
+}
+
+func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+	p.mu.Lock()
+	call := p.continueCalls
+	p.continueCalls++
+	p.continueProviderInputs = append(p.continueProviderInputs, strings.TrimSpace(providerSessionIDForInvocation(input.ProviderInvocation)))
+	providerSessionID := ""
+	if call < len(p.sessions) {
+		providerSessionID = strings.TrimSpace(p.sessions[call])
+	}
+	p.mu.Unlock()
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		input.ProviderInvocation.OnProviderSession(providerSessionID)
+	}
+	if onChunk != nil {
+		onChunk(defaultPlanningServiceTestScript.ContinueContent)
+	}
+	return AgentTurn{
+		ContentMarkdown: defaultPlanningServiceTestScript.ContinueContent,
+		Question: &StructuredQuestion{
+			Prompt: defaultPlanningServiceTestScript.ContinueQuestion.Prompt,
+			Type:   defaultPlanningServiceTestScript.ContinueQuestion.Type,
+		},
+		Metadata: ProviderExecutionMetadata{
+			FinalText:                       defaultPlanningServiceTestScript.ContinueContent,
+			ProviderSessionID:               providerSessionID,
+			OutcomeState:                    "success",
+			CompletionStructuredPayloadJSON: "{}",
+		},
+	}, nil
+}
+
+func (p *rotatingSessionPlanner) continueProviderSessionIDs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.continueProviderInputs...)
 }
 
 func newParallelAutoTitlePlanner() *parallelAutoTitlePlanner {
@@ -3176,6 +3221,73 @@ func TestServiceRegenerateRejectsUserTarget(t *testing.T) {
 	})
 	if !errors.Is(err, ErrMessageNotRegeneratable) {
 		t.Fatalf("expected ErrMessageNotRegeneratable, got %v", err)
+	}
+}
+
+func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	planner := &rotatingSessionPlanner{sessions: []string{"provider-session-1", "provider-session-2", "provider-session-2"}}
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, planner, projectRoot, func() string { return "2026-06-14T12:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "First reply",
+		AnswerPayloadJSON: `{"text":"First reply"}`,
+	})
+	if err != nil {
+		t.Fatalf("create first reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, firstReply.Operation.OperationID)
+
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 3 {
+		t.Fatalf("expected bootstrap + reply branch, got %+v", messages)
+	}
+	targetMessageID := messages[len(messages)-1].PlanningMessageID
+
+	regenerate, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:            state.PlanningOperationTypeRegenerate,
+		TargetMessageID: targetMessageID,
+	})
+	if err != nil {
+		t.Fatalf("create regenerate: %v", err)
+	}
+	awaitOperationTerminal(t, store, regenerate.Operation.OperationID)
+
+	secondReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Follow-up reply",
+		AnswerPayloadJSON: `{"text":"Follow-up reply"}`,
+	})
+	if err != nil {
+		t.Fatalf("create second reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, secondReply.Operation.OperationID)
+
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(context.Background(), planningLogicalSessionID(session.PlanningSessionID, state.PlanningOperationTypeReply))
+	if err != nil || !found {
+		t.Fatalf("get latest reusable invocation: found=%v err=%v", found, err)
+	}
+	if invocation.ProviderSessionID != "provider-session-2" {
+		t.Fatalf("expected second reply to reuse regenerated provider session, got %+v", invocation)
+	}
+	if got := planner.continueProviderSessionIDs(); len(got) != 3 || got[0] != "" || got[1] != "" || got[2] != "provider-session-2" {
+		t.Fatalf("expected provider session reuse sequence [empty empty provider-session-2], got %v", got)
 	}
 }
 

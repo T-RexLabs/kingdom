@@ -453,7 +453,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, !request.ForceNewSession)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !request.ForceNewSession))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -582,7 +582,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, true)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -689,7 +689,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, true)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -781,7 +781,7 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, true)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -1108,10 +1108,7 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 		if len(payload) == 0 {
 			return
 		}
-		event, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, payload)
-		if err == nil {
-			publishCanonicalLivePlannerEvent(r.deps.liveBroker, operation.OperationID, event)
-		}
+		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, payload)
 	}
 }
 
@@ -1198,7 +1195,7 @@ func (r *operationRunner) reconcileProviderSessionActivity(ctx context.Context, 
 	if len(items) == 0 {
 		return nil
 	}
-	storedEvents, err := r.deps.store.ListOperationEventsAfterEventIDPage(ctx, operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
+	storedEvents, err := listAllPlanningOperationEvents(ctx, r.deps.store, operation.OperationID)
 	if err != nil {
 		return err
 	}
@@ -1403,18 +1400,37 @@ func persistObservedPlanningProviderSession(invocation *ProviderInvocationContex
 	invocation.ProviderSessionID = trimmedProviderSessionID
 }
 
-func publishCanonicalLivePlannerEvent(broker *liveOperationEventBroker, operationID string, event state.PlanningOperationEvent) {
-	if broker == nil || strings.TrimSpace(operationID) == "" {
-		return
+func providerSessionIDForPlanningInvocation(ctx context.Context, store *state.PlanningStore, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) string {
+	if !reuseExistingProviderSession || store == nil {
+		return ""
 	}
-	if strings.TrimSpace(event.EventID) == "" || strings.TrimSpace(event.EventType) == "" || strings.TrimSpace(event.PayloadJSON) == "" {
-		return
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, planningLogicalSessionID(session.PlanningSessionID, operation.Type))
+	if err != nil || !found {
+		return ""
 	}
-	broker.Publish(operationID, LiveOperationEvent{
-		EventID:   strings.TrimSpace(event.EventID),
-		EventType: strings.TrimSpace(event.EventType),
-		Payload:   strings.TrimSpace(event.PayloadJSON),
-	})
+	return strings.TrimSpace(invocation.ProviderSessionID)
+}
+
+func listAllPlanningOperationEvents(ctx context.Context, store *state.PlanningStore, operationID string) ([]state.PlanningOperationEvent, error) {
+	if store == nil {
+		return nil, fmt.Errorf("planning store is required")
+	}
+	all := make([]state.PlanningOperationEvent, 0)
+	cursor := ""
+	for {
+		page, err := store.ListOperationEventsAfterEventIDPage(ctx, operationID, cursor, state.DefaultPlanningOperationEventListLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return all, nil
+		}
+		all = append(all, page...)
+		if len(page) < state.DefaultPlanningOperationEventListLimit {
+			return all, nil
+		}
+		cursor = page[len(page)-1].EventID
+	}
 }
 
 // buildTerminalEventFromCursor uses the supplied cursor when available

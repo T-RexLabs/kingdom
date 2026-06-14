@@ -14,7 +14,6 @@ import (
 
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
-	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
@@ -173,7 +172,7 @@ func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
 	}
 }
 
-func TestWritePlanningOperationEventsIncludesLiveEventID(t *testing.T) {
+func TestWritePlanningOperationEventsEmitsInitialDurableEvents(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -198,34 +197,38 @@ func TestWritePlanningOperationEventsIncludesLiveEventID(t *testing.T) {
 		OperationID:        "op_live",
 		PlanningSessionID:  "ps_live",
 		Type:               state.PlanningOperationTypeReply,
-		Status:             state.PlanningOperationStatusRunning,
+		Status:             state.PlanningOperationStatusSucceeded,
 		RequestPayloadJSON: `{}`,
 		CreatedAt:          "2026-06-12T10:00:01Z",
 		StartedAt:          "2026-06-12T10:00:01Z",
+		FinishedAt:         "2026-06-12T10:00:06Z",
 	}); err != nil {
 		t.Fatalf("create live operation: %v", err)
 	}
-	liveSignals := make(chan planning.LiveOperationEvent, 1)
-	liveSignals <- planning.LiveOperationEvent{
-		EventID:   "op_live:5",
-		EventType: acp.GenericEventType,
-		Payload:   `{"kind":"kingdom.tool","label":"Fetched https://example.com"}`,
+	if _, err := store.AppendOperationEvent(ctx, state.AppendPlanningOperationEventRequest{
+		EventID:     "op_live:5",
+		OperationID: "op_live",
+		Seq:         5,
+		EventType:   acp.GenericEventType,
+		PayloadJSON: `{"kind":"kingdom.tool","label":"Fetched https://example.com"}`,
+		CreatedAt:   "2026-06-12T10:00:05Z",
+	}); err != nil {
+		t.Fatalf("append durable event: %v", err)
 	}
-	close(liveSignals)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_live/events", nil)
 	res := httptest.NewRecorder()
-	server.writePlanningOperationEvents(res, req, "op_live", "", nil, liveSignals, func() {})
+	server.writePlanningOperationEvents(res, req, "op_live", "", nil)
 	body := res.Body.String()
 	if !strings.Contains(body, "id: op_live:5\n") {
-		t.Fatalf("expected live SSE event id to be emitted, got %q", body)
+		t.Fatalf("expected durable SSE event id to be emitted, got %q", body)
 	}
 	if !strings.Contains(body, "event: generic\n") {
-		t.Fatalf("expected live SSE event type to be emitted, got %q", body)
+		t.Fatalf("expected durable SSE event type to be emitted, got %q", body)
 	}
 }
 
-func TestWritePlanningOperationEventsDoesNotReplayPersistedLiveEvent(t *testing.T) {
+func TestWritePlanningOperationEventsDoesNotReplayPersistedDurableEvent(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -253,10 +256,11 @@ func TestWritePlanningOperationEventsDoesNotReplayPersistedLiveEvent(t *testing.
 		OperationID:        "op_live_replay",
 		PlanningSessionID:  "ps_live_replay",
 		Type:               state.PlanningOperationTypeReply,
-		Status:             state.PlanningOperationStatusRunning,
+		Status:             state.PlanningOperationStatusSucceeded,
 		RequestPayloadJSON: `{}`,
 		CreatedAt:          "2026-06-12T11:00:01Z",
 		StartedAt:          "2026-06-12T11:00:01Z",
+		FinishedAt:         "2026-06-12T11:00:06Z",
 	}); err != nil {
 		t.Fatalf("create live operation: %v", err)
 	}
@@ -271,20 +275,69 @@ func TestWritePlanningOperationEventsDoesNotReplayPersistedLiveEvent(t *testing.
 		t.Fatalf("append persisted live event: %v", err)
 	}
 
-	liveSignals := make(chan planning.LiveOperationEvent, 1)
-	liveSignals <- planning.LiveOperationEvent{
-		EventID:   "op_live_replay:5",
-		EventType: acp.GenericEventType,
-		Payload:   `{"kind":"kingdom.tool","label":"Fetched https://example.com"}`,
-	}
-	close(liveSignals)
-
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_live_replay/events", nil)
 	res := httptest.NewRecorder()
-	server.writePlanningOperationEvents(res, req, "op_live_replay", "", nil, liveSignals, func() {})
+	server.writePlanningOperationEvents(res, req, "op_live_replay", "", nil)
 	body := res.Body.String()
 	if count := strings.Count(body, "id: op_live_replay:5\n"); count != 1 {
-		t.Fatalf("expected persisted live event to be emitted once, got %d copies in %q", count, body)
+		t.Fatalf("expected persisted durable event to be emitted once, got %d copies in %q", count, body)
+	}
+}
+
+func TestWritePlanningOperationEventsReplaysOnlyEventsAfterLastEventID(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	server := handler.(*Server)
+	store := state.NewPlanningStore(db)
+	ctx := t.Context()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_live_resume",
+		Title:              "live resume",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateProcessing,
+		ProjectRoot:        projectRoot,
+		ModelSelectionJSON: `{"model":"gpt-5.4"}`,
+		CreatedAt:          "2026-06-12T11:00:00Z",
+		UpdatedAt:          "2026-06-12T11:00:00Z",
+	}); err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID:        "op_live_resume",
+		PlanningSessionID:  "ps_live_resume",
+		Type:               state.PlanningOperationTypeReply,
+		Status:             state.PlanningOperationStatusSucceeded,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-06-12T11:00:01Z",
+		StartedAt:          "2026-06-12T11:00:01Z",
+		FinishedAt:         "2026-06-12T11:00:09Z",
+	}); err != nil {
+		t.Fatalf("create live operation: %v", err)
+	}
+	for _, event := range []state.AppendPlanningOperationEventRequest{
+		{EventID: "op_live_resume:7", OperationID: "op_live_resume", Seq: 7, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.tool","label":"Fetched A"}`, CreatedAt: "2026-06-12T11:00:07Z"},
+		{EventID: "op_live_resume:8", OperationID: "op_live_resume", Seq: 8, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.tool","label":"Fetched B"}`, CreatedAt: "2026-06-12T11:00:08Z"},
+	} {
+		if _, err := store.AppendOperationEvent(ctx, event); err != nil {
+			t.Fatalf("append durable event %s: %v", event.EventID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_live_resume/events", nil)
+	res := httptest.NewRecorder()
+	server.writePlanningOperationEvents(res, req, "op_live_resume", "op_live_resume:7", nil)
+	body := res.Body.String()
+	if strings.Contains(body, "id: op_live_resume:7\n") {
+		t.Fatalf("expected resume to omit already-seen event 7, got %q", body)
+	}
+	if count := strings.Count(body, "id: op_live_resume:8\n"); count != 1 {
+		t.Fatalf("expected resumed stream to emit event 8 once, got %d copies in %q", count, body)
 	}
 }
 
@@ -316,7 +369,7 @@ func TestAcpRunLookupNormalizesLegacyPlannerRunIDs(t *testing.T) {
 		t.Fatalf("decode planning session detail: %v", err)
 	}
 	if session.CurrentRunId == nil || session.CurrentRunId.String() != legacyRunID {
-		t.Fatalf("expected normalized current_run_id %q, got %+v", legacyRunID, session.CurrentRunId)
+		t.Fatalf("expected live normalized current_run_id %q, got %+v", legacyRunID, session.CurrentRunId)
 	}
 
 	runRes := performJSONRequest(t, handler, requestSpec{
@@ -343,6 +396,55 @@ func TestAcpRunLookupNormalizesLegacyPlannerRunIDs(t *testing.T) {
 	}
 	if operation.AcpRunID != legacyRunID {
 		t.Fatalf("expected stored acp_run_id normalized to %q, got %q", legacyRunID, operation.AcpRunID)
+	}
+
+	mustExecSQL(t, db, `UPDATE planning_operations SET status = 'cancelled', finished_at = '2026-04-21T17:10:09Z' WHERE operation_id = 'po_legacy_acp'`)
+
+	terminalSessionRes := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/planning-sessions/ps_legacy_acp",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if terminalSessionRes.Code != http.StatusOK {
+		t.Fatalf("expected terminal session 200, got %d (%s)", terminalSessionRes.Code, terminalSessionRes.Body.String())
+	}
+	var terminalSession gen.PlanningSessionDetail
+	if err := json.Unmarshal(terminalSessionRes.Body.Bytes(), &terminalSession); err != nil {
+		t.Fatalf("decode terminal session detail: %v", err)
+	}
+	if terminalSession.CurrentRunId != nil {
+		t.Fatalf("expected terminal current_run_id to be hidden, got %+v", terminalSession.CurrentRunId)
+	}
+}
+
+func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_title_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_run_output', 'Run Output', 'custom', 'active', 'ready', NULL, 'po_run_output', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:20:00Z', '2026-04-21T17:20:00Z')`, projectRoot)
+	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_run_output', ?, 'ps_run_output', 'formalize', 'failed', '{}', '', NULL, 0, NULL, NULL, NULL, 'Partial decree body', 'formalize failed', NULL, NULL, '2026-04-21T17:20:01Z', '2026-04-21T17:20:01Z', '2026-04-21T17:20:09Z')`, acp.PlannerRunID("po_run_output"))
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/acp/runs/" + acp.PlannerRunID("po_run_output"),
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected acp run 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode acp run: %v", err)
+	}
+	if run.OutputText == nil || *run.OutputText != "Partial decree body" {
+		t.Fatalf("expected output_text to expose persisted terminal text, got %+v", run.OutputText)
 	}
 }
 

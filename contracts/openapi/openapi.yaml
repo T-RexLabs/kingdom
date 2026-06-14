@@ -2715,6 +2715,7 @@ components:
         status: in-progress
         created_at: "2026-04-30T12:03:00Z"
         started_at: "2026-04-30T12:03:01Z"
+        output_text: Partial streamed planner output
       type: object
       additionalProperties: false
       required: [run_id, session_id, planning_session_id, agent_name, status, created_at]
@@ -2735,6 +2736,8 @@ components:
           type: string
           enum: [created, in-progress, awaiting, completed, failed, cancelled]
         error:
+          type: string
+        output_text:
           type: string
         created_at:
           type: string

@@ -50,7 +50,6 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 	clock := clockFunc(nowRFC3339)
 	ids := idFunc(idGenerator)
 	broker := newOperationEventBroker()
-	liveBroker := newLiveOperationEventBroker()
 	metrics := &plannerMetrics{}
 	shared := runtimeDeps{
 		store:       store,
@@ -60,7 +59,6 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 		projectRoot: projectRoot,
 		leaseOwner:  plannerLeaseOwner(),
 		broker:      broker,
-		liveBroker:  liveBroker,
 		metrics:     metrics,
 	}
 	// One service-owned context drives both the recovery loop and every
@@ -310,15 +308,6 @@ func (s *Service) SubscribeOperationEvents(operationID string) (<-chan struct{},
 		return ch, func() {}
 	}
 	return s.events.SubscribeOperationEvents(operationID)
-}
-
-func (s *Service) SubscribeLiveOperationEvents(operationID string) (<-chan LiveOperationEvent, func()) {
-	if s == nil || s.events == nil {
-		ch := make(chan LiveOperationEvent)
-		close(ch)
-		return ch, func() {}
-	}
-	return s.events.SubscribeLiveOperationEvents(operationID)
 }
 
 func (s *Service) RecoverOperations(ctx context.Context) error {

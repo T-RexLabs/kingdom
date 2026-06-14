@@ -43,15 +43,6 @@ func (s *operationEventService) SubscribeOperationEvents(operationID string) (<-
 	return s.deps.broker.Subscribe(operationID)
 }
 
-func (s *operationEventService) SubscribeLiveOperationEvents(operationID string) (<-chan LiveOperationEvent, func()) {
-	if s == nil || s.deps.liveBroker == nil {
-		ch := make(chan LiveOperationEvent)
-		close(ch)
-		return ch, func() {}
-	}
-	return s.deps.liveBroker.Subscribe(operationID)
-}
-
 func (s *operationEventService) observeReplay(afterEventID string) {
 	if s == nil || s.deps.metrics == nil {
 		return

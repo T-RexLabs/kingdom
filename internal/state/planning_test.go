@@ -62,6 +62,107 @@ func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	}
 }
 
+func TestSetActiveBranchRefreshesSessionRecency(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_old_branch",
+		Title:              "older branch session",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-21T16:00:00Z",
+		UpdatedAt:          "2026-04-21T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("create older session: %v", err)
+	}
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_recent",
+		Title:              "recent session",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-21T16:10:00Z",
+		UpdatedAt:          "2026-04-21T16:10:00Z",
+	}); err != nil {
+		t.Fatalf("create recent session: %v", err)
+	}
+
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_root_old",
+		PlanningSessionID:   "ps_old_branch",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "opening",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-21T16:00:05Z",
+	}); err != nil {
+		t.Fatalf("append root: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_branch_old",
+		PlanningSessionID:   "ps_old_branch",
+		ParentMessageID:     "pm_root_old",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "older branch",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{"text":"older branch"}`,
+		CreatedAt:           "2026-04-21T16:00:06Z",
+	}); err != nil {
+		t.Fatalf("append old branch: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_branch_newer",
+		PlanningSessionID:   "ps_old_branch",
+		ParentMessageID:     "pm_root_old",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "newer branch",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{"text":"newer branch"}`,
+		CreatedAt:           "2026-04-21T16:00:07Z",
+	}); err != nil {
+		t.Fatalf("append newer branch: %v", err)
+	}
+
+	before, err := store.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("list sessions before activation: %v", err)
+	}
+	if len(before) != 2 || before[0].PlanningSessionID != "ps_recent" {
+		t.Fatalf("expected recent session first before activation, got %+v", before)
+	}
+
+	if _, err := store.SetActiveBranch(ctx, "ps_old_branch", "pm_branch_old"); err != nil {
+		t.Fatalf("activate older branch: %v", err)
+	}
+
+	after, err := store.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("list sessions after activation: %v", err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("expected 2 sessions after activation, got %d", len(after))
+	}
+	if after[0].PlanningSessionID != "ps_old_branch" {
+		t.Fatalf("expected activated session to become most recent, got %+v", after)
+	}
+	if after[0].UpdatedAt <= "2026-04-21T16:10:00Z" {
+		t.Fatalf("expected activated session updated_at to move forward, got %q", after[0].UpdatedAt)
+	}
+	if after[0].ActiveLeafMessageID == nil || *after[0].ActiveLeafMessageID != "pm_branch_old" {
+		t.Fatalf("expected active leaf to move to selected branch, got %+v", after[0].ActiveLeafMessageID)
+	}
+}
+
 func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	t.Parallel()
 

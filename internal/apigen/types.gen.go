@@ -557,6 +557,7 @@ type AcpRun struct {
 	CreatedAt         time.Time          `json:"created_at"`
 	Error             *string            `json:"error,omitempty"`
 	FinishedAt        *time.Time         `json:"finished_at,omitempty"`
+	OutputText        *string            `json:"output_text,omitempty"`
 	PlanningSessionId string             `json:"planning_session_id"`
 	RunId             openapi_types.UUID `json:"run_id"`
 	SessionId         openapi_types.UUID `json:"session_id"`

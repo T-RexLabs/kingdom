@@ -21,7 +21,6 @@ type runtimeDeps struct {
 	projectRoot string
 	leaseOwner  string
 	broker      *operationEventBroker
-	liveBroker  *liveOperationEventBroker
 	metrics     *plannerMetrics
 }
 

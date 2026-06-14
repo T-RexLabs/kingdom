@@ -91,7 +91,12 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 	}
 	response := gen.PlanningSessionListResponse{Items: make([]gen.PlanningSessionSummary, 0, len(items))}
 	for _, item := range items {
-		response.Items = append(response.Items, planningSessionSummaryFromState(item))
+		presentedRuns, resolveErr := s.presentPlanningSessionRuns(r.Context(), item)
+		if resolveErr != nil {
+			s.writeInternalError(w, "evaluate planning session run state failed")
+			return
+		}
+		response.Items = append(response.Items, planningSessionSummaryFromState(item, presentedRuns))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -429,7 +434,35 @@ func (s *Server) presentPlanningSessionDetail(ctx context.Context, session state
 	if err != nil {
 		return gen.PlanningSessionDetail{}, err
 	}
-	return planningSessionDetailFromState(session, autoTitleEligible), nil
+	presentedRuns, err := s.presentPlanningSessionRuns(ctx, session)
+	if err != nil {
+		return gen.PlanningSessionDetail{}, err
+	}
+	return planningSessionDetailFromState(session, autoTitleEligible, presentedRuns), nil
+}
+
+func (s *Server) presentPlanningSessionRuns(ctx context.Context, session state.PlanningSession) (planningSessionPresentedRuns, error) {
+	var interactiveOperation *state.PlanningOperation
+	if session.CurrentOperationID != nil {
+		operation, ok, err := s.planningStore.GetOperation(ctx, *session.CurrentOperationID)
+		if err != nil {
+			return planningSessionPresentedRuns{}, err
+		}
+		if ok {
+			interactiveOperation = &operation
+		}
+	}
+	var titleOperation *state.PlanningOperation
+	if session.CurrentTitleOperationID != nil {
+		operation, ok, err := s.planningStore.GetOperation(ctx, *session.CurrentTitleOperationID)
+		if err != nil {
+			return planningSessionPresentedRuns{}, err
+		}
+		if ok {
+			titleOperation = &operation
+		}
+	}
+	return resolvePresentedPlanningSessionRuns(session, interactiveOperation, titleOperation), nil
 }
 
 func (s *Server) encodePlanningMessagesCursor(sessionID string, before int) string {

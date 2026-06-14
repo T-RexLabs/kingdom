@@ -1,9 +1,11 @@
 package planning
 
 import (
+	"context"
+	"fmt"
 	"testing"
-	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -94,29 +96,70 @@ func TestPlannerActivityIDFromStoredEventReadsProviderPartID(t *testing.T) {
 	}
 }
 
-func TestPublishCanonicalLivePlannerEventCarriesEventID(t *testing.T) {
-	broker := newLiveOperationEventBroker()
-	ch, unsubscribe := broker.Subscribe("op_1")
-	defer unsubscribe()
+func TestListAllPlanningOperationEventsReadsPastFirstPage(t *testing.T) {
+	t.Parallel()
 
-	publishCanonicalLivePlannerEvent(broker, "op_1", state.PlanningOperationEvent{
-		EventID:     "op_1:12",
-		OperationID: "op_1",
-		Seq:         12,
-		EventType:   "generic",
-		PayloadJSON: `{"kind":"kingdom.tool","label":"Fetched https://example.com"}`,
-		CreatedAt:   "2026-06-12T13:52:21Z",
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	ctx := context.Background()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_reconcile_pages",
+		Title:              "reconcile pages",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateProcessing,
+		ProjectRoot:        t.TempDir(),
+		ModelSelectionJSON: `{"model":"gpt-5.4"}`,
+		CreatedAt:          "2026-06-14T12:00:00Z",
+		UpdatedAt:          "2026-06-14T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	operation, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID:        "op_reconcile_pages",
+		AcpRunID:           acp.PlannerRunID("op_reconcile_pages"),
+		PlanningSessionID:  "ps_reconcile_pages",
+		Type:               state.PlanningOperationTypeReply,
+		Status:             state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-06-14T12:00:01Z",
+		StartedAt:          "2026-06-14T12:00:01Z",
 	})
+	if err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	for seq := 1; seq <= state.DefaultPlanningOperationEventListLimit; seq++ {
+		if _, err := store.AppendOperationEvent(ctx, state.AppendPlanningOperationEventRequest{
+			EventID:     fmt.Sprintf("op_reconcile_pages:%d", seq),
+			OperationID: "op_reconcile_pages",
+			Seq:         seq,
+			EventType:   acp.MessagePartEventType,
+			PayloadJSON: fmt.Sprintf(`{"text":"chunk-%d"}`, seq),
+			CreatedAt:   "2026-06-14T12:00:02Z",
+		}); err != nil {
+			t.Fatalf("append message part %d: %v", seq, err)
+		}
+	}
+	payload := plannerActivityPayload(operation, "activity_101", ProviderActivity{Kind: "tool", ToolName: "webfetch", ToolStatus: "completed", ToolTitle: "https://example.com"})
+	if _, err := store.AppendOperationEvent(ctx, state.AppendPlanningOperationEventRequest{
+		EventID:     fmt.Sprintf("op_reconcile_pages:%d", state.DefaultPlanningOperationEventListLimit+1),
+		OperationID: "op_reconcile_pages",
+		Seq:         state.DefaultPlanningOperationEventListLimit + 1,
+		EventType:   acp.GenericEventType,
+		PayloadJSON: mustJSON(payload),
+		CreatedAt:   "2026-06-14T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("append durable activity: %v", err)
+	}
 
-	select {
-	case event := <-ch:
-		if event.EventID != "op_1:12" {
-			t.Fatalf("expected canonical live event id, got %q", event.EventID)
-		}
-		if event.EventType != "generic" {
-			t.Fatalf("expected generic live event type, got %q", event.EventType)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected canonical live event to be published")
+	events, err := listAllPlanningOperationEvents(ctx, store, operation.OperationID)
+	if err != nil {
+		t.Fatalf("list all events: %v", err)
+	}
+	if len(events) != state.DefaultPlanningOperationEventListLimit+1 {
+		t.Fatalf("expected paginated helper to return all events, got %d", len(events))
+	}
+	if activityID, ok := plannerActivityIDFromStoredEvent(events[len(events)-1]); !ok || activityID != "activity_101" {
+		t.Fatalf("expected helper to include activity event after first page, got %+v", events[len(events)-1])
 	}
 }

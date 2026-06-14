@@ -67,7 +67,29 @@ func optionalTrimmedString(value *string) *string {
 	return &trimmed
 }
 
-func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSessionSummary {
+type planningSessionPresentedRuns struct {
+	currentRunID      *openapi_types.UUID
+	currentTitleRunID *openapi_types.UUID
+}
+
+func resolvePresentedPlanningSessionRuns(item state.PlanningSession, interactiveOperation *state.PlanningOperation, titleOperation *state.PlanningOperation) planningSessionPresentedRuns {
+	runs := planningSessionPresentedRuns{}
+	if interactiveOperation != nil && planningOperationIsLive(*interactiveOperation) {
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(interactiveOperation.AcpRunID))
+		runs.currentRunID = &runID
+	}
+	if titleOperation != nil && planningOperationIsLive(*titleOperation) {
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(titleOperation.AcpRunID))
+		runs.currentTitleRunID = &runID
+	}
+	return runs
+}
+
+func planningOperationIsLive(operation state.PlanningOperation) bool {
+	return operation.Status == state.PlanningOperationStatusQueued || operation.Status == state.PlanningOperationStatusRunning
+}
+
+func planningSessionSummaryFromState(item state.PlanningSession, presentedRuns planningSessionPresentedRuns) gen.PlanningSessionSummary {
 	result := gen.PlanningSessionSummary{
 		PlanningSessionId: item.PlanningSessionID,
 		AcpSessionId:      openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerSessionID(item.PlanningSessionID))),
@@ -81,13 +103,11 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 	if value := optionalTrimmedString(item.ActiveLeafMessageID); value != nil {
 		result.ActiveLeafMessageId = value
 	}
-	if value := optionalTrimmedString(item.CurrentOperationID); value != nil {
-		runID := openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerRunID(*value)))
-		result.CurrentRunId = &runID
+	if presentedRuns.currentRunID != nil {
+		result.CurrentRunId = presentedRuns.currentRunID
 	}
-	if value := optionalTrimmedString(item.CurrentTitleOperationID); value != nil {
-		runID := openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerRunID(*value)))
-		result.CurrentTitleRunId = &runID
+	if presentedRuns.currentTitleRunID != nil {
+		result.CurrentTitleRunId = presentedRuns.currentTitleRunID
 	}
 	if value := optionalTrimmedString(item.CurrentDraftID); value != nil {
 		result.CurrentDraftId = value
@@ -98,8 +118,8 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 	return result
 }
 
-func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligible bool) gen.PlanningSessionDetail {
-	summary := planningSessionSummaryFromState(item)
+func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligible bool, presentedRuns planningSessionPresentedRuns) gen.PlanningSessionDetail {
+	summary := planningSessionSummaryFromState(item, presentedRuns)
 	modelSelection := decodePlanningAgentModelSelection(item.ModelSelectionJSON)
 	result := gen.PlanningSessionDetail{
 		PlanningSessionId: summary.PlanningSessionId,

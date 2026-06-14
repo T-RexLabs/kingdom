@@ -6,11 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/planning"
 	"kingdom/internal/state"
 )
 
-func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Request, operationID string, afterEventID string, initial []state.PlanningOperationEvent, liveSignals <-chan planning.LiveOperationEvent, unsubscribeLive func()) {
+func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Request, operationID string, afterEventID string, initial []state.PlanningOperationEvent) {
 	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -36,9 +35,6 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 
 	operationSignals, unsubscribe := s.planningService.SubscribeOperationEvents(operationID)
 	defer unsubscribe()
-	if unsubscribeLive != nil {
-		defer unsubscribeLive()
-	}
 
 	if !writeEvents(initial) {
 		return
@@ -90,22 +86,6 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 			if !ok {
 				return
 			}
-		case event, ok := <-liveSignals:
-			if !ok {
-				return
-			}
-			if strings.TrimSpace(event.EventType) == "" || strings.TrimSpace(event.Payload) == "" {
-				continue
-			}
-			if trimmedID := strings.TrimSpace(event.EventID); trimmedID != "" {
-				if trimmedID == lastEventID {
-					continue
-				}
-				fmt.Fprintf(w, "id: %s\n", trimmedID)
-				lastEventID = trimmedID
-			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.EventType, event.Payload)
-			_ = rc.Flush()
 		case <-keepAliveTicker.C:
 			fmt.Fprint(w, "event: keepalive\ndata: {}\n\n")
 			_ = rc.Flush()
