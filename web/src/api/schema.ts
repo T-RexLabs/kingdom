@@ -963,7 +963,6 @@ export interface components {
             queue: components["schemas"]["PlannerLatencyMetric"];
             launch: components["schemas"]["PlannerLatencyMetric"];
             first_output: components["schemas"]["PlannerLatencyMetric"];
-            output_to_receipt: components["schemas"]["PlannerLatencyMetric"];
             finalize: components["schemas"]["PlannerLatencyMetric"];
             total: components["schemas"]["PlannerLatencyMetric"];
         };

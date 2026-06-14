@@ -484,7 +484,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
-	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
+	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
 	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
@@ -606,7 +606,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
-	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
+	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
 	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
@@ -712,7 +712,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, plan.Metadata.ProviderSessionID)
-	if err := requireReceiptEvidenceID(plan.Metadata); err != nil {
+	if err := requirePlannerTurnSettled(plan.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(plan.Metadata, err), plan.Metadata.FinalText)
 	}
 	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
@@ -804,7 +804,7 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, generatedTitle.Metadata.ProviderSessionID)
-	if err := requireReceiptEvidenceID(generatedTitle.Metadata); err != nil {
+	if err := requirePlannerTurnSettled(generatedTitle.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(generatedTitle.Metadata, err), generatedTitle.Metadata.FinalText)
 	}
 	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
@@ -855,225 +855,6 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	return nil
 }
 
-func (r *operationRunner) finalizeRecoveredSuccessFromReceipt(ctx context.Context, operation state.PlanningOperation, metadata ProviderExecutionMetadata, now string) error {
-	if r == nil || r.deps.store == nil {
-		return fmt.Errorf("planning store is required for recovered success finalization")
-	}
-	if operation.ActiveProviderInvocationID == nil || strings.TrimSpace(*operation.ActiveProviderInvocationID) == "" {
-		return fmt.Errorf("recovered success finalization requires an active provider invocation")
-	}
-	if now = strings.TrimSpace(now); now == "" {
-		now = r.deps.nowString()
-	}
-	request, err := decodeOperationRequest(operation.RequestPayloadJSON)
-	if err != nil {
-		return err
-	}
-	session, found, err := r.deps.store.GetSession(ctx, operation.PlanningSessionID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return ErrSessionNotFound
-	}
-	if operation.Type == state.PlanningOperationTypeGenerateTitle {
-		finalizeReq, err := r.buildRecoveredGenerateTitleFinalizeRequest(ctx, session, operation, metadata, now)
-		if err != nil {
-			return err
-		}
-		if err := r.deps.store.FinalizeGenerateTitle(ctx, finalizeReq); err != nil {
-			if errors.Is(err, state.ErrPlanningLeaseConflict) {
-				return nil
-			}
-			return err
-		}
-		if r.deps.broker != nil {
-			r.deps.broker.Publish(operation.OperationID)
-		}
-		return nil
-	}
-	finalizeReq, err := r.buildRecoveredSuccessFinalizeRequest(ctx, session, operation, request, metadata, now)
-	if err != nil {
-		return err
-	}
-	if err := r.deps.store.FinalizeOperation(ctx, finalizeReq); err != nil {
-		if errors.Is(err, state.ErrPlanningLeaseConflict) {
-			return nil
-		}
-		return err
-	}
-	if r.deps.broker != nil {
-		r.deps.broker.Publish(operation.OperationID)
-	}
-	return nil
-}
-
-func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, metadata ProviderExecutionMetadata, now string) (state.FinalizeOperationRequest, error) {
-	base := state.FinalizeOperationRequest{
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		ConversationState:  state.PlanningSessionConversationStateReady,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		ProviderSettlement: providerSettlementForSuccess(*operation.ActiveProviderInvocationID, metadata, now),
-	}
-	if base.ProviderSettlement == nil {
-		return state.FinalizeOperationRequest{}, fmt.Errorf("recovered success finalization requires completion receipt settlement")
-	}
-
-	switch operation.Type {
-	case state.PlanningOperationTypeReply:
-		assistantMessageID := strings.TrimSpace(request.AssistantMessageID)
-		if assistantMessageID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("reply recovery requires assistant_message_id in request payload")
-		}
-		cleanMarkdown, question := parseStructuredQuestion(metadata.FinalText)
-		questionPayloadJSON, err := marshalQuestion(question)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		assistantMessage := state.AppendPlanningMessageRequest{
-			PlanningMessageID:   assistantMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			ParentMessageID:     request.UserMessageID,
-			Role:                state.PlanningMessageRoleAssistant,
-			ContentMarkdown:     cleanMarkdown,
-			QuestionPayloadJSON: questionPayloadJSON,
-			AnswerPayloadJSON:   `{}`,
-			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
-		}
-		runCompletedPayload := plannerMessagePayload(operation, map[string]any{
-			"result_ref":          assistantMessage.PlanningMessageID,
-			"planning_message_id": assistantMessage.PlanningMessageID,
-		})
-		messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		autoTitleSession, err := maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
-		if err != nil {
-			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
-		} else if autoTitleSession != nil {
-			runCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
-		}
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCompletedEventType, runCompletedPayload)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeReply
-		base.AssistantMessage = &assistantMessage
-		base.ActiveLeafMessageID = assistantMessage.PlanningMessageID
-		base.ResultRef = assistantMessage.PlanningMessageID
-		base.TerminalEvent = terminalEvent
-		// The user message was appended at create time, so recovery only needs to
-		// append the assistant reply under it (assistantMessage.ParentMessageID =
-		// request.UserMessageID).
-		return base, nil
-	case state.PlanningOperationTypeRegenerate:
-		assistantMessageID := strings.TrimSpace(request.AssistantMessageID)
-		if assistantMessageID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("regenerate recovery requires assistant_message_id in request payload")
-		}
-		cleanMarkdown, question := parseStructuredQuestion(metadata.FinalText)
-		questionPayloadJSON, err := marshalQuestion(question)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		assistantMessage := state.AppendPlanningMessageRequest{
-			PlanningMessageID:   assistantMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			ParentMessageID:     request.ParentMessageID,
-			Role:                state.PlanningMessageRoleAssistant,
-			ContentMarkdown:     cleanMarkdown,
-			QuestionPayloadJSON: questionPayloadJSON,
-			AnswerPayloadJSON:   `{}`,
-			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
-		}
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
-			"result_ref":          assistantMessage.PlanningMessageID,
-			"planning_message_id": assistantMessage.PlanningMessageID,
-		}))
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeRegenerate
-		base.AssistantMessage = &assistantMessage
-		base.ActiveLeafMessageID = assistantMessage.PlanningMessageID
-		base.ResultRef = assistantMessage.PlanningMessageID
-		base.TerminalEvent = terminalEvent
-		return base, nil
-	case state.PlanningOperationTypeFormalize:
-		draftID := strings.TrimSpace(request.DraftID)
-		if draftID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("formalize recovery requires draft_id in request payload")
-		}
-		title, text := parseFormalizedOutput(metadata.FinalText, session.Title)
-		draft := state.CreatePlanningDraftRequest{
-			PlanningDraftID:   draftID,
-			PlanningSessionID: session.PlanningSessionID,
-			DecreeTitle:       firstNonEmpty(title, session.Title),
-			DecreeText:        text,
-			SummaryJSON:       `{}`,
-			CreatedAt:         firstNonEmpty(strings.TrimSpace(request.DraftCreatedAt), now),
-		}
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{"result_ref": draft.PlanningDraftID, "planning_draft_id": draft.PlanningDraftID}))
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeFormalize
-		base.Draft = &draft
-		base.CurrentDraftID = draft.PlanningDraftID
-		base.ResultRef = draft.PlanningDraftID
-		base.TerminalEvent = terminalEvent
-		return base, nil
-	default:
-		return state.FinalizeOperationRequest{}, fmt.Errorf("recovered success finalization is unsupported for operation type %q", operation.Type)
-	}
-}
-
-func (r *operationRunner) buildRecoveredGenerateTitleFinalizeRequest(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, metadata ProviderExecutionMetadata, now string) (state.FinalizeGenerateTitleRequest, error) {
-	finalTitle, err := normalizeGeneratedTitle(metadata.FinalText)
-	if err != nil {
-		return state.FinalizeGenerateTitleRequest{}, &invalidRecoveredGeneratedTitleError{cause: err}
-	}
-	terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{"result_ref": finalTitle, "title": finalTitle, "title_state": "generated"}))
-	if err != nil {
-		return state.FinalizeGenerateTitleRequest{}, err
-	}
-	return state.FinalizeGenerateTitleRequest{
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		GeneratedTitle:     finalTitle,
-		ObservedOutputText: finalTitle,
-		ProviderSettlement: providerSettlementForSuccess(*operation.ActiveProviderInvocationID, metadata, now),
-		TerminalEvent:      terminalEvent,
-	}, nil
-}
-
-type invalidRecoveredGeneratedTitleError struct {
-	cause error
-}
-
-func (e *invalidRecoveredGeneratedTitleError) Error() string {
-	if e == nil || e.cause == nil {
-		return "invalid recovered generated title"
-	}
-	return e.cause.Error()
-}
-
-func (e *invalidRecoveredGeneratedTitleError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.cause
-}
-
 func (r *operationRunner) failOperation(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, cause error) error {
 	return r.failOperationWithObservedOutput(ctx, operation, cursor, cause, providerMetadataFromError(cause).FinalText)
 }
@@ -1104,10 +885,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))
 	observedOutputText = sanitizeObservedPlannerOutput(operation.Type, observedOutputText)
-	providerSettlement, err := terminalPlanningProviderSettlement(ctx, r.deps.store, operation, providerMetadata, now, cause.Error(), cause, false)
-	if err != nil {
-		return err
-	}
+	providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
 	finalizeErr := r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent)
 	if finalizeErr != nil {
 		// A concurrent finaliser (recovery vs SSE-observer, or any
@@ -1167,10 +945,7 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 		return eventErr
 	}
 	now := r.deps.nowString()
-	providerSettlement, err := terminalPlanningProviderSettlement(writeCtx, r.deps.store, operation, ProviderExecutionMetadata{}, now, reason, nil, true)
-	if err != nil {
-		return err
-	}
+	providerSettlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, now, reason, nil, true)
 	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent); err != nil {
 		return err
 	}
@@ -1319,9 +1094,7 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 		}
 		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_session_open", map[string]any{"provider_session_id": strings.TrimSpace(providerSessionID)}))
 	}
-	originalReceipt := invocation.OnCompletionReceipt
 	originalActivity := invocation.OnActivity
-	var receiptOnce sync.Once
 	invocation.OnActivity = func(activity ProviderActivity) {
 		if originalActivity != nil {
 			originalActivity(activity)
@@ -1339,21 +1112,6 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 		if err == nil {
 			publishCanonicalLivePlannerEvent(r.deps.liveBroker, operation.OperationID, event)
 		}
-	}
-	invocation.OnCompletionReceipt = func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-		var (
-			acceptance CompletionReceiptAcceptance
-			err        error
-		)
-		if originalReceipt != nil {
-			acceptance, err = originalReceipt(receipt)
-		}
-		if err == nil && !acceptance.Rejected {
-			receiptOnce.Do(func() {
-				_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "receipt_persisted", map[string]any{"evidence_id": strings.TrimSpace(acceptance.EvidenceID)}))
-			})
-		}
-		return acceptance, err
 	}
 }
 

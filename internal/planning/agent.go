@@ -14,25 +14,6 @@ type Agent interface {
 	GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error)
 }
 
-type CompletionReceipt struct {
-	ProtocolVersion       string
-	AttemptID             string
-	InvocationID          string
-	CompletionCapability  string
-	FinalText             string
-	StructuredPayloadJSON string
-}
-
-type CompletionReceiptAcceptance struct {
-	EvidenceID            string
-	FinalText             string
-	StructuredPayloadJSON string
-	Idempotent            bool
-	Rejected              bool
-	InvalidatesInvocation bool
-	RejectedReason        string
-}
-
 type ProviderActivity struct {
 	Kind           string
 	ProviderPartID string
@@ -47,17 +28,13 @@ type ProviderActivity struct {
 }
 
 type ProviderInvocationContext struct {
-	AttemptID                 string
-	LogicalSessionID          string
-	ProviderSessionID         string
-	InvocationID              string
-	InvocationIssuedAt        string
-	CompletionProtocolVersion string
-	CompletionCapability      string
-	CompletionReceiptDir      string
-	OnProviderSession         func(sessionID string)
-	OnActivity                func(activity ProviderActivity)
-	OnCompletionReceipt       func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error)
+	AttemptID          string
+	LogicalSessionID   string
+	ProviderSessionID  string
+	InvocationID       string
+	InvocationIssuedAt string
+	OnProviderSession  func(sessionID string)
+	OnActivity         func(activity ProviderActivity)
 }
 
 type AgentContext struct {
@@ -74,7 +51,6 @@ type AgentContext struct {
 type ProviderExecutionMetadata struct {
 	FinalText                       string
 	ProviderSessionID               string
-	CompletionReceiptEvidenceID     string
 	CompletionStructuredPayloadJSON string
 	OutcomeState                    string
 	FailureReasonCode               string
@@ -107,12 +83,13 @@ func executionError(metadata ProviderExecutionMetadata, err error) error {
 	return &AgentExecutionError{Metadata: metadata, Err: err}
 }
 
-func requireReceiptEvidenceID(metadata ProviderExecutionMetadata) error {
+// requirePlannerTurnSettled gates canonical persistence on the provider's own
+// structural stop signal: the adjudicated terminal outcome must be success and
+// the assembled output text must be non-empty. The planner settles server-side
+// from this signal — there is no model-invoked completion receipt.
+func requirePlannerTurnSettled(metadata ProviderExecutionMetadata) error {
 	if metadata.OutcomeState != "success" {
 		return fmt.Errorf("planner provider execution did not settle success")
-	}
-	if metadata.CompletionReceiptEvidenceID == "" {
-		return fmt.Errorf("planner provider execution missing completion receipt evidence id")
 	}
 	if metadata.FinalText == "" {
 		return fmt.Errorf("planner provider execution missing settled final text")

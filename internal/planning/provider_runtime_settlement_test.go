@@ -57,10 +57,10 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 			wantReason: "provider_timeout",
 		},
 		{
-			name: "missing receipt after provider success maps to incomplete turn",
+			name: "empty final text after provider success maps to incomplete turn",
 			metadata: ProviderExecutionMetadata{
-				OutcomeState:                "success",
-				CompletionReceiptEvidenceID: "",
+				OutcomeState: "success",
+				FinalText:    "",
 			},
 			cause:      context.DeadlineExceeded,
 			wantReason: "provider_incomplete_turn",

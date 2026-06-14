@@ -137,22 +137,3 @@ func TestParseStructuredQuestion_NormalizesTrailingPrompt(t *testing.T) {
 		})
 	}
 }
-
-func TestProviderReceiptAcceptanceForPlannerPreservesTerminalInvalidation(t *testing.T) {
-	t.Parallel()
-
-	accepted := providerReceiptAcceptanceForPlanner(CompletionReceiptAcceptance{
-		Rejected:              true,
-		InvalidatesInvocation: true,
-		RejectedReason:        "completion_capability_mismatch",
-	})
-	if !accepted.Rejected {
-		t.Fatal("expected rejected receipt acceptance")
-	}
-	if !accepted.InvalidatesInvocation {
-		t.Fatal("expected terminal receipt invalidation to be preserved for opencode")
-	}
-	if accepted.RejectedReason != "completion_capability_mismatch" {
-		t.Fatalf("unexpected rejected reason %q", accepted.RejectedReason)
-	}
-}

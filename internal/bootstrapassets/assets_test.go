@@ -353,7 +353,6 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"glob: true",
 		"grep: true",
 		"webfetch: true",
-		"kingdom_complete_attempt",
 		"task: false",
 		"todowrite: false",
 		"todoread: false",

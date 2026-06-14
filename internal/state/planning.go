@@ -155,7 +155,6 @@ type PlanningOperationTelemetrySample struct {
 	FinishedAt            *string
 	ProviderSessionOpenAt *string
 	FirstTextDeltaAt      *string
-	ReceiptPersistedAt    *string
 	FinalizingAt          *string
 }
 

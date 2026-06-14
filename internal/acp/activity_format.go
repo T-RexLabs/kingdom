@@ -11,8 +11,6 @@ func PhaseActivityLabel(phase string) (string, bool) {
 		return "Launching provider", true
 	case "provider_session_open":
 		return "Opening provider session", true
-	case "receipt_persisted":
-		return "Saving final response", true
 	case "finalizing":
 		return "Finalizing response", true
 	default:

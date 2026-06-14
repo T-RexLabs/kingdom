@@ -420,7 +420,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 	var queue latencyAccumulator
 	var launch latencyAccumulator
 	var firstOutput latencyAccumulator
-	var outputToReceipt latencyAccumulator
 	var finalize latencyAccumulator
 	var total latencyAccumulator
 	for _, sample := range samples {
@@ -428,9 +427,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 		if sample.StartedAt != nil {
 			launch.add(*sample.StartedAt, sample.ProviderSessionOpenAt)
 			firstOutput.add(*sample.StartedAt, sample.FirstTextDeltaAt)
-		}
-		if sample.FirstTextDeltaAt != nil {
-			outputToReceipt.add(*sample.FirstTextDeltaAt, sample.ReceiptPersistedAt)
 		}
 		if sample.FinalizingAt != nil {
 			finalize.add(*sample.FinalizingAt, sample.FinishedAt)
@@ -440,7 +436,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 	metrics.Queue = queue.metric()
 	metrics.Launch = launch.metric()
 	metrics.FirstOutput = firstOutput.metric()
-	metrics.OutputToReceipt = outputToReceipt.metric()
 	metrics.Finalize = finalize.metric()
 	metrics.Total = total.metric()
 	return metrics

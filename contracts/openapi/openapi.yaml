@@ -1956,7 +1956,7 @@ components:
       type: object
       additionalProperties: false
       required:
-        [recent_sample_size, queue, launch, first_output, output_to_receipt, finalize, total]
+        [recent_sample_size, queue, launch, first_output, finalize, total]
       properties:
         recent_sample_size:
           type: integer
@@ -1966,8 +1966,6 @@ components:
         launch:
           $ref: "#/components/schemas/PlannerLatencyMetric"
         first_output:
-          $ref: "#/components/schemas/PlannerLatencyMetric"
-        output_to_receipt:
           $ref: "#/components/schemas/PlannerLatencyMetric"
         finalize:
           $ref: "#/components/schemas/PlannerLatencyMetric"

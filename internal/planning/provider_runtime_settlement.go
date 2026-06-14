@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -16,8 +14,6 @@ import (
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
-
-const planningCompletionReceiptInboxPath = ".kingdom/provider-completion/receipts"
 
 var planningProviderInvocationIDCounter atomic.Uint64
 
@@ -31,32 +27,6 @@ func generatePlanningCompletionCapability() (string, error) {
 		return "", fmt.Errorf("generate planning completion capability: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-func completionReceiptDirForPlannerInvocation(projectRoot, invocationID string) (string, error) {
-	return resolvePlannerPathWithinRoot(strings.TrimSpace(projectRoot), planningCompletionReceiptInboxPath+"/"+sanitizePlannerToken(invocationID))
-}
-
-func resolvePlannerPathWithinRoot(root, relativePath string) (string, error) {
-	normalized := strings.TrimSpace(relativePath)
-	if normalized == "" {
-		return "", fmt.Errorf("planner relative path is required")
-	}
-	if filepath.IsAbs(normalized) {
-		return "", fmt.Errorf("planner relative path must be relative")
-	}
-	rootAbs, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve planner root path: %w", err)
-	}
-	resolved := filepath.Clean(filepath.Join(rootAbs, normalized))
-	if resolved != rootAbs {
-		prefix := rootAbs + string(filepath.Separator)
-		if !strings.HasPrefix(resolved, prefix) {
-			return "", fmt.Errorf("planner path escapes root: %q", relativePath)
-		}
-	}
-	return resolved, nil
 }
 
 func sanitizePlannerToken(raw string) string {
@@ -97,16 +67,12 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 			reusedProviderSessionID = strings.TrimSpace(invocation.ProviderSessionID)
 		}
 	}
+	// The completion capability anchors invocation identity/idempotency in the
+	// store; it is no longer a receipt secret since the planner settles
+	// server-side from the provider's terminal stop signal.
 	capability, err := generatePlanningCompletionCapability()
 	if err != nil {
 		return nil, err
-	}
-	receiptDir, err := completionReceiptDirForPlannerInvocation(session.ProjectRoot, invocationID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve planner completion receipt dir: %w", err)
-	}
-	if err := os.MkdirAll(receiptDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create planner completion receipt dir: %w", err)
 	}
 	if _, err := r.deps.store.ActivatePlanningProviderInvocation(ctx, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: invocationID,
@@ -129,14 +95,11 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	}
 	var invocationContext *ProviderInvocationContext
 	invocationContext = &ProviderInvocationContext{
-		AttemptID:                 operation.OperationID,
-		LogicalSessionID:          logicalSessionID,
-		ProviderSessionID:         reusedProviderSessionID,
-		InvocationID:              invocationID,
-		InvocationIssuedAt:        issuedAt,
-		CompletionProtocolVersion: "v1",
-		CompletionCapability:      capability,
-		CompletionReceiptDir:      receiptDir,
+		AttemptID:          operation.OperationID,
+		LogicalSessionID:   logicalSessionID,
+		ProviderSessionID:  reusedProviderSessionID,
+		InvocationID:       invocationID,
+		InvocationIssuedAt: issuedAt,
 		OnProviderSession: func(providerSessionID string) {
 			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
 			if trimmedProviderSessionID != "" {
@@ -157,34 +120,6 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 				})
 			}
 		},
-		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-			acceptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer cancel()
-			accepted, err := r.deps.store.AcceptPlanningProviderCompletionReceipt(acceptCtx, state.AcceptPlanningProviderCompletionReceiptRequest{
-				EvidenceID:                   fmt.Sprintf("receipt_%s_%d", sanitizePlannerToken(operation.OperationID), time.Now().UTC().UnixNano()),
-				AttemptID:                    strings.TrimSpace(receipt.AttemptID),
-				PlanningProviderInvocationID: strings.TrimSpace(receipt.InvocationID),
-				PlanningOperationID:          operation.OperationID,
-				PlanningSessionID:            session.PlanningSessionID,
-				ProtocolVersion:              strings.TrimSpace(receipt.ProtocolVersion),
-				CompletionCapability:         strings.TrimSpace(receipt.CompletionCapability),
-				FinalText:                    strings.TrimSpace(receipt.FinalText),
-				StructuredPayloadJSON:        firstNonEmpty(strings.TrimSpace(receipt.StructuredPayloadJSON), "{}"),
-				ReceivedAt:                   r.deps.nowString(),
-			})
-			if err != nil {
-				if state.IsTerminalPlanningProviderReceiptError(err) {
-					return CompletionReceiptAcceptance{Rejected: true, InvalidatesInvocation: true, RejectedReason: err.Error()}, nil
-				}
-				return CompletionReceiptAcceptance{}, err
-			}
-			return CompletionReceiptAcceptance{
-				EvidenceID:            accepted.Evidence.EvidenceID,
-				FinalText:             strings.TrimSpace(receipt.FinalText),
-				StructuredPayloadJSON: firstNonEmpty(strings.TrimSpace(receipt.StructuredPayloadJSON), "{}"),
-				Idempotent:            accepted.Idempotent,
-			}, nil
-		},
 	}
 	return invocationContext, nil
 }
@@ -202,18 +137,35 @@ func planningLogicalSessionID(sessionID string, operationType state.PlanningOper
 	}
 }
 
+// providerSettlementForSuccess mints a server-side success settlement keyed on
+// the provider's adjudicated terminal outcome plus the assembled output text.
+// The durable evidence is a stream observation (the planner has no model-invoked
+// completion receipt); the store records both the evidence and settlement rows
+// atomically in the finalize transaction.
 func providerSettlementForSuccess(invocationID string, metadata ProviderExecutionMetadata, settledAt string) *state.FinalizePlanningProviderSettlementRequest {
 	trimmedInvocationID := strings.TrimSpace(invocationID)
-	if trimmedInvocationID == "" || strings.TrimSpace(metadata.CompletionReceiptEvidenceID) == "" {
+	finalText := strings.TrimSpace(metadata.FinalText)
+	if trimmedInvocationID == "" || finalText == "" {
 		return nil
 	}
+	structuredPayloadJSON := firstNonEmpty(strings.TrimSpace(metadata.CompletionStructuredPayloadJSON), "{}")
+	payload, _ := json.Marshal(map[string]any{
+		"state":                   "success",
+		"final_text":              finalText,
+		"structured_payload_json": structuredPayloadJSON,
+		"output_text":             finalText,
+		"provider_session":        strings.TrimSpace(metadata.ProviderSessionID),
+	})
 	return &state.FinalizePlanningProviderSettlementRequest{
 		SettlementID:                 fmt.Sprintf("settlement_%s", sanitizePlannerToken(trimmedInvocationID)),
 		PlanningProviderInvocationID: trimmedInvocationID,
-		PrimaryEvidenceID:            strings.TrimSpace(metadata.CompletionReceiptEvidenceID),
+		PrimaryEvidenceID:            fmt.Sprintf("evidence_success_%s", sanitizePlannerToken(trimmedInvocationID)),
+		PrimaryEvidenceKind:          state.PlanningProviderCompletionEvidenceKindStreamObservation,
+		PrimaryEvidencePayloadJSON:   string(payload),
+		PrimaryEvidenceCreatedAt:     settledAt,
 		Outcome:                      state.PlanningProviderCompletionOutcomeSuccess,
-		FinalText:                    strings.TrimSpace(metadata.FinalText),
-		StructuredPayloadJSON:        firstNonEmpty(strings.TrimSpace(metadata.CompletionStructuredPayloadJSON), "{}"),
+		FinalText:                    finalText,
+		StructuredPayloadJSON:        structuredPayloadJSON,
 		SettledAt:                    settledAt,
 	}
 }
@@ -236,10 +188,6 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 		FailureReasonText:            strings.TrimSpace(firstNonEmpty(failureText, metadata.FailureReasonText)),
 		SettledAt:                    settledAt,
 	}
-	if strings.TrimSpace(metadata.CompletionReceiptEvidenceID) != "" {
-		request.PrimaryEvidenceID = strings.TrimSpace(metadata.CompletionReceiptEvidenceID)
-		return request
-	}
 	payload, _ := json.Marshal(map[string]any{
 		"state":            strings.TrimSpace(firstNonEmpty(metadata.OutcomeState, plannerOutcomeStateForCancelled(cancelled))),
 		"reason_code":      request.FailureReasonCode,
@@ -254,75 +202,12 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 	return request
 }
 
-func terminalPlanningProviderSettlement(ctx context.Context, store *state.PlanningStore, operation state.PlanningOperation, metadata ProviderExecutionMetadata, settledAt, failureText string, cause error, cancelled bool) (*state.FinalizePlanningProviderSettlementRequest, error) {
-	settlement := providerSettlementForFailure(operation, metadata, settledAt, failureText, cause, cancelled)
-	if settlement == nil {
-		return nil, nil
-	}
-	if strings.TrimSpace(metadata.CompletionReceiptEvidenceID) != "" {
-		return settlement, nil
-	}
-	if store == nil || operation.ActiveProviderInvocationID == nil {
-		return settlement, nil
-	}
-	invocationID := strings.TrimSpace(*operation.ActiveProviderInvocationID)
-	if invocationID == "" {
-		return settlement, nil
-	}
-	invocation, found, err := store.GetPlanningProviderInvocation(ctx, invocationID)
-	if err != nil {
-		return nil, fmt.Errorf("get planning provider invocation %q: %w", invocationID, err)
-	}
-	if !found {
-		return nil, fmt.Errorf("planning provider invocation %q not found", invocationID)
-	}
-	if invocation.InvocationState != state.PlanningProviderInvocationStateReceiptPersisted {
-		return settlement, nil
-	}
-	evidence, found, err := store.GetPlanningProviderReceiptEvidence(ctx, invocationID)
-	if err != nil {
-		return nil, fmt.Errorf("get planning provider receipt evidence for %q: %w", invocationID, err)
-	}
-	if !found {
-		return nil, fmt.Errorf("planning provider receipt evidence for invocation %q not found", invocationID)
-	}
-	settlement.PrimaryEvidenceID = evidence.EvidenceID
-	settlement.PrimaryEvidenceKind = ""
-	settlement.PrimaryEvidencePayloadJSON = ""
-	settlement.PrimaryEvidenceCreatedAt = ""
-	return settlement, nil
-}
-
 func providerMetadataFromError(err error) ProviderExecutionMetadata {
 	var executionErr *AgentExecutionError
 	if errors.As(err, &executionErr) {
 		return executionErr.Metadata
 	}
 	return ProviderExecutionMetadata{}
-}
-
-func providerMetadataFromReceiptEvidence(evidence state.PlanningProviderCompletionEvidence) (ProviderExecutionMetadata, error) {
-	trimmedPayload := strings.TrimSpace(evidence.PayloadJSON)
-	if trimmedPayload == "" {
-		return ProviderExecutionMetadata{}, fmt.Errorf("planning provider receipt evidence %q payload is required", evidence.EvidenceID)
-	}
-	var payload struct {
-		FinalText             string `json:"final_text"`
-		StructuredPayloadJSON string `json:"structured_payload_json"`
-	}
-	if err := json.Unmarshal([]byte(trimmedPayload), &payload); err != nil {
-		return ProviderExecutionMetadata{}, fmt.Errorf("decode planning provider receipt evidence %q: %w", evidence.EvidenceID, err)
-	}
-	finalText := strings.TrimSpace(payload.FinalText)
-	if finalText == "" {
-		return ProviderExecutionMetadata{}, fmt.Errorf("planning provider receipt evidence %q final_text is required", evidence.EvidenceID)
-	}
-	return ProviderExecutionMetadata{
-		FinalText:                       finalText,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(evidence.EvidenceID),
-		CompletionStructuredPayloadJSON: firstNonEmpty(strings.TrimSpace(payload.StructuredPayloadJSON), "{}"),
-		OutcomeState:                    "success",
-	}, nil
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
@@ -332,7 +217,7 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 	if cancelled || errors.Is(cause, context.Canceled) {
 		return "provider_cancelled"
 	}
-	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.CompletionReceiptEvidenceID) == "" {
+	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" {
 		return "provider_incomplete_turn"
 	}
 	if strings.TrimSpace(metadata.OutcomeState) == "incomplete_turn" {

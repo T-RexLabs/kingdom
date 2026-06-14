@@ -19,7 +19,6 @@ func TestPhaseActivityLabelIncludesProviderLaunchLifecycle(t *testing.T) {
 		"provider_launching":    "Launching provider",
 		"provider_session_open": "Opening provider session",
 		"finalizing":            "Finalizing response",
-		"receipt_persisted":     "Saving final response",
 	}
 
 	for phase, want := range tests {

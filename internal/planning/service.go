@@ -351,11 +351,6 @@ func (s *Service) FinaliseIfStuck(ctx context.Context, operationID string) (bool
 	if !ok {
 		return false, ErrOperationNotFound
 	}
-	if recovered, err := s.recovery.convergeRecoveredRunningOperation(ctx, op); err != nil {
-		return false, err
-	} else if recovered {
-		return true, nil
-	}
 	now := nowTime(s.operations.deps.nowString())
 	if !IsStuckOperation(op, now) {
 		return false, nil

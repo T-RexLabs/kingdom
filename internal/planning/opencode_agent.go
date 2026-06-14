@@ -92,24 +92,21 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	}
 
 	resp, err := a.adapter.Execute(ctx, opencode.ExecuteRequest{
-		SessionID:                 sessionID,
-		AttemptID:                 attemptID,
-		RunID:                     "planner-" + input.SessionID,
-		NodeRunID:                 attemptID,
-		Model:                     input.ModelSelection.Model,
-		Agent:                     "planner",
-		ForceNewSession:           forceNew,
-		WorkspacePath:             input.ProjectRoot,
-		ConfigDir:                 bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
-		Prompt:                    prompt,
-		OccurredAt:                time.Now().UTC().Format(time.RFC3339),
-		OnProgress:                onChunk,
-		ProviderSessionID:         providerSessionIDForInvocation(providerInvocation),
-		InvocationID:              invocationIDForPlanner(providerInvocation),
-		InvocationIssuedAt:        invocationIssuedAtForPlanner(providerInvocation),
-		CompletionProtocolVersion: completionProtocolVersionForPlanner(providerInvocation),
-		CompletionCapability:      completionCapabilityForPlanner(providerInvocation),
-		CompletionReceiptDir:      completionReceiptDirForPlanner(providerInvocation),
+		SessionID:          sessionID,
+		AttemptID:          attemptID,
+		RunID:              "planner-" + input.SessionID,
+		NodeRunID:          attemptID,
+		Model:              input.ModelSelection.Model,
+		Agent:              "planner",
+		ForceNewSession:    forceNew,
+		WorkspacePath:      input.ProjectRoot,
+		ConfigDir:          bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
+		Prompt:             prompt,
+		OccurredAt:         time.Now().UTC().Format(time.RFC3339),
+		OnProgress:         onChunk,
+		ProviderSessionID:  providerSessionIDForInvocation(providerInvocation),
+		InvocationID:       invocationIDForPlanner(providerInvocation),
+		InvocationIssuedAt: invocationIssuedAtForPlanner(providerInvocation),
 		OnProviderSession: func(providerSessionID string) {
 			if providerInvocation != nil && providerInvocation.OnProviderSession != nil {
 				providerInvocation.OnProviderSession(providerSessionID)
@@ -132,28 +129,10 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 				RawText:    strings.TrimSpace(observation.RawText),
 			})
 		},
-		OnCompletionReceipt: func(receipt opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
-			if providerInvocation == nil || providerInvocation.OnCompletionReceipt == nil {
-				return opencode.CompletionReceiptAcceptance{}, nil
-			}
-			accepted, err := providerInvocation.OnCompletionReceipt(CompletionReceipt{
-				ProtocolVersion:       receipt.ProtocolVersion,
-				AttemptID:             receipt.AttemptID,
-				InvocationID:          receipt.InvocationID,
-				CompletionCapability:  receipt.CompletionCapability,
-				FinalText:             receipt.FinalText,
-				StructuredPayloadJSON: receipt.StructuredPayloadJSON,
-			})
-			if err != nil {
-				return opencode.CompletionReceiptAcceptance{}, err
-			}
-			return providerReceiptAcceptanceForPlanner(accepted), nil
-		},
 	})
 	metadata := ProviderExecutionMetadata{
 		FinalText:                       strings.TrimSpace(resp.OutputText),
 		ProviderSessionID:               strings.TrimSpace(resp.ProviderSessionID),
-		CompletionReceiptEvidenceID:     strings.TrimSpace(resp.CompletionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: firstNonEmpty(strings.TrimSpace(resp.CompletionStructuredPayloadJSON), "{}"),
 		OutcomeState:                    strings.TrimSpace(resp.Outcome.State),
 		FailureReasonCode:               strings.TrimSpace(resp.Outcome.ReasonCode),
@@ -163,7 +142,7 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 		return metadata, executionError(metadata, fmt.Errorf("opencode execute: %w", err))
 	}
 	if providerInvocation != nil {
-		if err := requireReceiptEvidenceID(metadata); err != nil {
+		if err := requirePlannerTurnSettled(metadata); err != nil {
 			return metadata, executionError(metadata, err)
 		}
 	}
@@ -189,39 +168,6 @@ func invocationIssuedAtForPlanner(invocation *ProviderInvocationContext) string 
 		return ""
 	}
 	return strings.TrimSpace(invocation.InvocationIssuedAt)
-}
-
-func completionProtocolVersionForPlanner(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
-	}
-	return strings.TrimSpace(invocation.CompletionProtocolVersion)
-}
-
-func completionCapabilityForPlanner(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
-	}
-	return strings.TrimSpace(invocation.CompletionCapability)
-}
-
-func completionReceiptDirForPlanner(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
-	}
-	return strings.TrimSpace(invocation.CompletionReceiptDir)
-}
-
-func providerReceiptAcceptanceForPlanner(accepted CompletionReceiptAcceptance) opencode.CompletionReceiptAcceptance {
-	return opencode.CompletionReceiptAcceptance{
-		EvidenceID:            accepted.EvidenceID,
-		FinalText:             accepted.FinalText,
-		StructuredPayloadJSON: accepted.StructuredPayloadJSON,
-		Idempotent:            accepted.Idempotent,
-		Rejected:              accepted.Rejected,
-		InvalidatesInvocation: accepted.InvalidatesInvocation,
-		RejectedReason:        accepted.RejectedReason,
-	}
 }
 
 func (a *OpenCodeAgent) id(prefix string) string {
@@ -464,7 +410,6 @@ func buildContinuePrompt(input AgentContext) string {
 	sb.WriteString("Ask another question only if the answer would materially change scope, approach, risk, or verification. Suggest 'Generate Plan' only when the discussion is clear enough that the resulting plan would not force downstream implementation to guess core product, content, or positioning decisions. Avoid claiming that only one or two minor questions remain unless that is genuinely true.\n\n")
 	sb.WriteString("## Output contract\n")
 	sb.WriteString("Write concise conversational context first, then end with exactly one structured_question block. Do not repeat the question text in the prose.\n\n")
-	sb.WriteString("When your final response for this turn is ready, call `kingdom_complete_attempt` exactly once to settle the planner operation.\n\n")
 	sb.WriteString(structuredQuestionInstructions())
 	return sb.String()
 }
@@ -503,7 +448,7 @@ func buildFormalizePrompt(input AgentContext) string {
 	sb.WriteString("- **Out of Scope**: Anything intentionally excluded\n\n")
 	sb.WriteString("Start with a title line: `# <decree title>`\n")
 	sb.WriteString("Then write the plan using the sections above as ## headings.\n")
-	sb.WriteString("Do NOT include a structured_question block in this response. When the final plan is ready, call `kingdom_complete_attempt` exactly once to settle the planner operation.\n")
+	sb.WriteString("Do NOT include a structured_question block in this response.\n")
 	return sb.String()
 }
 
@@ -589,7 +534,7 @@ func buildTitlePrompt(input AgentContext) string {
 	sb.WriteString("Summarize this planning session as a short title (3-6 words, max 50 characters).\n\n")
 	sb.WriteString("## Conversation\n")
 	sb.WriteString(formatTitleConversationHistory(input.Messages))
-	sb.WriteString("\nRespond with ONLY the title on a single line. Nothing else — no explanation, no quotes, no follow-up text, no markdown, no structured_question block. When the final title is ready, call `kingdom_complete_attempt` exactly once to settle the planner operation.\n\n")
+	sb.WriteString("\nRespond with ONLY the title on a single line. Nothing else — no explanation, no quotes, no follow-up text, no markdown, no structured_question block.\n\n")
 	sb.WriteString("Examples of good titles:\n- Auth Middleware Rework\n- User Dashboard Analytics\n- Payment Flow Refactor\n")
 	return sb.String()
 }

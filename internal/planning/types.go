@@ -146,7 +146,6 @@ type GeneratedTitleLatencyMetrics struct {
 	Queue            PlannerLatencyMetric `json:"queue"`
 	Launch           PlannerLatencyMetric `json:"launch"`
 	FirstOutput      PlannerLatencyMetric `json:"first_output"`
-	OutputToReceipt  PlannerLatencyMetric `json:"output_to_receipt"`
 	Finalize         PlannerLatencyMetric `json:"finalize"`
 	Total            PlannerLatencyMetric `json:"total"`
 }

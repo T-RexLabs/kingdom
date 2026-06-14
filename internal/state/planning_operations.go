@@ -410,7 +410,6 @@ func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.
 		        po.finished_at,
 		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'provider_session_open') AS provider_session_open_at,
 		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'text_delta') AS first_text_delta_at,
-		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'receipt_persisted') AS receipt_persisted_at,
 		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'finalizing') AS finalizing_at
 		 FROM planning_operations po
 		 WHERE po.type = ? AND po.finished_at IS NOT NULL
@@ -428,7 +427,6 @@ func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.
 		var finishedAt sql.NullString
 		var providerSessionOpenAt sql.NullString
 		var firstTextDeltaAt sql.NullString
-		var receiptPersistedAt sql.NullString
 		var finalizingAt sql.NullString
 		if err := rows.Scan(
 			&sample.OperationID,
@@ -437,7 +435,6 @@ func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.
 			&finishedAt,
 			&providerSessionOpenAt,
 			&firstTextDeltaAt,
-			&receiptPersistedAt,
 			&finalizingAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan planning operation telemetry sample: %w", err)
@@ -446,7 +443,6 @@ func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.
 		sample.FinishedAt = nullableStringFromSQL(finishedAt)
 		sample.ProviderSessionOpenAt = nullableStringFromSQL(providerSessionOpenAt)
 		sample.FirstTextDeltaAt = nullableStringFromSQL(firstTextDeltaAt)
-		sample.ReceiptPersistedAt = nullableStringFromSQL(receiptPersistedAt)
 		sample.FinalizingAt = nullableStringFromSQL(finalizingAt)
 		items = append(items, sample)
 	}
