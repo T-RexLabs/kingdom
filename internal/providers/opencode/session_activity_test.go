@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -61,6 +62,57 @@ func TestParseSessionActivityExportKeepsEncryptedReasoningPresence(t *testing.T)
 	if items[0].Detail == "" {
 		t.Fatalf("expected encrypted reasoning placeholder detail, got %#v", items[0])
 	}
+}
+
+func TestInspectSessionActivityFallbackStillHonorsInvocationStartedAt(t *testing.T) {
+	raw := []byte(`{
+		"messages": [
+			{
+				"info": {"role": "assistant", "time": {"completed": "2026-06-12T09:59:30Z"}},
+				"parts": [
+					{"type": "tool", "id": "tool_old", "tool": "webfetch", "state": {"status": "completed", "input": {"url": "https://old.example.com"}, "output": "fetched"}}
+				]
+			},
+			{
+				"info": {"role": "assistant", "time": {"completed": "2026-06-12T10:00:30Z"}},
+				"parts": [
+					{"type": "tool", "id": "tool_new", "tool": "webfetch", "state": {"status": "completed", "input": {"url": "https://new.example.com"}, "output": "fetched"}}
+				]
+			}
+		]
+	}`)
+
+	items, err := inspectSessionActivityWithExporter(context.Background(), SessionActivityRequest{
+		ProviderSessionID:   "session_1",
+		AttemptID:           "op_1",
+		InvocationID:        "inv_current",
+		InvocationStartedAt: time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC),
+	}, sessionActivityTestExporter{raw: raw})
+	if err != nil {
+		t.Fatalf("inspect session activity: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected one fallback-scoped activity item, got %#v", items)
+	}
+	if items[0].ID != "tool_new" {
+		t.Fatalf("expected fallback activity to exclude older session activity, got %#v", items)
+	}
+	if items[0].Label != "Fetched https://new.example.com" {
+		t.Fatalf("expected current fallback activity item, got %#v", items)
+	}
+}
+
+type sessionActivityTestExporter struct {
+	raw       []byte
+	sanitized []byte
+}
+
+func (f sessionActivityTestExporter) Export(_ context.Context, req sessionExportRequest) (sessionExportResult, error) {
+	if req.Mode == sessionExportModeSanitized && len(f.sanitized) > 0 {
+		return sessionExportResult{Stdout: f.sanitized}, nil
+	}
+	return sessionExportResult{Stdout: f.raw}, nil
 }
 
 func assertHasActivityItem(t *testing.T, items []SessionActivityItem, kind string, label string) {

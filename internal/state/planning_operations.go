@@ -687,6 +687,13 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate:
 		ready := string(PlanningSessionConversationStateReady)
 		sessionUpdate.Set("conversation_state", ready)
+		if operation.Type == PlanningOperationTypeRegenerate {
+			previousLeafID, parseErr := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
+			if parseErr != nil {
+				return rollbackPlanningTx(tx, "cancel queued planning operation", parseErr)
+			}
+			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(previousLeafID))
+		}
 		sessionUpdate.Where("current_operation_id = ?", operation.OperationID)
 	case PlanningOperationTypeGenerateTitle:
 		sessionUpdate.Set("current_title_operation_id", nil)

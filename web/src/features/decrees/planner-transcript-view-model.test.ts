@@ -351,6 +351,212 @@ describe("planner transcript view model", () => {
     expect(result.items[1]?.isStreaming).toBe(false);
   });
 
+  it("hides stale descendants for an optimistic edit reply", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "root",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Root",
+          created_at: "2026-04-21T10:00:00Z",
+        },
+        {
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          parent_message_id: "root",
+          role: "assistant",
+          content_markdown: "Original answer",
+          created_at: "2026-04-21T10:01:00Z",
+        },
+        {
+          planning_message_id: "stale-user",
+          planning_session_id: "session-1",
+          parent_message_id: "assistant-1",
+          role: "user",
+          content_markdown: "Old follow-up",
+          created_at: "2026-04-21T10:02:00Z",
+        },
+        {
+          planning_message_id: "stale-assistant",
+          planning_session_id: "session-1",
+          parent_message_id: "stale-user",
+          role: "assistant",
+          content_markdown: "Old branch answer",
+          created_at: "2026-04-21T10:03:00Z",
+        },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "reply",
+        status: "streaming",
+        operationId: "op-edit",
+        parentMessageId: "root",
+        userMessageId: "pending-user",
+        userCreatedAt: "2026-04-21T10:04:00Z",
+        assistantMessageId: "pending-assistant",
+        assistantCreatedAt: "2026-04-21T10:04:01Z",
+        pendingReply: { contentMarkdown: "Edited question" },
+        replyText: "Edited answer",
+      }),
+    });
+
+    expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
+      "root",
+      "pending-user",
+      "pending-assistant",
+    ]);
+  });
+
+  it("hides stale descendants for an optimistic regenerate", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "root",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Root",
+          created_at: "2026-04-21T10:00:00Z",
+        },
+        {
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          parent_message_id: "root",
+          role: "assistant",
+          content_markdown: "Original answer",
+          created_at: "2026-04-21T10:01:00Z",
+        },
+        {
+          planning_message_id: "stale-user",
+          planning_session_id: "session-1",
+          parent_message_id: "assistant-1",
+          role: "user",
+          content_markdown: "Old follow-up",
+          created_at: "2026-04-21T10:02:00Z",
+        },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "regenerate",
+        status: "streaming",
+        operationId: "op-regen",
+        parentMessageId: "root",
+        assistantMessageId: "pending-regen",
+        assistantCreatedAt: "2026-04-21T10:04:00Z",
+        replyText: "Regenerated answer",
+      }),
+    });
+
+    expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
+      "root",
+      "pending-regen",
+    ]);
+  });
+
+  it("keeps stale descendants hidden after regenerate message patch until refetch catches up", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "root",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Root",
+          created_at: "2026-04-21T10:00:00Z",
+        },
+        {
+          planning_message_id: "regen-new",
+          planning_session_id: "session-1",
+          parent_message_id: "root",
+          role: "assistant",
+          content_markdown: "Canonical regenerated answer",
+          source_run_id: "op-regen",
+          created_at: "2026-04-21T10:04:00Z",
+        },
+        {
+          planning_message_id: "stale-user",
+          planning_session_id: "session-1",
+          parent_message_id: "assistant-1",
+          role: "user",
+          content_markdown: "Old follow-up",
+          created_at: "2026-04-21T10:02:00Z",
+        },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "regenerate",
+        status: "streaming",
+        operationId: "op-regen",
+        parentMessageId: "root",
+        assistantMessageId: "regen-new",
+        assistantCreatedAt: "2026-04-21T10:04:00Z",
+        replyText: "Canonical regenerated answer",
+      }),
+    });
+
+    expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
+      "root",
+      "regen-new",
+    ]);
+  });
+
+  it("keeps stale descendants hidden after edit reply patch until refetch catches up", () => {
+    const result = buildPlannerTranscriptViewModel({
+      messages: [
+        {
+          planning_message_id: "root",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Root",
+          created_at: "2026-04-21T10:00:00Z",
+        },
+        {
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          parent_message_id: "root",
+          role: "assistant",
+          content_markdown: "Original answer",
+          created_at: "2026-04-21T10:01:00Z",
+        },
+        {
+          planning_message_id: "stale-user",
+          planning_session_id: "session-1",
+          parent_message_id: "assistant-1",
+          role: "user",
+          content_markdown: "Old follow-up",
+          created_at: "2026-04-21T10:02:00Z",
+        },
+        {
+          planning_message_id: "reply-new",
+          planning_session_id: "session-1",
+          parent_message_id: "pending-user",
+          role: "assistant",
+          content_markdown: "Canonical edited answer",
+          source_run_id: "op-edit",
+          created_at: "2026-04-21T10:04:01Z",
+        },
+      ],
+      conversationState: "processing",
+      operation: buildOperation({
+        kind: "reply",
+        status: "streaming",
+        operationId: "op-edit",
+        parentMessageId: "root",
+        userMessageId: "pending-user",
+        userCreatedAt: "2026-04-21T10:04:00Z",
+        assistantMessageId: "reply-new",
+        assistantCreatedAt: "2026-04-21T10:04:01Z",
+        pendingReply: { contentMarkdown: "Edited question" },
+        replyText: "Canonical edited answer",
+      }),
+    });
+
+    expect(result.items.map((item) => item.message.planning_message_id)).toEqual([
+      "root",
+      "pending-user",
+      "reply-new",
+    ]);
+  });
+
   it("keeps the canonical assistant message live-bound until the active run finishes", () => {
     const result = buildPlannerTranscriptViewModel({
       messages: [

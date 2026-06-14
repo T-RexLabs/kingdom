@@ -38,6 +38,10 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 		binaryPath = "opencode"
 	}
 	exporter := cliSessionExporter{binaryPath: binaryPath}
+	return inspectSessionActivityWithExporter(ctx, req, exporter)
+}
+
+func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter SessionExporter) ([]SessionActivityItem, error) {
 	result, err := exporter.Export(ctx, sessionExportRequest{
 		ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
 		WorkDir:           strings.TrimSpace(req.WorkDir),
@@ -57,8 +61,9 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 	items := parseSessionActivityExport(result.Stdout, parseReq)
 	if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
 		items = parseSessionActivityExport(result.Stdout, sessionCompletionReconcileRequest{
-			ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
-			AttemptID:         strings.TrimSpace(req.AttemptID),
+			ProviderSessionID:   strings.TrimSpace(req.ProviderSessionID),
+			AttemptID:           strings.TrimSpace(req.AttemptID),
+			InvocationStartedAt: req.InvocationStartedAt,
 		})
 	}
 	if len(items) == 0 {
@@ -73,8 +78,9 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 			items = parseSessionActivityExport(sanitizedResult.Stdout, parseReq)
 			if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
 				items = parseSessionActivityExport(sanitizedResult.Stdout, sessionCompletionReconcileRequest{
-					ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
-					AttemptID:         strings.TrimSpace(req.AttemptID),
+					ProviderSessionID:   strings.TrimSpace(req.ProviderSessionID),
+					AttemptID:           strings.TrimSpace(req.AttemptID),
+					InvocationStartedAt: req.InvocationStartedAt,
 				})
 			}
 		}

@@ -98,7 +98,11 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 				continue
 			}
 			if trimmedID := strings.TrimSpace(event.EventID); trimmedID != "" {
+				if trimmedID == lastEventID {
+					continue
+				}
 				fmt.Fprintf(w, "id: %s\n", trimmedID)
+				lastEventID = trimmedID
 			}
 			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.EventType, event.Payload)
 			_ = rc.Flush()

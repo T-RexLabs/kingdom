@@ -54,22 +54,18 @@ export function buildPlannerTranscriptViewModel({
   const activeOperationRunId = operation && !operation.operationId.startsWith("pending-")
     ? operation.operationId
     : undefined;
-  // `messages` is the server-computed active path (root -> active leaf), already
-  // linear and correct — sibling branches off the active path are excluded. No
-  // client-side truncation/superseding is needed: a regenerate/edit moves the
-  // active leaf server-side at create time, so the active path is the new branch
-  // immediately and the prior branch is simply not on it.
-  const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(messages, currentQuestionMessageId, operation);
   // Resolve `parsedReply` once: prefer the caller's memoised value, fall back
   // to a single parse here if the caller did not supply one. The four call
   // sites below all reuse this resolution rather than re-running the parser.
   const reply: ParsedStreamingReply | null = parsedReply ?? (operation?.replyText
     ? parseStreamingQuestion(operation.replyText)
     : null);
+  const renderedMessages = projectRenderedMessages(messages, operation);
+  const resolvedAnswersByQuestionId = persistedAnswersByQuestionId(renderedMessages, currentQuestionMessageId, operation);
   const activeQuestionId = resolveActiveQuestionId(currentQuestionMessageId, operation, reply);
-  const activeQuestion = resolveActiveQuestion(messages, activeQuestionId, operation, reply);
+  const activeQuestion = resolveActiveQuestion(renderedMessages, activeQuestionId, operation, reply);
 
-  const items: TranscriptItem[] = messages.map((message) => ({
+  const items: TranscriptItem[] = renderedMessages.map((message) => ({
     kind: "message",
     key: `message-${message.planning_message_id}`,
     message,
@@ -84,7 +80,7 @@ export function buildPlannerTranscriptViewModel({
     activityRunId: message.role === "assistant" ? message.source_run_id : undefined,
   }));
 
-  const sessionID = messages[messages.length - 1]?.planning_session_id ?? "";
+  const sessionID = renderedMessages[renderedMessages.length - 1]?.planning_session_id ?? messages[messages.length - 1]?.planning_session_id ?? "";
 
   // Regenerate streams a new assistant branch; show its ghost while live (even
   // before text arrives, so the slot shows the thinking/feather), and keep
@@ -94,7 +90,7 @@ export function buildPlannerTranscriptViewModel({
     operation.status !== "done" &&
     (!isPlannerOperationTerminal(operation.status) || operation.replyText.trim() !== "")
   ) {
-    const canonicalIds = new Set(messages.map((m) => m.planning_message_id));
+    const canonicalIds = new Set(renderedMessages.map((m) => m.planning_message_id));
     if (operation.assistantMessageId && !canonicalIds.has(operation.assistantMessageId) && operation.assistantCreatedAt) {
       const parsed = reply ?? parseStreamingQuestion(operation.replyText);
       items.push(buildGhostMessage({
@@ -113,7 +109,7 @@ export function buildPlannerTranscriptViewModel({
   }
 
   if (operation?.kind === "reply" && operation.status !== "done") {
-    const canonicalIds = new Set(messages.map((m) => m.planning_message_id));
+    const canonicalIds = new Set(renderedMessages.map((m) => m.planning_message_id));
 
     if (operation.pendingReply && operation.userMessageId && !canonicalIds.has(operation.userMessageId) && operation.userCreatedAt) {
       items.push(buildGhostMessage({
@@ -151,6 +147,91 @@ export function buildPlannerTranscriptViewModel({
     activeQuestion,
     activeQuestionId,
   };
+}
+
+function projectRenderedMessages(
+  messages: PlanningMessage[],
+  operation: PlannerOperationState | null | undefined,
+): PlanningMessage[] {
+  if (!shouldProjectPendingBranch(messages, operation)) {
+    return messages;
+  }
+
+  const anchorId = operation?.parentMessageId?.trim();
+  if (!anchorId) {
+    return [];
+  }
+
+  const anchorIndex = messages.findIndex((message) => message.planning_message_id === anchorId);
+  if (anchorIndex < 0) {
+    return messages;
+  }
+
+  const projected = messages.slice(0, anchorIndex + 1);
+  if (operation?.kind === "reply") {
+    return projected;
+  }
+  const canonicalAssistant = findCanonicalPendingAssistant(messages, operation);
+  if (canonicalAssistant) {
+    projected.push(canonicalAssistant);
+  }
+  return projected;
+}
+
+function shouldProjectPendingBranch(
+  messages: PlanningMessage[],
+  operation: PlannerOperationState | null | undefined,
+): boolean {
+  if (!operation || isPlannerOperationTerminal(operation.status)) {
+    return false;
+  }
+  const anchorId = operation.parentMessageId?.trim();
+  if (!anchorId) {
+    return false;
+  }
+  if (operation.kind === "reply") {
+    const pendingUserId = operation.userMessageId?.trim();
+    const pendingAssistantId = operation.assistantMessageId?.trim();
+    if (pendingUserId && messages.some((message) => message.planning_message_id === pendingUserId)) {
+      return false;
+    }
+    return hasMessagesAfterAnchor(messages, anchorId, pendingAssistantId);
+  }
+  if (operation.kind === "regenerate") {
+    const pendingAssistantId = operation.assistantMessageId?.trim();
+    return hasMessagesAfterAnchor(messages, anchorId, pendingAssistantId);
+  }
+  return false;
+}
+
+function hasMessagesAfterAnchor(
+  messages: PlanningMessage[],
+  anchorId: string,
+  canonicalAssistantId?: string,
+): boolean {
+  const anchorIndex = messages.findIndex((message) => message.planning_message_id === anchorId);
+  if (anchorIndex < 0) {
+    return false;
+  }
+  const trailing = messages.slice(anchorIndex + 1);
+  if (trailing.length === 0) {
+    return false;
+  }
+  if (!canonicalAssistantId) {
+    return true;
+  }
+  return trailing.some((message) => message.planning_message_id !== canonicalAssistantId);
+}
+
+function findCanonicalPendingAssistant(
+  messages: PlanningMessage[],
+  operation: PlannerOperationState | null | undefined,
+): PlanningMessage | undefined {
+  const assistantId = operation?.assistantMessageId?.trim();
+  if (!assistantId) {
+    return undefined;
+  }
+  return messages.find((message) => message.planning_message_id === assistantId);
 }
 
 // buildGhostMessage produces an optimistic transcript item for an in-flight

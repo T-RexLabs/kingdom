@@ -1989,6 +1989,104 @@ func TestCancelQueuedGenerateTitleOperationClearsTitleSlot(t *testing.T) {
 	}
 }
 
+func TestCancelQueuedRegenerateRestoresPreviousActiveLeaf(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		Title:               "regen-cancel-queued",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
+		ActiveLeafMessageID: "pm_target_parent",
+		CurrentOperationID:  "po_regen_cancel_queued",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T16:30:00Z",
+		UpdatedAt:           "2026-04-27T16:30:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target_parent",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Original prompt",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:00Z",
+	}); err != nil {
+		t.Fatalf("append target parent: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		ParentMessageID:     "pm_target_parent",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Original answer",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:01Z",
+	}); err != nil {
+		t.Fatalf("append target assistant: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_followup",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		ParentMessageID:     "pm_target",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Follow-up question",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:02Z",
+	}); err != nil {
+		t.Fatalf("append follow-up user: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_regen_cancel_queued",
+		PlanningSessionID:  "ps_regen_cancel_queued",
+		Type:               PlanningOperationTypeRegenerate,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"target_message_id":"pm_target","parent_message_id":"pm_target_parent","previous_active_leaf_message_id":"pm_followup"}`,
+		CreatedAt:          "2026-04-27T16:30:03Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	if err := store.CancelQueuedOperation(ctx, CancelQueuedPlanningOperationRequest{
+		OperationID:  "po_regen_cancel_queued",
+		ErrorMessage: "cancelled before claim",
+		UpdatedAt:    "2026-04-27T16:30:30Z",
+		FinishedAt:   "2026-04-27T16:30:30Z",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_regen_cancel_queued:1",
+			OperationID: "po_regen_cancel_queued",
+			Seq:         1,
+			EventType:   "run.cancelled",
+			PayloadJSON: `{"reason":"cancelled before claim"}`,
+			CreatedAt:   "2026-04-27T16:30:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("cancel queued operation: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_regen_cancel_queued")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_followup" {
+		t.Fatalf("expected queued regenerate cancel to restore active leaf, got %+v", session.ActiveLeafMessageID)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_regen_cancel_queued" {
+		t.Fatalf("expected cancelled regenerate lineage retained, got %+v", session.CurrentOperationID)
+	}
+}
+
 // TestSetActiveBranchRequiresMatchingSession verifies that branch switching is
 // scoped by both session id and message id.
 func TestSetActiveBranchRequiresMatchingSession(t *testing.T) {
