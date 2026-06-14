@@ -288,6 +288,7 @@ export function patchPlannerTerminalCaches(
 			fields.current_draft_id = draftId;
 		}
 		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id), exact: true });
 	}
 	if (event.type === "run.failed" || event.type === "run.cancelled") {
 		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });

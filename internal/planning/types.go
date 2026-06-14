@@ -99,6 +99,10 @@ type operationRequest struct {
 	ParentMessageID string `json:"parent_message_id,omitempty"`
 	// TargetMessageID records the assistant message a regenerate forks from.
 	TargetMessageID string `json:"target_message_id,omitempty"`
+	// PreviousActiveLeafMessageID preserves the exact transcript tip that was
+	// canonical before regenerate temporarily rewound the session to the fork
+	// point for prompting.
+	PreviousActiveLeafMessageID string `json:"previous_active_leaf_message_id,omitempty"`
 	// ForceNewSession is true when the branch does not continue from the prior
 	// active leaf (edit or regenerate), so the provider session must restart.
 	ForceNewSession bool `json:"force_new_session,omitempty"`

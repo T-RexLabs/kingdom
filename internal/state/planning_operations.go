@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -550,6 +551,14 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		case FinalizeReply, FinalizeRegenerate:
 			sessionUpdate.Set("current_operation_id", nil)
 			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(req.ActiveLeafMessageID))
+		case FinalizeFail, FinalizeCancel:
+			if operation.Type == PlanningOperationTypeRegenerate {
+				previousLeafID, parseErr := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
+				if parseErr != nil {
+					return rollbackPlanningTx(tx, "finalize planning operation", parseErr)
+				}
+				sessionUpdate.Set("active_leaf_message_id", finalizeNullable(previousLeafID))
+			}
 		case FinalizeFormalize:
 			sessionUpdate.Set("current_operation_id", nil)
 			sessionUpdate.Set("current_draft_id", finalizeNullable(req.CurrentDraftID))
@@ -680,6 +689,7 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 		sessionUpdate.Set("conversation_state", ready)
 		sessionUpdate.Where("current_operation_id = ?", operation.OperationID)
 	case PlanningOperationTypeGenerateTitle:
+		sessionUpdate.Set("current_title_operation_id", nil)
 		sessionUpdate.Where("current_title_operation_id = ?", operation.OperationID)
 	default:
 		// bootstrap_context does not own an interactive session slot.
@@ -697,6 +707,20 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 		return fmt.Errorf("commit cancel queued planning operation: %w", err)
 	}
 	return nil
+}
+
+func regeneratePreviousActiveLeafMessageID(requestPayloadJSON string) (string, error) {
+	trimmed := strings.TrimSpace(requestPayloadJSON)
+	if trimmed == "" {
+		return "", nil
+	}
+	var request struct {
+		PreviousActiveLeafMessageID string `json:"previous_active_leaf_message_id,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &request); err != nil {
+		return "", fmt.Errorf("decode regenerate request payload: %w", err)
+	}
+	return strings.TrimSpace(request.PreviousActiveLeafMessageID), nil
 }
 
 func validateFinalizeOperationRequest(req FinalizeOperationRequest) error {

@@ -71,4 +71,31 @@ describe("patchPlannerTerminalCaches", () => {
     expect(messagesState?.isInvalidated).toBe(true);
     expect(activityState?.isInvalidated).toBe(true);
   });
+
+  it("invalidates the cached plan when formalize completes live", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.plan("ps_1"), { decree_text: "Old draft" });
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ agent_name: "planner-formalize" }),
+      buildEvent({
+        payload: {
+          planning_draft_id: "draft_new",
+          result_ref: "draft_new",
+        },
+      }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    const planState = qc.getQueryState(plannerKeys.plan("ps_1"));
+    const activityState = qc.getQueryState(plannerKeys.activity("run_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+    expect(detail?.current_draft_id).toBe("draft_new");
+    expect(planState?.isInvalidated).toBe(true);
+    expect(activityState?.isInvalidated).toBe(true);
+  });
 });

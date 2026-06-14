@@ -46,6 +46,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	now := s.deps.nowString()
 	request := operationRequest{}
 	operationType := input.Type
+	activeLeaf := strings.TrimSpace(stringValueOrEmpty(session.ActiveLeafMessageID))
 
 	switch operationType {
 	case state.PlanningOperationTypeReply:
@@ -57,7 +58,6 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		// earlier message → a new sibling branch) or, by default, the session's
 		// active leaf (a normal reply continuing the conversation). No
 		// truncation: editing simply forks a branch.
-		activeLeaf := strings.TrimSpace(stringValueOrEmpty(session.ActiveLeafMessageID))
 		parentMessageID := activeLeaf
 		if input.ParentMessageID != nil {
 			parentMessageID = strings.TrimSpace(*input.ParentMessageID)
@@ -106,11 +106,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		// Regenerate forks a new assistant sibling under the same parent as the
 		// message it replaces; the old answer and its downstream are preserved.
 		request = operationRequest{
-			TargetMessageID:    targetID,
-			ParentMessageID:    strings.TrimSpace(stringValueOrEmpty(target.ParentMessageID)),
-			AssistantMessageID: s.deps.nextID("planning_message"),
-			AssistantCreatedAt: now,
-			ForceNewSession:    true,
+			TargetMessageID:             targetID,
+			ParentMessageID:             strings.TrimSpace(stringValueOrEmpty(target.ParentMessageID)),
+			AssistantMessageID:          s.deps.nextID("planning_message"),
+			AssistantCreatedAt:          now,
+			PreviousActiveLeafMessageID: activeLeaf,
+			ForceNewSession:             true,
 		}
 	default:
 		return CreateOperationResult{}, fmt.Errorf("unsupported planner operation type: %q", operationType)
