@@ -98,4 +98,35 @@ describe("patchPlannerTerminalCaches", () => {
     expect(planState?.isInvalidated).toBe(true);
     expect(activityState?.isInvalidated).toBe(true);
   });
+
+  it("clears current_run_id when a reply fails live", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ status: "failed" }),
+      buildEvent({ type: "run.failed", payload: { error: "planner failed" } }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+  });
+
+  it("clears current_title_run_id when title generation is cancelled", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession({ current_run_id: undefined, current_title_run_id: "run_1" }));
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ agent_name: "planner-generate-title", status: "cancelled" }),
+      buildEvent({ type: "run.cancelled", payload: { reason: "cancelled" } }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.current_title_run_id).toBeUndefined();
+  });
 });

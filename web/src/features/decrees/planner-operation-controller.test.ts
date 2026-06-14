@@ -74,4 +74,20 @@ describe("planner operation controller", () => {
     expect(thought?.kind).toBe("thinking");
     expect(thought?.detail).toContain("current transcript branch");
   });
+
+  it("hydrates failed reply output from terminal ACP run output_text", () => {
+    const state = buildPlannerOperationState(buildRun({ status: "failed", output_text: "Partial answer", error: "planner failed" }));
+
+    expect(state.status).toBe("error");
+    expect(state.replyText).toBe("Partial answer");
+    expect(state.formalizeText).toBe("");
+  });
+
+  it("hydrates failed formalize output from terminal ACP run output_text", () => {
+    const state = buildPlannerOperationState(buildRun({ agent_name: "planner-formalize", status: "cancelled", output_text: "Partial decree", error: "cancelled" }));
+
+    expect(state.status).toBe("cancelled");
+    expect(state.replyText).toBe("");
+    expect(state.formalizeText).toBe("Partial decree");
+  });
 });

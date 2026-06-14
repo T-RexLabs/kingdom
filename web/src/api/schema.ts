@@ -1277,7 +1277,8 @@ export interface components {
          *       "agent_name": "planner-reply",
          *       "status": "in-progress",
          *       "created_at": "2026-04-30T12:03:00Z",
-         *       "started_at": "2026-04-30T12:03:01Z"
+         *       "started_at": "2026-04-30T12:03:01Z",
+         *       "output_text": "Partial streamed planner output"
          *     }
          */
         AcpRun: {
@@ -1291,6 +1292,7 @@ export interface components {
             /** @enum {string} */
             status: "created" | "in-progress" | "awaiting" | "completed" | "failed" | "cancelled";
             error?: string;
+            output_text?: string;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */

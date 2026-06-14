@@ -70,6 +70,7 @@ export function buildPlannerOperationState(operation: AcpRun): PlannerOperationS
     operation.agent_name === "planner-generate-title" ? "generate_title" :
     operation.agent_name === "planner-formalize" ? "formalize" :
     operation.agent_name === "planner-regenerate" ? "regenerate" : "reply";
+  const outputText = typeof operation.output_text === "string" ? operation.output_text : "";
   return {
     kind,
     operationId: operation.run_id,
@@ -80,8 +81,8 @@ export function buildPlannerOperationState(operation: AcpRun): PlannerOperationS
       operation.status === "in-progress" ? "streaming" : "pending",
     lastEventSeq: 0,
     pendingReply: null,
-    replyText: "",
-    formalizeText: "",
+    replyText: kind === "formalize" || kind === "generate_title" ? "" : outputText,
+    formalizeText: kind === "formalize" ? outputText : "",
     error: operation.error ?? null,
     events: [],
     activityItems: [],

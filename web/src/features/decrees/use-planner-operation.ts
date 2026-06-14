@@ -178,10 +178,10 @@ export function reconcileTerminalOperationSnapshot(
 
   const fields: Partial<PlanningSessionDetail> =
     operation.agent_name === "planner-generate-title"
-      ? (operation.status === "completed" ? { current_title_run_id: undefined } : {})
+      ? { current_title_run_id: undefined }
       : {
           conversation_state: "ready",
-          ...(operation.status === "completed" ? { current_run_id: undefined } : {}),
+          current_run_id: undefined,
         };
   applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
   void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id), exact: true });
@@ -265,10 +265,10 @@ export function patchPlannerTerminalCaches(
   if (event.type !== "run.completed" && event.type !== "run.failed" && event.type !== "run.cancelled") return;
   const fields: Partial<PlanningSessionDetail> =
     operation.agent_name === "planner-generate-title"
-      ? (event.type === "run.completed" ? { current_title_run_id: undefined } : {})
+      ? { current_title_run_id: undefined }
       : {
           conversation_state: "ready",
-          ...(event.type === "run.completed" ? { current_run_id: undefined } : {}),
+          current_run_id: undefined,
         };
 	if (event.type === "run.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
 		const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
