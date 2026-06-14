@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	gen "kingdom/internal/apigen"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 	"kingdom/internal/acp"
+	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
-	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 // handlePlanningError maps planning-domain errors to canonical HTTP responses.
@@ -33,6 +33,7 @@ func handlePlanningError(w http.ResponseWriter, err error, authority string) {
 		errors.Is(err, state.ErrPlanningOperationNotFound):
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, err.Error(), authority, nil)
 	case errors.Is(err, planning.ErrSessionInactive),
+		errors.Is(err, planning.ErrMessageNotRegeneratable),
 		errors.Is(err, planning.ErrTurnIndexOutOfRange),
 		errors.Is(err, state.ErrPlanningTurnOutOfRange):
 		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), authority, nil)

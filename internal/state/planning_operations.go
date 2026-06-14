@@ -6,7 +6,22 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/acp"
 )
+
+func normalizePlanningOperationAcpRunID(operationID, acpRunID string) string {
+	trimmedOperationID := strings.TrimSpace(operationID)
+	trimmedRunID := strings.TrimSpace(acpRunID)
+	canonical := strings.TrimSpace(acp.PlannerRunID(trimmedOperationID))
+	if canonical == "" {
+		return trimmedRunID
+	}
+	if trimmedRunID == "" || trimmedRunID == trimmedOperationID {
+		return canonical
+	}
+	return trimmedRunID
+}
 
 func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningOperationRequest) (PlanningOperation, error) {
 	if err := validatePlanningOperationCreate(req); err != nil {
@@ -37,9 +52,7 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		StartedAt:                  nullableString(req.StartedAt),
 		FinishedAt:                 nullableString(req.FinishedAt),
 	}
-	if row.AcpRunID == "" {
-		row.AcpRunID = row.OperationID
-	}
+	row.AcpRunID = normalizePlanningOperationAcpRunID(row.OperationID, row.AcpRunID)
 	_, err := exec.ExecContext(ctx,
 		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -886,10 +899,12 @@ func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID 
 
 func getPlanningOperationByAcpRunID(ctx context.Context, query sqlQueryRower, acpRunID string) (PlanningOperation, bool, error) {
 	var row PlanningOperation
+	trimmedRunID := strings.TrimSpace(acpRunID)
 	err := scanPlanningOperation(query.QueryRowContext(ctx,
 		`SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
-		 FROM planning_operations WHERE acp_run_id = ?`,
-		strings.TrimSpace(acpRunID),
+		 FROM planning_operations WHERE acp_run_id = ? OR operation_id = ?`,
+		trimmedRunID,
+		trimmedRunID,
 	), &row)
 	if err == sql.ErrNoRows {
 		return PlanningOperation{}, false, nil
@@ -953,6 +968,67 @@ func (s *PlanningStore) GetLatestOperationByResultRef(ctx context.Context, plann
 		return PlanningOperation{}, false, fmt.Errorf("get planning operation by result ref: %w", err)
 	}
 	return row, true, nil
+}
+
+func (s *PlanningStore) ListLatestOperationsByResultRefs(ctx context.Context, planningSessionID string, resultRefs []string) (map[string]PlanningOperation, error) {
+	trimmedSessionID := strings.TrimSpace(planningSessionID)
+	if trimmedSessionID == "" {
+		return nil, fmt.Errorf("planning session id is required")
+	}
+	trimmedRefs := make([]string, 0, len(resultRefs))
+	seen := make(map[string]struct{}, len(resultRefs))
+	for _, resultRef := range resultRefs {
+		trimmed := strings.TrimSpace(resultRef)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		trimmedRefs = append(trimmedRefs, trimmed)
+	}
+	if len(trimmedRefs) == 0 {
+		return map[string]PlanningOperation{}, nil
+	}
+	placeholders := make([]string, 0, len(trimmedRefs))
+	args := make([]any, 0, len(trimmedRefs)+1)
+	args = append(args, trimmedSessionID)
+	for _, resultRef := range trimmedRefs {
+		placeholders = append(placeholders, "?")
+		args = append(args, resultRef)
+	}
+	query := `SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		 FROM planning_operations
+		 WHERE planning_session_id = ? AND result_ref IN (` + strings.Join(placeholders, ",") + `)
+		 ORDER BY created_at DESC, operation_id DESC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list planning operations by result refs: %w", err)
+	}
+	defer rows.Close()
+	items := make(map[string]PlanningOperation, len(trimmedRefs))
+	for rows.Next() {
+		var row PlanningOperation
+		if err := scanPlanningOperation(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan planning operation by result refs: %w", err)
+		}
+		if row.ResultRef == nil {
+			continue
+		}
+		resultRef := strings.TrimSpace(*row.ResultRef)
+		if resultRef == "" {
+			continue
+		}
+		if _, exists := items[resultRef]; exists {
+			continue
+		}
+		items[resultRef] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate planning operations by result refs: %w", err)
+	}
+	return items, nil
 }
 
 func (s *PlanningStore) ListOperationsByStatusPage(ctx context.Context, afterCreatedAt, afterOperationID string, limit int, statuses ...PlanningOperationStatus) ([]PlanningOperation, error) {
@@ -1108,6 +1184,7 @@ func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
 	); err != nil {
 		return err
 	}
+	dest.AcpRunID = normalizePlanningOperationAcpRunID(dest.OperationID, dest.AcpRunID)
 
 	dest.LeaseExpiresAt = nullableStringFromSQL(leaseExpiresAt)
 	dest.LastHeartbeatAt = nullableStringFromSQL(lastHeartbeatAt)

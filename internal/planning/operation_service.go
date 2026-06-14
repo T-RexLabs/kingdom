@@ -100,6 +100,9 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			}
 			return CreateOperationResult{}, err
 		}
+		if target.Role != state.PlanningMessageRoleAssistant {
+			return CreateOperationResult{}, ErrMessageNotRegeneratable
+		}
 		// Regenerate forks a new assistant sibling under the same parent as the
 		// message it replaces; the old answer and its downstream are preserved.
 		request = operationRequest{

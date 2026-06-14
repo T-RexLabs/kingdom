@@ -238,7 +238,11 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 		s.writeInternalError(w, "fetch branch info failed")
 		return
 	}
-	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID)
+	messageIDs := make([]string, 0, len(page.Items))
+	for _, item := range page.Items {
+		messageIDs = append(messageIDs, item.PlanningMessageID)
+	}
+	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID, messageIDs)
 	if err != nil {
 		s.writeInternalError(w, "fetch planning message activity linkage failed")
 		return
@@ -342,7 +346,11 @@ func (s *Server) handleListPlanningMessageVariants(w http.ResponseWriter, r *htt
 		return
 	}
 	response := gen.PlanningMessageVariantsResponse{Items: make([]gen.PlanningMessage, 0, len(variants))}
-	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID)
+	messageIDs := make([]string, 0, len(variants))
+	for _, item := range variants {
+		messageIDs = append(messageIDs, item.PlanningMessageID)
+	}
+	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID, messageIDs)
 	if err != nil {
 		s.writeInternalError(w, "fetch planning message activity linkage failed")
 		return
@@ -361,8 +369,8 @@ func (s *Server) handleListPlanningMessageVariants(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) planningMessageRunIDs(ctx context.Context, planningSessionID string) (map[string]openapi_types.UUID, error) {
-	operations, err := s.planningStore.ListSessionOperations(ctx, planningSessionID, 200)
+func (s *Server) planningMessageRunIDs(ctx context.Context, planningSessionID string, messageIDs []string) (map[string]openapi_types.UUID, error) {
+	operations, err := s.planningStore.ListLatestOperationsByResultRefs(ctx, planningSessionID, messageIDs)
 	if err != nil {
 		return nil, err
 	}

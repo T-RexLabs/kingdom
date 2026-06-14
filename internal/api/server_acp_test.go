@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	gen "kingdom/internal/apigen"
 	"kingdom/internal/acp"
+	gen "kingdom/internal/apigen"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
@@ -224,6 +225,140 @@ func TestWritePlanningOperationEventsIncludesLiveEventID(t *testing.T) {
 	}
 }
 
+func TestAcpRunLookupNormalizesLegacyPlannerRunIDs(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	db := openAPIServerTestDB(t)
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_title_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_legacy_acp', 'Legacy ACP', 'custom', 'active', 'ready', NULL, 'po_legacy_acp', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:10:00Z', '2026-04-21T17:10:00Z')`, projectRoot)
+	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_legacy_acp', 'po_legacy_acp', 'ps_legacy_acp', 'reply', 'running', '{}', '', NULL, 0, NULL, NULL, NULL, '', NULL, NULL, NULL, '2026-04-21T17:10:01Z', '2026-04-21T17:10:01Z', NULL)`)
+
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{DB: db, ProjectRoot: projectRoot})
+	legacyRunID := acp.PlannerRunID("po_legacy_acp")
+
+	sessionRes := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/planning-sessions/ps_legacy_acp",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if sessionRes.Code != http.StatusOK {
+		t.Fatalf("expected session 200, got %d (%s)", sessionRes.Code, sessionRes.Body.String())
+	}
+	var session gen.PlanningSessionDetail
+	if err := json.Unmarshal(sessionRes.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode planning session detail: %v", err)
+	}
+	if session.CurrentRunId == nil || session.CurrentRunId.String() != legacyRunID {
+		t.Fatalf("expected normalized current_run_id %q, got %+v", legacyRunID, session.CurrentRunId)
+	}
+
+	runRes := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/acp/runs/" + legacyRunID,
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if runRes.Code != http.StatusOK {
+		t.Fatalf("expected acp run 200, got %d (%s)", runRes.Code, runRes.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode acp run: %v", err)
+	}
+	if run.RunId.String() != legacyRunID {
+		t.Fatalf("expected normalized acp run id %q, got %q", legacyRunID, run.RunId.String())
+	}
+
+	store := state.NewPlanningStore(db)
+	operation, ok, err := store.GetOperation(context.Background(), "po_legacy_acp")
+	if err != nil || !ok {
+		t.Fatalf("get normalized operation: ok=%v err=%v", ok, err)
+	}
+	if operation.AcpRunID != legacyRunID {
+		t.Fatalf("expected stored acp_run_id normalized to %q, got %q", legacyRunID, operation.AcpRunID)
+	}
+}
+
+func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+
+	const sessionID = "ps_history_runs"
+	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_title_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES (?, 'History Runs', 'custom', 'active', 'ready', 'pm_assistant_205', NULL, NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:10:00Z', '2026-04-21T17:10:00Z')`, sessionID, projectRoot)
+	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('pm_root_history', ?, NULL, 'assistant', 'How would you like to start?', '{"prompt":"How would you like to start?","type":"long_text"}', '{}', '2026-04-21T17:10:00Z')`, sessionID)
+	parentID := "pm_root_history"
+	for i := 1; i <= 205; i++ {
+		userID := fmt.Sprintf("pm_user_%03d", i)
+		assistantID := fmt.Sprintf("pm_assistant_%03d", i)
+		operationID := fmt.Sprintf("po_hist_%03d", i)
+		userCreatedAt := fmt.Sprintf("2026-04-21T17:%02d:%02dZ", 10+(i/60), i%60)
+		assistantCreatedAt := fmt.Sprintf("2026-04-21T18:%02d:%02dZ", 10+(i/60), i%60)
+		mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES (?, ?, ?, 'user', ?, '{}', ?, ?)`, userID, sessionID, parentID, fmt.Sprintf("User message %d", i), fmt.Sprintf(`{"text":"User message %d"}`, i), userCreatedAt)
+		mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES (?, ?, ?, 'assistant', ?, '{}', '{}', ?)`, assistantID, sessionID, userID, fmt.Sprintf("Assistant message %d", i), assistantCreatedAt)
+		mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES (?, ?, ?, 'reply', 'succeeded', '{}', '', NULL, 0, NULL, NULL, NULL, '', NULL, ?, NULL, ?, ?, ?)`, operationID, acp.PlannerRunID(operationID), sessionID, assistantID, assistantCreatedAt, assistantCreatedAt, assistantCreatedAt)
+		parentID = assistantID
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected planning messages 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var page gen.PlanningMessagesPage
+	if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode planning messages page: %v", err)
+	}
+	if len(page.Items) == 0 {
+		t.Fatal("expected planning message history to be returned")
+	}
+	var firstAssistant *gen.PlanningMessage
+	for {
+		for i := range page.Items {
+			item := &page.Items[i]
+			if item.PlanningMessageId == "pm_assistant_001" {
+				firstAssistant = item
+				break
+			}
+		}
+		if firstAssistant != nil {
+			break
+		}
+		if page.PreviousCursor == nil || strings.TrimSpace(*page.PreviousCursor) == "" {
+			break
+		}
+		res = performJSONRequest(t, handler, requestSpec{
+			method:  http.MethodGet,
+			path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200&before=" + *page.PreviousCursor,
+			actorID: "actor-1",
+			roleID:  "chancellor",
+		})
+		if res.Code != http.StatusOK {
+			t.Fatalf("expected paged planning messages 200, got %d (%s)", res.Code, res.Body.String())
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode paged planning messages page: %v", err)
+		}
+	}
+	if firstAssistant == nil {
+		t.Fatalf("expected to find oldest assistant message in page, got %d items", len(page.Items))
+	}
+	if firstAssistant.SourceRunId == nil || firstAssistant.SourceRunId.String() != acp.PlannerRunID("po_hist_001") {
+		t.Fatalf("expected oldest assistant source_run_id %q, got %+v", acp.PlannerRunID("po_hist_001"), firstAssistant.SourceRunId)
+	}
+}
 
 func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.Duration) gen.AcpRun {
 	t.Helper()

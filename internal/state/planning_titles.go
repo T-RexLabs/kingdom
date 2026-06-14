@@ -151,6 +151,7 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 
 	sessionResult, err := newUpdateBuilder("planning_sessions").
 		Set("updated_at", strings.TrimSpace(req.UpdatedAt)).
+		Set("current_title_operation_id", nil).
 		Where("planning_session_id = ?", strings.TrimSpace(req.SessionID)).
 		Where("current_title_operation_id = ?", strings.TrimSpace(req.OperationID)).
 		Exec(ctx, tx)

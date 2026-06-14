@@ -57,20 +57,20 @@ const (
 )
 
 type PlanningSession struct {
-	PlanningSessionID        string
-	Title                    string
-	TitleState               string
-	LifecycleState           PlanningSessionLifecycleState
-	ConversationState        PlanningSessionConversationState
-	ActiveLeafMessageID      *string
-	CurrentOperationID       *string
-	CurrentTitleOperationID  *string
-	CurrentDraftID           *string
-	ContextSnapshotID        *string
-	ProjectRoot              string
-	ModelSelectionJSON       string
-	CreatedAt                string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   string
+	TitleState              string
+	LifecycleState          PlanningSessionLifecycleState
+	ConversationState       PlanningSessionConversationState
+	ActiveLeafMessageID     *string
+	CurrentOperationID      *string
+	CurrentTitleOperationID *string
+	CurrentDraftID          *string
+	ContextSnapshotID       *string
+	ProjectRoot             string
+	ModelSelectionJSON      string
+	CreatedAt               string
+	UpdatedAt               string
 }
 
 type PlanningMessage struct {
@@ -159,35 +159,35 @@ type PlanningOperationTelemetrySample struct {
 }
 
 type CreatePlanningSessionRequest struct {
-	PlanningSessionID        string
-	Title                    string
-	TitleState               string
-	LifecycleState           PlanningSessionLifecycleState
-	ConversationState        PlanningSessionConversationState
-	ActiveLeafMessageID      string
-	CurrentOperationID       string
-	CurrentTitleOperationID  string
-	CurrentDraftID           string
-	ContextSnapshotID        string
-	ProjectRoot              string
-	ModelSelectionJSON       string
-	CreatedAt                string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   string
+	TitleState              string
+	LifecycleState          PlanningSessionLifecycleState
+	ConversationState       PlanningSessionConversationState
+	ActiveLeafMessageID     string
+	CurrentOperationID      string
+	CurrentTitleOperationID string
+	CurrentDraftID          string
+	ContextSnapshotID       string
+	ProjectRoot             string
+	ModelSelectionJSON      string
+	CreatedAt               string
+	UpdatedAt               string
 }
 
 type UpdatePlanningSessionRequest struct {
-	PlanningSessionID        string
-	Title                    *string
-	TitleState               *string
-	LifecycleState           *PlanningSessionLifecycleState
-	ConversationState        *PlanningSessionConversationState
-	ActiveLeafMessageID      *string
-	CurrentOperationID       *string
-	CurrentTitleOperationID  *string
-	CurrentDraftID           *string
-	ContextSnapshotID        *string
-	ModelSelectionJSON       *string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   *string
+	TitleState              *string
+	LifecycleState          *PlanningSessionLifecycleState
+	ConversationState       *PlanningSessionConversationState
+	ActiveLeafMessageID     *string
+	CurrentOperationID      *string
+	CurrentTitleOperationID *string
+	CurrentDraftID          *string
+	ContextSnapshotID       *string
+	ModelSelectionJSON      *string
+	UpdatedAt               string
 }
 
 type AppendPlanningMessageRequest struct {
@@ -470,6 +470,64 @@ type sqlQuerier interface {
 
 func NewPlanningStore(db *sql.DB) *PlanningStore {
 	return &PlanningStore{db: db}
+}
+
+func (s *PlanningStore) NormalizePlannerAcpRunIDs(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("planning store database is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT operation_id, acp_run_id FROM planning_operations`)
+	if err != nil {
+		return fmt.Errorf("list planning operations for acp run id normalization: %w", err)
+	}
+	defer rows.Close()
+	type normalizedUpdate struct {
+		operationID string
+		acpRunID    string
+	}
+	updates := make([]normalizedUpdate, 0)
+	for rows.Next() {
+		var operationID string
+		var acpRunID string
+		if err := rows.Scan(&operationID, &acpRunID); err != nil {
+			return fmt.Errorf("scan planning operation for acp run id normalization: %w", err)
+		}
+		normalized := normalizePlanningOperationAcpRunID(operationID, acpRunID)
+		if normalized == strings.TrimSpace(acpRunID) {
+			continue
+		}
+		updates = append(updates, normalizedUpdate{operationID: strings.TrimSpace(operationID), acpRunID: normalized})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate planning operations for acp run id normalization: %w", err)
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin planning acp run id normalization: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, update := range updates {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE planning_operations SET acp_run_id = ? WHERE operation_id = ?`,
+			update.acpRunID,
+			update.operationID,
+		); err != nil {
+			return fmt.Errorf("update planning acp run id for %s: %w", update.operationID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit planning acp run id normalization: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {

@@ -174,15 +174,15 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 
 	conversationState := PlanningSessionConversationStateProcessing
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_flow",
-		Title:                    refString("Planner flow updated"),
-		TitleState:               refString("generated"),
-		ConversationState:        &conversationState,
-		ActiveLeafMessageID:      refString("pm_assistant"),
-		CurrentDraftID:           refString("pd_1"),
-		ContextSnapshotID:        refString("pcs_1"),
-		ModelSelectionJSON:       refString(`{"model":"opencode/gpt-5-nano"}`),
-		UpdatedAt:                "2026-04-21T16:15:00Z",
+		PlanningSessionID:   "ps_flow",
+		Title:               refString("Planner flow updated"),
+		TitleState:          refString("generated"),
+		ConversationState:   &conversationState,
+		ActiveLeafMessageID: refString("pm_assistant"),
+		CurrentDraftID:      refString("pd_1"),
+		ContextSnapshotID:   refString("pcs_1"),
+		ModelSelectionJSON:  refString(`{"model":"opencode/gpt-5-nano"}`),
+		UpdatedAt:           "2026-04-21T16:15:00Z",
 	}); err != nil {
 		t.Fatalf("update session: %v", err)
 	}
@@ -465,19 +465,19 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
-		Title:                    "Original title",
-		TitleState:               "custom",
-		LifecycleState:           PlanningSessionLifecycleStateActive,
-		ConversationState:        PlanningSessionConversationStateReady,
+		PlanningSessionID:   "ps_update_optional",
+		Title:               "Original title",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateReady,
 		ActiveLeafMessageID: "pm_original",
-		CurrentOperationID:       "po_original",
-		CurrentDraftID:           "pd_original",
-		ContextSnapshotID:        "pcs_original",
-		ProjectRoot:              "/workspace/project",
-		ModelSelectionJSON:       `{"model":"github-copilot/gpt-5.4"}`,
-		CreatedAt:                "2026-04-21T16:00:00Z",
-		UpdatedAt:                "2026-04-21T16:00:00Z",
+		CurrentOperationID:  "po_original",
+		CurrentDraftID:      "pd_original",
+		ContextSnapshotID:   "pcs_original",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:           "2026-04-21T16:00:00Z",
+		UpdatedAt:           "2026-04-21T16:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -511,12 +511,12 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	}
 
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
+		PlanningSessionID:   "ps_update_optional",
 		ActiveLeafMessageID: refString(""),
-		CurrentOperationID:       refString(""),
-		CurrentDraftID:           refString(""),
-		ContextSnapshotID:        refString(""),
-		UpdatedAt:                "2026-04-21T16:02:00Z",
+		CurrentOperationID:  refString(""),
+		CurrentDraftID:      refString(""),
+		ContextSnapshotID:   refString(""),
+		UpdatedAt:           "2026-04-21T16:02:00Z",
 	}); err != nil {
 		t.Fatalf("clear session optional fields: %v", err)
 	}
@@ -533,12 +533,12 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	}
 
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
+		PlanningSessionID:   "ps_update_optional",
 		ActiveLeafMessageID: refString("pm_new"),
-		CurrentOperationID:       refString("po_new"),
-		CurrentDraftID:           refString("pd_new"),
-		ContextSnapshotID:        refString("pcs_new"),
-		UpdatedAt:                "2026-04-21T16:03:00Z",
+		CurrentOperationID:  refString("po_new"),
+		CurrentDraftID:      refString("pd_new"),
+		ContextSnapshotID:   refString("pcs_new"),
+		UpdatedAt:           "2026-04-21T16:03:00Z",
 	}); err != nil {
 		t.Fatalf("set session optional fields: %v", err)
 	}
@@ -1013,17 +1013,17 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 	ctx := context.Background()
 
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_regen_race",
-		Title:                    "regen-race",
-		TitleState:               "custom",
-		LifecycleState:           PlanningSessionLifecycleStateActive,
-		ConversationState:        PlanningSessionConversationStateProcessing,
+		PlanningSessionID:   "ps_regen_race",
+		Title:               "regen-race",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
 		ActiveLeafMessageID: "pm_regen_old",
-		CurrentOperationID:       "po_regen_race",
-		ProjectRoot:              "/workspace/project",
-		ModelSelectionJSON:       `{"model":"m"}`,
-		CreatedAt:                "2026-04-27T11:00:00Z",
-		UpdatedAt:                "2026-04-27T11:00:00Z",
+		CurrentOperationID:  "po_regen_race",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T11:00:00Z",
+		UpdatedAt:           "2026-04-27T11:00:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -1645,6 +1645,81 @@ func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T
 	}
 	if session.Title != "Foreground-safe title" || session.TitleState != "generated" {
 		t.Fatalf("expected generated title to settle on title lane, got %+v", session)
+	}
+}
+
+func TestFinalizeGenerateTitleAbortClearsTitleSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:       "ps_title_abort",
+		Title:                   "placeholder",
+		TitleState:              "placeholder",
+		LifecycleState:          PlanningSessionLifecycleStateActive,
+		ConversationState:       PlanningSessionConversationStateReady,
+		CurrentTitleOperationID: "po_title_abort",
+		ProjectRoot:             "/workspace/project",
+		ModelSelectionJSON:      `{"model":"m"}`,
+		CreatedAt:               "2026-04-26T14:00:00Z",
+		UpdatedAt:               "2026-04-26T14:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_title_abort",
+		PlanningSessionID:  "ps_title_abort",
+		Type:               PlanningOperationTypeGenerateTitle,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "title-worker",
+		LeaseExpiresAt:     "2026-04-26T15:00:00Z",
+		LeaseVersion:       2,
+		CreatedAt:          "2026-04-26T14:00:01Z",
+		StartedAt:          "2026-04-26T14:00:02Z",
+	}); err != nil {
+		t.Fatalf("create title op: %v", err)
+	}
+
+	if err := store.FinalizeGenerateTitleAbort(ctx, FinalizeGenerateTitleAbortRequest{
+		SessionID:    "ps_title_abort",
+		OperationID:  "po_title_abort",
+		LeaseOwner:   "title-worker",
+		LeaseVersion: 2,
+		Status:       PlanningOperationStatusCancelled,
+		UpdatedAt:    "2026-04-26T14:00:30Z",
+		FinishedAt:   "2026-04-26T14:00:30Z",
+		ErrorMessage: "cancelled during shutdown",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_title_abort:1",
+			OperationID: "po_title_abort",
+			Seq:         1,
+			EventType:   "run.cancelled",
+			PayloadJSON: `{"reason":"cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-26T14:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize generate title abort: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_title_abort")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentTitleOperationID != nil {
+		t.Fatalf("expected title slot cleared after abort, got %+v", session.CurrentTitleOperationID)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_title_abort")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected cancelled title operation, got %q", op.Status)
 	}
 }
 

@@ -740,16 +740,16 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 
 	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_edit_auto_title",
-		Title:                    "plan_1",
-		TitleState:               planningSessionTitleStatePlaceholder,
-		LifecycleState:           state.PlanningSessionLifecycleStateActive,
-		ConversationState:        state.PlanningSessionConversationStateReady,
+		PlanningSessionID:   "ps_edit_auto_title",
+		Title:               "plan_1",
+		TitleState:          planningSessionTitleStatePlaceholder,
+		LifecycleState:      state.PlanningSessionLifecycleStateActive,
+		ConversationState:   state.PlanningSessionConversationStateReady,
 		ActiveLeafMessageID: "pm_edit_auto_title_assistant_3",
-		ProjectRoot:              projectRoot,
-		ModelSelectionJSON:       `{"model":"test-model"}`,
-		CreatedAt:                "2026-04-21T17:00:00Z",
-		UpdatedAt:                "2026-04-21T17:00:00Z",
+		ProjectRoot:         projectRoot,
+		ModelSelectionJSON:  `{"model":"test-model"}`,
+		CreatedAt:           "2026-04-21T17:00:00Z",
+		UpdatedAt:           "2026-04-21T17:00:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -1119,16 +1119,16 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
 
 	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_recovery_catchup",
-		Title:                    "plan_1",
-		TitleState:               planningSessionTitleStatePlaceholder,
-		LifecycleState:           state.PlanningSessionLifecycleStateActive,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		ActiveLeafMessageID:      "pm_recovery_catchup_user_3",
-		ProjectRoot:              projectRoot,
-		ModelSelectionJSON:       `{"model":"test-model"}`,
-		CreatedAt:                "2026-04-26T09:55:00Z",
-		UpdatedAt:                "2026-04-26T09:55:00Z",
+		PlanningSessionID:   "ps_recovery_catchup",
+		Title:               "plan_1",
+		TitleState:          planningSessionTitleStatePlaceholder,
+		LifecycleState:      state.PlanningSessionLifecycleStateActive,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		ActiveLeafMessageID: "pm_recovery_catchup_user_3",
+		ProjectRoot:         projectRoot,
+		ModelSelectionJSON:  `{"model":"test-model"}`,
+		CreatedAt:           "2026-04-26T09:55:00Z",
+		UpdatedAt:           "2026-04-26T09:55:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -3056,14 +3056,126 @@ func TestServiceCloseCancelsInFlightGenerateTitleOperation(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get session after close: ok=%v err=%v", ok, err)
 	}
-	if stored.CurrentTitleOperationID == nil {
-		t.Fatalf("expected title slot to retain cancelled lineage, got %+v", stored.CurrentTitleOperationID)
+	if stored.CurrentTitleOperationID != nil {
+		t.Fatalf("expected cancelled title run to release the title slot, got %+v", stored.CurrentTitleOperationID)
 	}
 	if stored.CurrentOperationID != nil {
 		t.Fatalf("expected interactive slot to remain empty, got %+v", stored.CurrentOperationID)
 	}
 	if stored.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected conversation_state to remain ready, got %q", stored.ConversationState)
+	}
+}
+
+func TestServiceGenerateTitleCanRetryAfterCancelledTitleRun(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	planner := newSlowTitlePlanner()
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, planner, projectRoot, func() string { return "2026-04-26T15:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	updated, err := service.GenerateTitle(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("first generate title: %v", err)
+	}
+	if updated.CurrentTitleOperationID == nil || strings.TrimSpace(*updated.CurrentTitleOperationID) == "" {
+		t.Fatalf("expected queued title operation id, got %+v", updated.CurrentTitleOperationID)
+	}
+	firstOperationID := strings.TrimSpace(*updated.CurrentTitleOperationID)
+	awaitSlowTitleStarted(t, planner)
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(closeCtx); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+
+	closedSession, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get cancelled session: ok=%v err=%v", ok, err)
+	}
+	if closedSession.CurrentTitleOperationID != nil {
+		t.Fatalf("expected cancelled title run to clear the slot, got %+v", closedSession.CurrentTitleOperationID)
+	}
+
+	retryPlanner := &mockAgent{}
+	retryService := NewService(store, retryPlanner, projectRoot, func() string { return "2026-04-26T15:05:00Z" }, deterministicID())
+	retried, _, err := retryService.CreateGenerateTitleOperation(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("retry generate title: %v", err)
+	}
+	if retried.CurrentTitleOperationID == nil || strings.TrimSpace(*retried.CurrentTitleOperationID) == "" {
+		t.Fatalf("expected retried title operation id, got %+v", retried.CurrentTitleOperationID)
+	}
+	secondOperationID := strings.TrimSpace(*retried.CurrentTitleOperationID)
+	if secondOperationID == firstOperationID {
+		t.Fatalf("expected a fresh title operation after cancellation, reused %q", secondOperationID)
+	}
+	awaitOperationTerminal(t, store, secondOperationID)
+
+	stored, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get retried session: ok=%v err=%v", ok, err)
+	}
+	if stored.CurrentTitleOperationID != nil {
+		t.Fatalf("expected title slot cleared after retried completion, got %+v", stored.CurrentTitleOperationID)
+	}
+	if stored.TitleState != planningSessionTitleStateGenerated {
+		t.Fatalf("expected retried title generation to settle title, got %+v", stored)
+	}
+}
+
+func TestServiceRegenerateRejectsUserTarget(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T16:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	reply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Capture scope and constraints",
+		AnswerPayloadJSON: `{"text":"Capture scope and constraints"}`,
+	})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	awaitOperationTerminal(t, store, reply.Operation.OperationID)
+
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 2 {
+		t.Fatalf("expected at least opening + user message, got %+v", messages)
+	}
+	userMessageID := messages[1].PlanningMessageID
+
+	_, err = service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:            state.PlanningOperationTypeRegenerate,
+		TargetMessageID: userMessageID,
+	})
+	if !errors.Is(err, ErrMessageNotRegeneratable) {
+		t.Fatalf("expected ErrMessageNotRegeneratable, got %v", err)
 	}
 }
 

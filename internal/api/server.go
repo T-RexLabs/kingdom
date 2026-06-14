@@ -198,6 +198,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	workflowParser := workflow.NewParser(state.CanonicalRoleIDs())
 	workflowCompiler := workflow.NewCompiler(schemaSet, workflowParser)
 	planningStore := state.NewPlanningStore(cfg.DB)
+	if err := planningStore.NormalizePlannerAcpRunIDs(context.Background()); err != nil {
+		return nil, fmt.Errorf("normalize planner acp run ids: %w", err)
+	}
 
 	cursorSigner, err := newCursorSigner()
 	if err != nil {
