@@ -113,6 +113,10 @@ type ExecuteRequest struct {
 	// that are not plain text progress, such as export-based reconciliation phases.
 	OnLifecycle func(observation ExecuteLifecycleObservation) `json:"-"`
 
+	// OnActivity is called for real provider-emitted activity such as tool use
+	// or reasoning observations. Callers must not fabricate additional detail.
+	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
+
 	// OnCompletionReceipt persists a runtime-owned settlement receipt before the
 	// adapter returns success for runtime-backed execution.
 	OnCompletionReceipt func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) `json:"-"`
@@ -136,6 +140,27 @@ type ExecuteLifecycleObservation struct {
 	ResolvedReasonCode string                `json:"resolved_reason_code,omitempty"`
 	EvidenceSource     string                `json:"evidence_source,omitempty"`
 	Error              string                `json:"error,omitempty"`
+}
+
+type ExecuteActivityKind string
+
+const (
+	ExecuteActivityKindTool      ExecuteActivityKind = "tool"
+	ExecuteActivityKindReasoning ExecuteActivityKind = "reasoning"
+	ExecuteActivityKindProgress  ExecuteActivityKind = "progress"
+)
+
+type ExecuteActivityObservation struct {
+	Kind          ExecuteActivityKind `json:"kind"`
+	ProviderPartID string             `json:"provider_part_id,omitempty"`
+	OccurredAt    string              `json:"occurred_at,omitempty"`
+	ToolName   string              `json:"tool_name,omitempty"`
+	ToolStatus string              `json:"tool_status,omitempty"`
+	ToolTitle  string              `json:"tool_title,omitempty"`
+	ToolInput  string              `json:"tool_input,omitempty"`
+	Label      string              `json:"label,omitempty"`
+	Summary    string              `json:"summary,omitempty"`
+	RawText    string              `json:"raw_text,omitempty"`
 }
 
 type CompletionReceipt struct {

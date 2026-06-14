@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -19,6 +20,13 @@ type operationService struct {
 
 func newOperationService(deps runtimeDeps, runner *operationRunner) *operationService {
 	return &operationService{deps: deps, runner: runner}
+}
+
+func stringValueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (s *operationService) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
@@ -38,6 +46,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	now := s.deps.nowString()
 	request := operationRequest{}
 	operationType := input.Type
+	activeLeaf := strings.TrimSpace(stringValueOrEmpty(session.ActiveLeafMessageID))
 
 	switch operationType {
 	case state.PlanningOperationTypeReply:
@@ -45,28 +54,20 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		if trimmedReply == "" {
 			return CreateOperationResult{}, fmt.Errorf("planning reply content is required")
 		}
-		// Cross-check `truncate_from_turn` against the actual transcript so a
-		// client cannot submit `truncate_from_turn = 99` against a 3-turn
-		// session and create a gapful sequence. The plain `>= 1` validation
-		// at the store layer is necessary but not sufficient.
-		messages, err := s.deps.store.ListMessages(ctx, planningSessionID)
-		if err != nil {
-			return CreateOperationResult{}, err
+		// The new user message attaches under an explicit parent (editing an
+		// earlier message → a new sibling branch) or, by default, the session's
+		// active leaf (a normal reply continuing the conversation). No
+		// truncation: editing simply forks a branch.
+		parentMessageID := activeLeaf
+		if input.ParentMessageID != nil {
+			parentMessageID = strings.TrimSpace(*input.ParentMessageID)
 		}
-		maxTurn := 0
-		if len(messages) > 0 {
-			maxTurn = messages[len(messages)-1].TurnIndex
-		}
-		turnIndex := 0
-		if input.TruncateFromTurn != nil {
-			if *input.TruncateFromTurn < 1 || *input.TruncateFromTurn > maxTurn {
-				return CreateOperationResult{}, ErrTurnIndexOutOfRange
-			}
-			turnIndex = *input.TruncateFromTurn
-		} else {
-			turnIndex = 1
-			if maxTurn > 0 {
-				turnIndex = maxTurn + 1
+		if parentMessageID != "" {
+			if _, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, parentMessageID); err != nil {
+				if errors.Is(err, state.ErrPlanningMessageNotFound) {
+					return CreateOperationResult{}, ErrMessageNotFound
+				}
+				return CreateOperationResult{}, err
 			}
 		}
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(input.AnswerPayloadJSON), `{}`)
@@ -75,10 +76,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			AnswerPayload:      json.RawMessage(answerPayloadJSON),
 			UserMessageID:      s.deps.nextID("planning_message"),
 			UserCreatedAt:      now,
-			TurnIndex:          turnIndex,
+			ParentMessageID:    parentMessageID,
 			AssistantMessageID: s.deps.nextID("planning_message"),
 			AssistantCreatedAt: now,
-			ForceNewSession:    input.TruncateFromTurn != nil,
+			// A reply that does not continue from the current active leaf (an
+			// edit) starts a new branch, so the provider session must restart.
+			ForceNewSession: parentMessageID != activeLeaf,
 		}
 	case state.PlanningOperationTypeFormalize:
 		request = operationRequest{
@@ -86,32 +89,29 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			DraftCreatedAt: now,
 		}
 	case state.PlanningOperationTypeRegenerate:
-		if input.TargetTurnIndex < 1 {
-			return CreateOperationResult{}, ErrTurnIndexOutOfRange
+		targetID := strings.TrimSpace(input.TargetMessageID)
+		if targetID == "" {
+			return CreateOperationResult{}, ErrMessageNotFound
 		}
-		// Reject regenerate against turns that don't exist in the canonical
-		// transcript — the partial unique index would catch some collisions
-		// but not gapful turn creation when no assistant message exists yet
-		// at that turn.
-		maxTurn, err := s.deps.store.GetMaxTurnIndex(ctx, planningSessionID)
+		target, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, targetID)
 		if err != nil {
+			if errors.Is(err, state.ErrPlanningMessageNotFound) {
+				return CreateOperationResult{}, ErrMessageNotFound
+			}
 			return CreateOperationResult{}, err
 		}
-		if input.TargetTurnIndex > maxTurn {
-			return CreateOperationResult{}, ErrTurnIndexOutOfRange
+		if target.Role != state.PlanningMessageRoleAssistant {
+			return CreateOperationResult{}, ErrMessageNotRegeneratable
 		}
-		maxVariant, err := s.deps.store.GetMaxVariantIndex(ctx, planningSessionID, input.TargetTurnIndex, state.PlanningMessageRoleAssistant)
-		if err != nil {
-			return CreateOperationResult{}, err
-		}
-		nextVariant := maxVariant + 1
+		// Regenerate forks a new assistant sibling under the same parent as the
+		// message it replaces; the old answer and its downstream are preserved.
 		request = operationRequest{
-			TargetTurnIndex:    input.TargetTurnIndex,
-			TurnIndex:          input.TargetTurnIndex,
-			VariantIndex:       nextVariant,
-			AssistantMessageID: s.deps.nextID("planning_message"),
-			AssistantCreatedAt: now,
-			ForceNewSession:    true,
+			TargetMessageID:             targetID,
+			ParentMessageID:             strings.TrimSpace(stringValueOrEmpty(target.ParentMessageID)),
+			AssistantMessageID:          s.deps.nextID("planning_message"),
+			AssistantCreatedAt:          now,
+			PreviousActiveLeafMessageID: activeLeaf,
+			ForceNewSession:             true,
 		}
 	default:
 		return CreateOperationResult{}, fmt.Errorf("unsupported planner operation type: %q", operationType)
@@ -121,8 +121,11 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	if err != nil {
 		return CreateOperationResult{}, fmt.Errorf("marshal planning operation request: %w", err)
 	}
+	operationID := operationReqID(s.deps)
+	acpRunID := acp.PlannerRunID(operationID)
 	operationReq := state.CreatePlanningOperationRequest{
-		OperationID:        s.deps.nextID("planning_operation"),
+		OperationID:        operationID,
+		AcpRunID:           acpRunID,
 		PlanningSessionID:  planningSessionID,
 		Type:               operationType,
 		Status:             state.PlanningOperationStatusQueued,
@@ -133,25 +136,25 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	}
 
 	var operation state.PlanningOperation
+	initialEvent := plannerAcpRunCreatedEvent(operationReq.OperationID, planningSessionID, operationType, request, now)
 	switch operationType {
 	case state.PlanningOperationTypeReply:
 		conversationState := state.PlanningSessionConversationStateProcessing
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(string(request.AnswerPayload)), `{}`)
 		operation, err = s.deps.store.CreateReplyBundle(ctx, state.CreatePlanningReplyBundleRequest{
-			SessionID:        planningSessionID,
-			TruncateFromTurn: input.TruncateFromTurn,
+			SessionID: planningSessionID,
 			UserMessage: state.AppendPlanningMessageRequest{
 				PlanningMessageID:   request.UserMessageID,
 				PlanningSessionID:   planningSessionID,
-				TurnIndex:           request.TurnIndex,
+				ParentMessageID:     request.ParentMessageID,
 				Role:                state.PlanningMessageRoleUser,
 				ContentMarkdown:     request.ContentMarkdown,
 				QuestionPayloadJSON: `{}`,
 				AnswerPayloadJSON:   answerPayloadJSON,
-				Active:              true,
 				CreatedAt:           request.UserCreatedAt,
 			},
 			Operation:         operationReq,
+			InitialEvent:      initialEvent,
 			ConversationState: conversationState,
 			UpdatedAt:         now,
 		})
@@ -160,6 +163,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		operation, err = s.deps.store.CreateFormalizeBundle(ctx, state.CreatePlanningFormalizeBundleRequest{
 			SessionID:          planningSessionID,
 			Operation:          operationReq,
+			InitialEvent:       initialEvent,
 			ConversationState:  conversationState,
 			CurrentOperationID: operationReq.OperationID,
 			UpdatedAt:          now,
@@ -167,11 +171,12 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	case state.PlanningOperationTypeRegenerate:
 		conversationState := state.PlanningSessionConversationStateProcessing
 		operation, err = s.deps.store.CreateRegenerateBundle(ctx, state.CreateRegenerateBundleRequest{
-			SessionID:         planningSessionID,
-			TargetTurnIndex:   input.TargetTurnIndex,
-			Operation:         operationReq,
-			ConversationState: conversationState,
-			UpdatedAt:         now,
+			SessionID:           planningSessionID,
+			ActiveLeafMessageID: request.ParentMessageID,
+			Operation:           operationReq,
+			InitialEvent:        initialEvent,
+			ConversationState:   conversationState,
+			UpdatedAt:           now,
 		})
 	}
 	if err != nil {
@@ -201,6 +206,10 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	return CreateOperationResult{Operation: operation, Session: updatedSession}, nil
 }
 
+func operationReqID(deps runtimeDeps) string {
+	return deps.nextID("planning_operation")
+}
+
 func (s *operationService) GetOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, map[string]any, error) {
 	operation, ok, err := s.deps.store.GetOperation(ctx, operationID)
 	if err != nil || !ok {
@@ -212,6 +221,101 @@ func (s *operationService) GetOperation(ctx context.Context, operationID string)
 		request["type"] = operation.Type
 	}
 	return operation, true, request, nil
+}
+
+func (s *operationService) GetOperationByAcpRunID(ctx context.Context, acpRunID string) (state.PlanningOperation, bool, map[string]any, error) {
+	operation, ok, err := s.deps.store.GetOperationByAcpRunID(ctx, acpRunID)
+	if err != nil || !ok {
+		return operation, ok, nil, err
+	}
+	request := map[string]any{}
+	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)
+	if strings.TrimSpace(fmt.Sprint(request["type"])) == "" {
+		request["type"] = operation.Type
+	}
+	return operation, true, request, nil
+}
+
+func (s *operationService) CancelOperationByAcpRunID(ctx context.Context, acpRunID, reason string) (state.PlanningOperation, error) {
+	operation, ok, _, err := s.GetOperationByAcpRunID(ctx, acpRunID)
+	if err != nil {
+		return state.PlanningOperation{}, err
+	}
+	if !ok {
+		return state.PlanningOperation{}, ErrOperationNotFound
+	}
+	if operation.Status == state.PlanningOperationStatusSucceeded || operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
+		return operation, nil
+	}
+	trimmedReason := strings.TrimSpace(reason)
+	if trimmedReason == "" {
+		trimmedReason = "operation cancelled"
+	}
+	if operation.Status == state.PlanningOperationStatusQueued {
+		now := s.deps.nowString()
+		terminalEvent, eventErr := s.runner.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCancelledEventType, plannerMessagePayload(operation, map[string]any{"reason": trimmedReason}))
+		if eventErr != nil {
+			return state.PlanningOperation{}, eventErr
+		}
+		err = s.deps.store.CancelQueuedOperation(ctx, state.CancelQueuedPlanningOperationRequest{
+			OperationID:   operation.OperationID,
+			ErrorMessage:  trimmedReason,
+			UpdatedAt:     now,
+			FinishedAt:    now,
+			TerminalEvent: terminalEvent,
+		})
+		if err == nil {
+			updated, found, getErr := s.deps.store.GetOperation(ctx, operation.OperationID)
+			if getErr != nil {
+				return state.PlanningOperation{}, getErr
+			}
+			if !found {
+				return state.PlanningOperation{}, ErrOperationNotFound
+			}
+			return updated, nil
+		}
+		if !errors.Is(err, state.ErrPlanningLeaseConflict) {
+			return state.PlanningOperation{}, err
+		}
+		operation, ok, err = s.deps.store.GetOperation(ctx, operation.OperationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !ok {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		if operation.Status == state.PlanningOperationStatusCancelled {
+			return operation, nil
+		}
+	}
+	if s.runner == nil || !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
+		return operation, nil
+	}
+	return s.waitForTerminalOperation(ctx, operation.OperationID)
+}
+
+func (s *operationService) waitForTerminalOperation(ctx context.Context, operationID string) (state.PlanningOperation, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		operation, ok, err := s.deps.store.GetOperation(ctx, operationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !ok {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		if operation.Status == state.PlanningOperationStatusSucceeded || operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
+			return operation, nil
+		}
+		if time.Now().After(deadline) {
+			return operation, nil
+		}
+		select {
+		case <-ctx.Done():
+			return state.PlanningOperation{}, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (s *operationService) RuntimeMetrics(ctx context.Context) (PlannerRuntimeMetrics, error) {
@@ -320,7 +424,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 	var queue latencyAccumulator
 	var launch latencyAccumulator
 	var firstOutput latencyAccumulator
-	var outputToReceipt latencyAccumulator
 	var finalize latencyAccumulator
 	var total latencyAccumulator
 	for _, sample := range samples {
@@ -328,9 +431,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 		if sample.StartedAt != nil {
 			launch.add(*sample.StartedAt, sample.ProviderSessionOpenAt)
 			firstOutput.add(*sample.StartedAt, sample.FirstTextDeltaAt)
-		}
-		if sample.FirstTextDeltaAt != nil {
-			outputToReceipt.add(*sample.FirstTextDeltaAt, sample.ReceiptPersistedAt)
 		}
 		if sample.FinalizingAt != nil {
 			finalize.add(*sample.FinalizingAt, sample.FinishedAt)
@@ -340,7 +440,6 @@ func buildGeneratedTitleLatencyMetrics(samples []state.PlanningOperationTelemetr
 	metrics.Queue = queue.metric()
 	metrics.Launch = launch.metric()
 	metrics.FirstOutput = firstOutput.metric()
-	metrics.OutputToReceipt = outputToReceipt.metric()
 	metrics.Finalize = finalize.metric()
 	metrics.Total = total.metric()
 	return metrics

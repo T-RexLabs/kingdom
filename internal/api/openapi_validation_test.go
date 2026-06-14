@@ -104,7 +104,7 @@ func TestOpenAPISpecRequiresGlobalModelSelectionEntry(t *testing.T) {
 	}
 }
 
-func TestOpenAPISpecPlacesPlannerResumeHeaderOnEventsEndpoint(t *testing.T) {
+func TestOpenAPISpecPlacesPlannerResumeHeaderOnAcpEventsEndpoint(t *testing.T) {
 	t.Parallel()
 
 	swagger, err := gen.GetSwagger()
@@ -112,24 +112,24 @@ func TestOpenAPISpecPlacesPlannerResumeHeaderOnEventsEndpoint(t *testing.T) {
 		t.Fatalf("load swagger: %v", err)
 	}
 
-	getOperation := mustGetOperation(t, swagger, "/planning-operations/{id}")
+	getOperation := mustGetOperation(t, swagger, "/acp/runs/{runId}")
 	if operationHasParameterRef(getOperation, "#/components/parameters/LastEventId") {
-		t.Fatal("expected GetPlanningOperation to omit Last-Event-ID")
+		t.Fatal("expected GetAcpRun to omit Last-Event-ID")
 	}
 
-	eventsOperation := mustGetOperation(t, swagger, "/planning-operations/{id}/events")
+	eventsOperation := mustGetOperation(t, swagger, "/acp/runs/{runId}/events")
 	if !operationHasParameterRef(eventsOperation, "#/components/parameters/LastEventId") {
-		t.Fatal("expected streamPlanningOperationEvents to accept Last-Event-ID")
+		t.Fatal("expected streamAcpRunEvents to accept Last-Event-ID")
 	}
 
-	getParamsType := reflect.TypeOf(gen.GetPlanningOperationParams{})
+	getParamsType := reflect.TypeOf(gen.GetAcpRunParams{})
 	if _, ok := getParamsType.FieldByName("LastEventID"); ok {
-		t.Fatal("expected GetPlanningOperationParams to omit LastEventID")
+		t.Fatal("expected GetAcpRunParams to omit LastEventID")
 	}
 
-	streamParamsType := reflect.TypeOf(gen.StreamPlanningOperationEventsParams{})
+	streamParamsType := reflect.TypeOf(gen.StreamAcpRunEventsParams{})
 	if _, ok := streamParamsType.FieldByName("LastEventID"); !ok {
-		t.Fatal("expected StreamPlanningOperationEventsParams to include LastEventID")
+		t.Fatal("expected StreamAcpRunEventsParams to include LastEventID")
 	}
 }
 
@@ -212,7 +212,7 @@ func TestOpenAPISpecIncludesCanonicalExamplesForCoreSchemas(t *testing.T) {
 		"CreateDecreeRequest",
 		"CreateDecreeResult",
 		"PlanningSessionDetail",
-		"PlanningOperationDetail",
+		"AcpRun",
 		"CreateRunRequest",
 		"RunSummary",
 		"RunDetailSummary",

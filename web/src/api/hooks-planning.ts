@@ -2,7 +2,9 @@ import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient } fr
 import { ApiError, apiFetch } from "./client";
 import { manualRefetchQueryOptions } from "./query-freshness";
 import type {
-  CreatePlanningOperationRequest,
+  AcpRun,
+  AcpRunActivityResponse,
+  CreateAcpRunRequest,
   CreatePlanningSessionRequest,
   CreatePlanningSessionResult,
   MutationKeyOnly,
@@ -12,8 +14,6 @@ import type {
   PlanningMessage,
   PlanningMessageVariantsResponse,
   PlanningMessagesPage,
-  CreatePlanningOperationResult,
-  PlanningOperationDetail,
   PlanningSessionDetail,
   PlanningSessionListResponse,
   UpdatePlanningSessionRequest,
@@ -150,18 +150,19 @@ export function useGeneratePlanningSessionTitle(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ key }: MutationKeyOnly) =>
-      apiFetch<PlanningSessionDetail>(`/planning-sessions/${sessionId}/generate-title`, {
+      apiFetch<AcpRun>(`/acp/runs`, {
         method: "POST",
         headers: { "Idempotency-Key": key },
+        body: JSON.stringify({
+          agent_name: "planner-generate-title",
+          planning_session_id: sessionId,
+        } satisfies CreateAcpRunRequest),
       }),
-    onSuccess: (updated) => {
+    onSuccess: (run) => {
       applyPlanningSessionFields(qc, sessionId, {
-        title: updated.title,
-        title_state: updated.title_state,
-        auto_title_eligible: updated.auto_title_eligible,
-        current_title_operation_id: updated.current_title_operation_id,
-        updated_at: updated.updated_at,
+        current_title_run_id: run.run_id,
       });
+      void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
     },
   });
 }
@@ -186,16 +187,19 @@ export function useDeletePlanningSession() {
 export function useCreatePlanningOperation(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ body, key }: MutationWithBody<CreatePlanningOperationRequest>) =>
-      apiFetch<CreatePlanningOperationResult>(`/planning-sessions/${sessionId}/operations`, {
+    mutationFn: ({ body, key }: MutationWithBody<CreateAcpRunRequest>) =>
+      apiFetch<AcpRun>(`/acp/runs`, {
         method: "POST",
         headers: { "Idempotency-Key": key },
         body: JSON.stringify(body),
       }),
-    onSuccess: (result) => {
-      qc.setQueryData<PlanningOperationDetail>(plannerKeys.operation(result.operation.operation_id), result.operation);
-      qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail(sessionId), result.session);
-      applyPlanningSessionFields(qc, sessionId, result.session);
+    onSuccess: (run) => {
+      qc.setQueryData<AcpRun>(plannerKeys.operation(run.run_id), run);
+      applyPlanningSessionFields(qc, sessionId, {
+        conversation_state: "processing",
+        current_run_id: run.run_id,
+      });
+      void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
     },
   });
 }
@@ -204,10 +208,27 @@ export function usePlanningOperation(operationId?: string) {
   return useQuery({
     queryKey: operationId ? plannerKeys.operation(operationId) : plannerKeys.pendingOperation(),
     queryFn: operationId
-      ? () => apiFetch<PlanningOperationDetail>(`/planning-operations/${operationId}`)
+      ? () => apiFetch<AcpRun>(`/acp/runs/${operationId}`)
       : skipToken,
   });
 }
+
+export function useAcpRunActivity(
+  runId?: string,
+  options?: { enabled?: boolean; refetchIntervalMs?: number | false },
+) {
+  const enabled = options?.enabled ?? true;
+  return useQuery({
+    queryKey: runId ? plannerKeys.activity(runId) : ["planning-operations", "__pending__", "activity"],
+    queryFn: runId
+      ? () => apiFetch<AcpRunActivityResponse>(`/acp/runs/${runId}/activity`)
+      : skipToken,
+    enabled: enabled && Boolean(runId),
+    refetchInterval: options?.refetchIntervalMs,
+    ...plannerQueryOptions,
+  });
+}
+
 
 export function useActivateVariant(sessionId: string) {
   const qc = useQueryClient();

@@ -19,51 +19,14 @@ export type TranscriptCallbacks = {
   onEditMessage?: (messageId: string) => void;
   onEditSubmit?: (text: string) => void;
   onEditCancel?: () => void;
-  onRegenerate?: (turnIndex: number) => void;
+  onRegenerate?: (messageId: string, parentMessageId?: string) => void;
   onActivateVariant?: (messageId: string) => void;
   sessionId?: string;
   isProcessing?: boolean;
   editingMessageId?: string | null;
 };
 
-type PinSyncMode = "force" | "maintain";
 const LATEST_VISIBILITY_THRESHOLD_PX = 80;
-const PROGRAMMATIC_SYNC_SETTLE_FRAMES = 8;
-
-function isLatestAnchorVisible(scroller: HTMLElement | null, anchor: HTMLDivElement | null) {
-  if (!scroller || !anchor) {
-    return true;
-  }
-
-  const scrollerRect = scroller.getBoundingClientRect();
-  const anchorRect = anchor.getBoundingClientRect();
-  return anchorRect.top <= scrollerRect.bottom + LATEST_VISIBILITY_THRESHOLD_PX;
-}
-
-function buildTailVersion(item: TranscriptItem | undefined) {
-  if (!item) {
-    return "empty";
-  }
-
-  const question = item.message.question_payload;
-  const questionOptions = question?.options?.map((option) => `${option.label}:${option.value}`).join("|") ?? "";
-  const resolvedValues = item.resolvedAnswer?.values?.join(",") ?? "";
-
-  return [
-    item.key,
-    item.message.planning_message_id,
-    item.contentMarkdown ?? item.message.content_markdown,
-    item.isStreaming ? "streaming" : "stable",
-    item.isInteractive ? "interactive" : "static",
-    question?.prompt ?? "",
-    question?.type ?? "",
-    questionOptions,
-    item.resolvedAnswer?.value ?? "",
-    resolvedValues,
-    item.variantCount ?? "",
-    item.currentVariantIndex ?? "",
-  ].join("::");
-}
 
 function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isFirstAssistant: boolean) {
   const question = item.message.question_payload;
@@ -75,7 +38,7 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       isStreaming={item.isStreaming}
       contentMarkdown={item.contentMarkdown}
       onEdit={callbacks.onEditMessage ? () => callbacks.onEditMessage?.(item.message.planning_message_id) : undefined}
-      onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.turn_index) : undefined}
+      onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.planning_message_id, item.message.parent_message_id) : undefined}
       isEditing={isEditing}
       onEditSubmit={callbacks.onEditSubmit}
       onEditCancel={callbacks.onEditCancel}
@@ -85,6 +48,8 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       currentVariantIndex={item.currentVariantIndex}
       sessionId={callbacks.sessionId}
       onActivateVariant={callbacks.onActivateVariant}
+      activityRunId={item.activityRunId}
+      liveActivityItems={item.liveActivityItems}
     >
       {item.message.role === "assistant" && question ? (
         <PlannerQuestionChoices
@@ -133,20 +98,14 @@ export function PlannerTranscript({
   callbacks: TranscriptCallbacks;
 }) {
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
-  const [isLatestVisible, setIsLatestVisible] = useState(true);
+  const [isPinned, setIsPinned] = useState(true);
   const [scrollerElement, setScrollerElement] = useState<HTMLElement | null>(null);
-  const [latestAnchorElement, setLatestAnchorElement] = useState<HTMLDivElement | null>(null);
+  const [tailContentElement, setTailContentElement] = useState<HTMLDivElement | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const isAtBottomRef = useRef(true);
-  const isFollowingLatestRef = useRef(true);
-  const isLatestVisibleRef = useRef(true);
+  const isPinnedRef = useRef(true);
   const lastFollowLatestRequestRef = useRef<number | null>(followLatestRequest ?? null);
   const pinFrameRef = useRef<number | null>(null);
-  const pendingPinModeRef = useRef<PinSyncMode | null>(null);
   const lastScrollTopRef = useRef(0);
-  const programmaticSyncFrameRef = useRef<number | null>(null);
-  const pendingProgrammaticSyncFramesRef = useRef(0);
   const pointerInteractionRef = useRef(false);
   const touchInteractionRef = useRef(false);
   const wheelDetachPendingRef = useRef(false);
@@ -156,14 +115,13 @@ export function PlannerTranscript({
     const first = items.find((item) => item.message.role === "assistant");
     return first?.message.planning_message_id;
   }, [items]);
-  const tailVersion = useMemo(() => buildTailVersion(items[items.length - 1]), [items]);
 
   const setVirtuosoScroller = useCallback((node: HTMLElement | null | Window) => {
     setScrollerElement(node instanceof HTMLElement ? node : null);
   }, []);
 
-  const setLatestAnchor = useCallback((node: HTMLDivElement | null) => {
-    setLatestAnchorElement(node);
+  const setTailContent = useCallback((node: HTMLDivElement | null) => {
+    setTailContentElement(node);
   }, []);
 
   const clearOneShotDetachIntent = useCallback(() => {
@@ -180,83 +138,14 @@ export function PlannerTranscript({
     [],
   );
 
-  const clearProgrammaticSync = useCallback(() => {
-    pendingProgrammaticSyncFramesRef.current = 0;
-    if (programmaticSyncFrameRef.current != null) {
-      cancelAnimationFrame(programmaticSyncFrameRef.current);
-      programmaticSyncFrameRef.current = null;
-    }
+  const updateAtBottom = useCallback((next: boolean) => {
+    setIsAtBottom((current) => (current === next ? current : next));
   }, []);
 
-  const updateAtBottom = useCallback(
-    (next: boolean) => {
-      isAtBottomRef.current = next;
-      setIsAtBottom((current) => (current === next ? current : next));
-      if (next) {
-        clearProgrammaticSync();
-      }
-    },
-    [clearProgrammaticSync],
-  );
-
-  const updateFollowingLatest = useCallback((next: boolean) => {
-    isFollowingLatestRef.current = next;
-    setIsFollowingLatest((current) => (current === next ? current : next));
+  const updatePinned = useCallback((next: boolean) => {
+    isPinnedRef.current = next;
+    setIsPinned((current) => (current === next ? current : next));
   }, []);
-
-  const updateLatestVisible = useCallback(
-    (next: boolean) => {
-      isLatestVisibleRef.current = next;
-      setIsLatestVisible((current) => (current === next ? current : next));
-      if (next) {
-        clearProgrammaticSync();
-      }
-    },
-    [clearProgrammaticSync],
-  );
-
-  const refreshLatestVisibility = useCallback(() => {
-    const next = items.length === 0 || isLatestAnchorVisible(scrollerElement, latestAnchorElement);
-    updateLatestVisible(next);
-    return next;
-  }, [items.length, latestAnchorElement, scrollerElement, updateLatestVisible]);
-
-  const beginProgrammaticSync = useCallback(() => {
-    pendingProgrammaticSyncFramesRef.current = PROGRAMMATIC_SYNC_SETTLE_FRAMES;
-    if (programmaticSyncFrameRef.current != null) {
-      return;
-    }
-
-    let scheduleSettleFrame = () => {};
-
-    const settle = () => {
-      if (
-        pendingProgrammaticSyncFramesRef.current <= 0 ||
-        isAtBottomRef.current ||
-        isLatestVisibleRef.current
-      ) {
-        clearProgrammaticSync();
-        return;
-      }
-
-      pendingProgrammaticSyncFramesRef.current -= 1;
-      scheduleSettleFrame();
-    };
-
-    scheduleSettleFrame = () => {
-      let ranSynchronously = false;
-      const frameId = requestAnimationFrame(() => {
-        ranSynchronously = true;
-        settle();
-      });
-
-      if (!ranSynchronously) {
-        programmaticSyncFrameRef.current = frameId;
-      }
-    };
-
-    scheduleSettleFrame();
-  }, [clearProgrammaticSync]);
 
   // --- Entrance animation ---
   // Track the highest virtual index seen so far. Items above this watermark are
@@ -292,63 +181,33 @@ export function PlannerTranscript({
     maxSeenIndexRef.current = firstItemIndex + items.length - 1;
   }, [firstItemIndex, items]);
 
-  const syncToLatest = useCallback(
-    (mode: PinSyncMode) => {
-      const handle = virtuosoRef.current;
-      if (!handle || items.length === 0) {
-        return;
-      }
+  // Glue the viewport to the tail by aligning the last item's bottom edge with
+  // the viewport bottom. Unlike `autoscrollToBottom()` (which is gated on
+  // Virtuoso already considering itself at-bottom and silently no-ops once
+  // streaming content has pushed the tail below the fold), `scrollToIndex`
+  // scrolls unconditionally — so it keeps following as the bubble grows with
+  // streamed reply text, thinking, ACP events, and sources. Instant positioning
+  // ("auto") is used because smooth scrolling can't track a target whose height
+  // is changing mid-animation and produces jitter on virtualized lists.
+  //
+  // Requests are coalesced into a single rAF so a burst of resize/append ticks
+  // within one frame produces exactly one scroll.
+  const pinToLatest = useCallback(() => {
+    if (items.length === 0 || pinFrameRef.current != null) {
+      return;
+    }
 
-      beginProgrammaticSync();
-      if (mode === "force") {
-        handle.scrollToIndex({
-          index: "LAST",
-          align: "end",
-          behavior: "auto",
-        });
-        return;
-      }
+    let ranSynchronously = false;
+    const frameId = requestAnimationFrame(() => {
+      ranSynchronously = true;
+      pinFrameRef.current = null;
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+    });
 
-      handle.autoscrollToBottom();
-    },
-    [beginProgrammaticSync, items.length],
-  );
-
-  const schedulePinnedSync = useCallback(
-    (mode: PinSyncMode) => {
-      if (items.length === 0) {
-        return;
-      }
-
-      if (mode === "force") {
-        pendingPinModeRef.current = null;
-        syncToLatest("force");
-        return;
-      }
-
-      pendingPinModeRef.current = pendingPinModeRef.current === "force" ? "force" : "maintain";
-      if (pinFrameRef.current != null) {
-        return;
-      }
-
-      let ranSynchronously = false;
-      const frameId = requestAnimationFrame(() => {
-        ranSynchronously = true;
-        pinFrameRef.current = null;
-        const nextMode = pendingPinModeRef.current ?? "maintain";
-        pendingPinModeRef.current = null;
-        if (nextMode !== "force" && !isFollowingLatestRef.current) {
-          return;
-        }
-        syncToLatest(nextMode);
-      });
-
-      if (!ranSynchronously) {
-        pinFrameRef.current = frameId;
-      }
-    },
-    [items.length, syncToLatest],
-  );
+    if (!ranSynchronously) {
+      pinFrameRef.current = frameId;
+    }
+  }, [items.length]);
 
   // --- Scroll-to-edit ---
   // Scroll the edited item into view using Virtuoso's imperative API.
@@ -389,84 +248,36 @@ export function PlannerTranscript({
     }
 
     lastFollowLatestRequestRef.current = followLatestRequest;
-    updateFollowingLatest(true);
-    schedulePinnedSync("force");
-  }, [followLatestRequest, schedulePinnedSync, updateFollowingLatest]);
+    updatePinned(true);
+    pinToLatest();
+  }, [followLatestRequest, pinToLatest, updatePinned]);
 
-  useEffect(() => {
-    if (!isFollowingLatest) {
-      return;
-    }
-    schedulePinnedSync("maintain");
-  }, [isFollowingLatest, schedulePinnedSync, tailVersion]);
-
-  useEffect(() => {
-    if (items.length === 0) {
-      updateLatestVisible(true);
-      return;
-    }
-
-    if (!scrollerElement || !latestAnchorElement) {
-      return;
-    }
-
-    if (typeof IntersectionObserver === "undefined") {
-      refreshLatestVisibility();
-      return;
-    }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const nextVisible = entries[0]?.isIntersecting ?? false;
-        updateLatestVisible(nextVisible);
-        if (isFollowingLatestRef.current && !nextVisible && !hasDetachIntent()) {
-          schedulePinnedSync("maintain");
-        }
-      },
-      {
-        root: scrollerElement,
-        rootMargin: `0px 0px ${LATEST_VISIBILITY_THRESHOLD_PX}px 0px`,
-        threshold: 0,
-      },
-    );
-
-    observer.observe(latestAnchorElement);
-    refreshLatestVisibility();
-
-    return () => {
-      observer.disconnect();
-    };
-  }, [
-    hasDetachIntent,
-    items.length,
-    latestAnchorElement,
-    refreshLatestVisibility,
-    schedulePinnedSync,
-    scrollerElement,
-    updateLatestVisible,
-  ]);
-
+  // Single growth detector. We observe the tail item's content box — the element
+  // that actually grows as the reply text, live thinking, ACP events, and sources
+  // stream in — plus the scroller for viewport-height changes. A zero-height
+  // anchor never resizes, so observing the real content box is what keeps the
+  // view glued to the bottom during a thinking/ACP burst (which never changes the
+  // `items` array and so never triggers `followOutput`).
   useEffect(() => {
     if (typeof ResizeObserver === "undefined" || !scrollerElement) {
       return;
     }
 
     const observer = new ResizeObserver(() => {
-      const nextVisible = refreshLatestVisibility();
-      if (isFollowingLatestRef.current && !nextVisible && !hasDetachIntent()) {
-        schedulePinnedSync("maintain");
+      if (isPinnedRef.current && !hasDetachIntent()) {
+        pinToLatest();
       }
     });
 
     observer.observe(scrollerElement);
-    if (latestAnchorElement) {
-      observer.observe(latestAnchorElement);
+    if (tailContentElement) {
+      observer.observe(tailContentElement);
     }
 
     return () => {
       observer.disconnect();
     };
-  }, [hasDetachIntent, latestAnchorElement, refreshLatestVisibility, schedulePinnedSync, scrollerElement]);
+  }, [hasDetachIntent, pinToLatest, scrollerElement, tailContentElement]);
 
   useEffect(() => {
     if (!scrollerElement) {
@@ -504,22 +315,16 @@ export function PlannerTranscript({
       const previousScrollTop = lastScrollTopRef.current;
       lastScrollTopRef.current = currentScrollTop;
 
-      if (typeof IntersectionObserver === "undefined") {
-        refreshLatestVisibility();
-      }
-
-      if (!isFollowingLatestRef.current) {
+      if (!isPinnedRef.current) {
         clearOneShotDetachIntent();
         return;
       }
 
-      if (pendingProgrammaticSyncFramesRef.current > 0) {
-        clearOneShotDetachIntent();
-        return;
-      }
-
+      // Only an upward scroll backed by a real user gesture detaches. A
+      // programmatic scroll-to-bottom moves downward and carries no detach
+      // intent, so it can never be misread as the user leaving the tail.
       if (currentScrollTop < previousScrollTop - 1 && hasDetachIntent()) {
-        updateFollowingLatest(false);
+        updatePinned(false);
       }
 
       clearOneShotDetachIntent();
@@ -546,18 +351,17 @@ export function PlannerTranscript({
       scrollerElement.removeEventListener("keydown", handleKeyDown);
       scrollerElement.removeEventListener("scroll", handleScroll);
     };
-  }, [clearOneShotDetachIntent, hasDetachIntent, refreshLatestVisibility, scrollerElement, updateFollowingLatest]);
+  }, [clearOneShotDetachIntent, hasDetachIntent, scrollerElement, updatePinned]);
 
   useEffect(() => {
     return () => {
       if (pinFrameRef.current != null) {
         cancelAnimationFrame(pinFrameRef.current);
       }
-      clearProgrammaticSync();
     };
-  }, [clearProgrammaticSync]);
+  }, []);
 
-  const showScrollToLatest = items.length > 0 && !isFollowingLatest && (!isAtBottom || !isLatestVisible);
+  const showScrollToLatest = items.length > 0 && !isPinned && !isAtBottom;
 
   return (
     <div className="relative flex-1 min-h-0">
@@ -570,12 +374,12 @@ export function PlannerTranscript({
         totalCount={Math.max(totalCount, firstItemIndex + items.length)}
         firstItemIndex={Math.max(firstItemIndex, 0)}
         initialTopMostItemIndex={items.length > 0 ? firstItemIndex + items.length - 1 : 0}
-        followOutput={() => (isFollowingLatest ? "auto" : false)}
+        followOutput={() => (isPinned ? "auto" : false)}
         atBottomThreshold={LATEST_VISIBILITY_THRESHOLD_PX}
         atBottomStateChange={(atBottom) => {
           updateAtBottom(atBottom);
           if (atBottom) {
-            updateFollowingLatest(true);
+            updatePinned(true);
           }
         }}
         startReached={() => {
@@ -590,11 +394,16 @@ export function PlannerTranscript({
           // above. itemContent stays a pure render function so React 19 strict
           // mode and Virtuoso reconciliation never corrupt the Set.
           const shouldAnimate = animatedKeysRef.current.has(item.key);
+          // The tail item's content box is what the ResizeObserver watches: it
+          // grows as reply text, thinking, ACP events, and sources stream in,
+          // which is exactly when we need to re-pin to the bottom.
           const isTailItem = index === items.length - 1;
           return (
-            <div className={`px-4 ${index === 0 ? "pt-1" : "pt-4"} ${shouldAnimate ? "animate-chat-bubble-in" : ""}`}>
+            <div
+              ref={isTailItem ? setTailContent : undefined}
+              className={`px-4 ${index === 0 ? "pt-1" : "pt-4"} ${shouldAnimate ? "animate-chat-bubble-in" : ""}`}
+            >
               {renderMessage(item, callbacks, item.message.planning_message_id === firstAssistantId)}
-              {isTailItem ? <div ref={setLatestAnchor} aria-hidden="true" className="h-px w-full pointer-events-none" /> : null}
             </div>
           );
         }}
@@ -604,8 +413,8 @@ export function PlannerTranscript({
         <button
           type="button"
           onClick={() => {
-            updateFollowingLatest(true);
-            schedulePinnedSync("force");
+            updatePinned(true);
+            pinToLatest();
           }}
           className="absolute right-4 bottom-4 z-20 flex items-center gap-1.5 rounded-full border border-border-strong bg-surface-overlay px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition-colors hover:bg-surface-raised hover:text-gold"
           style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -82,11 +83,11 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 		last := operations[len(operations)-1]
 		for _, operation := range operations {
 			if operation.Status == state.PlanningOperationStatusRunning {
-				if recovered, err := r.convergeRecoveredRunningOperation(ctx, operation); err != nil {
-					return fmt.Errorf("converge-running-operation %s: %w", operation.OperationID, err)
-				} else if recovered {
-					continue
-				}
+				// A planner turn settles server-side only inside the atomic
+				// FinalizeOperation transaction. An operation still marked
+				// running after a restart never reached that point, so there
+				// is no durable success to replay — finalise it as stuck once
+				// the lease grace expires. The user simply retries the turn.
 				if _, err := finaliseIfStuck(ctx, operation.OperationID); err != nil {
 					return fmt.Errorf("finalise-if-stuck %s: %w", operation.OperationID, err)
 				}
@@ -134,15 +135,12 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 // whether to call us; this function unconditionally finalises.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
 	cause := fmt.Errorf("operation exceeded heartbeat deadline (idle for %s)", idleFor.Round(time.Second))
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, "error", map[string]any{"error": cause.Error()})
+	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, acp.RunFailedEventType, plannerMessagePayload(op, map[string]any{"error": cause.Error()}))
 	if err != nil {
 		return err
 	}
 	now := r.deps.nowString()
-	providerSettlement, err := terminalPlanningProviderSettlement(ctx, r.deps.store, op, ProviderExecutionMetadata{}, now, cause.Error(), cause, false)
-	if err != nil {
-		return err
-	}
+	providerSettlement := providerSettlementForFailure(op, ProviderExecutionMetadata{}, now, cause.Error(), cause, false)
 	// Bootstrap and generated-title operations do not own the interactive
 	// current_operation_id slot, so recovery must finalize them through their
 	// dedicated abort paths rather than the interactive FinalizeOperation fence.
@@ -164,115 +162,10 @@ func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOper
 	}
 	if r.deps.broker != nil {
 		// Wake any subscribed SSE consumers so they observe the terminal
-		// "error" event without waiting for the keep-alive tick.
+		// failure event without waiting for the keep-alive tick.
 		r.deps.broker.Publish(op.OperationID)
 	}
 	return nil
-}
-
-func (r *operationRecovery) convergeRecoveredRunningOperation(ctx context.Context, op state.PlanningOperation) (bool, error) {
-	if op.Status != state.PlanningOperationStatusRunning {
-		return false, nil
-	}
-	if r == nil || r.deps.store == nil || r.runner == nil || op.ActiveProviderInvocationID == nil {
-		return false, nil
-	}
-	invocationID := strings.TrimSpace(*op.ActiveProviderInvocationID)
-	if invocationID == "" {
-		return false, nil
-	}
-	invocation, found, err := r.deps.store.GetPlanningProviderInvocation(ctx, invocationID)
-	if err != nil {
-		return false, err
-	}
-	if !found {
-		return false, nil
-	}
-	switch invocation.InvocationState {
-	case state.PlanningProviderInvocationStateReceiptPersisted, state.PlanningProviderInvocationStateSettledSuccess:
-		return r.recoverReceiptPersistedSuccess(ctx, op, invocation)
-	case state.PlanningProviderInvocationStateInvalidHandshake:
-		return r.recoverInvalidHandshakeFailure(ctx, op, invocation)
-	default:
-		return false, nil
-	}
-}
-
-func (r *operationRecovery) recoverReceiptPersistedSuccess(ctx context.Context, op state.PlanningOperation, invocation state.PlanningProviderInvocation) (bool, error) {
-	if invocation.InvocationState != state.PlanningProviderInvocationStateReceiptPersisted && invocation.InvocationState != state.PlanningProviderInvocationStateSettledSuccess {
-		return false, nil
-	}
-	invocationID := strings.TrimSpace(invocation.PlanningProviderInvocationID)
-	receiptEvidence, found, err := r.deps.store.GetPlanningProviderReceiptEvidence(ctx, invocationID)
-	if err != nil {
-		return false, err
-	}
-	if !found {
-		return false, fmt.Errorf("planning provider receipt evidence for invocation %q not found", invocationID)
-	}
-	metadata, err := providerMetadataFromReceiptEvidence(receiptEvidence)
-	if err != nil {
-		return false, err
-	}
-	metadata.ProviderSessionID = firstNonEmpty(strings.TrimSpace(invocation.ProviderSessionID), metadata.ProviderSessionID)
-	if err := r.runner.finalizeRecoveredSuccessFromReceipt(ctx, op, metadata, r.deps.nowString()); err != nil {
-		var invalidTitleErr *invalidRecoveredGeneratedTitleError
-		if errors.As(err, &invalidTitleErr) {
-			failed, finalizeErr := r.finalizeRecoveredReceiptFailure(ctx, op, metadata, invalidTitleErr)
-			if finalizeErr != nil {
-				return false, finalizeErr
-			}
-			return failed, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-func (r *operationRecovery) recoverInvalidHandshakeFailure(ctx context.Context, op state.PlanningOperation, invocation state.PlanningProviderInvocation) (bool, error) {
-	if invocation.InvocationState != state.PlanningProviderInvocationStateInvalidHandshake {
-		return false, nil
-	}
-	invalidReason := strings.TrimSpace(invocation.InvalidReason)
-	if invalidReason == "" {
-		invalidReason = "invalid_handshake"
-	}
-	failureText := fmt.Sprintf("planning provider invocation invalidated: %s", invalidReason)
-	metadata := ProviderExecutionMetadata{
-		FailureReasonCode: "internal_error",
-		FailureReasonText: failureText,
-		OutcomeState:      "failed",
-		ProviderSessionID: strings.TrimSpace(invocation.ProviderSessionID),
-	}
-	return r.finalizeRecoveredReceiptFailure(ctx, op, metadata, errors.New(failureText))
-}
-
-func (r *operationRecovery) finalizeRecoveredReceiptFailure(ctx context.Context, op state.PlanningOperation, metadata ProviderExecutionMetadata, cause error) (bool, error) {
-	if r == nil || r.runner == nil {
-		return false, cause
-	}
-	now := r.deps.nowString()
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, "error", map[string]any{"error": cause.Error()})
-	if err != nil {
-		return false, err
-	}
-	providerSettlement, err := terminalPlanningProviderSettlement(ctx, r.deps.store, op, metadata, now, cause.Error(), cause, false)
-	if err != nil {
-		return false, err
-	}
-	if err := r.runner.finalizeAbortOperation(ctx, op, state.PlanningOperationStatusFailed, now, cause.Error(), metadata.FinalText, providerSettlement, terminalEvent); err != nil {
-		if errors.Is(err, state.ErrPlanningLeaseConflict) {
-			return true, nil
-		}
-		return false, err
-	}
-	if r.deps.metrics != nil {
-		r.deps.metrics.failureCount.Add(1)
-	}
-	if r.deps.broker != nil {
-		r.deps.broker.Publish(op.OperationID)
-	}
-	return true, nil
 }
 
 // idleFor returns how long the operation's lease has been expired by the

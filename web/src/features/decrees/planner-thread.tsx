@@ -36,8 +36,8 @@ export function PlannerThread({
   session: PlanningSessionDetail;
   operation?: PlannerOperationState | null;
   connection?: PlannerConnection;
-  onSubmitReply: (payload: { text: string; answer?: AnswerPayload; truncateFromTurn?: number }) => Promise<void> | void;
-  onRegenerate: (payload: { turnIndex: number }) => Promise<void> | void;
+  onSubmitReply: (payload: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => Promise<void> | void;
+  onRegenerate: (payload: { messageId: string; parentMessageId?: string }) => Promise<void> | void;
   onActivateVariant: (payload: { messageId: string }) => Promise<void> | void;
 }) {
   const [inputText, setInputText] = useState("");
@@ -59,12 +59,12 @@ export function PlannerThread({
     () =>
       buildPlannerTranscriptViewModel({
         messages: messagePages.messages,
-        currentQuestionMessageId: session.current_question_message_id,
+        currentQuestionMessageId: session.active_leaf_message_id,
         conversationState: session.conversation_state,
         operation,
         parsedReply,
       }),
-    [messagePages.messages, session.current_question_message_id, session.conversation_state, operation, parsedReply],
+    [messagePages.messages, session.active_leaf_message_id, session.conversation_state, operation, parsedReply],
   );
 
   const messagesError = messagePages.error;
@@ -91,13 +91,13 @@ export function PlannerThread({
 
   const sendingRef = useRef(false);
 
-  const sendText = async (text: string, answer?: AnswerPayload, truncateFromTurn?: number) => {
+  const sendText = async (text: string, answer?: AnswerPayload, parentMessageId?: string) => {
     if (sendingRef.current) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     sendingRef.current = true;
     try {
-      await onSubmitReply({ text: trimmed, answer, truncateFromTurn });
+      await onSubmitReply({ text: trimmed, answer, parentMessageId });
       setFollowLatestRequest((current) => current + 1);
       // Only clear the composer once the mutation has resolved successfully.
       // If onSubmitReply throws (e.g. network failure), the controller has
@@ -117,15 +117,16 @@ export function PlannerThread({
     const editingItem = transcript.items.find((item) => item.message.planning_message_id === editingMessageId);
     if (!editingItem) return;
     setEditingMessageId(null);
-    void sendText(text, undefined, editingItem.message.turn_index);
+    // Editing branches a new sibling off the edited message's parent.
+    void sendText(text, undefined, editingItem.message.parent_message_id);
   };
 
   const handleEditCancel = () => {
     setEditingMessageId(null);
   };
 
-  const handleRegenerate = async (turnIndex: number) => {
-    await onRegenerate({ turnIndex });
+  const handleRegenerate = async (messageId: string, parentMessageId?: string) => {
+    await onRegenerate({ messageId, parentMessageId });
     setFollowLatestRequest((current) => current + 1);
   };
 
@@ -179,8 +180,8 @@ export function PlannerThread({
             onEditMessage: handleEditMessage,
             onEditSubmit: handleEditSubmit,
             onEditCancel: handleEditCancel,
-            onRegenerate: (turnIndex) => {
-              void handleRegenerate(turnIndex);
+            onRegenerate: (messageId, parentMessageId) => {
+              void handleRegenerate(messageId, parentMessageId);
             },
             onActivateVariant: handleActivateVariant,
             sessionId: session.planning_session_id,

@@ -1,58 +1,13 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/state"
 )
-
-func (s *Server) handleStreamPlanningOperationEvents(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.stream_planning_operation_events"); !ok {
-		return
-	}
-	if s.planningService == nil {
-		s.writeInternalError(w, "planning service is not configured")
-		return
-	}
-	operationID := strings.TrimSpace(r.PathValue("id"))
-	if operationID == "" {
-		s.writeBadRequest(w, "planning operation id is required")
-		return
-	}
-	// Resolve the operation up-front. Without this, an unknown operationID
-	// would return `200 text/event-stream` and an empty stream that closes
-	// immediately — clients can't tell that apart from "idle, no events
-	// yet". Returning the canonical 404 here is honest.
-	if _, found, _, err := s.planningService.GetOperation(r.Context(), operationID); err != nil {
-		s.writeInternalError(w, "fetch planning operation failed")
-		return
-	} else if !found {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked,
-			"planning operation not found", "api.stream_planning_operation_events",
-			map[string]any{"operation_id": operationID})
-		return
-	}
-	afterEventID, ok := decodePlannerLastEventID(w, r.Header.Get("Last-Event-ID"))
-	if !ok {
-		return
-	}
-	events, err := s.planningService.ListOperationEventsAfterEventID(r.Context(), operationID, afterEventID)
-	if err != nil {
-		if errors.Is(err, state.ErrPlanningOperationEventNotFound) {
-			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "invalid Last-Event-ID header", "api.stream_planning_operation_events", nil)
-			return
-		}
-		s.writeInternalError(w, "fetch planning operation events failed")
-		return
-	}
-	s.planningService.ObserveOperationEventReplay(afterEventID)
-	s.writePlanningOperationEvents(w, r, operationID, afterEventID, events)
-}
 
 func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Request, operationID string, afterEventID string, initial []state.PlanningOperationEvent) {
 	rc := http.NewResponseController(w)

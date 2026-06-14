@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/planning"
@@ -31,6 +33,7 @@ func handlePlanningError(w http.ResponseWriter, err error, authority string) {
 		errors.Is(err, state.ErrPlanningOperationNotFound):
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, err.Error(), authority, nil)
 	case errors.Is(err, planning.ErrSessionInactive),
+		errors.Is(err, planning.ErrMessageNotRegeneratable),
 		errors.Is(err, planning.ErrTurnIndexOutOfRange),
 		errors.Is(err, state.ErrPlanningTurnOutOfRange):
 		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), authority, nil)
@@ -64,9 +67,32 @@ func optionalTrimmedString(value *string) *string {
 	return &trimmed
 }
 
-func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSessionSummary {
+type planningSessionPresentedRuns struct {
+	currentRunID      *openapi_types.UUID
+	currentTitleRunID *openapi_types.UUID
+}
+
+func resolvePresentedPlanningSessionRuns(item state.PlanningSession, interactiveOperation *state.PlanningOperation, titleOperation *state.PlanningOperation) planningSessionPresentedRuns {
+	runs := planningSessionPresentedRuns{}
+	if interactiveOperation != nil && planningOperationIsLive(*interactiveOperation) {
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(interactiveOperation.AcpRunID))
+		runs.currentRunID = &runID
+	}
+	if titleOperation != nil && planningOperationIsLive(*titleOperation) {
+		runID := openapi_types.UUID(mustParseOpenAPIUUID(titleOperation.AcpRunID))
+		runs.currentTitleRunID = &runID
+	}
+	return runs
+}
+
+func planningOperationIsLive(operation state.PlanningOperation) bool {
+	return operation.Status == state.PlanningOperationStatusQueued || operation.Status == state.PlanningOperationStatusRunning
+}
+
+func planningSessionSummaryFromState(item state.PlanningSession, presentedRuns planningSessionPresentedRuns) gen.PlanningSessionSummary {
 	result := gen.PlanningSessionSummary{
 		PlanningSessionId: item.PlanningSessionID,
+		AcpSessionId:      openapi_types.UUID(mustParseOpenAPIUUID(acp.PlannerSessionID(item.PlanningSessionID))),
 		Title:             item.Title,
 		TitleState:        gen.PlanningSessionSummaryTitleState(item.TitleState),
 		LifecycleState:    gen.PlanningSessionSummaryLifecycleState(item.LifecycleState),
@@ -74,14 +100,14 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 		CreatedAt:         mustParseRFC3339(item.CreatedAt),
 		UpdatedAt:         mustParseRFC3339(item.UpdatedAt),
 	}
-	if value := optionalTrimmedString(item.CurrentQuestionMessageID); value != nil {
-		result.CurrentQuestionMessageId = value
+	if value := optionalTrimmedString(item.ActiveLeafMessageID); value != nil {
+		result.ActiveLeafMessageId = value
 	}
-	if value := optionalTrimmedString(item.CurrentOperationID); value != nil {
-		result.CurrentOperationId = value
+	if presentedRuns.currentRunID != nil {
+		result.CurrentRunId = presentedRuns.currentRunID
 	}
-	if value := optionalTrimmedString(item.CurrentTitleOperationID); value != nil {
-		result.CurrentTitleOperationId = value
+	if presentedRuns.currentTitleRunID != nil {
+		result.CurrentTitleRunId = presentedRuns.currentTitleRunID
 	}
 	if value := optionalTrimmedString(item.CurrentDraftID); value != nil {
 		result.CurrentDraftId = value
@@ -92,8 +118,8 @@ func planningSessionSummaryFromState(item state.PlanningSession) gen.PlanningSes
 	return result
 }
 
-func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligible bool) gen.PlanningSessionDetail {
-	summary := planningSessionSummaryFromState(item)
+func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligible bool, presentedRuns planningSessionPresentedRuns) gen.PlanningSessionDetail {
+	summary := planningSessionSummaryFromState(item, presentedRuns)
 	modelSelection := decodePlanningAgentModelSelection(item.ModelSelectionJSON)
 	result := gen.PlanningSessionDetail{
 		PlanningSessionId: summary.PlanningSessionId,
@@ -107,14 +133,14 @@ func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligibl
 		ModelSelection:    modelSelection,
 		AutoTitleEligible: autoTitleEligible,
 	}
-	if summary.CurrentQuestionMessageId != nil {
-		result.CurrentQuestionMessageId = summary.CurrentQuestionMessageId
+	if summary.ActiveLeafMessageId != nil {
+		result.ActiveLeafMessageId = summary.ActiveLeafMessageId
 	}
-	if summary.CurrentOperationId != nil {
-		result.CurrentOperationId = summary.CurrentOperationId
+	if summary.CurrentRunId != nil {
+		result.CurrentRunId = summary.CurrentRunId
 	}
-	if summary.CurrentTitleOperationId != nil {
-		result.CurrentTitleOperationId = summary.CurrentTitleOperationId
+	if summary.CurrentTitleRunId != nil {
+		result.CurrentTitleRunId = summary.CurrentTitleRunId
 	}
 	if summary.CurrentDraftId != nil {
 		result.CurrentDraftId = summary.CurrentDraftId
@@ -125,87 +151,17 @@ func planningSessionDetailFromState(item state.PlanningSession, autoTitleEligibl
 	return result
 }
 
-func planningOperationDetailFromState(item state.PlanningOperation, request map[string]any) gen.PlanningOperationDetail {
-	requestEnvelope := planningOperationRequestEnvelopeFromState(item.Type, request)
-	result := gen.PlanningOperationDetail{
-		OperationId:       item.OperationID,
-		PlanningSessionId: item.PlanningSessionID,
-		Type:              gen.PlanningOperationDetailType(item.Type),
-		Status:            gen.PlanningOperationDetailStatus(item.Status),
-		Request:           requestEnvelope,
-		CreatedAt:         mustParseRFC3339(item.CreatedAt),
-	}
-	if value := optionalTrimmedString(item.Error); value != nil {
-		result.Error = value
-	}
-	if value := optionalTrimmedString(item.ResultRef); value != nil {
-		result.ResultRef = value
-	}
-	if trimmed := strings.TrimSpace(item.ObservedOutputText); trimmed != "" {
-		result.ObservedOutputText = &trimmed
-	}
-	if value := optionalTrimmedString(item.StartedAt); value != nil {
-		startedAt := mustParseRFC3339(*value)
-		result.StartedAt = &startedAt
-	}
-	if value := optionalTrimmedString(item.FinishedAt); value != nil {
-		finishedAt := mustParseRFC3339(*value)
-		result.FinishedAt = &finishedAt
-	}
-	return result
-}
-
-func createPlanningOperationResultFromState(result planning.CreateOperationResult, request map[string]any, autoTitleEligible bool) gen.CreatePlanningOperationResult {
-	return gen.CreatePlanningOperationResult{
-		Operation: planningOperationDetailFromState(result.Operation, request),
-		Session:   planningSessionDetailFromState(result.Session, autoTitleEligible),
-	}
-}
-
-func planningOperationRequestEnvelopeFromState(operationType state.PlanningOperationType, request map[string]any) gen.PlanningOperationRequestEnvelope {
-	envelope := gen.PlanningOperationRequestEnvelope{
-		Type: gen.PlanningOperationRequestEnvelopeType(operationType),
-	}
-	if value := readStringMap(request, "content_markdown"); value != nil {
-		envelope.ContentMarkdown = value
-	}
-	if answer := structuredAnswerFromAny(request["answer_payload"]); answer != nil {
-		envelope.AnswerPayload = answer
-	}
-	if value := readStringMap(request, "user_message_id"); value != nil {
-		envelope.UserMessageId = value
-	}
-	if value := readRFC3339Map(request, "user_created_at"); value != nil {
-		envelope.UserCreatedAt = value
-	}
-	if value := readIntMap(request, "turn_index"); value != nil {
-		envelope.TurnIndex = value
-	}
-	if value := readStringMap(request, "assistant_message_id"); value != nil {
-		envelope.AssistantMessageId = value
-	}
-	if value := readRFC3339Map(request, "assistant_created_at"); value != nil {
-		envelope.AssistantCreatedAt = value
-	}
-	if value := readStringMap(request, "draft_id"); value != nil {
-		envelope.DraftId = value
-	}
-	if value := readRFC3339Map(request, "draft_created_at"); value != nil {
-		envelope.DraftCreatedAt = value
-	}
-	return envelope
-}
-
 func planningMessageFromState(item state.PlanningMessage) (gen.PlanningMessage, error) {
 	result := gen.PlanningMessage{
 		PlanningMessageId: item.PlanningMessageID,
 		PlanningSessionId: item.PlanningSessionID,
-		TurnIndex:         item.TurnIndex,
+		ParentMessageId:   item.ParentMessageID,
 		Role:              gen.PlanningMessageRole(item.Role),
 		ContentMarkdown:   item.ContentMarkdown,
-		VariantIndex:      item.VariantIndex,
-		Active:            item.Active,
-		CreatedAt:         mustParseRFC3339(item.CreatedAt),
+		// Branch position is omitted here; list handlers enrich it from
+		// BranchInfoBySession so the navigator can render forks. Absent = a lone
+		// branch (the client treats it as index 0 / count 1).
+		CreatedAt: mustParseRFC3339(item.CreatedAt),
 	}
 	if question := structuredQuestionFromJSON(item.QuestionPayloadJSON); question != nil {
 		result.QuestionPayload = question

@@ -66,6 +66,9 @@ export const plannerKeys = {
   /** Exact key for an operation detail. */
   operation: (operationId: string) => ["planning-operations", operationId] as const,
 
+  /** Exact key for an operation's derived activity history. */
+  activity: (operationId: string) => ["planning-operations", operationId, "activity"] as const,
+
   /** Exact key for a message's variants. */
   variants: (sessionId: string, messageId: string) =>
     ["planning-sessions", sessionId, "variants", messageId] as const,

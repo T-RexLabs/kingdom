@@ -5,6 +5,7 @@ import "errors"
 var (
 	ErrSessionNotFound            = errors.New("planning session not found")
 	ErrMessageNotFound            = errors.New("planning message not found")
+	ErrMessageNotRegeneratable    = errors.New("planning regenerate target must be an assistant message")
 	ErrOperationNotFound          = errors.New("planning operation not found")
 	ErrMessageNotInSession        = errors.New("planning message does not belong to session")
 	ErrTurnIndexOutOfRange        = errors.New("planning turn index out of range")

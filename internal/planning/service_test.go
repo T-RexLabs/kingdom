@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
@@ -26,28 +27,19 @@ type mockAgent struct{}
 
 var defaultPlanningServiceTestScript = planningfixture.DefaultServiceScript()
 
-func testReceiptMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
-	metadata := ProviderExecutionMetadata{FinalText: finalText, OutcomeState: "success", CompletionStructuredPayloadJSON: "{}"}
+// testSuccessMetadata models a planner turn that settles server-side: the
+// provider reports a terminal success outcome and the runtime assembles the
+// final text. There is no model-invoked completion receipt.
+func testSuccessMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
 		input.ProviderInvocation.OnProviderSession("provider-session-1")
 	}
-	if input.ProviderInvocation == nil || input.ProviderInvocation.OnCompletionReceipt == nil {
-		return metadata, nil
-	}
-	accepted, err := input.ProviderInvocation.OnCompletionReceipt(CompletionReceipt{
-		ProtocolVersion:       firstNonEmpty(input.ProviderInvocation.CompletionProtocolVersion, "v1"),
-		AttemptID:             input.ProviderInvocation.AttemptID,
-		InvocationID:          input.ProviderInvocation.InvocationID,
-		CompletionCapability:  input.ProviderInvocation.CompletionCapability,
-		FinalText:             finalText,
-		StructuredPayloadJSON: "{}",
-	})
-	if err != nil {
-		return ProviderExecutionMetadata{}, err
-	}
-	metadata.CompletionReceiptEvidenceID = accepted.EvidenceID
-	metadata.CompletionStructuredPayloadJSON = firstNonEmpty(accepted.StructuredPayloadJSON, "{}")
-	return metadata, nil
+	return ProviderExecutionMetadata{
+		FinalText:                       finalText,
+		ProviderSessionID:               "provider-session-1",
+		OutcomeState:                    "success",
+		CompletionStructuredPayloadJSON: "{}",
+	}, nil
 }
 
 func (m *mockAgent) OpeningTurn(_ context.Context, input AgentContext) (AgentTurn, error) {
@@ -69,7 +61,7 @@ func (m *mockAgent) OpeningTurnStream(_ context.Context, input AgentContext, onC
 }
 
 func (m *mockAgent) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
-	metadata, err := testReceiptMetadata(input, defaultPlanningServiceTestScript.ContinueContent)
+	metadata, err := testSuccessMetadata(input, defaultPlanningServiceTestScript.ContinueContent)
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -88,7 +80,7 @@ func (m *mockAgent) ContinueTurnStream(_ context.Context, input AgentContext, on
 }
 
 func (m *mockAgent) FormalizePlanStream(_ context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
-	metadata, err := testReceiptMetadata(input, defaultPlanningServiceTestScript.FormalizedText)
+	metadata, err := testSuccessMetadata(input, defaultPlanningServiceTestScript.FormalizedText)
 	if err != nil {
 		return FormalizedPlan{}, err
 	}
@@ -103,7 +95,7 @@ func (m *mockAgent) FormalizePlanStream(_ context.Context, input AgentContext, o
 }
 
 func (m *mockAgent) GenerateTitle(_ context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
-	metadata, err := testReceiptMetadata(input, defaultPlanningServiceTestScript.GeneratedTitle)
+	metadata, err := testSuccessMetadata(input, defaultPlanningServiceTestScript.GeneratedTitle)
 	if err != nil {
 		return GeneratedTitle{}, err
 	}
@@ -123,6 +115,14 @@ type streamingMockAgent struct {
 	err      error
 }
 
+type rotatingSessionPlanner struct {
+	mockAgent
+	mu                     sync.Mutex
+	sessions               []string
+	continueCalls          int
+	continueProviderInputs []string
+}
+
 type parallelAutoTitlePlanner struct {
 	mockAgent
 	release            chan struct{}
@@ -134,42 +134,16 @@ type parallelAutoTitlePlanner struct {
 	mu                 sync.Mutex
 }
 
-type missingReceiptAgent struct{ mockAgent }
+// emptyOutputAgent models a provider that reports a terminal success outcome
+// but produces no assembled output text. Server-side settlement must reject
+// this as an incomplete turn rather than persisting an empty canonical message.
+type emptyOutputAgent struct{ mockAgent }
 
-func (m *missingReceiptAgent) ContinueTurnStream(_ context.Context, _ AgentContext, onChunk func(text string)) (AgentTurn, error) {
-	if onChunk != nil {
-		onChunk(defaultPlanningServiceTestScript.ContinueContent)
-	}
+func (m *emptyOutputAgent) ContinueTurnStream(_ context.Context, _ AgentContext, onChunk func(text string)) (AgentTurn, error) {
 	return AgentTurn{
-		ContentMarkdown: defaultPlanningServiceTestScript.ContinueContent,
-		Question: &StructuredQuestion{
-			Prompt: defaultPlanningServiceTestScript.ContinueQuestion.Prompt,
-			Type:   defaultPlanningServiceTestScript.ContinueQuestion.Type,
-		},
-		Metadata: ProviderExecutionMetadata{FinalText: defaultPlanningServiceTestScript.ContinueContent, OutcomeState: "success"},
+		ContentMarkdown: "",
+		Metadata:        ProviderExecutionMetadata{FinalText: "", OutcomeState: "success"},
 	}, nil
-}
-
-type invalidReceiptAgent struct{ mockAgent }
-
-func (m *invalidReceiptAgent) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
-	if onChunk != nil {
-		onChunk(defaultPlanningServiceTestScript.ContinueContent)
-	}
-	if input.ProviderInvocation != nil && input.ProviderInvocation.OnCompletionReceipt != nil {
-		_, err := input.ProviderInvocation.OnCompletionReceipt(CompletionReceipt{
-			ProtocolVersion:       firstNonEmpty(input.ProviderInvocation.CompletionProtocolVersion, "v1"),
-			AttemptID:             input.ProviderInvocation.AttemptID,
-			InvocationID:          input.ProviderInvocation.InvocationID,
-			CompletionCapability:  "wrong-capability",
-			FinalText:             defaultPlanningServiceTestScript.ContinueContent,
-			StructuredPayloadJSON: "{}",
-		})
-		if err != nil {
-			return AgentTurn{}, err
-		}
-	}
-	return AgentTurn{}, nil
 }
 
 type erroringAgent struct {
@@ -205,7 +179,7 @@ func (m *streamingMockAgent) ContinueTurnStream(_ context.Context, input AgentCo
 	if m.err != nil {
 		return AgentTurn{}, m.err
 	}
-	metadata, err := testReceiptMetadata(input, m.final)
+	metadata, err := testSuccessMetadata(input, m.final)
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -222,6 +196,43 @@ func (m *streamingMockAgent) FormalizePlanStream(_ context.Context, input AgentC
 
 func (m *streamingMockAgent) GenerateTitle(_ context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
 	return (&mockAgent{}).GenerateTitle(context.Background(), input, onChunk)
+}
+
+func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+	p.mu.Lock()
+	call := p.continueCalls
+	p.continueCalls++
+	p.continueProviderInputs = append(p.continueProviderInputs, strings.TrimSpace(providerSessionIDForInvocation(input.ProviderInvocation)))
+	providerSessionID := ""
+	if call < len(p.sessions) {
+		providerSessionID = strings.TrimSpace(p.sessions[call])
+	}
+	p.mu.Unlock()
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		input.ProviderInvocation.OnProviderSession(providerSessionID)
+	}
+	if onChunk != nil {
+		onChunk(defaultPlanningServiceTestScript.ContinueContent)
+	}
+	return AgentTurn{
+		ContentMarkdown: defaultPlanningServiceTestScript.ContinueContent,
+		Question: &StructuredQuestion{
+			Prompt: defaultPlanningServiceTestScript.ContinueQuestion.Prompt,
+			Type:   defaultPlanningServiceTestScript.ContinueQuestion.Type,
+		},
+		Metadata: ProviderExecutionMetadata{
+			FinalText:                       defaultPlanningServiceTestScript.ContinueContent,
+			ProviderSessionID:               providerSessionID,
+			OutcomeState:                    "success",
+			CompletionStructuredPayloadJSON: "{}",
+		},
+	}, nil
+}
+
+func (p *rotatingSessionPlanner) continueProviderSessionIDs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.continueProviderInputs...)
 }
 
 func newParallelAutoTitlePlanner() *parallelAutoTitlePlanner {
@@ -243,7 +254,7 @@ func (p *parallelAutoTitlePlanner) ContinueTurnStream(ctx context.Context, input
 	p.secondReplyOnce.Do(func() { close(p.secondReplyStarted) })
 	select {
 	case <-p.release:
-		metadata, err := testReceiptMetadata(input, "Second reply content")
+		metadata, err := testSuccessMetadata(input, "Second reply content")
 		if err != nil {
 			return AgentTurn{}, err
 		}
@@ -265,7 +276,7 @@ func (p *parallelAutoTitlePlanner) GenerateTitle(ctx context.Context, input Agen
 	p.titleStartedOnce.Do(func() { close(p.titleStarted) })
 	select {
 	case <-p.release:
-		metadata, err := testReceiptMetadata(input, "Parallel Title")
+		metadata, err := testSuccessMetadata(input, "Parallel Title")
 		if err != nil {
 			return GeneratedTitle{}, err
 		}
@@ -313,7 +324,7 @@ func TestServiceCreateSessionPersistsImmediateOpeningQuestion(t *testing.T) {
 	if session.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected ready conversation state, got %q", session.ConversationState)
 	}
-	if session.CurrentQuestionMessageID == nil {
+	if session.ActiveLeafMessageID == nil {
 		t.Fatal("expected current question message id to be set immediately")
 	}
 
@@ -402,8 +413,84 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 	if updated.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected ready conversation state, got %q", updated.ConversationState)
 	}
-	if updated.CurrentQuestionMessageID == nil || *updated.CurrentQuestionMessageID != messages[2].PlanningMessageID {
-		t.Fatalf("expected latest assistant question to be active, got %+v", updated.CurrentQuestionMessageID)
+	if updated.ActiveLeafMessageID == nil || *updated.ActiveLeafMessageID != messages[2].PlanningMessageID {
+		t.Fatalf("expected latest assistant question to be active, got %+v", updated.ActiveLeafMessageID)
+	}
+}
+
+// TestServiceReplyOperationPersistsServerSettledSuccess drives a normal reply
+// through the real runner with the server-settling mockAgent (terminal success
+// outcome + non-empty assembled final text). It pins the new contract: the
+// assistant message is persisted, the op succeeds, and the canonical settlement
+// row is a success keyed on a stream_observation primary evidence row — there is
+// no model-invoked completion receipt.
+func TestServiceReplyOperationPersistsServerSettledSuccess(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	reply := "We need a planner that captures scope, constraints, and verification before implementation."
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     reply,
+		AnswerPayloadJSON: `{"text":"` + reply + `"}`,
+	})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected succeeded reply operation, got %+v", terminal)
+	}
+
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) == 0 || messages[len(messages)-1].Role != state.PlanningMessageRoleAssistant {
+		t.Fatalf("expected a persisted assistant message, got %+v", messages)
+	}
+	assistant := messages[len(messages)-1]
+	if strings.TrimSpace(assistant.ContentMarkdown) == "" {
+		t.Fatalf("expected non-empty assistant content, got %+v", assistant)
+	}
+
+	if terminal.CanonicalSettlementID == nil || strings.TrimSpace(*terminal.CanonicalSettlementID) == "" {
+		t.Fatalf("expected canonical settlement id on succeeded reply operation, got %+v", terminal)
+	}
+	settlement, found, err := store.GetPlanningProviderCompletionSettlement(context.Background(), *terminal.CanonicalSettlementID)
+	if err != nil {
+		t.Fatalf("get planning provider settlement: %v", err)
+	}
+	if !found {
+		t.Fatal("expected planning provider settlement to exist")
+	}
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeSuccess {
+		t.Fatalf("expected success planning settlement, got %+v", settlement)
+	}
+	if strings.TrimSpace(settlement.FinalText) == "" {
+		t.Fatalf("expected settled final text on success settlement, got %+v", settlement)
+	}
+	if strings.TrimSpace(settlement.PrimaryEvidenceID) == "" {
+		t.Fatalf("expected success settlement to reference primary evidence, got %+v", settlement)
+	}
+	var evidenceKind string
+	if err := db.QueryRow(`SELECT evidence_kind FROM planning_provider_completion_evidence WHERE evidence_id = ?`, settlement.PrimaryEvidenceID).Scan(&evidenceKind); err != nil {
+		t.Fatalf("read primary evidence kind: %v", err)
+	}
+	if evidenceKind != string(state.PlanningProviderCompletionEvidenceKindStreamObservation) {
+		t.Fatalf("expected stream_observation primary evidence, got %q", evidenceKind)
 	}
 }
 
@@ -466,7 +553,7 @@ func TestServiceFormalizeOperationCreatesDraftWithoutPlanningMessages(t *testing
 	}
 }
 
-func TestServiceReplyOperationRequiresCompletionReceipt(t *testing.T) {
+func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -474,7 +561,7 @@ func TestServiceReplyOperationRequiresCompletionReceipt(t *testing.T) {
 
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
-	service := NewService(store, &missingReceiptAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	service := NewService(store, &emptyOutputAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 
 	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
 	if err != nil {
@@ -497,64 +584,27 @@ func TestServiceReplyOperationRequiresCompletionReceipt(t *testing.T) {
 	if terminal.CanonicalSettlementID == nil || strings.TrimSpace(*terminal.CanonicalSettlementID) == "" {
 		t.Fatalf("expected failed reply operation to record canonical settlement, got %+v", terminal)
 	}
-	if terminal.Error == nil || !strings.Contains(*terminal.Error, "missing completion receipt evidence id") {
-		t.Fatalf("expected missing completion receipt failure, got %+v", terminal.Error)
+	if terminal.Error == nil || !strings.Contains(*terminal.Error, "missing settled final text") {
+		t.Fatalf("expected missing settled final text failure, got %+v", terminal.Error)
 	}
-}
-
-func TestServiceReplyOperationRejectsInvalidCompletionReceipt(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &invalidReceiptAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-
-	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	// A success outcome with no assembled output settles as an incomplete turn,
+	// and no canonical assistant reply message is persisted. The immediate
+	// opening question legitimately carries empty content with a non-empty
+	// question payload, so a genuinely empty reply is one with neither content
+	// nor a question payload.
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
-		t.Fatalf("create session: %v", err)
+		t.Fatalf("list messages: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
-
-	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
-		Type:              state.PlanningOperationTypeReply,
-		ReplyMarkdown:     "Need a rejected planner receipt",
-		AnswerPayloadJSON: `{"text":"Need a rejected planner receipt"}`,
-	})
-	if err != nil {
-		t.Fatalf("create reply operation: %v", err)
-	}
-	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
-	if terminal.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("expected failed reply operation, got %+v", terminal)
-	}
-	if terminal.Error == nil || strings.TrimSpace(*terminal.Error) == "" {
-		t.Fatalf("expected rejected receipt to fail the planner operation, got %+v", terminal.Error)
-	}
-	if terminal.CanonicalSettlementID == nil || strings.TrimSpace(*terminal.CanonicalSettlementID) == "" {
-		t.Fatalf("expected failed reply operation to retain canonical settlement lineage for audit, got %+v", terminal)
-	}
-	settlement, found, err := store.GetPlanningProviderCompletionSettlement(context.Background(), strings.TrimSpace(*terminal.CanonicalSettlementID))
-	if err != nil {
-		t.Fatalf("get planning provider settlement: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning provider settlement to exist")
-	}
-	invocation, found, err := store.GetPlanningProviderInvocation(context.Background(), settlement.PlanningProviderInvocationID)
-	if err != nil {
-		t.Fatalf("get planning provider invocation: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning provider invocation to exist")
-	}
-	if invocation.InvalidReason != "completion_capability_mismatch" {
-		t.Fatalf("expected completion_capability_mismatch invalid reason, got %+v", invocation)
-	}
-	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed {
-		t.Fatalf("expected planner operation to finish by settling the invalid invocation as failed, got %+v", invocation)
+	for _, message := range messages {
+		if message.Role != state.PlanningMessageRoleAssistant {
+			continue
+		}
+		emptyContent := strings.TrimSpace(message.ContentMarkdown) == ""
+		emptyQuestion := strings.TrimSpace(message.QuestionPayloadJSON) == "" || strings.TrimSpace(message.QuestionPayloadJSON) == "{}"
+		if emptyContent && emptyQuestion {
+			t.Fatalf("expected no empty assistant reply message to be persisted, got %+v", message)
+		}
 	}
 }
 
@@ -628,7 +678,7 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 	}
 }
 
-func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
+func TestServiceEditedReplyBranchesNonDestructively(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -669,12 +719,14 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 
 	blocking := newBlockingPlanner(false)
 	service = NewService(store, blocking, projectRoot, func() string { return "2026-04-21T17:10:01Z" }, ids)
-	editTurn := 2
+	// Edit the first user turn: branch a new sibling off the opening message
+	// (the first user turn's parent) instead of truncating.
+	editParent := beforeEdit[0].PlanningMessageID
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     "Replacement user turn",
 		AnswerPayloadJSON: `{"text":"Replacement user turn"}`,
-		TruncateFromTurn:  &editTurn,
+		ParentMessageID:   &editParent,
 	})
 	if err != nil {
 		t.Fatalf("create edited reply operation: %v", err)
@@ -682,15 +734,18 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 	awaitPlannerStarted(t, blocking)
 	awaitRunnerRunning(t, service.runner, operation.Operation.OperationID)
 
+	// The edit immediately makes the new branch active: the active path is now
+	// opening + the replacement user turn (the assistant reply is still
+	// streaming), and the original answer is off the active path.
 	duringEdit, err := store.ListMessages(context.Background(), session.PlanningSessionID)
 	if err != nil {
 		t.Fatalf("list messages during edit: %v", err)
 	}
-	if len(duringEdit) != len(beforeEdit) {
-		t.Fatalf("expected transcript unchanged while edited reply is unsettled, before=%d during=%d", len(beforeEdit), len(duringEdit))
+	if len(duringEdit) != 2 {
+		t.Fatalf("expected active path = opening + replacement user while streaming, got %d", len(duringEdit))
 	}
-	if duringEdit[1].ContentMarkdown != beforeEdit[1].ContentMarkdown || duringEdit[2].PlanningMessageID != beforeEdit[2].PlanningMessageID {
-		t.Fatalf("expected original turn to remain canonical before success, before=%+v during=%+v", beforeEdit, duringEdit)
+	if duringEdit[1].ContentMarkdown != "Replacement user turn" {
+		t.Fatalf("expected replacement user turn active during edit, got %+v", duringEdit[1])
 	}
 
 	close(blocking.release)
@@ -700,13 +755,22 @@ func TestServiceEditedReplyDefersTranscriptRewriteUntilSuccess(t *testing.T) {
 		t.Fatalf("list messages after edit: %v", err)
 	}
 	if len(afterEdit) != 3 {
-		t.Fatalf("expected rewritten transcript to stay compact after success, got %d", len(afterEdit))
+		t.Fatalf("expected active path opening + replacement user + new assistant, got %d", len(afterEdit))
 	}
 	if afterEdit[1].ContentMarkdown != "Replacement user turn" {
 		t.Fatalf("expected replacement user turn after success, got %+v", afterEdit[1])
 	}
 	if afterEdit[2].PlanningMessageID == beforeEdit[2].PlanningMessageID {
-		t.Fatalf("expected assistant turn to be replaced after success")
+		t.Fatalf("expected a new assistant message on the edited branch")
+	}
+	// Non-destructive: the original user turn is preserved as a sibling branch
+	// of the replacement, so the operator can switch back to it.
+	siblings, err := store.SiblingsOf(context.Background(), session.PlanningSessionID, afterEdit[1].PlanningMessageID)
+	if err != nil {
+		t.Fatalf("list siblings of replacement: %v", err)
+	}
+	if len(siblings) != 2 {
+		t.Fatalf("expected original + replacement user branches preserved, got %d", len(siblings))
 	}
 }
 
@@ -721,25 +785,26 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 
 	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_edit_auto_title",
-		Title:                    "plan_1",
-		TitleState:               planningSessionTitleStatePlaceholder,
-		LifecycleState:           state.PlanningSessionLifecycleStateActive,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		CurrentQuestionMessageID: "pm_edit_auto_title_assistant_3",
-		ProjectRoot:              projectRoot,
-		ModelSelectionJSON:       `{"model":"test-model"}`,
-		CreatedAt:                "2026-04-21T17:00:00Z",
-		UpdatedAt:                "2026-04-21T17:00:00Z",
+		PlanningSessionID:   "ps_edit_auto_title",
+		Title:               "plan_1",
+		TitleState:          planningSessionTitleStatePlaceholder,
+		LifecycleState:      state.PlanningSessionLifecycleStateActive,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		ActiveLeafMessageID: "pm_edit_auto_title_assistant_3",
+		ProjectRoot:         projectRoot,
+		ModelSelectionJSON:  `{"model":"test-model"}`,
+		CreatedAt:           "2026-04-21T17:00:00Z",
+		UpdatedAt:           "2026-04-21T17:00:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	// Linear seed chain: opening -> user_2 -> assistant_2 -> user_3 -> assistant_3.
 	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:00Z"},
-		{PlanningMessageID: "pm_edit_auto_title_user_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:01Z"},
-		{PlanningMessageID: "pm_edit_auto_title_assistant_2", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "First response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:02Z"},
-		{PlanningMessageID: "pm_edit_auto_title_user_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-21T17:00:03Z"},
-		{PlanningMessageID: "pm_edit_auto_title_assistant_3", PlanningSessionID: "ps_edit_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-21T17:00:04Z"},
+		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:00Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_2", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-21T17:00:01Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_2", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_user_2", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "First response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:02Z"},
+		{PlanningMessageID: "pm_edit_auto_title_user_3", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_assistant_2", Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, CreatedAt: "2026-04-21T17:00:03Z"},
+		{PlanningMessageID: "pm_edit_auto_title_assistant_3", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "pm_edit_auto_title_user_3", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second response", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:04Z"},
 	}
 	for _, message := range seedMessages {
 		if _, err := store.AppendMessage(context.Background(), message); err != nil {
@@ -747,12 +812,15 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 		}
 	}
 
-	editTurn := 2
+	// Edit the first user turn: branch off the opening message. The new branch
+	// has a single user message, so auto-title must not fire from the stale
+	// (longer) prior branch.
+	editParent := "pm_edit_auto_title_opening"
 	result, err := service.CreateOperation(context.Background(), "ps_edit_auto_title", CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     "Replacement first answer",
 		AnswerPayloadJSON: `{"text":"Replacement first answer"}`,
-		TruncateFromTurn:  &editTurn,
+		ParentMessageID:   &editParent,
 	})
 	if err != nil {
 		t.Fatalf("create edited reply: %v", err)
@@ -927,12 +995,10 @@ func TestServiceGenerateTitleRunsAlongsideInteractiveOperation(t *testing.T) {
 		UserMessage: state.AppendPlanningMessageRequest{
 			PlanningMessageID:   "planning_message_reply_seed",
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           2,
 			Role:                state.PlanningMessageRoleUser,
 			ContentMarkdown:     "Keep the planner busy",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{"text":"Keep the planner busy"}`,
-			Active:              true,
 			CreatedAt:           "2026-04-21T17:10:01Z",
 		},
 		Operation: state.CreatePlanningOperationRequest{
@@ -1098,24 +1164,24 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
 
 	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_recovery_catchup",
-		Title:                    "plan_1",
-		TitleState:               planningSessionTitleStatePlaceholder,
-		LifecycleState:           state.PlanningSessionLifecycleStateActive,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		CurrentQuestionMessageID: "pm_recovery_catchup_assistant_2",
-		ProjectRoot:              projectRoot,
-		ModelSelectionJSON:       `{"model":"test-model"}`,
-		CreatedAt:                "2026-04-26T09:55:00Z",
-		UpdatedAt:                "2026-04-26T09:55:00Z",
+		PlanningSessionID:   "ps_recovery_catchup",
+		Title:               "plan_1",
+		TitleState:          planningSessionTitleStatePlaceholder,
+		LifecycleState:      state.PlanningSessionLifecycleStateActive,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		ActiveLeafMessageID: "pm_recovery_catchup_user_3",
+		ProjectRoot:         projectRoot,
+		ModelSelectionJSON:  `{"model":"test-model"}`,
+		CreatedAt:           "2026-04-26T09:55:00Z",
+		UpdatedAt:           "2026-04-26T09:55:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
-		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
-		{PlanningMessageID: "pm_recovery_catchup_assistant_2", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
-		{PlanningMessageID: "pm_recovery_catchup_user_3", PlanningSessionID: "ps_recovery_catchup", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
+		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:00Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-26T09:55:01Z"},
+		{PlanningMessageID: "pm_recovery_catchup_assistant_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_user_2", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:02Z"},
+		{PlanningMessageID: "pm_recovery_catchup_user_3", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_assistant_2", Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, CreatedAt: "2026-04-26T09:55:03Z"},
 	}
 	for _, message := range seedMessages {
 		if _, err := store.AppendMessage(context.Background(), message); err != nil {
@@ -1192,8 +1258,8 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if eventsAfterFirst[0].Seq != 2 {
 		t.Fatalf("expected first resumed seq 2, got %d", eventsAfterFirst[0].Seq)
 	}
-	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != "done" {
-		t.Fatalf("expected terminal done event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
+	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != acp.RunCompletedEventType {
+		t.Fatalf("expected terminal run.completed event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
 	}
 }
 
@@ -1239,18 +1305,18 @@ func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testin
 	textDeltas := make([]string, 0)
 	for _, event := range events {
 		types = append(types, event.EventType)
-		if event.EventType == "text_delta" {
+		if event.EventType == acp.MessagePartEventType {
 			textDeltas = append(textDeltas, event.PayloadJSON)
 		}
 	}
 
-	for _, expected := range []string{"started", "user_message", "provider_launching", "provider_session_open", "receipt_persisted", "finalizing", "done"} {
+	for _, expected := range []string{acp.RunCreatedEventType, acp.RunInProgressEventType, acp.GenericEventType, acp.MessagePartEventType, acp.MessageDoneEventType, acp.RunCompletedEventType} {
 		if !containsString(types, expected) {
 			t.Fatalf("expected lifecycle event %q in %v", expected, types)
 		}
 	}
 	if len(textDeltas) != 1 {
-		t.Fatalf("expected one batched text_delta event, got %d (%v)", len(textDeltas), textDeltas)
+		t.Fatalf("expected one batched message.part event, got %d (%v)", len(textDeltas), textDeltas)
 	}
 	var payload struct {
 		Text string `json:"text"`
@@ -1264,11 +1330,11 @@ func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testin
 	if strings.Contains(textDeltas[0], "structured_question") {
 		t.Fatalf("expected streamed text delta to be sanitized, got %s", textDeltas[0])
 	}
-	if !strings.Contains(events[0].PayloadJSON, `"start_source":"foreground"`) {
-		t.Fatalf("expected started payload to record foreground source, got %s", events[0].PayloadJSON)
+	if !containsEventPayload(events, acp.RunInProgressEventType, `"start_source":"foreground"`) {
+		t.Fatalf("expected run.in-progress payload to record foreground source, got %v", types)
 	}
-	if !strings.Contains(events[0].PayloadJSON, `"queue_age_ms":`) {
-		t.Fatalf("expected started payload to record queue age, got %s", events[0].PayloadJSON)
+	if !containsEventPayload(events, acp.RunInProgressEventType, `"queue_age_ms":`) {
+		t.Fatalf("expected run.in-progress payload to record queue age, got %v", types)
 	}
 	metrics, err := service.RuntimeMetrics(context.Background())
 	if err != nil {
@@ -1467,7 +1533,12 @@ func TestRefreshContextReturnsErrSessionNotFoundForUnknownSession(t *testing.T) 
 // stuck-op recovery path when the planner already persisted a valid receipt.
 // Recovery must treat the receipt as canonical success authority and replay
 // the normal finalize path rather than overwriting it as failure.
-func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
+// TestRecoveryFailsStuckRunningOperationAsFailed pins the new server-side
+// settlement contract: a planner reply still marked running after a restart
+// never reached the atomic FinalizeOperation transaction, so there is no
+// durable success to replay. Recovery finalises the abandoned op as failed
+// once the lease is past the 3× TTL grace — the user simply retries the turn.
+func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -1508,6 +1579,9 @@ func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed running operation: %v", err)
 	}
+	// The invocation is created+opened but never settled: server-side success
+	// is only minted inside FinalizeOperation, which this abandoned op never
+	// reached. There is no receipt to accept anymore.
 	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stuck_e2e",
 		PlanningOperationID:          "po_stuck_e2e",
@@ -1527,27 +1601,9 @@ func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_stuck_e2e",
-		AttemptID:                    "po_stuck_e2e",
-		PlanningProviderInvocationID: "ppinv_stuck_e2e",
-		PlanningOperationID:          "po_stuck_e2e",
-		PlanningSessionID:            "ps_stuck_e2e",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "capability_stuck_e2e",
-		FinalText:                    "Planner reply that never finalized.",
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T08:55:04Z",
-	})
-	if err != nil {
-		t.Fatalf("accept completion receipt: %v", err)
-	}
-	if accepted.Idempotent {
-		t.Fatal("expected first completion receipt accept to be non-idempotent")
-	}
 
-	// A single recovery pass must finalise the abandoned op. With the new
-	// timestamp-derived predicate, no per-observer counter to ramp through.
+	// A single recovery pass must finalise the abandoned op as failed. With the
+	// timestamp-derived predicate, there is no per-observer counter to ramp through.
 	if err := service.RecoverOperations(context.Background()); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -1556,14 +1612,11 @@ func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get operation: ok=%v err=%v", ok, err)
 	}
-	if op.Status != state.PlanningOperationStatusSucceeded {
-		t.Fatalf("expected succeeded status, got %q", op.Status)
+	if op.Status != state.PlanningOperationStatusFailed {
+		t.Fatalf("expected failed status for abandoned running op, got %q", op.Status)
 	}
-	if op.Error != nil {
-		t.Fatalf("expected no error message, got %q", *op.Error)
-	}
-	if op.ResultRef == nil || strings.TrimSpace(*op.ResultRef) != "pm_stuck_e2e_assistant" {
-		t.Fatalf("expected result_ref to point at replayed assistant message, got %+v", op.ResultRef)
+	if op.Error == nil || strings.TrimSpace(*op.Error) == "" {
+		t.Fatalf("expected stuck failure to record an error message, got %+v", op.Error)
 	}
 	if op.CanonicalSettlementID == nil || strings.TrimSpace(*op.CanonicalSettlementID) == "" {
 		t.Fatalf("expected canonical settlement id on stuck provider-backed operation, got %+v", op)
@@ -1575,27 +1628,19 @@ func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
 	if !found {
 		t.Fatal("expected planning provider settlement to exist")
 	}
-	if settlement.Outcome != state.PlanningProviderCompletionOutcomeSuccess {
-		t.Fatalf("expected success planning settlement, got %+v", settlement)
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed {
+		t.Fatalf("expected failed planning settlement, got %+v", settlement)
 	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected stuck recovery to reuse persisted receipt evidence %q, got %+v", accepted.Evidence.EvidenceID, settlement)
-	}
-	if settlement.FinalText != "Planner reply that never finalized." {
-		t.Fatalf("expected planning settlement final text to come from receipt, got %+v", settlement)
-	}
+	// Server-side success is never replayed from a stuck op, so no canonical
+	// assistant message is persisted.
 	messages, err := store.ListMessages(context.Background(), "ps_stuck_e2e")
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
-	if len(messages) != 1 {
-		t.Fatalf("expected one replayed assistant message, got %d", len(messages))
-	}
-	if messages[0].PlanningMessageID != "pm_stuck_e2e_assistant" {
-		t.Fatalf("expected replayed assistant message id pm_stuck_e2e_assistant, got %+v", messages[0])
-	}
-	if messages[0].ContentMarkdown != "Planner reply that never finalized." {
-		t.Fatalf("expected replayed assistant content from receipt final_text, got %+v", messages[0])
+	for _, message := range messages {
+		if message.PlanningMessageID == "pm_stuck_e2e_assistant" {
+			t.Fatalf("expected no replayed assistant message for failed recovery, got %+v", message)
+		}
 	}
 	invocation, found, err := store.GetPlanningProviderInvocation(context.Background(), "ppinv_stuck_e2e")
 	if err != nil {
@@ -1604,427 +1649,8 @@ func TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess(t *testing.T) {
 	if !found {
 		t.Fatal("expected planning provider invocation to exist")
 	}
-	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledSuccess {
-		t.Fatalf("expected stuck recovery to settle invocation as success, got %+v", invocation)
-	}
-}
-
-func TestRecoveryImmediatelyReplaysRecentReceiptPersistedOperationAsSuccess(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, nil, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_recent_receipt_recovery",
-		Title:              "recent",
-		TitleState:         "custom",
-		LifecycleState:     state.PlanningSessionLifecycleStateActive,
-		ConversationState:  state.PlanningSessionConversationStateProcessing,
-		CurrentOperationID: "po_recent_receipt_recovery",
-		ProjectRoot:        projectRoot,
-		ModelSelectionJSON: `{"model":"test-model"}`,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		UpdatedAt:          "2026-04-26T09:55:00Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_recent_receipt_recovery",
-		PlanningSessionID:  "ps_recent_receipt_recovery",
-		Type:               state.PlanningOperationTypeReply,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{"assistant_message_id":"pm_recent_receipt_assistant","assistant_created_at":"2026-04-26T09:55:05Z","turn_index":1}`,
-		LeaseOwner:         "slow-worker",
-		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		StartedAt:          "2026-04-26T09:55:01Z",
-	}); err != nil {
-		t.Fatalf("seed running operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_recent_receipt_recovery",
-		PlanningOperationID:          "po_recent_receipt_recovery",
-		PlanningSessionID:            "ps_recent_receipt_recovery",
-		LogicalSessionID:             "planner-ps_recent_receipt_recovery",
-		CompletionCapability:         "capability_recent_receipt_recovery",
-		IssuedAt:                     "2026-04-26T09:55:02Z",
-		CreatedAt:                    "2026-04-26T09:55:02Z",
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_recent_receipt_recovery",
-		PlanningOperationID:          "po_recent_receipt_recovery",
-		ProviderSessionID:            "ses_recent_receipt_recovery",
-		OpenedAt:                     "2026-04-26T09:55:03Z",
-	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
-	}
-	accepted, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_recent_receipt_recovery",
-		AttemptID:                    "po_recent_receipt_recovery",
-		PlanningProviderInvocationID: "ppinv_recent_receipt_recovery",
-		PlanningOperationID:          "po_recent_receipt_recovery",
-		PlanningSessionID:            "ps_recent_receipt_recovery",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "capability_recent_receipt_recovery",
-		FinalText:                    "Planner reply recovered before the stuck threshold.",
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:55:04Z",
-	})
-	if err != nil {
-		t.Fatalf("accept completion receipt: %v", err)
-	}
-
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("recover: %v", err)
-	}
-
-	op, ok, err := store.GetOperation(context.Background(), "po_recent_receipt_recovery")
-	if err != nil || !ok {
-		t.Fatalf("get operation: ok=%v err=%v", ok, err)
-	}
-	if op.Status != state.PlanningOperationStatusSucceeded {
-		t.Fatalf("expected succeeded status, got %+v", op)
-	}
-	if op.CanonicalSettlementID == nil || strings.TrimSpace(*op.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id on recovered operation, got %+v", op)
-	}
-	settlement, found, err := store.GetPlanningProviderCompletionSettlement(context.Background(), *op.CanonicalSettlementID)
-	if err != nil {
-		t.Fatalf("get planning provider settlement: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning provider settlement to exist")
-	}
-	if settlement.Outcome != state.PlanningProviderCompletionOutcomeSuccess {
-		t.Fatalf("expected success planning settlement, got %+v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected recent recovery to reuse persisted receipt evidence %q, got %+v", accepted.Evidence.EvidenceID, settlement)
-	}
-	if settlement.FinalText != "Planner reply recovered before the stuck threshold." {
-		t.Fatalf("expected planning settlement final text to come from receipt, got %+v", settlement)
-	}
-}
-
-func TestRecoveryReplySuccessAutoGeneratesTitleUnderForegroundRules(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_recent_receipt_auto_title",
-		Title:                    "plan_1",
-		TitleState:               planningSessionTitleStatePlaceholder,
-		LifecycleState:           state.PlanningSessionLifecycleStateActive,
-		ConversationState:        state.PlanningSessionConversationStateProcessing,
-		CurrentQuestionMessageID: "pm_recent_receipt_auto_title_assistant_2",
-		CurrentOperationID:       "po_recent_receipt_auto_title",
-		ProjectRoot:              projectRoot,
-		ModelSelectionJSON:       `{"model":"test-model"}`,
-		CreatedAt:                "2026-04-26T09:55:00Z",
-		UpdatedAt:                "2026-04-26T09:55:00Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	seedMessages := []state.AppendPlanningMessageRequest{
-		{PlanningMessageID: "pm_recent_receipt_auto_title_opening", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 1, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:00Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_user_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:01Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_assistant_2", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 2, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Second question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, Active: true, CreatedAt: "2026-04-26T09:55:02Z"},
-		{PlanningMessageID: "pm_recent_receipt_auto_title_user_3", PlanningSessionID: "ps_recent_receipt_auto_title", TurnIndex: 3, Role: state.PlanningMessageRoleUser, ContentMarkdown: "Second answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"Second answer"}`, Active: true, CreatedAt: "2026-04-26T09:55:03Z"},
-	}
-	for _, message := range seedMessages {
-		if _, err := store.AppendMessage(context.Background(), message); err != nil {
-			t.Fatalf("append seed message %s: %v", message.PlanningMessageID, err)
-		}
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_recent_receipt_auto_title",
-		PlanningSessionID:  "ps_recent_receipt_auto_title",
-		Type:               state.PlanningOperationTypeReply,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{"assistant_message_id":"pm_recent_receipt_auto_title_assistant_3","assistant_created_at":"2026-04-26T09:55:05Z","turn_index":3}`,
-		LeaseOwner:         "slow-worker",
-		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		StartedAt:          "2026-04-26T09:55:01Z",
-	}); err != nil {
-		t.Fatalf("seed running operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
-		PlanningOperationID:          "po_recent_receipt_auto_title",
-		PlanningSessionID:            "ps_recent_receipt_auto_title",
-		LogicalSessionID:             "planner-ps_recent_receipt_auto_title",
-		CompletionCapability:         "capability_recent_receipt_auto_title",
-		IssuedAt:                     "2026-04-26T09:55:02Z",
-		CreatedAt:                    "2026-04-26T09:55:02Z",
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
-		PlanningOperationID:          "po_recent_receipt_auto_title",
-		ProviderSessionID:            "ses_recent_receipt_auto_title",
-		OpenedAt:                     "2026-04-26T09:55:03Z",
-	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
-	}
-	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_recent_receipt_auto_title",
-		AttemptID:                    "po_recent_receipt_auto_title",
-		PlanningProviderInvocationID: "ppinv_recent_receipt_auto_title",
-		PlanningOperationID:          "po_recent_receipt_auto_title",
-		PlanningSessionID:            "ps_recent_receipt_auto_title",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "capability_recent_receipt_auto_title",
-		FinalText:                    "Recovered second planner reply.",
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:55:04Z",
-	}); err != nil {
-		t.Fatalf("accept completion receipt: %v", err)
-	}
-
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("recover: %v", err)
-	}
-
-	recoveredReply, ok, err := store.GetOperation(context.Background(), "po_recent_receipt_auto_title")
-	if err != nil || !ok {
-		t.Fatalf("get recovered reply: ok=%v err=%v", ok, err)
-	}
-	if recoveredReply.Status != state.PlanningOperationStatusSucceeded {
-		t.Fatalf("expected recovered reply to succeed, got %+v", recoveredReply)
-	}
-	latest := latestSessionOperation(t, store, "ps_recent_receipt_auto_title")
-	if latest.Type != state.PlanningOperationTypeGenerateTitle {
-		t.Fatalf("expected recovered reply success to enqueue generate_title, got %+v", latest)
-	}
-	awaitOperationTerminal(t, store, latest.OperationID)
-	request, err := decodeOperationRequest(latest.RequestPayloadJSON)
-	if err != nil {
-		t.Fatalf("decode recovered title request payload: %v", err)
-	}
-	if request.TriggerSource != string(titleTriggerSourceRecoveryCatchup) {
-		t.Fatalf("expected recovered title trigger source %q, got %q", titleTriggerSourceRecoveryCatchup, request.TriggerSource)
-	}
-}
-
-func TestRecoveryImmediatelyFailsInvalidHandshakeOperation(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, nil, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_invalid_handshake_recovery",
-		Title:              "invalid",
-		TitleState:         "custom",
-		LifecycleState:     state.PlanningSessionLifecycleStateActive,
-		ConversationState:  state.PlanningSessionConversationStateProcessing,
-		CurrentOperationID: "po_invalid_handshake_recovery",
-		ProjectRoot:        projectRoot,
-		ModelSelectionJSON: `{"model":"test-model"}`,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		UpdatedAt:          "2026-04-26T10:00:30Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_invalid_handshake_recovery",
-		PlanningSessionID:  "ps_invalid_handshake_recovery",
-		Type:               state.PlanningOperationTypeReply,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{"assistant_message_id":"pm_invalid_handshake_recovery","assistant_created_at":"2026-04-26T09:55:05Z","turn_index":1}`,
-		LeaseOwner:         "slow-worker",
-		LeaseExpiresAt:     "2026-04-26T10:00:10Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		StartedAt:          "2026-04-26T09:55:01Z",
-	}); err != nil {
-		t.Fatalf("seed running operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_handshake_recovery",
-		PlanningOperationID:          "po_invalid_handshake_recovery",
-		PlanningSessionID:            "ps_invalid_handshake_recovery",
-		LogicalSessionID:             "planner-ps_invalid_handshake_recovery",
-		CompletionCapability:         "capability_invalid_handshake_recovery",
-		IssuedAt:                     "2026-04-26T09:55:02Z",
-		CreatedAt:                    "2026-04-26T09:55:02Z",
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_handshake_recovery",
-		PlanningOperationID:          "po_invalid_handshake_recovery",
-		ProviderSessionID:            "ses_invalid_handshake_recovery",
-		OpenedAt:                     "2026-04-26T09:55:03Z",
-	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
-	}
-	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_invalid_handshake_recovery",
-		AttemptID:                    "po_invalid_handshake_recovery",
-		PlanningProviderInvocationID: "ppinv_invalid_handshake_recovery",
-		PlanningOperationID:          "po_invalid_handshake_recovery",
-		PlanningSessionID:            "ps_invalid_handshake_recovery",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "wrong_capability_invalid_handshake_recovery",
-		FinalText:                    "This receipt should be rejected.",
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:55:04Z",
-	}); err == nil {
-		t.Fatal("expected mismatched capability receipt to be rejected")
-	}
-
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("recover: %v", err)
-	}
-
-	op, ok, err := store.GetOperation(context.Background(), "po_invalid_handshake_recovery")
-	if err != nil || !ok {
-		t.Fatalf("get operation: ok=%v err=%v", ok, err)
-	}
-	if op.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("expected invalid-handshake operation to fail immediately, got %+v", op)
-	}
-	if op.Error == nil || !strings.Contains(*op.Error, "invalidated") {
-		t.Fatalf("expected invalid-handshake error to be recorded, got %+v", op.Error)
-	}
-	if op.CanonicalSettlementID == nil || strings.TrimSpace(*op.CanonicalSettlementID) == "" {
-		t.Fatalf("expected invalid-handshake recovery to persist canonical settlement, got %+v", op)
-	}
-	settlement, found, err := store.GetPlanningProviderCompletionSettlement(context.Background(), strings.TrimSpace(*op.CanonicalSettlementID))
-	if err != nil {
-		t.Fatalf("get planning provider settlement: %v", err)
-	}
-	if !found {
-		t.Fatal("expected invalid-handshake recovery settlement to exist")
-	}
-	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed {
-		t.Fatalf("expected invalid-handshake recovery settlement to fail, got %+v", settlement)
-	}
-	invocation, found, err := store.GetPlanningProviderInvocation(context.Background(), "ppinv_invalid_handshake_recovery")
-	if err != nil {
-		t.Fatalf("get planning provider invocation: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning provider invocation to exist")
-	}
 	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed {
-		t.Fatalf("expected invalid-handshake recovery to settle invocation as failed, got %+v", invocation)
-	}
-}
-
-func TestRecoveryGenerateTitleUsesRecoveryTimeForSessionFreshness(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, nil, projectRoot, func() string { return "2026-04-26T10:00:31Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:       "ps_recovered_title_freshness",
-		Title:                   "Untitled",
-		TitleState:              "placeholder",
-		LifecycleState:          state.PlanningSessionLifecycleStateActive,
-		ConversationState:       state.PlanningSessionConversationStateReady,
-		CurrentTitleOperationID: "po_recovered_title_freshness",
-		ProjectRoot:             projectRoot,
-		ModelSelectionJSON:      `{"model":"test-model"}`,
-		CreatedAt:               "2026-04-26T09:55:00Z",
-		UpdatedAt:               "2026-04-26T10:00:30Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_recovered_title_freshness",
-		PlanningSessionID:  "ps_recovered_title_freshness",
-		Type:               state.PlanningOperationTypeGenerateTitle,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{}`,
-		LeaseOwner:         "title-worker",
-		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:55:00Z",
-		StartedAt:          "2026-04-26T09:55:01Z",
-	}); err != nil {
-		t.Fatalf("seed running title operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_recovered_title_freshness",
-		PlanningOperationID:          "po_recovered_title_freshness",
-		PlanningSessionID:            "ps_recovered_title_freshness",
-		LogicalSessionID:             "planner-ps_recovered_title_freshness",
-		CompletionCapability:         "capability_recovered_title_freshness",
-		IssuedAt:                     "2026-04-26T09:55:02Z",
-		CreatedAt:                    "2026-04-26T09:55:02Z",
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_recovered_title_freshness",
-		PlanningOperationID:          "po_recovered_title_freshness",
-		ProviderSessionID:            "ses_recovered_title_freshness",
-		OpenedAt:                     "2026-04-26T09:55:03Z",
-	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
-	}
-	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_recovered_title_freshness",
-		AttemptID:                    "po_recovered_title_freshness",
-		PlanningProviderInvocationID: "ppinv_recovered_title_freshness",
-		PlanningOperationID:          "po_recovered_title_freshness",
-		PlanningSessionID:            "ps_recovered_title_freshness",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "capability_recovered_title_freshness",
-		FinalText:                    "Recovered Title",
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:55:04Z",
-	}); err != nil {
-		t.Fatalf("accept completion receipt: %v", err)
-	}
-
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("recover: %v", err)
-	}
-
-	session, ok, err := store.GetSession(context.Background(), "ps_recovered_title_freshness")
-	if err != nil || !ok {
-		t.Fatalf("get session after recovery: ok=%v err=%v", ok, err)
-	}
-	if session.Title != "Recovered Title" {
-		t.Fatalf("expected recovered title to be applied, got %+v", session)
-	}
-	if session.TitleState != "generated" {
-		t.Fatalf("expected recovered title state generated, got %+v", session)
-	}
-	if session.UpdatedAt != "2026-04-26T10:00:31Z" {
-		t.Fatalf("expected title recovery to stamp session freshness with recovery time, got %+v", session)
-	}
-	if session.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title lane cleared after recovered success, got %+v", session.CurrentTitleOperationID)
+		t.Fatalf("expected stuck recovery to settle invocation as failed, got %+v", invocation)
 	}
 }
 
@@ -2677,206 +2303,6 @@ func TestFinaliseIfStuckBeforeThreshold(t *testing.T) {
 	}
 }
 
-func TestFinaliseIfStuckTerminalizesInvalidRecoveredGeneratedTitle(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T10:01:00Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:       "ps_invalid_title_recovery",
-		Title:                   "plan_1",
-		TitleState:              "placeholder",
-		LifecycleState:          state.PlanningSessionLifecycleStateActive,
-		ConversationState:       state.PlanningSessionConversationStateReady,
-		CurrentTitleOperationID: "po_invalid_title_recovery",
-		ProjectRoot:             projectRoot,
-		ModelSelectionJSON:      `{"model":"m"}`,
-		CreatedAt:               "2026-04-26T10:00:00Z",
-		UpdatedAt:               "2026-04-26T10:00:00Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_invalid_title_recovery",
-		PlanningSessionID:  "ps_invalid_title_recovery",
-		Type:               state.PlanningOperationTypeGenerateTitle,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{}`,
-		LeaseOwner:         "worker-a",
-		LeaseExpiresAt:     "2026-04-26T09:59:00Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:58:00Z",
-		StartedAt:          "2026-04-26T09:58:01Z",
-	}); err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_title_recovery",
-		PlanningOperationID:          "po_invalid_title_recovery",
-		PlanningSessionID:            "ps_invalid_title_recovery",
-		LogicalSessionID:             "planner-title-ps_invalid_title_recovery",
-		CompletionCapability:         "planning-capability-invalid-title",
-		IssuedAt:                     "2026-04-26T09:58:02Z",
-		CreatedAt:                    "2026-04-26T09:58:02Z",
-	}); err != nil {
-		t.Fatalf("create planning provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_title_recovery",
-		PlanningOperationID:          "po_invalid_title_recovery",
-		ProviderSessionID:            "ses_invalid_title_recovery",
-		OpenedAt:                     "2026-04-26T09:58:03Z",
-	}); err != nil {
-		t.Fatalf("mark planning provider invocation open: %v", err)
-	}
-	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_invalid_title_recovery",
-		AttemptID:                    "po_invalid_title_recovery",
-		PlanningProviderInvocationID: "ppinv_invalid_title_recovery",
-		PlanningOperationID:          "po_invalid_title_recovery",
-		PlanningSessionID:            "ps_invalid_title_recovery",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "planning-capability-invalid-title",
-		FinalText:                    `""`,
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:58:04Z",
-	}); err != nil {
-		t.Fatalf("accept planning provider completion receipt: %v", err)
-	}
-
-	stuck, err := service.FinaliseIfStuck(context.Background(), "po_invalid_title_recovery")
-	if err != nil {
-		t.Fatalf("finalise invalid recovered title if stuck: %v", err)
-	}
-	if !stuck {
-		t.Fatal("expected invalid recovered title operation to finalize as stuck")
-	}
-
-	op, found, err := store.GetOperation(context.Background(), "po_invalid_title_recovery")
-	if err != nil || !found {
-		t.Fatalf("get recovered title operation: ok=%v err=%v", found, err)
-	}
-	if op.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("expected invalid recovered title op to fail, got %#v", op)
-	}
-	if op.Error == nil || !strings.Contains(*op.Error, "generated title is empty") {
-		t.Fatalf("expected invalid recovered title error to be recorded, got %#v", op)
-	}
-
-	session, found, err := store.GetSession(context.Background(), "ps_invalid_title_recovery")
-	if err != nil || !found {
-		t.Fatalf("get recovered title session: ok=%v err=%v", found, err)
-	}
-	if session.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title lane to clear after invalid recovered title failure, got %#v", session)
-	}
-}
-
-func TestFinaliseIfStuckImmediatelyTerminalizesInvalidRecoveredGeneratedTitleBeforeThreshold(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, nil, projectRoot, func() string { return "2026-04-26T10:00:30Z" }, deterministicID())
-
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:       "ps_invalid_title_recent",
-		Title:                   "plan_1",
-		TitleState:              "placeholder",
-		LifecycleState:          state.PlanningSessionLifecycleStateActive,
-		ConversationState:       state.PlanningSessionConversationStateReady,
-		CurrentTitleOperationID: "po_invalid_title_recent",
-		ProjectRoot:             projectRoot,
-		ModelSelectionJSON:      `{"model":"m"}`,
-		CreatedAt:               "2026-04-26T09:58:00Z",
-		UpdatedAt:               "2026-04-26T09:58:00Z",
-	}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
-		OperationID:        "po_invalid_title_recent",
-		PlanningSessionID:  "ps_invalid_title_recent",
-		Type:               state.PlanningOperationTypeGenerateTitle,
-		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{}`,
-		LeaseOwner:         "worker-a",
-		LeaseExpiresAt:     "2026-04-26T10:00:00Z",
-		LeaseVersion:       1,
-		CreatedAt:          "2026-04-26T09:58:00Z",
-		StartedAt:          "2026-04-26T09:58:01Z",
-	}); err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_title_recent",
-		PlanningOperationID:          "po_invalid_title_recent",
-		PlanningSessionID:            "ps_invalid_title_recent",
-		LogicalSessionID:             "planner-title-ps_invalid_title_recent",
-		CompletionCapability:         "planning-capability-invalid-title-recent",
-		IssuedAt:                     "2026-04-26T09:58:02Z",
-		CreatedAt:                    "2026-04-26T09:58:02Z",
-	}); err != nil {
-		t.Fatalf("create planning provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_invalid_title_recent",
-		PlanningOperationID:          "po_invalid_title_recent",
-		ProviderSessionID:            "ses_invalid_title_recent",
-		OpenedAt:                     "2026-04-26T09:58:03Z",
-	}); err != nil {
-		t.Fatalf("mark planning provider invocation open: %v", err)
-	}
-	if _, err := store.AcceptPlanningProviderCompletionReceipt(context.Background(), state.AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   "receipt_invalid_title_recent",
-		AttemptID:                    "po_invalid_title_recent",
-		PlanningProviderInvocationID: "ppinv_invalid_title_recent",
-		PlanningOperationID:          "po_invalid_title_recent",
-		PlanningSessionID:            "ps_invalid_title_recent",
-		ProtocolVersion:              "v1",
-		CompletionCapability:         "planning-capability-invalid-title-recent",
-		FinalText:                    `""`,
-		StructuredPayloadJSON:        `{}`,
-		ReceivedAt:                   "2026-04-26T09:58:04Z",
-	}); err != nil {
-		t.Fatalf("accept planning provider completion receipt: %v", err)
-	}
-
-	stuck, err := service.FinaliseIfStuck(context.Background(), "po_invalid_title_recent")
-	if err != nil {
-		t.Fatalf("finalise invalid recovered title before threshold: %v", err)
-	}
-	if !stuck {
-		t.Fatal("expected receipt-backed invalid title to finalize immediately before the stuck threshold")
-	}
-
-	op, found, err := store.GetOperation(context.Background(), "po_invalid_title_recent")
-	if err != nil || !found {
-		t.Fatalf("get recovered title operation: ok=%v err=%v", found, err)
-	}
-	if op.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("expected invalid recovered title op to fail, got %#v", op)
-	}
-	if op.Error == nil || !strings.Contains(*op.Error, "generated title is empty") {
-		t.Fatalf("expected invalid recovered title error to be recorded, got %#v", op)
-	}
-
-	session, found, err := store.GetSession(context.Background(), "ps_invalid_title_recent")
-	if err != nil || !found {
-		t.Fatalf("get recovered title session: ok=%v err=%v", found, err)
-	}
-	if session.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title lane to clear after invalid recovered title failure, got %#v", session)
-	}
-}
-
 func TestServiceRejectsDuplicateInteractiveOperation(t *testing.T) {
 	t.Parallel()
 
@@ -3068,7 +2494,7 @@ func (p *slowTitlePlanner) GenerateTitle(ctx context.Context, input AgentContext
 		if onChunk != nil {
 			onChunk("Released Title")
 		}
-		metadata, err := testReceiptMetadata(input, "Released Title")
+		metadata, err := testSuccessMetadata(input, "Released Title")
 		if err != nil {
 			return GeneratedTitle{}, err
 		}
@@ -3093,6 +2519,15 @@ func awaitSlowTitleStarted(t *testing.T, p *slowTitlePlanner) {
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEventPayload(events []state.PlanningOperationEvent, eventType, fragment string) bool {
+	for _, event := range events {
+		if event.EventType == eventType && strings.Contains(event.PayloadJSON, fragment) {
 			return true
 		}
 	}
@@ -3178,7 +2613,7 @@ func (p *blockingPlanner) ContinueTurnStream(ctx context.Context, input AgentCon
 			p.observedOnce.Do(func() { close(p.observed) })
 			return AgentTurn{}, ctx.Err()
 		case <-p.release:
-			metadata, err := testReceiptMetadata(input, "released")
+			metadata, err := testSuccessMetadata(input, "released")
 			if err != nil {
 				return AgentTurn{}, err
 			}
@@ -3186,7 +2621,7 @@ func (p *blockingPlanner) ContinueTurnStream(ctx context.Context, input AgentCon
 		}
 	}
 	<-p.release
-	metadata, err := testReceiptMetadata(input, "released")
+	metadata, err := testSuccessMetadata(input, "released")
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -3328,8 +2763,8 @@ func TestServiceCloseFinalizesInFlightOperationAsCancelled(t *testing.T) {
 	if session.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected session conversation_state=ready after cancel, got %q", session.ConversationState)
 	}
-	if session.CurrentOperationID != nil {
-		t.Fatalf("expected session current_operation_id cleared, got %q", *session.CurrentOperationID)
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != opID {
+		t.Fatalf("expected session current_operation_id to retain cancelled lineage, got %+v", session.CurrentOperationID)
 	}
 
 	// Terminal event must be the dedicated "cancelled" event type so the
@@ -3342,8 +2777,8 @@ func TestServiceCloseFinalizesInFlightOperationAsCancelled(t *testing.T) {
 		t.Fatal("expected at least one operation event")
 	}
 	terminal := events[len(events)-1]
-	if terminal.EventType != "cancelled" {
-		t.Fatalf("expected terminal event type=cancelled, got %q", terminal.EventType)
+	if terminal.EventType != acp.RunCancelledEventType {
+		t.Fatalf("expected terminal event type=%s, got %q", acp.RunCancelledEventType, terminal.EventType)
 	}
 }
 
@@ -3451,12 +2886,10 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 		UserMessage: state.AppendPlanningMessageRequest{
 			PlanningMessageID:   "pm_user_failroute",
 			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           1,
 			Role:                state.PlanningMessageRoleUser,
 			ContentMarkdown:     "ping",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           "2026-04-26T13:00:01Z",
 		},
 		Operation: state.CreatePlanningOperationRequest{
@@ -3521,8 +2954,8 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 		t.Fatal("expected at least one terminal event")
 	}
 	terminal := events[len(events)-1]
-	if terminal.EventType != "cancelled" {
-		t.Fatalf("expected terminal event type=cancelled, got %q", terminal.EventType)
+	if terminal.EventType != acp.RunCancelledEventType {
+		t.Fatalf("expected terminal event type=%s, got %q", acp.RunCancelledEventType, terminal.EventType)
 	}
 }
 
@@ -3669,13 +3102,192 @@ func TestServiceCloseCancelsInFlightGenerateTitleOperation(t *testing.T) {
 		t.Fatalf("get session after close: ok=%v err=%v", ok, err)
 	}
 	if stored.CurrentTitleOperationID != nil {
-		t.Fatalf("expected title slot cleared after shutdown cancel, got %+v", stored.CurrentTitleOperationID)
+		t.Fatalf("expected cancelled title run to release the title slot, got %+v", stored.CurrentTitleOperationID)
 	}
 	if stored.CurrentOperationID != nil {
 		t.Fatalf("expected interactive slot to remain empty, got %+v", stored.CurrentOperationID)
 	}
 	if stored.ConversationState != state.PlanningSessionConversationStateReady {
 		t.Fatalf("expected conversation_state to remain ready, got %q", stored.ConversationState)
+	}
+}
+
+func TestServiceGenerateTitleCanRetryAfterCancelledTitleRun(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	planner := newSlowTitlePlanner()
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, planner, projectRoot, func() string { return "2026-04-26T15:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	updated, err := service.GenerateTitle(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("first generate title: %v", err)
+	}
+	if updated.CurrentTitleOperationID == nil || strings.TrimSpace(*updated.CurrentTitleOperationID) == "" {
+		t.Fatalf("expected queued title operation id, got %+v", updated.CurrentTitleOperationID)
+	}
+	firstOperationID := strings.TrimSpace(*updated.CurrentTitleOperationID)
+	awaitSlowTitleStarted(t, planner)
+
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := service.Close(closeCtx); err != nil {
+		t.Fatalf("close service: %v", err)
+	}
+
+	closedSession, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get cancelled session: ok=%v err=%v", ok, err)
+	}
+	if closedSession.CurrentTitleOperationID != nil {
+		t.Fatalf("expected cancelled title run to clear the slot, got %+v", closedSession.CurrentTitleOperationID)
+	}
+
+	retryPlanner := &mockAgent{}
+	retryService := NewService(store, retryPlanner, projectRoot, func() string { return "2026-04-26T15:05:00Z" }, deterministicID())
+	retried, _, err := retryService.CreateGenerateTitleOperation(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("retry generate title: %v", err)
+	}
+	if retried.CurrentTitleOperationID == nil || strings.TrimSpace(*retried.CurrentTitleOperationID) == "" {
+		t.Fatalf("expected retried title operation id, got %+v", retried.CurrentTitleOperationID)
+	}
+	secondOperationID := strings.TrimSpace(*retried.CurrentTitleOperationID)
+	if secondOperationID == firstOperationID {
+		t.Fatalf("expected a fresh title operation after cancellation, reused %q", secondOperationID)
+	}
+	awaitOperationTerminal(t, store, secondOperationID)
+
+	stored, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || !ok {
+		t.Fatalf("get retried session: ok=%v err=%v", ok, err)
+	}
+	if stored.CurrentTitleOperationID != nil {
+		t.Fatalf("expected title slot cleared after retried completion, got %+v", stored.CurrentTitleOperationID)
+	}
+	if stored.TitleState != planningSessionTitleStateGenerated {
+		t.Fatalf("expected retried title generation to settle title, got %+v", stored)
+	}
+}
+
+func TestServiceRegenerateRejectsUserTarget(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T16:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	reply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Capture scope and constraints",
+		AnswerPayloadJSON: `{"text":"Capture scope and constraints"}`,
+	})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	awaitOperationTerminal(t, store, reply.Operation.OperationID)
+
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 2 {
+		t.Fatalf("expected at least opening + user message, got %+v", messages)
+	}
+	userMessageID := messages[1].PlanningMessageID
+
+	_, err = service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:            state.PlanningOperationTypeRegenerate,
+		TargetMessageID: userMessageID,
+	})
+	if !errors.Is(err, ErrMessageNotRegeneratable) {
+		t.Fatalf("expected ErrMessageNotRegeneratable, got %v", err)
+	}
+}
+
+func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	planner := &rotatingSessionPlanner{sessions: []string{"provider-session-1", "provider-session-2", "provider-session-2"}}
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, planner, projectRoot, func() string { return "2026-06-14T12:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
+
+	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "First reply",
+		AnswerPayloadJSON: `{"text":"First reply"}`,
+	})
+	if err != nil {
+		t.Fatalf("create first reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, firstReply.Operation.OperationID)
+
+	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) < 3 {
+		t.Fatalf("expected bootstrap + reply branch, got %+v", messages)
+	}
+	targetMessageID := messages[len(messages)-1].PlanningMessageID
+
+	regenerate, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:            state.PlanningOperationTypeRegenerate,
+		TargetMessageID: targetMessageID,
+	})
+	if err != nil {
+		t.Fatalf("create regenerate: %v", err)
+	}
+	awaitOperationTerminal(t, store, regenerate.Operation.OperationID)
+
+	secondReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Follow-up reply",
+		AnswerPayloadJSON: `{"text":"Follow-up reply"}`,
+	})
+	if err != nil {
+		t.Fatalf("create second reply: %v", err)
+	}
+	awaitOperationTerminal(t, store, secondReply.Operation.OperationID)
+
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(context.Background(), planningLogicalSessionID(session.PlanningSessionID, state.PlanningOperationTypeReply))
+	if err != nil || !found {
+		t.Fatalf("get latest reusable invocation: found=%v err=%v", found, err)
+	}
+	if invocation.ProviderSessionID != "provider-session-2" {
+		t.Fatalf("expected second reply to reuse regenerated provider session, got %+v", invocation)
+	}
+	if got := planner.continueProviderSessionIDs(); len(got) != 3 || got[0] != "" || got[1] != "" || got[2] != "provider-session-2" {
+		t.Fatalf("expected provider session reuse sequence [empty empty provider-session-2], got %v", got)
 	}
 }
 

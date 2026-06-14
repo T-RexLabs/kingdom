@@ -37,8 +37,13 @@ type CreateOperationInput struct {
 	Type              state.PlanningOperationType
 	ReplyMarkdown     string
 	AnswerPayloadJSON string
-	TruncateFromTurn  *int
-	TargetTurnIndex   int
+	// ParentMessageID branches a reply off a specific message. Nil = continue
+	// from the session's active leaf (a normal reply); set = edit, i.e. append
+	// a sibling under the edited message's parent. No truncation either way.
+	ParentMessageID *string
+	// TargetMessageID is the assistant message a regenerate forks a new sibling
+	// branch from.
+	TargetMessageID string
 }
 
 type CreateOperationResult struct {
@@ -84,14 +89,23 @@ type operationRequest struct {
 	TriggerSource      string          `json:"trigger_source,omitempty"`
 	UserMessageID      string          `json:"user_message_id,omitempty"`
 	UserCreatedAt      string          `json:"user_created_at,omitempty"`
-	TurnIndex          int             `json:"turn_index,omitempty"`
 	AssistantMessageID string          `json:"assistant_message_id,omitempty"`
 	AssistantCreatedAt string          `json:"assistant_created_at,omitempty"`
 	DraftID            string          `json:"draft_id,omitempty"`
 	DraftCreatedAt     string          `json:"draft_created_at,omitempty"`
-	TargetTurnIndex    int             `json:"target_turn_index,omitempty"`
-	VariantIndex       int             `json:"variant_index,omitempty"`
-	ForceNewSession    bool            `json:"force_new_session,omitempty"`
+	// ParentMessageID is where the produced branch attaches: the user message's
+	// parent for reply/edit, or the regenerated assistant's parent for
+	// regenerate. Empty means the conversation root.
+	ParentMessageID string `json:"parent_message_id,omitempty"`
+	// TargetMessageID records the assistant message a regenerate forks from.
+	TargetMessageID string `json:"target_message_id,omitempty"`
+	// PreviousActiveLeafMessageID preserves the exact transcript tip that was
+	// canonical before regenerate temporarily rewound the session to the fork
+	// point for prompting.
+	PreviousActiveLeafMessageID string `json:"previous_active_leaf_message_id,omitempty"`
+	// ForceNewSession is true when the branch does not continue from the prior
+	// active leaf (edit or regenerate), so the provider session must restart.
+	ForceNewSession bool `json:"force_new_session,omitempty"`
 }
 
 type clockFunc func() string
@@ -136,7 +150,6 @@ type GeneratedTitleLatencyMetrics struct {
 	Queue            PlannerLatencyMetric `json:"queue"`
 	Launch           PlannerLatencyMetric `json:"launch"`
 	FirstOutput      PlannerLatencyMetric `json:"first_output"`
-	OutputToReceipt  PlannerLatencyMetric `json:"output_to_receipt"`
 	Finalize         PlannerLatencyMetric `json:"finalize"`
 	Total            PlannerLatencyMetric `json:"total"`
 }

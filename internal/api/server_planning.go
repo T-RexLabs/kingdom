@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/planning"
@@ -55,7 +56,7 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	result := gen.CreatePlanningSessionResult{Session: presentedSession}
-	if optionalTrimmedString(session.CurrentQuestionMessageID) != nil {
+	if optionalTrimmedString(session.ActiveLeafMessageID) != nil {
 		messages, listErr := s.planningStore.ListMessagesPage(r.Context(), session.PlanningSessionID, 1, nil)
 		if listErr != nil {
 			s.writeInternalError(w, "list planning session messages failed")
@@ -90,7 +91,12 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 	}
 	response := gen.PlanningSessionListResponse{Items: make([]gen.PlanningSessionSummary, 0, len(items))}
 	for _, item := range items {
-		response.Items = append(response.Items, planningSessionSummaryFromState(item))
+		presentedRuns, resolveErr := s.presentPlanningSessionRuns(r.Context(), item)
+		if resolveErr != nil {
+			s.writeInternalError(w, "evaluate planning session run state failed")
+			return
+		}
+		response.Items = append(response.Items, planningSessionSummaryFromState(item, presentedRuns))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -232,9 +238,18 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 		previousCursor := s.encodePlanningMessagesCursor(planningSessionID, page.FirstItemIndex)
 		response.PreviousCursor = &previousCursor
 	}
-	variantCounts, err := s.planningStore.VariantCountsBySession(r.Context(), planningSessionID)
+	branchInfo, err := s.planningStore.BranchInfoBySession(r.Context(), planningSessionID)
 	if err != nil {
-		s.writeInternalError(w, "fetch variant counts failed")
+		s.writeInternalError(w, "fetch branch info failed")
+		return
+	}
+	messageIDs := make([]string, 0, len(page.Items))
+	for _, item := range page.Items {
+		messageIDs = append(messageIDs, item.PlanningMessageID)
+	}
+	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID, messageIDs)
+	if err != nil {
+		s.writeInternalError(w, "fetch planning message activity linkage failed")
 		return
 	}
 	for _, item := range page.Items {
@@ -243,8 +258,13 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 			s.writeInternalError(w, "decode planning session messages failed")
 			return
 		}
-		if count, ok := variantCounts[item.TurnIndex]; ok && item.Role == state.PlanningMessageRoleAssistant {
-			msg.VariantCount = &count
+		if branch, ok := branchInfo[item.PlanningMessageID]; ok {
+			index, count := branch.Index, branch.Count
+			msg.BranchIndex = &index
+			msg.BranchCount = &count
+		}
+		if runID, ok := messageRunIDs[item.PlanningMessageID]; ok {
+			msg.SourceRunId = &runID
 		}
 		response.Items = append(response.Items, msg)
 	}
@@ -321,109 +341,52 @@ func (s *Server) handleListPlanningMessageVariants(w http.ResponseWriter, r *htt
 		s.writeBadRequest(w, "message id is required")
 		return
 	}
-	message, err := s.planningService.GetMessageInSession(r.Context(), planningSessionID, messageID)
-	if err != nil {
+	if _, err := s.planningService.GetMessageInSession(r.Context(), planningSessionID, messageID); err != nil {
 		handlePlanningError(w, err, "api.list_planning_message_variants")
 		return
 	}
-	variants, err := s.planningService.ListMessageVariants(r.Context(), planningSessionID, message.TurnIndex, message.Role)
+	variants, err := s.planningService.ListMessageBranches(r.Context(), planningSessionID, messageID)
 	if err != nil {
-		s.writeInternalError(w, "list planning message variants failed")
+		s.writeInternalError(w, "list planning message branches failed")
 		return
 	}
 	response := gen.PlanningMessageVariantsResponse{Items: make([]gen.PlanningMessage, 0, len(variants))}
+	messageIDs := make([]string, 0, len(variants))
+	for _, item := range variants {
+		messageIDs = append(messageIDs, item.PlanningMessageID)
+	}
+	messageRunIDs, err := s.planningMessageRunIDs(r.Context(), planningSessionID, messageIDs)
+	if err != nil {
+		s.writeInternalError(w, "fetch planning message activity linkage failed")
+		return
+	}
 	for _, v := range variants {
 		presented, presentErr := planningMessageFromState(v)
 		if presentErr != nil {
 			s.writeInternalError(w, "decode planning message variants failed")
 			return
 		}
+		if runID, ok := messageRunIDs[v.PlanningMessageID]; ok {
+			presented.SourceRunId = &runID
+		}
 		response.Items = append(response.Items, presented)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) handleCreatePlanningSessionOperation(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.create_planning_session_operation"); !ok {
-		return
+func (s *Server) planningMessageRunIDs(ctx context.Context, planningSessionID string, messageIDs []string) (map[string]openapi_types.UUID, error) {
+	operations, err := s.planningStore.ListLatestOperationsByResultRefs(ctx, planningSessionID, messageIDs)
+	if err != nil {
+		return nil, err
 	}
-	if s.planningService == nil {
-		s.writeInternalError(w, "planning service is not configured")
-		return
-	}
-	planningSessionID := strings.TrimSpace(r.PathValue("id"))
-	if planningSessionID == "" {
-		s.writeBadRequest(w, "planning session id is required")
-		return
-	}
-
-	var req gen.CreatePlanningOperationRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
-		s.writeBadRequest(w, err.Error())
-		return
-	}
-
-	input := planning.CreateOperationInput{Type: state.PlanningOperationType(strings.TrimSpace(string(req.Type)))}
-	if req.Reply != nil {
-		input.ReplyMarkdown = strings.TrimSpace(req.Reply.ContentMarkdown)
-		if req.Reply.AnswerPayload != nil {
-			raw, err := json.Marshal(req.Reply.AnswerPayload)
-			if err != nil {
-				s.writeInternalError(w, "encode planning reply answer payload failed")
-				return
-			}
-			input.AnswerPayloadJSON = string(raw)
+	result := make(map[string]openapi_types.UUID)
+	for _, operation := range operations {
+		if operation.ResultRef == nil || strings.TrimSpace(*operation.ResultRef) == "" || strings.TrimSpace(operation.AcpRunID) == "" {
+			continue
 		}
-		if req.Reply.TruncateFromTurn != nil {
-			v := int(*req.Reply.TruncateFromTurn)
-			input.TruncateFromTurn = &v
-		}
+		result[strings.TrimSpace(*operation.ResultRef)] = openapi_types.UUID(mustParseOpenAPIUUID(operation.AcpRunID))
 	}
-	if req.Regenerate != nil {
-		input.TargetTurnIndex = int(req.Regenerate.TargetTurnIndex)
-	}
-
-	result, err := s.planningService.CreateOperation(r.Context(), planningSessionID, input)
-	if err != nil {
-		handlePlanningError(w, err, "api.create_planning_session_operation")
-		return
-	}
-	_, _, request, err := s.planningService.GetOperation(r.Context(), result.Operation.OperationID)
-	if err != nil {
-		s.writeInternalError(w, "fetch planning operation failed")
-		return
-	}
-	autoTitleEligible, err := s.presentPlanningSessionAutoTitleEligible(r.Context(), result.Session)
-	if err != nil {
-		s.writeInternalError(w, "evaluate planning session title eligibility failed")
-		return
-	}
-	writeJSON(w, http.StatusCreated, createPlanningOperationResultFromState(result, request, autoTitleEligible))
-}
-
-func (s *Server) handleGetPlanningOperation(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_planning_operation"); !ok {
-		return
-	}
-	if s.planningService == nil {
-		s.writeInternalError(w, "planning service is not configured")
-		return
-	}
-	operationID := strings.TrimSpace(r.PathValue("id"))
-	if operationID == "" {
-		s.writeBadRequest(w, "planning operation id is required")
-		return
-	}
-	operation, ok, request, err := s.planningService.GetOperation(r.Context(), operationID)
-	if err != nil {
-		s.writeInternalError(w, "fetch planning operation failed")
-		return
-	}
-	if !ok {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "planning operation not found", "api.get_planning_operation", map[string]any{"operation_id": operationID})
-		return
-	}
-	writeJSON(w, http.StatusOK, planningOperationDetailFromState(operation, request))
+	return result, nil
 }
 
 func (s *Server) handleRefreshPlanningSessionContext(w http.ResponseWriter, r *http.Request) {
@@ -459,32 +422,6 @@ func (s *Server) handleRefreshPlanningSessionContext(w http.ResponseWriter, r *h
 	})
 }
 
-func (s *Server) handleGeneratePlanningSessionTitle(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.generate_planning_session_title"); !ok {
-		return
-	}
-	if s.planningService == nil {
-		s.writeInternalError(w, "planning service is not configured")
-		return
-	}
-	planningSessionID := strings.TrimSpace(r.PathValue("id"))
-	if planningSessionID == "" {
-		s.writeBadRequest(w, "planning session id is required")
-		return
-	}
-	session, err := s.planningService.GenerateTitle(r.Context(), planningSessionID)
-	if err != nil {
-		handlePlanningError(w, err, "api.generate_planning_session_title")
-		return
-	}
-	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
-	if err != nil {
-		s.writeInternalError(w, "evaluate planning session title eligibility failed")
-		return
-	}
-	writeJSON(w, http.StatusOK, presentedSession)
-}
-
 func (s *Server) presentPlanningSessionAutoTitleEligible(ctx context.Context, session state.PlanningSession) (bool, error) {
 	if s == nil || s.planningService == nil {
 		return false, nil
@@ -497,7 +434,35 @@ func (s *Server) presentPlanningSessionDetail(ctx context.Context, session state
 	if err != nil {
 		return gen.PlanningSessionDetail{}, err
 	}
-	return planningSessionDetailFromState(session, autoTitleEligible), nil
+	presentedRuns, err := s.presentPlanningSessionRuns(ctx, session)
+	if err != nil {
+		return gen.PlanningSessionDetail{}, err
+	}
+	return planningSessionDetailFromState(session, autoTitleEligible, presentedRuns), nil
+}
+
+func (s *Server) presentPlanningSessionRuns(ctx context.Context, session state.PlanningSession) (planningSessionPresentedRuns, error) {
+	var interactiveOperation *state.PlanningOperation
+	if session.CurrentOperationID != nil {
+		operation, ok, err := s.planningStore.GetOperation(ctx, *session.CurrentOperationID)
+		if err != nil {
+			return planningSessionPresentedRuns{}, err
+		}
+		if ok {
+			interactiveOperation = &operation
+		}
+	}
+	var titleOperation *state.PlanningOperation
+	if session.CurrentTitleOperationID != nil {
+		operation, ok, err := s.planningStore.GetOperation(ctx, *session.CurrentTitleOperationID)
+		if err != nil {
+			return planningSessionPresentedRuns{}, err
+		}
+		if ok {
+			titleOperation = &operation
+		}
+	}
+	return resolvePresentedPlanningSessionRuns(session, interactiveOperation, titleOperation), nil
 }
 
 func (s *Server) encodePlanningMessagesCursor(sessionID string, before int) string {

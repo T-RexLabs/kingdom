@@ -111,4 +111,3 @@ Rules:
 
 - Return conversational prose only.
 - End the response with exactly one `structured_question` block.
-- When the turn response is complete, call `kingdom_complete_attempt` exactly once.

@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -16,12 +15,10 @@ type PlanningProviderInvocationState string
 const (
 	PlanningProviderInvocationStateIssued           PlanningProviderInvocationState = "issued"
 	PlanningProviderInvocationStateOpen             PlanningProviderInvocationState = "open"
-	PlanningProviderInvocationStateReceiptPersisted PlanningProviderInvocationState = "receipt_persisted"
 	PlanningProviderInvocationStateSettledSuccess   PlanningProviderInvocationState = "settled_success"
 	PlanningProviderInvocationStateSettledFailed    PlanningProviderInvocationState = "settled_failed"
 	PlanningProviderInvocationStateSettledCancelled PlanningProviderInvocationState = "settled_cancelled"
 	PlanningProviderInvocationStateSuperseded       PlanningProviderInvocationState = "superseded"
-	PlanningProviderInvocationStateInvalidHandshake PlanningProviderInvocationState = "invalid_handshake"
 )
 
 type PlanningProviderCompletionEvidenceKind string
@@ -52,9 +49,7 @@ type PlanningProviderInvocation struct {
 	CompletionCapabilityIssuedAt string
 	CompletionCapabilityUsedAt   string
 	OpenedAt                     string
-	ReceiptPersistedAt           string
 	SettledAt                    string
-	InvalidReason                string
 	FailureReasonCode            string
 	FailureReasonText            string
 	CreatedAt                    string
@@ -116,25 +111,6 @@ type ActivatePlanningProviderInvocationRequest struct {
 	OpenedAt                     string
 }
 
-type AcceptPlanningProviderCompletionReceiptRequest struct {
-	EvidenceID                   string
-	AttemptID                    string
-	PlanningProviderInvocationID string
-	PlanningOperationID          string
-	PlanningSessionID            string
-	ProtocolVersion              string
-	CompletionCapability         string
-	FinalText                    string
-	StructuredPayloadJSON        string
-	ReceivedAt                   string
-}
-
-type AcceptPlanningProviderCompletionReceiptResult struct {
-	Invocation PlanningProviderInvocation
-	Evidence   PlanningProviderCompletionEvidence
-	Idempotent bool
-}
-
 type FinalizePlanningProviderSettlementRequest struct {
 	SettlementID                 string
 	PlanningProviderInvocationID string
@@ -183,11 +159,6 @@ func (e *planningProviderSettlementError) Error() string {
 		message += ")"
 	}
 	return message
-}
-
-func IsTerminalPlanningProviderReceiptError(err error) bool {
-	var settlementErr *planningProviderSettlementError
-	return errors.As(err, &settlementErr) && settlementErr != nil && settlementErr.Operation == "accept_planning_provider_completion_receipt"
 }
 
 func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, req CreatePlanningProviderInvocationRequest) (PlanningProviderInvocation, error) {
@@ -317,10 +288,7 @@ func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, 
 	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
-			SET invocation_state = CASE
-				WHEN invocation_state = 'receipt_persisted' THEN invocation_state
-				ELSE 'open'
-			END,
+			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
@@ -364,191 +332,6 @@ func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, 
 	return invocation, nil
 }
 
-func (s *PlanningStore) AcceptPlanningProviderCompletionReceipt(ctx context.Context, req AcceptPlanningProviderCompletionReceiptRequest) (AcceptPlanningProviderCompletionReceiptResult, error) {
-	if s == nil || s.db == nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("planning store database is required")
-	}
-	normalized, payloadJSON, capabilityHash, err := normalizeAcceptPlanningProviderCompletionReceiptRequest(req)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("begin accept planning provider completion receipt: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, normalized.PlanningProviderInvocationID)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	if !found {
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-	}
-	if invocation.PlanningOperationID != normalized.AttemptID {
-		if invocation.InvocationState == PlanningProviderInvocationStateOpen || invocation.InvocationState == PlanningProviderInvocationStateReceiptPersisted {
-			invalidated, err := invalidatePlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID, normalized.ReceivedAt, "attempt_lineage_mismatch")
-			if err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("invalidate planning provider invocation %q on attempt mismatch: %w", invocation.PlanningProviderInvocationID, err)
-			}
-			if invalidated {
-				if err := tx.Commit(); err != nil {
-					return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit planning provider attempt mismatch receipt accept: %w", err)
-				}
-				committed = true
-				return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "attempt_lineage_mismatch", invocation.PlanningProviderInvocationID, normalized.AttemptID, string(PlanningProviderInvocationStateInvalidHandshake))
-			}
-		}
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "attempt_lineage_mismatch", invocation.PlanningProviderInvocationID, normalized.AttemptID, string(invocation.InvocationState))
-	}
-	if invocation.PlanningOperationID != normalized.PlanningOperationID || invocation.PlanningSessionID != normalized.PlanningSessionID {
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, normalized.PlanningOperationID, string(invocation.InvocationState))
-	}
-	existingReceipt, existingFound, err := loadPlanningProviderReceiptEvidenceTx(ctx, tx, invocation.PlanningProviderInvocationID)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	if invocation.InvocationState == PlanningProviderInvocationStateSettledSuccess {
-		if invocation.CompletionCapabilityHash != capabilityHash {
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "completion_capability_mismatch", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		if !existingFound {
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "receipt_evidence_not_found", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		if existingReceipt.PayloadJSON != payloadJSON {
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "conflicting_completion_receipt", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		if err := tx.Commit(); err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit settled planning provider receipt retry: %w", err)
-		}
-		committed = true
-		return AcceptPlanningProviderCompletionReceiptResult{Invocation: invocation, Evidence: existingReceipt, Idempotent: true}, nil
-	}
-	if err := validatePlanningProviderInvocationReceiptEligibilityTx(ctx, tx, invocation); err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	if invocation.CompletionCapabilityHash != capabilityHash {
-		invalidated, err := invalidatePlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID, normalized.ReceivedAt, "completion_capability_mismatch")
-		if err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("invalidate planning provider invocation %q on capability mismatch: %w", invocation.PlanningProviderInvocationID, err)
-		}
-		if !invalidated {
-			invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-			if err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, err
-			}
-			if !found {
-				return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-			}
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "completion_capability_mismatch", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		if err := tx.Commit(); err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit planning provider capability mismatch receipt accept: %w", err)
-		}
-		committed = true
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "completion_capability_mismatch", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(PlanningProviderInvocationStateInvalidHandshake))
-	}
-	if existingFound {
-		if existingReceipt.PayloadJSON == payloadJSON {
-			invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-			if err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, err
-			}
-			if !found {
-				return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-			}
-			if err := tx.Commit(); err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit idempotent planning provider receipt accept: %w", err)
-			}
-			committed = true
-			return AcceptPlanningProviderCompletionReceiptResult{Invocation: invocation, Evidence: existingReceipt, Idempotent: true}, nil
-		}
-		invalidated, err := invalidatePlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID, normalized.ReceivedAt, "conflicting_completion_receipt")
-		if err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("invalidate planning provider invocation %q on conflicting receipt: %w", invocation.PlanningProviderInvocationID, err)
-		}
-		if !invalidated {
-			invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-			if err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, err
-			}
-			if !found {
-				return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-			}
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "conflicting_completion_receipt", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		if err := tx.Commit(); err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit conflicting planning provider receipt accept: %w", err)
-		}
-		committed = true
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "conflicting_completion_receipt", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(PlanningProviderInvocationStateInvalidHandshake))
-	}
-
-	evidence, inserted, err := insertPlanningProviderCompletionReceiptEvidenceTx(ctx, tx, normalized, payloadJSON)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	if !inserted {
-		invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-		if err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, err
-		}
-		if !found {
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-		}
-		if evidence.PayloadJSON == payloadJSON {
-			if err := tx.Commit(); err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit concurrent planning provider receipt accept: %w", err)
-			}
-			committed = true
-			return AcceptPlanningProviderCompletionReceiptResult{Invocation: invocation, Evidence: evidence, Idempotent: true}, nil
-		}
-		invalidated, err := invalidatePlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID, normalized.ReceivedAt, "conflicting_completion_receipt")
-		if err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("invalidate planning provider invocation %q after duplicate receipt insert race: %w", invocation.PlanningProviderInvocationID, err)
-		}
-		if invalidated {
-			if err := tx.Commit(); err != nil {
-				return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit conflicting planning provider receipt accept after duplicate insert race: %w", err)
-			}
-			committed = true
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "conflicting_completion_receipt", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(PlanningProviderInvocationStateInvalidHandshake))
-		}
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "conflicting_completion_receipt", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	persisted, err := markPlanningProviderInvocationReceiptPersistedTx(ctx, tx, invocation.PlanningProviderInvocationID, normalized.ReceivedAt)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("mark planning provider invocation %q receipt persisted: %w", invocation.PlanningProviderInvocationID, err)
-	}
-	if !persisted {
-		invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-		if err != nil {
-			return AcceptPlanningProviderCompletionReceiptResult{}, err
-		}
-		if !found {
-			return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-		}
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invalid_invocation_state", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, err
-	}
-	if !found {
-		return AcceptPlanningProviderCompletionReceiptResult{}, planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-	}
-	if err := tx.Commit(); err != nil {
-		return AcceptPlanningProviderCompletionReceiptResult{}, fmt.Errorf("commit planning provider completion receipt accept: %w", err)
-	}
-	committed = true
-	return AcceptPlanningProviderCompletionReceiptResult{Invocation: invocation, Evidence: evidence}, nil
-}
-
 func (s *PlanningStore) GetPlanningProviderInvocation(ctx context.Context, planningProviderInvocationID string) (PlanningProviderInvocation, bool, error) {
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, false, fmt.Errorf("planning store database is required")
@@ -556,18 +339,36 @@ func (s *PlanningStore) GetPlanningProviderInvocation(ctx context.Context, plann
 	return getPlanningProviderInvocation(ctx, s.db, planningProviderInvocationID)
 }
 
+func (s *PlanningStore) GetLatestReusablePlanningProviderInvocation(ctx context.Context, logicalSessionID string) (PlanningProviderInvocation, bool, error) {
+	if s == nil || s.db == nil {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("planning store database is required")
+	}
+	trimmedLogicalSessionID := strings.TrimSpace(logicalSessionID)
+	if trimmedLogicalSessionID == "" {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("logical_session_id is required")
+	}
+	row := s.db.QueryRowContext(ctx, planningProviderInvocationSelect+`
+		 WHERE logical_session_id = ?
+		   AND TRIM(provider_session_id) <> ''
+		   AND invocation_state IN (?, ?)
+		 ORDER BY created_at DESC, planning_provider_invocation_id DESC
+		 LIMIT 1`,
+		trimmedLogicalSessionID,
+		string(PlanningProviderInvocationStateOpen),
+		string(PlanningProviderInvocationStateSettledSuccess),
+	)
+	invocation, found, err := scanPlanningProviderInvocation(row)
+	if err != nil {
+		return PlanningProviderInvocation{}, false, fmt.Errorf("get latest reusable planning provider invocation %q: %w", trimmedLogicalSessionID, err)
+	}
+	return invocation, found, nil
+}
+
 func (s *PlanningStore) GetPlanningProviderCompletionSettlement(ctx context.Context, settlementID string) (PlanningProviderCompletionSettlement, bool, error) {
 	if s == nil || s.db == nil {
 		return PlanningProviderCompletionSettlement{}, false, fmt.Errorf("planning store database is required")
 	}
 	return getPlanningProviderCompletionSettlement(ctx, s.db, settlementID)
-}
-
-func (s *PlanningStore) GetPlanningProviderReceiptEvidence(ctx context.Context, planningProviderInvocationID string) (PlanningProviderCompletionEvidence, bool, error) {
-	if s == nil || s.db == nil {
-		return PlanningProviderCompletionEvidence{}, false, fmt.Errorf("planning store database is required")
-	}
-	return getPlanningProviderReceiptEvidence(ctx, s.db, planningProviderInvocationID)
 }
 
 func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, operationID, sessionID string, req *FinalizePlanningProviderSettlementRequest) (string, error) {
@@ -635,20 +436,18 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		CreatedAt:                    normalized.SettledAt,
 	}
 	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
-		if evidence.EvidenceKind != PlanningProviderCompletionEvidenceKindCompletionReceipt {
-			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_receipt_evidence", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		// Planner success is settled server-side from the provider's terminal
+		// stop signal; the durable proof is a stream observation, not a
+		// model-invoked completion receipt. FinalText is the runtime-assembled
+		// output text carried on the settlement request.
+		if evidence.EvidenceKind != PlanningProviderCompletionEvidenceKindStreamObservation {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_stream_observation_evidence", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		receiptPayload, parseErr := parsePlanningCompletionReceiptEvidencePayload(evidence.PayloadJSON)
-		if parseErr != nil {
-			return "", fmt.Errorf("parse planning completion receipt evidence %q: %w", evidence.EvidenceID, parseErr)
+		if candidateSettlement.FinalText == "" {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		candidateSettlement.FinalText = receiptPayload.FinalText
-		candidateSettlement.StructuredPayloadJSON = receiptPayload.StructuredPayloadJSON
 		candidateSettlement.FailureReasonCode = ""
 		candidateSettlement.FailureReasonText = ""
-		if invocation.InvocationState != PlanningProviderInvocationStateReceiptPersisted && invocation.InvocationState != PlanningProviderInvocationStateSettledSuccess {
-			return "", planningProviderError("finalize_planning_provider_settlement", "invocation_not_receipt_persisted", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
 	}
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO planning_provider_completion_settlements (
 		settlement_id,
@@ -858,10 +657,7 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
-			SET invocation_state = CASE
-				WHEN invocation_state = 'receipt_persisted' THEN invocation_state
-				ELSE 'open'
-			END,
+			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
@@ -897,46 +693,6 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 		return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return nil
-}
-
-func normalizeAcceptPlanningProviderCompletionReceiptRequest(req AcceptPlanningProviderCompletionReceiptRequest) (AcceptPlanningProviderCompletionReceiptRequest, string, string, error) {
-	normalized := AcceptPlanningProviderCompletionReceiptRequest{
-		EvidenceID:                   strings.TrimSpace(req.EvidenceID),
-		AttemptID:                    strings.TrimSpace(req.AttemptID),
-		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
-		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
-		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),
-		ProtocolVersion:              strings.TrimSpace(req.ProtocolVersion),
-		CompletionCapability:         strings.TrimSpace(req.CompletionCapability),
-		FinalText:                    strings.TrimSpace(req.FinalText),
-		StructuredPayloadJSON:        firstNonEmptyPlanningProvider(req.StructuredPayloadJSON, "{}"),
-		ReceivedAt:                   strings.TrimSpace(req.ReceivedAt),
-	}
-	if normalized.EvidenceID == "" || normalized.AttemptID == "" || normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" || normalized.PlanningSessionID == "" {
-		return AcceptPlanningProviderCompletionReceiptRequest{}, "", "", fmt.Errorf("planning receipt evidence, attempt, invocation, operation, and session ids are required")
-	}
-	if normalized.ProtocolVersion == "" {
-		return AcceptPlanningProviderCompletionReceiptRequest{}, "", "", fmt.Errorf("planning receipt protocol version is required")
-	}
-	if normalized.CompletionCapability == "" || normalized.FinalText == "" || normalized.ReceivedAt == "" {
-		return AcceptPlanningProviderCompletionReceiptRequest{}, "", "", fmt.Errorf("planning receipt completion capability, final_text, and received_at are required")
-	}
-	structuredPayloadJSON, err := canonicalizePlanningProviderJSONDocument(normalized.StructuredPayloadJSON, "{}")
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptRequest{}, "", "", fmt.Errorf("canonicalize planning completion receipt structured payload: %w", err)
-	}
-	normalized.StructuredPayloadJSON = structuredPayloadJSON
-	payload, err := json.Marshal(map[string]any{
-		"protocol_version":        normalized.ProtocolVersion,
-		"attempt_id":              normalized.AttemptID,
-		"completion_capability":   normalized.CompletionCapability,
-		"final_text":              normalized.FinalText,
-		"structured_payload_json": normalized.StructuredPayloadJSON,
-	})
-	if err != nil {
-		return AcceptPlanningProviderCompletionReceiptRequest{}, "", "", fmt.Errorf("marshal planning receipt payload: %w", err)
-	}
-	return normalized, string(payload), hashPlanningProviderCapability(normalized.CompletionCapability), nil
 }
 
 func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProviderSettlementRequest) (FinalizePlanningProviderSettlementRequest, error) {
@@ -979,42 +735,6 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 	return normalized, nil
 }
 
-func parsePlanningCompletionReceiptEvidencePayload(payloadJSON string) (struct {
-	ProtocolVersion       string `json:"protocol_version"`
-	CompletionCapability  string `json:"completion_capability"`
-	FinalText             string `json:"final_text"`
-	StructuredPayloadJSON string `json:"structured_payload_json"`
-}, error) {
-	trimmed := strings.TrimSpace(payloadJSON)
-	if trimmed == "" {
-		return struct {
-			ProtocolVersion       string `json:"protocol_version"`
-			CompletionCapability  string `json:"completion_capability"`
-			FinalText             string `json:"final_text"`
-			StructuredPayloadJSON string `json:"structured_payload_json"`
-		}{}, fmt.Errorf("payload json is required")
-	}
-	var payload struct {
-		ProtocolVersion       string `json:"protocol_version"`
-		CompletionCapability  string `json:"completion_capability"`
-		FinalText             string `json:"final_text"`
-		StructuredPayloadJSON string `json:"structured_payload_json"`
-	}
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return payload, err
-	}
-	payload.FinalText = strings.TrimSpace(payload.FinalText)
-	if payload.FinalText == "" {
-		return payload, fmt.Errorf("final_text is required")
-	}
-	structuredPayloadJSON, err := canonicalizePlanningProviderJSONDocument(payload.StructuredPayloadJSON, "{}")
-	if err != nil {
-		return payload, fmt.Errorf("canonicalize structured_payload_json: %w", err)
-	}
-	payload.StructuredPayloadJSON = structuredPayloadJSON
-	return payload, nil
-}
-
 func hashPlanningProviderCapability(capability string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(capability)))
 	return hex.EncodeToString(sum[:])
@@ -1033,19 +753,10 @@ func planningProviderInvocationStateForOutcome(outcome PlanningProviderCompletio
 
 func ensurePlanningProviderInvocationStateForOpen(invocation PlanningProviderInvocation) error {
 	switch invocation.InvocationState {
-	case PlanningProviderInvocationStateIssued, PlanningProviderInvocationStateOpen, PlanningProviderInvocationStateReceiptPersisted:
+	case PlanningProviderInvocationStateIssued, PlanningProviderInvocationStateOpen:
 		return nil
 	default:
 		return planningProviderError("mark_planning_provider_invocation_open", "invalid_invocation_state", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-}
-
-func ensurePlanningProviderInvocationStateForReceipt(invocation PlanningProviderInvocation) error {
-	switch invocation.InvocationState {
-	case PlanningProviderInvocationStateOpen, PlanningProviderInvocationStateReceiptPersisted:
-		return nil
-	default:
-		return planningProviderError("accept_planning_provider_completion_receipt", "invalid_invocation_state", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 }
 
@@ -1056,35 +767,6 @@ func ensurePlanningProviderSessionLineage(planningProviderInvocationID, planning
 		return nil
 	}
 	return planningProviderError(operation, "provider_session_lineage_conflict", strings.TrimSpace(planningProviderInvocationID), strings.TrimSpace(planningOperationID), strings.TrimSpace(state))
-}
-
-func validatePlanningProviderInvocationReceiptEligibilityTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation) error {
-	if err := ensurePlanningProviderInvocationStateForReceipt(invocation); err != nil {
-		return err
-	}
-	activeInvocationID, found, err := loadPlanningOperationActiveInvocationRefTx(ctx, tx, invocation.PlanningOperationID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return planningProviderError("accept_planning_provider_completion_receipt", "operation_not_found", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	if activeInvocationID != invocation.PlanningProviderInvocationID {
-		return planningProviderError("accept_planning_provider_completion_receipt", "invocation_not_active", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	return nil
-}
-
-func loadPlanningOperationActiveInvocationRefTx(ctx context.Context, query sqlQueryRower, operationID string) (string, bool, error) {
-	var activeInvocationID sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT NULLIF(TRIM(active_provider_invocation_id), '') FROM planning_operations WHERE operation_id = ?`, strings.TrimSpace(operationID)).Scan(&activeInvocationID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("load planning operation active invocation for %q: %w", operationID, err)
-	}
-	return strings.TrimSpace(activeInvocationID.String), true, nil
 }
 
 func getPlanningProviderInvocation(ctx context.Context, query sqlQueryRower, planningProviderInvocationID string) (PlanningProviderInvocation, bool, error) {
@@ -1105,10 +787,6 @@ func loadPlanningProviderInvocationTx(ctx context.Context, query sqlQueryRower, 
 
 func getPlanningProviderCompletionSettlement(ctx context.Context, query sqlQueryRower, settlementID string) (PlanningProviderCompletionSettlement, bool, error) {
 	return loadPlanningProviderCompletionSettlementTx(ctx, query, strings.TrimSpace(settlementID))
-}
-
-func getPlanningProviderReceiptEvidence(ctx context.Context, query sqlQueryRower, planningProviderInvocationID string) (PlanningProviderCompletionEvidence, bool, error) {
-	return loadPlanningProviderReceiptEvidenceTx(ctx, query, strings.TrimSpace(planningProviderInvocationID))
 }
 
 func loadPlanningProviderCompletionSettlementTx(ctx context.Context, query sqlQueryRower, settlementID string) (PlanningProviderCompletionSettlement, bool, error) {
@@ -1135,106 +813,11 @@ func loadPlanningProviderCompletionEvidenceTx(ctx context.Context, query sqlQuer
 	return evidence, found, nil
 }
 
-func loadPlanningProviderReceiptEvidenceTx(ctx context.Context, query sqlQueryRower, planningProviderInvocationID string) (PlanningProviderCompletionEvidence, bool, error) {
-	row := query.QueryRowContext(ctx, planningProviderCompletionEvidenceSelect+` WHERE planning_provider_invocation_id = ? AND evidence_kind = ? ORDER BY planning_provider_evidence_seq ASC LIMIT 1`, strings.TrimSpace(planningProviderInvocationID), string(PlanningProviderCompletionEvidenceKindCompletionReceipt))
-	evidence, found, err := scanPlanningProviderCompletionEvidence(row)
-	if err != nil {
-		return PlanningProviderCompletionEvidence{}, false, fmt.Errorf("get planning provider receipt evidence for %q: %w", planningProviderInvocationID, err)
-	}
-	return evidence, found, nil
-}
-
-func insertPlanningProviderCompletionReceiptEvidenceTx(ctx context.Context, tx *sql.Tx, req AcceptPlanningProviderCompletionReceiptRequest, payloadJSON string) (PlanningProviderCompletionEvidence, bool, error) {
-	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO planning_provider_completion_evidence (
-		evidence_id,
-		planning_provider_invocation_id,
-		planning_operation_id,
-		planning_session_id,
-		evidence_kind,
-		payload_json,
-		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		strings.TrimSpace(req.EvidenceID),
-		strings.TrimSpace(req.PlanningProviderInvocationID),
-		strings.TrimSpace(req.PlanningOperationID),
-		strings.TrimSpace(req.PlanningSessionID),
-		string(PlanningProviderCompletionEvidenceKindCompletionReceipt),
-		payloadJSON,
-		strings.TrimSpace(req.ReceivedAt),
-	)
-	if err != nil {
-		return PlanningProviderCompletionEvidence{}, false, fmt.Errorf("insert planning provider completion receipt evidence %q: %w", req.EvidenceID, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return PlanningProviderCompletionEvidence{}, false, fmt.Errorf("read planning provider completion receipt evidence rows affected for %q: %w", req.EvidenceID, err)
-	}
-	if rows > 0 {
-		evidence, found, err := loadPlanningProviderCompletionEvidenceTx(ctx, tx, strings.TrimSpace(req.EvidenceID))
-		if err != nil {
-			return PlanningProviderCompletionEvidence{}, false, err
-		}
-		if !found {
-			return PlanningProviderCompletionEvidence{}, false, planningProviderError("accept_planning_provider_completion_receipt", "evidence_not_found", strings.TrimSpace(req.PlanningProviderInvocationID), strings.TrimSpace(req.PlanningOperationID), string(PlanningProviderInvocationStateOpen))
-		}
-		return evidence, true, nil
-	}
-	evidence, found, err := loadPlanningProviderReceiptEvidenceTx(ctx, tx, strings.TrimSpace(req.PlanningProviderInvocationID))
-	if err != nil {
-		return PlanningProviderCompletionEvidence{}, false, err
-	}
-	if !found {
-		return PlanningProviderCompletionEvidence{}, false, planningProviderError("accept_planning_provider_completion_receipt", "evidence_not_found", strings.TrimSpace(req.PlanningProviderInvocationID), strings.TrimSpace(req.PlanningOperationID), string(PlanningProviderInvocationStateOpen))
-	}
-	return evidence, false, nil
-}
-
-func markPlanningProviderInvocationReceiptPersistedTx(ctx context.Context, tx *sql.Tx, planningProviderInvocationID, receivedAt string) (bool, error) {
-	res, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
-		SET invocation_state = 'receipt_persisted',
-		    completion_capability_used_at = COALESCE(completion_capability_used_at, ?),
-		    receipt_persisted_at = COALESCE(receipt_persisted_at, ?),
-		    updated_at = ?
-		WHERE planning_provider_invocation_id = ?
-		  AND invocation_state = 'open'`,
-		receivedAt,
-		receivedAt,
-		receivedAt,
-		planningProviderInvocationID,
-	)
-	if err != nil {
-		return false, err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rows > 0, nil
-}
-
-func invalidatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, planningProviderInvocationID, updatedAt, invalidReason string) (bool, error) {
-	res, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
-		SET invocation_state = 'invalid_handshake',
-		    invalid_reason = ?,
-		    updated_at = ?
-		WHERE planning_provider_invocation_id = ?
-		  AND invocation_state IN ('open', 'receipt_persisted')`, invalidReason, updatedAt, planningProviderInvocationID)
-	if err != nil {
-		return false, err
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rows > 0, nil
-}
-
 func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, bool, error) {
 	var item PlanningProviderInvocation
 	var providerSessionID sql.NullString
 	var completionCapabilityUsedAt sql.NullString
 	var openedAt sql.NullString
-	var receiptPersistedAt sql.NullString
 	var settledAt sql.NullString
 	err := row.Scan(
 		&item.PlanningProviderInvocationID,
@@ -1247,9 +830,7 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 		&item.CompletionCapabilityIssuedAt,
 		&completionCapabilityUsedAt,
 		&openedAt,
-		&receiptPersistedAt,
 		&settledAt,
-		&item.InvalidReason,
 		&item.FailureReasonCode,
 		&item.FailureReasonText,
 		&item.CreatedAt,
@@ -1264,7 +845,6 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 	item.ProviderSessionID = strings.TrimSpace(providerSessionID.String)
 	item.CompletionCapabilityUsedAt = strings.TrimSpace(completionCapabilityUsedAt.String)
 	item.OpenedAt = strings.TrimSpace(openedAt.String)
-	item.ReceiptPersistedAt = strings.TrimSpace(receiptPersistedAt.String)
 	item.SettledAt = strings.TrimSpace(settledAt.String)
 	return item, true, nil
 }
@@ -1386,9 +966,7 @@ const planningProviderInvocationSelect = `SELECT
 	completion_capability_issued_at,
 	completion_capability_used_at,
 	opened_at,
-	receipt_persisted_at,
 	settled_at,
-	invalid_reason,
 	failure_reason_code,
 	failure_reason_text,
 	created_at,

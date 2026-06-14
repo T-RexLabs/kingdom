@@ -19,11 +19,61 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
 const (
 	ActorIdHeaderScopes = "ActorIdHeader.Scopes"
 	RoleIdHeaderScopes  = "RoleIdHeader.Scopes"
+)
+
+// Defines values for AcpAgentName.
+const (
+	AcpAgentNamePlannerFormalize     AcpAgentName = "planner-formalize"
+	AcpAgentNamePlannerGenerateTitle AcpAgentName = "planner-generate-title"
+	AcpAgentNamePlannerRegenerate    AcpAgentName = "planner-regenerate"
+	AcpAgentNamePlannerReply         AcpAgentName = "planner-reply"
+)
+
+// Defines values for AcpAgentOperationType.
+const (
+	Formalize     AcpAgentOperationType = "formalize"
+	GenerateTitle AcpAgentOperationType = "generate_title"
+	Regenerate    AcpAgentOperationType = "regenerate"
+	Reply         AcpAgentOperationType = "reply"
+)
+
+// Defines values for AcpRunAgentName.
+const (
+	AcpRunAgentNamePlannerFormalize     AcpRunAgentName = "planner-formalize"
+	AcpRunAgentNamePlannerGenerateTitle AcpRunAgentName = "planner-generate-title"
+	AcpRunAgentNamePlannerRegenerate    AcpRunAgentName = "planner-regenerate"
+	AcpRunAgentNamePlannerReply         AcpRunAgentName = "planner-reply"
+)
+
+// Defines values for AcpRunStatus.
+const (
+	AcpRunStatusAwaiting   AcpRunStatus = "awaiting"
+	AcpRunStatusCancelled  AcpRunStatus = "cancelled"
+	AcpRunStatusCompleted  AcpRunStatus = "completed"
+	AcpRunStatusCreated    AcpRunStatus = "created"
+	AcpRunStatusFailed     AcpRunStatus = "failed"
+	AcpRunStatusInProgress AcpRunStatus = "in-progress"
+)
+
+// Defines values for AcpRunActivityItemKind.
+const (
+	Progress AcpRunActivityItemKind = "progress"
+	Thinking AcpRunActivityItemKind = "thinking"
+	Tool     AcpRunActivityItemKind = "tool"
+)
+
+// Defines values for CreateAcpRunRequestAgentName.
+const (
+	CreateAcpRunRequestAgentNamePlannerFormalize     CreateAcpRunRequestAgentName = "planner-formalize"
+	CreateAcpRunRequestAgentNamePlannerGenerateTitle CreateAcpRunRequestAgentName = "planner-generate-title"
+	CreateAcpRunRequestAgentNamePlannerRegenerate    CreateAcpRunRequestAgentName = "planner-regenerate"
+	CreateAcpRunRequestAgentNamePlannerReply         CreateAcpRunRequestAgentName = "planner-reply"
 )
 
 // Defines values for CreateFinalApprovalRequestAction.
@@ -48,13 +98,6 @@ const (
 const (
 	CreatePlanApprovalResultStatusApproved    CreatePlanApprovalResultStatus = "approved"
 	CreatePlanApprovalResultStatusNeedsRework CreatePlanApprovalResultStatus = "needs_rework"
-)
-
-// Defines values for CreatePlanningOperationRequestType.
-const (
-	CreatePlanningOperationRequestTypeFormalize  CreatePlanningOperationRequestType = "formalize"
-	CreatePlanningOperationRequestTypeRegenerate CreatePlanningOperationRequestType = "regenerate"
-	CreatePlanningOperationRequestTypeReply      CreatePlanningOperationRequestType = "reply"
 )
 
 // Defines values for ErrorEnvelopeErrorCategory.
@@ -109,51 +152,6 @@ const (
 const (
 	Assistant PlanningMessageRole = "assistant"
 	User      PlanningMessageRole = "user"
-)
-
-// Defines values for PlanningOperationDetailStatus.
-const (
-	PlanningOperationDetailStatusCancelled PlanningOperationDetailStatus = "cancelled"
-	PlanningOperationDetailStatusFailed    PlanningOperationDetailStatus = "failed"
-	PlanningOperationDetailStatusQueued    PlanningOperationDetailStatus = "queued"
-	PlanningOperationDetailStatusRunning   PlanningOperationDetailStatus = "running"
-	PlanningOperationDetailStatusSucceeded PlanningOperationDetailStatus = "succeeded"
-)
-
-// Defines values for PlanningOperationDetailType.
-const (
-	PlanningOperationDetailTypeBootstrapContext PlanningOperationDetailType = "bootstrap_context"
-	PlanningOperationDetailTypeFormalize        PlanningOperationDetailType = "formalize"
-	PlanningOperationDetailTypeGenerateTitle    PlanningOperationDetailType = "generate_title"
-	PlanningOperationDetailTypeRegenerate       PlanningOperationDetailType = "regenerate"
-	PlanningOperationDetailTypeReply            PlanningOperationDetailType = "reply"
-)
-
-// Defines values for PlanningOperationRequestEnvelopeType.
-const (
-	PlanningOperationRequestEnvelopeTypeBootstrapContext PlanningOperationRequestEnvelopeType = "bootstrap_context"
-	PlanningOperationRequestEnvelopeTypeFormalize        PlanningOperationRequestEnvelopeType = "formalize"
-	PlanningOperationRequestEnvelopeTypeGenerateTitle    PlanningOperationRequestEnvelopeType = "generate_title"
-	PlanningOperationRequestEnvelopeTypeRegenerate       PlanningOperationRequestEnvelopeType = "regenerate"
-	PlanningOperationRequestEnvelopeTypeReply            PlanningOperationRequestEnvelopeType = "reply"
-)
-
-// Defines values for PlanningOperationSummaryStatus.
-const (
-	PlanningOperationSummaryStatusCancelled PlanningOperationSummaryStatus = "cancelled"
-	PlanningOperationSummaryStatusFailed    PlanningOperationSummaryStatus = "failed"
-	PlanningOperationSummaryStatusQueued    PlanningOperationSummaryStatus = "queued"
-	PlanningOperationSummaryStatusRunning   PlanningOperationSummaryStatus = "running"
-	PlanningOperationSummaryStatusSucceeded PlanningOperationSummaryStatus = "succeeded"
-)
-
-// Defines values for PlanningOperationSummaryType.
-const (
-	PlanningOperationSummaryTypeBootstrapContext PlanningOperationSummaryType = "bootstrap_context"
-	PlanningOperationSummaryTypeFormalize        PlanningOperationSummaryType = "formalize"
-	PlanningOperationSummaryTypeGenerateTitle    PlanningOperationSummaryType = "generate_title"
-	PlanningOperationSummaryTypeRegenerate       PlanningOperationSummaryType = "regenerate"
-	PlanningOperationSummaryTypeReply            PlanningOperationSummaryType = "reply"
 )
 
 // Defines values for PlanningSessionDetailConversationState.
@@ -516,15 +514,81 @@ const (
 	RunStateFilterSucceeded             RunStateFilter = "succeeded"
 )
 
+// Defines values for GetAcpAgentParamsName.
+const (
+	GetAcpAgentParamsNamePlannerFormalize     GetAcpAgentParamsName = "planner-formalize"
+	GetAcpAgentParamsNamePlannerGenerateTitle GetAcpAgentParamsName = "planner-generate-title"
+	GetAcpAgentParamsNamePlannerRegenerate    GetAcpAgentParamsName = "planner-regenerate"
+	GetAcpAgentParamsNamePlannerReply         GetAcpAgentParamsName = "planner-reply"
+)
+
 // Defines values for ListRunsParamsStateFilter.
 const (
-	ListRunsParamsStateFilterAwaitingHumanDecision ListRunsParamsStateFilter = "awaiting_human_decision"
-	ListRunsParamsStateFilterCancelled             ListRunsParamsStateFilter = "cancelled"
-	ListRunsParamsStateFilterFailed                ListRunsParamsStateFilter = "failed"
-	ListRunsParamsStateFilterPending               ListRunsParamsStateFilter = "pending"
-	ListRunsParamsStateFilterRunning               ListRunsParamsStateFilter = "running"
-	ListRunsParamsStateFilterSucceeded             ListRunsParamsStateFilter = "succeeded"
+	AwaitingHumanDecision ListRunsParamsStateFilter = "awaiting_human_decision"
+	Cancelled             ListRunsParamsStateFilter = "cancelled"
+	Failed                ListRunsParamsStateFilter = "failed"
+	Pending               ListRunsParamsStateFilter = "pending"
+	Running               ListRunsParamsStateFilter = "running"
+	Succeeded             ListRunsParamsStateFilter = "succeeded"
 )
+
+// AcpAgent defines model for AcpAgent.
+type AcpAgent struct {
+	Description   string                `json:"description"`
+	Name          AcpAgentName          `json:"name"`
+	OperationType AcpAgentOperationType `json:"operation_type"`
+	Title         string                `json:"title"`
+}
+
+// AcpAgentName defines model for AcpAgent.Name.
+type AcpAgentName string
+
+// AcpAgentOperationType defines model for AcpAgent.OperationType.
+type AcpAgentOperationType string
+
+// AcpAgentListResponse defines model for AcpAgentListResponse.
+type AcpAgentListResponse struct {
+	Items []AcpAgent `json:"items"`
+}
+
+// AcpRun defines model for AcpRun.
+type AcpRun struct {
+	AgentName         AcpRunAgentName    `json:"agent_name"`
+	CreatedAt         time.Time          `json:"created_at"`
+	Error             *string            `json:"error,omitempty"`
+	FinishedAt        *time.Time         `json:"finished_at,omitempty"`
+	OutputText        *string            `json:"output_text,omitempty"`
+	PlanningSessionId string             `json:"planning_session_id"`
+	RunId             openapi_types.UUID `json:"run_id"`
+	SessionId         openapi_types.UUID `json:"session_id"`
+	StartedAt         *time.Time         `json:"started_at,omitempty"`
+	Status            AcpRunStatus       `json:"status"`
+}
+
+// AcpRunAgentName defines model for AcpRun.AgentName.
+type AcpRunAgentName string
+
+// AcpRunStatus defines model for AcpRun.Status.
+type AcpRunStatus string
+
+// AcpRunActivityItem defines model for AcpRunActivityItem.
+type AcpRunActivityItem struct {
+	Detail     *string                `json:"detail,omitempty"`
+	Id         string                 `json:"id"`
+	Input      *string                `json:"input,omitempty"`
+	Kind       AcpRunActivityItemKind `json:"kind"`
+	Label      string                 `json:"label"`
+	OccurredAt time.Time              `json:"occurred_at"`
+	Output     *string                `json:"output,omitempty"`
+}
+
+// AcpRunActivityItemKind defines model for AcpRunActivityItem.Kind.
+type AcpRunActivityItemKind string
+
+// AcpRunActivityResponse defines model for AcpRunActivityResponse.
+type AcpRunActivityResponse struct {
+	Items []AcpRunActivityItem `json:"items"`
+}
 
 // AgentsResponse defines model for AgentsResponse.
 type AgentsResponse struct {
@@ -555,10 +619,26 @@ type ArtifactResponse struct {
 	SizeBytes   int    `json:"size_bytes"`
 }
 
+// CancelAcpRunRequest defines model for CancelAcpRunRequest.
+type CancelAcpRunRequest struct {
+	Reason *string `json:"reason,omitempty"`
+}
+
 // CancelRunRequest defines model for CancelRunRequest.
 type CancelRunRequest struct {
 	Reason *string `json:"reason,omitempty"`
 }
+
+// CreateAcpRunRequest defines model for CreateAcpRunRequest.
+type CreateAcpRunRequest struct {
+	AgentName         CreateAcpRunRequestAgentName        `json:"agent_name"`
+	PlanningSessionId string                              `json:"planning_session_id"`
+	Regenerate        *PlanningRegenerateOperationRequest `json:"regenerate,omitempty"`
+	Reply             *PlanningReplyOperationRequest      `json:"reply,omitempty"`
+}
+
+// CreateAcpRunRequestAgentName defines model for CreateAcpRunRequest.AgentName.
+type CreateAcpRunRequestAgentName string
 
 // CreateArtifactPreviewSessionRequest defines model for CreateArtifactPreviewSessionRequest.
 type CreateArtifactPreviewSessionRequest = map[string]interface{}
@@ -623,22 +703,6 @@ type CreatePlanApprovalResult struct {
 
 // CreatePlanApprovalResultStatus defines model for CreatePlanApprovalResult.Status.
 type CreatePlanApprovalResultStatus string
-
-// CreatePlanningOperationRequest defines model for CreatePlanningOperationRequest.
-type CreatePlanningOperationRequest struct {
-	Regenerate *PlanningRegenerateOperationRequest `json:"regenerate,omitempty"`
-	Reply      *PlanningReplyOperationRequest      `json:"reply,omitempty"`
-	Type       CreatePlanningOperationRequestType  `json:"type"`
-}
-
-// CreatePlanningOperationRequestType defines model for CreatePlanningOperationRequest.Type.
-type CreatePlanningOperationRequestType string
-
-// CreatePlanningOperationResult defines model for CreatePlanningOperationResult.
-type CreatePlanningOperationResult struct {
-	Operation PlanningOperationDetail `json:"operation"`
-	Session   PlanningSessionDetail   `json:"session"`
-}
 
 // CreatePlanningSessionRequest defines model for CreatePlanningSessionRequest.
 type CreatePlanningSessionRequest struct {
@@ -728,15 +792,11 @@ type ErrorEnvelopeErrorCategory string
 // ErrorEnvelopeErrorCode defines model for ErrorEnvelope.Error.Code.
 type ErrorEnvelopeErrorCode string
 
-// GeneratePlanningSessionTitleResult defines model for GeneratePlanningSessionTitleResult.
-type GeneratePlanningSessionTitleResult = PlanningSessionDetail
-
 // GeneratedTitleLatencyMetrics defines model for GeneratedTitleLatencyMetrics.
 type GeneratedTitleLatencyMetrics struct {
 	Finalize         PlannerLatencyMetric `json:"finalize"`
 	FirstOutput      PlannerLatencyMetric `json:"first_output"`
 	Launch           PlannerLatencyMetric `json:"launch"`
-	OutputToReceipt  PlannerLatencyMetric `json:"output_to_receipt"`
 	Queue            PlannerLatencyMetric `json:"queue"`
 	RecentSampleSize int                  `json:"recent_sample_size"`
 	Total            PlannerLatencyMetric `json:"total"`
@@ -853,17 +913,23 @@ type PlanningDraft struct {
 
 // PlanningMessage defines model for PlanningMessage.
 type PlanningMessage struct {
-	Active            bool                      `json:"active"`
-	AnswerPayload     *StructuredQuestionAnswer `json:"answer_payload,omitempty"`
-	ContentMarkdown   string                    `json:"content_markdown"`
-	CreatedAt         time.Time                 `json:"created_at"`
-	PlanningMessageId string                    `json:"planning_message_id"`
-	PlanningSessionId string                    `json:"planning_session_id"`
-	QuestionPayload   *StructuredQuestion       `json:"question_payload,omitempty"`
-	Role              PlanningMessageRole       `json:"role"`
-	TurnIndex         int                       `json:"turn_index"`
-	VariantCount      *int                      `json:"variant_count,omitempty"`
-	VariantIndex      int                       `json:"variant_index"`
+	AnswerPayload *StructuredQuestionAnswer `json:"answer_payload,omitempty"`
+
+	// BranchCount Number of sibling branches at this point; the navigator shows when > 1.
+	BranchCount *int `json:"branch_count,omitempty"`
+
+	// BranchIndex Zero-based position of this message among its siblings (same parent).
+	BranchIndex     *int      `json:"branch_index,omitempty"`
+	ContentMarkdown string    `json:"content_markdown"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// ParentMessageId Parent in the conversation tree; omitted for the root message.
+	ParentMessageId   *string             `json:"parent_message_id,omitempty"`
+	PlanningMessageId string              `json:"planning_message_id"`
+	PlanningSessionId string              `json:"planning_session_id"`
+	QuestionPayload   *StructuredQuestion `json:"question_payload,omitempty"`
+	Role              PlanningMessageRole `json:"role"`
+	SourceRunId       *openapi_types.UUID `json:"source_run_id,omitempty"`
 }
 
 // PlanningMessageRole defines model for PlanningMessage.Role.
@@ -883,92 +949,41 @@ type PlanningMessagesPage struct {
 	TotalCount        int               `json:"total_count"`
 }
 
-// PlanningOperationDetail defines model for PlanningOperationDetail.
-type PlanningOperationDetail struct {
-	CreatedAt          time.Time                        `json:"created_at"`
-	Error              *string                          `json:"error,omitempty"`
-	FinishedAt         *time.Time                       `json:"finished_at,omitempty"`
-	ObservedOutputText *string                          `json:"observed_output_text,omitempty"`
-	OperationId        string                           `json:"operation_id"`
-	PlanningSessionId  string                           `json:"planning_session_id"`
-	Request            PlanningOperationRequestEnvelope `json:"request"`
-	ResultRef          *string                          `json:"result_ref,omitempty"`
-	StartedAt          *time.Time                       `json:"started_at,omitempty"`
-	Status             PlanningOperationDetailStatus    `json:"status"`
-	Type               PlanningOperationDetailType      `json:"type"`
-}
-
-// PlanningOperationDetailStatus defines model for PlanningOperationDetail.Status.
-type PlanningOperationDetailStatus string
-
-// PlanningOperationDetailType defines model for PlanningOperationDetail.Type.
-type PlanningOperationDetailType string
-
-// PlanningOperationRequestEnvelope defines model for PlanningOperationRequestEnvelope.
-type PlanningOperationRequestEnvelope struct {
-	AnswerPayload      *StructuredQuestionAnswer            `json:"answer_payload,omitempty"`
-	AssistantCreatedAt *time.Time                           `json:"assistant_created_at,omitempty"`
-	AssistantMessageId *string                              `json:"assistant_message_id,omitempty"`
-	ContentMarkdown    *string                              `json:"content_markdown,omitempty"`
-	DraftCreatedAt     *time.Time                           `json:"draft_created_at,omitempty"`
-	DraftId            *string                              `json:"draft_id,omitempty"`
-	TurnIndex          *int                                 `json:"turn_index,omitempty"`
-	Type               PlanningOperationRequestEnvelopeType `json:"type"`
-	UserCreatedAt      *time.Time                           `json:"user_created_at,omitempty"`
-	UserMessageId      *string                              `json:"user_message_id,omitempty"`
-}
-
-// PlanningOperationRequestEnvelopeType defines model for PlanningOperationRequestEnvelope.Type.
-type PlanningOperationRequestEnvelopeType string
-
-// PlanningOperationSummary defines model for PlanningOperationSummary.
-type PlanningOperationSummary struct {
-	CreatedAt         time.Time                      `json:"created_at"`
-	Error             *string                        `json:"error,omitempty"`
-	FinishedAt        *time.Time                     `json:"finished_at,omitempty"`
-	OperationId       string                         `json:"operation_id"`
-	PlanningSessionId string                         `json:"planning_session_id"`
-	ResultRef         *string                        `json:"result_ref,omitempty"`
-	StartedAt         *time.Time                     `json:"started_at,omitempty"`
-	Status            PlanningOperationSummaryStatus `json:"status"`
-	Type              PlanningOperationSummaryType   `json:"type"`
-}
-
-// PlanningOperationSummaryStatus defines model for PlanningOperationSummary.Status.
-type PlanningOperationSummaryStatus string
-
-// PlanningOperationSummaryType defines model for PlanningOperationSummary.Type.
-type PlanningOperationSummaryType string
-
 // PlanningRegenerateOperationRequest defines model for PlanningRegenerateOperationRequest.
 type PlanningRegenerateOperationRequest struct {
-	TargetTurnIndex int `json:"target_turn_index"`
+	// TargetMessageId The assistant message to fork a new sibling branch from.
+	TargetMessageId string `json:"target_message_id"`
 }
 
 // PlanningReplyOperationRequest defines model for PlanningReplyOperationRequest.
 type PlanningReplyOperationRequest struct {
-	AnswerPayload    *StructuredQuestionAnswer `json:"answer_payload,omitempty"`
-	ContentMarkdown  string                    `json:"content_markdown"`
-	TruncateFromTurn *int                      `json:"truncate_from_turn,omitempty"`
+	AnswerPayload   *StructuredQuestionAnswer `json:"answer_payload,omitempty"`
+	ContentMarkdown string                    `json:"content_markdown"`
+
+	// ParentMessageId Branch the reply off this message (editing an earlier message creates a sibling). Omitted = continue from the session's active leaf.
+	ParentMessageId *string `json:"parent_message_id,omitempty"`
 }
 
 // PlanningSessionDetail defines model for PlanningSessionDetail.
 type PlanningSessionDetail struct {
-	AutoTitleEligible        bool                                   `json:"auto_title_eligible"`
-	ContextSnapshotId        *string                                `json:"context_snapshot_id,omitempty"`
-	ConversationState        PlanningSessionDetailConversationState `json:"conversation_state"`
-	CreatedAt                time.Time                              `json:"created_at"`
-	CurrentDraftId           *string                                `json:"current_draft_id,omitempty"`
-	CurrentOperationId       *string                                `json:"current_operation_id,omitempty"`
-	CurrentQuestionMessageId *string                                `json:"current_question_message_id,omitempty"`
-	CurrentTitleOperationId  *string                                `json:"current_title_operation_id,omitempty"`
-	LifecycleState           PlanningSessionDetailLifecycleState    `json:"lifecycle_state"`
-	ModelSelection           PlanningAgentModelSelection            `json:"model_selection"`
-	PlanningSessionId        string                                 `json:"planning_session_id"`
-	ProjectRoot              string                                 `json:"project_root"`
-	Title                    string                                 `json:"title"`
-	TitleState               PlanningSessionDetailTitleState        `json:"title_state"`
-	UpdatedAt                time.Time                              `json:"updated_at"`
+	AcpSessionId openapi_types.UUID `json:"acp_session_id"`
+
+	// ActiveLeafMessageId Leaf of the active conversation path; the visible transcript ends here.
+	ActiveLeafMessageId *string                                `json:"active_leaf_message_id,omitempty"`
+	AutoTitleEligible   bool                                   `json:"auto_title_eligible"`
+	ContextSnapshotId   *string                                `json:"context_snapshot_id,omitempty"`
+	ConversationState   PlanningSessionDetailConversationState `json:"conversation_state"`
+	CreatedAt           time.Time                              `json:"created_at"`
+	CurrentDraftId      *string                                `json:"current_draft_id,omitempty"`
+	CurrentRunId        *openapi_types.UUID                    `json:"current_run_id,omitempty"`
+	CurrentTitleRunId   *openapi_types.UUID                    `json:"current_title_run_id,omitempty"`
+	LifecycleState      PlanningSessionDetailLifecycleState    `json:"lifecycle_state"`
+	ModelSelection      PlanningAgentModelSelection            `json:"model_selection"`
+	PlanningSessionId   string                                 `json:"planning_session_id"`
+	ProjectRoot         string                                 `json:"project_root"`
+	Title               string                                 `json:"title"`
+	TitleState          PlanningSessionDetailTitleState        `json:"title_state"`
+	UpdatedAt           time.Time                              `json:"updated_at"`
 }
 
 // PlanningSessionDetailConversationState defines model for PlanningSessionDetail.ConversationState.
@@ -987,18 +1002,21 @@ type PlanningSessionListResponse struct {
 
 // PlanningSessionSummary defines model for PlanningSessionSummary.
 type PlanningSessionSummary struct {
-	ContextSnapshotId        *string                                 `json:"context_snapshot_id,omitempty"`
-	ConversationState        PlanningSessionSummaryConversationState `json:"conversation_state"`
-	CreatedAt                time.Time                               `json:"created_at"`
-	CurrentDraftId           *string                                 `json:"current_draft_id,omitempty"`
-	CurrentOperationId       *string                                 `json:"current_operation_id,omitempty"`
-	CurrentQuestionMessageId *string                                 `json:"current_question_message_id,omitempty"`
-	CurrentTitleOperationId  *string                                 `json:"current_title_operation_id,omitempty"`
-	LifecycleState           PlanningSessionSummaryLifecycleState    `json:"lifecycle_state"`
-	PlanningSessionId        string                                  `json:"planning_session_id"`
-	Title                    string                                  `json:"title"`
-	TitleState               PlanningSessionSummaryTitleState        `json:"title_state"`
-	UpdatedAt                time.Time                               `json:"updated_at"`
+	AcpSessionId openapi_types.UUID `json:"acp_session_id"`
+
+	// ActiveLeafMessageId Leaf of the active conversation path; the visible transcript ends here.
+	ActiveLeafMessageId *string                                 `json:"active_leaf_message_id,omitempty"`
+	ContextSnapshotId   *string                                 `json:"context_snapshot_id,omitempty"`
+	ConversationState   PlanningSessionSummaryConversationState `json:"conversation_state"`
+	CreatedAt           time.Time                               `json:"created_at"`
+	CurrentDraftId      *string                                 `json:"current_draft_id,omitempty"`
+	CurrentRunId        *openapi_types.UUID                     `json:"current_run_id,omitempty"`
+	CurrentTitleRunId   *openapi_types.UUID                     `json:"current_title_run_id,omitempty"`
+	LifecycleState      PlanningSessionSummaryLifecycleState    `json:"lifecycle_state"`
+	PlanningSessionId   string                                  `json:"planning_session_id"`
+	Title               string                                  `json:"title"`
+	TitleState          PlanningSessionSummaryTitleState        `json:"title_state"`
+	UpdatedAt           time.Time                               `json:"updated_at"`
 }
 
 // PlanningSessionSummaryConversationState defines model for PlanningSessionSummary.ConversationState.
@@ -1735,6 +1753,9 @@ type WorkspaceCapabilities struct {
 	ProjectRoot          string         `json:"project_root"`
 }
 
+// AcpRunId defines model for AcpRunId.
+type AcpRunId = string
+
 // ActorId defines model for ActorId.
 type ActorId = string
 
@@ -1770,9 +1791,6 @@ type NodeKey = string
 
 // PlanningMessagesBefore defines model for PlanningMessagesBefore.
 type PlanningMessagesBefore = string
-
-// PlanningOperationId defines model for PlanningOperationId.
-type PlanningOperationId = string
 
 // PlanningSessionId defines model for PlanningSessionId.
 type PlanningSessionId = string
@@ -1824,6 +1842,54 @@ type ServiceUnavailableError = ErrorEnvelope
 
 // UnauthorizedError defines model for UnauthorizedError.
 type UnauthorizedError = ErrorEnvelope
+
+// ListAcpAgentsParams defines parameters for ListAcpAgents.
+type ListAcpAgentsParams struct {
+	XActorId ActorId `json:"X-Actor-Id"`
+	XRoleId  RoleId  `json:"X-Role-Id"`
+}
+
+// GetAcpAgentParams defines parameters for GetAcpAgent.
+type GetAcpAgentParams struct {
+	XActorId ActorId `json:"X-Actor-Id"`
+	XRoleId  RoleId  `json:"X-Role-Id"`
+}
+
+// GetAcpAgentParamsName defines parameters for GetAcpAgent.
+type GetAcpAgentParamsName string
+
+// CreateAcpRunParams defines parameters for CreateAcpRun.
+type CreateAcpRunParams struct {
+	XActorId       ActorId        `json:"X-Actor-Id"`
+	XRoleId        RoleId         `json:"X-Role-Id"`
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// GetAcpRunParams defines parameters for GetAcpRun.
+type GetAcpRunParams struct {
+	XActorId ActorId `json:"X-Actor-Id"`
+	XRoleId  RoleId  `json:"X-Role-Id"`
+}
+
+// GetAcpRunActivityParams defines parameters for GetAcpRunActivity.
+type GetAcpRunActivityParams struct {
+	XActorId ActorId `json:"X-Actor-Id"`
+	XRoleId  RoleId  `json:"X-Role-Id"`
+}
+
+// CancelAcpRunParams defines parameters for CancelAcpRun.
+type CancelAcpRunParams struct {
+	XActorId       ActorId        `json:"X-Actor-Id"`
+	XRoleId        RoleId         `json:"X-Role-Id"`
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+}
+
+// StreamAcpRunEventsParams defines parameters for StreamAcpRunEvents.
+type StreamAcpRunEventsParams struct {
+	XActorId    ActorId      `json:"X-Actor-Id"`
+	XRoleId     RoleId       `json:"X-Role-Id"`
+	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
+}
 
 // ListAgentsParams defines parameters for ListAgents.
 type ListAgentsParams struct {
@@ -1892,19 +1958,6 @@ type GetMetricsRuntimeParams struct {
 	XRoleId  RoleId  `json:"X-Role-Id"`
 }
 
-// GetPlanningOperationParams defines parameters for GetPlanningOperation.
-type GetPlanningOperationParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// StreamPlanningOperationEventsParams defines parameters for StreamPlanningOperationEvents.
-type StreamPlanningOperationEventsParams struct {
-	XActorId    ActorId      `json:"X-Actor-Id"`
-	XRoleId     RoleId       `json:"X-Role-Id"`
-	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
-}
-
 // ListPlanningSessionsParams defines parameters for ListPlanningSessions.
 type ListPlanningSessionsParams struct {
 	Limit    *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -1946,13 +1999,6 @@ type RefreshPlanningSessionContextParams struct {
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
-// GeneratePlanningSessionTitleParams defines parameters for GeneratePlanningSessionTitle.
-type GeneratePlanningSessionTitleParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
-	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
-
 // ListPlanningSessionMessagesParams defines parameters for ListPlanningSessionMessages.
 type ListPlanningSessionMessagesParams struct {
 	Limit    *Limit                  `form:"limit,omitempty" json:"limit,omitempty"`
@@ -1972,13 +2018,6 @@ type ActivatePlanningMessageVariantParams struct {
 type ListPlanningMessageVariantsParams struct {
 	XActorId ActorId `json:"X-Actor-Id"`
 	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// CreatePlanningSessionOperationParams defines parameters for CreatePlanningSessionOperation.
-type CreatePlanningSessionOperationParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
-	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
 }
 
 // GetPlanningSessionPlanParams defines parameters for GetPlanningSessionPlan.
@@ -2191,6 +2230,12 @@ type GetWorkspaceCapabilitiesParams struct {
 	XRoleId  RoleId  `json:"X-Role-Id"`
 }
 
+// CreateAcpRunJSONRequestBody defines body for CreateAcpRun for application/json ContentType.
+type CreateAcpRunJSONRequestBody = CreateAcpRunRequest
+
+// CancelAcpRunJSONRequestBody defines body for CancelAcpRun for application/json ContentType.
+type CancelAcpRunJSONRequestBody = CancelAcpRunRequest
+
 // CreateArtifactPreviewSessionJSONRequestBody defines body for CreateArtifactPreviewSession for application/json ContentType.
 type CreateArtifactPreviewSessionJSONRequestBody = CreateArtifactPreviewSessionRequest
 
@@ -2202,9 +2247,6 @@ type CreatePlanningSessionJSONRequestBody = CreatePlanningSessionRequest
 
 // UpdatePlanningSessionJSONRequestBody defines body for UpdatePlanningSession for application/json ContentType.
 type UpdatePlanningSessionJSONRequestBody = UpdatePlanningSessionRequest
-
-// CreatePlanningSessionOperationJSONRequestBody defines body for CreatePlanningSessionOperation for application/json ContentType.
-type CreatePlanningSessionOperationJSONRequestBody = CreatePlanningOperationRequest
 
 // CreateRunJSONRequestBody defines body for CreateRun for application/json ContentType.
 type CreateRunJSONRequestBody = CreateRunRequest
@@ -2300,6 +2342,31 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 
 // The interface specification for the client above.
 type ClientInterface interface {
+	// ListAcpAgents request
+	ListAcpAgents(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAcpAgent request
+	GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateAcpRunWithBody request with any body
+	CreateAcpRunWithBody(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateAcpRun(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAcpRun request
+	GetAcpRun(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAcpRunActivity request
+	GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CancelAcpRunWithBody request with any body
+	CancelAcpRunWithBody(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CancelAcpRun(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, body CancelAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StreamAcpRunEvents request
+	StreamAcpRunEvents(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListAgents request
 	ListAgents(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2334,12 +2401,6 @@ type ClientInterface interface {
 	// GetMetricsRuntime request
 	GetMetricsRuntime(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetPlanningOperation request
-	GetPlanningOperation(ctx context.Context, id PlanningOperationId, params *GetPlanningOperationParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// StreamPlanningOperationEvents request
-	StreamPlanningOperationEvents(ctx context.Context, id PlanningOperationId, params *StreamPlanningOperationEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// ListPlanningSessions request
 	ListPlanningSessions(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2362,9 +2423,6 @@ type ClientInterface interface {
 	// RefreshPlanningSessionContext request
 	RefreshPlanningSessionContext(ctx context.Context, id PlanningSessionId, params *RefreshPlanningSessionContextParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GeneratePlanningSessionTitle request
-	GeneratePlanningSessionTitle(ctx context.Context, id PlanningSessionId, params *GeneratePlanningSessionTitleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// ListPlanningSessionMessages request
 	ListPlanningSessionMessages(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2373,11 +2431,6 @@ type ClientInterface interface {
 
 	// ListPlanningMessageVariants request
 	ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// CreatePlanningSessionOperationWithBody request with any body
-	CreatePlanningSessionOperationWithBody(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	CreatePlanningSessionOperation(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, body CreatePlanningSessionOperationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetPlanningSessionPlan request
 	GetPlanningSessionPlan(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2485,6 +2538,114 @@ type ClientInterface interface {
 
 	// GetWorkspaceCapabilities request
 	GetWorkspaceCapabilities(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+}
+
+func (c *Client) ListAcpAgents(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAcpAgentsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpAgentRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateAcpRunWithBody(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateAcpRunRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateAcpRun(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateAcpRunRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAcpRun(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpRunRequest(c.Server, runId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpRunActivityRequest(c.Server, runId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CancelAcpRunWithBody(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelAcpRunRequestWithBody(c.Server, runId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CancelAcpRun(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, body CancelAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCancelAcpRunRequest(c.Server, runId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StreamAcpRunEvents(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStreamAcpRunEventsRequest(c.Server, runId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
 }
 
 func (c *Client) ListAgents(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2631,30 +2792,6 @@ func (c *Client) GetMetricsRuntime(ctx context.Context, params *GetMetricsRuntim
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetPlanningOperation(ctx context.Context, id PlanningOperationId, params *GetPlanningOperationParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPlanningOperationRequest(c.Server, id, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) StreamPlanningOperationEvents(ctx context.Context, id PlanningOperationId, params *StreamPlanningOperationEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewStreamPlanningOperationEventsRequest(c.Server, id, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
 func (c *Client) ListPlanningSessions(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListPlanningSessionsRequest(c.Server, params)
 	if err != nil {
@@ -2751,18 +2888,6 @@ func (c *Client) RefreshPlanningSessionContext(ctx context.Context, id PlanningS
 	return c.Client.Do(req)
 }
 
-func (c *Client) GeneratePlanningSessionTitle(ctx context.Context, id PlanningSessionId, params *GeneratePlanningSessionTitleParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGeneratePlanningSessionTitleRequest(c.Server, id, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
 func (c *Client) ListPlanningSessionMessages(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListPlanningSessionMessagesRequest(c.Server, id, params)
 	if err != nil {
@@ -2789,30 +2914,6 @@ func (c *Client) ActivatePlanningMessageVariant(ctx context.Context, id Planning
 
 func (c *Client) ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListPlanningMessageVariantsRequest(c.Server, id, messageId, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) CreatePlanningSessionOperationWithBody(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreatePlanningSessionOperationRequestWithBody(c.Server, id, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) CreatePlanningSessionOperation(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, body CreatePlanningSessionOperationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreatePlanningSessionOperationRequest(c.Server, id, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3277,6 +3378,439 @@ func (c *Client) GetWorkspaceCapabilities(ctx context.Context, params *GetWorksp
 		return nil, err
 	}
 	return c.Client.Do(req)
+}
+
+// NewListAcpAgentsRequest generates requests for ListAcpAgents
+func NewListAcpAgentsRequest(server string, params *ListAcpAgentsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/agents")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+	}
+
+	return req, nil
+}
+
+// NewGetAcpAgentRequest generates requests for GetAcpAgent
+func NewGetAcpAgentRequest(server string, name GetAcpAgentParamsName, params *GetAcpAgentParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "name", runtime.ParamLocationPath, name)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/agents/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+	}
+
+	return req, nil
+}
+
+// NewCreateAcpRunRequest calls the generic CreateAcpRun builder with application/json body
+func NewCreateAcpRunRequest(server string, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateAcpRunRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateAcpRunRequestWithBody generates requests for CreateAcpRun with any type of body
+func NewCreateAcpRunRequestWithBody(server string, params *CreateAcpRunParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+		var headerParam2 string
+
+		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam2)
+
+	}
+
+	return req, nil
+}
+
+// NewGetAcpRunRequest generates requests for GetAcpRun
+func NewGetAcpRunRequest(server string, runId AcpRunId, params *GetAcpRunParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "runId", runtime.ParamLocationPath, runId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+	}
+
+	return req, nil
+}
+
+// NewGetAcpRunActivityRequest generates requests for GetAcpRunActivity
+func NewGetAcpRunActivityRequest(server string, runId AcpRunId, params *GetAcpRunActivityParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "runId", runtime.ParamLocationPath, runId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs/%s/activity", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+	}
+
+	return req, nil
+}
+
+// NewCancelAcpRunRequest calls the generic CancelAcpRun builder with application/json body
+func NewCancelAcpRunRequest(server string, runId AcpRunId, params *CancelAcpRunParams, body CancelAcpRunJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCancelAcpRunRequestWithBody(server, runId, params, "application/json", bodyReader)
+}
+
+// NewCancelAcpRunRequestWithBody generates requests for CancelAcpRun with any type of body
+func NewCancelAcpRunRequestWithBody(server string, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "runId", runtime.ParamLocationPath, runId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs/%s/cancel", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+		var headerParam2 string
+
+		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam2)
+
+	}
+
+	return req, nil
+}
+
+// NewStreamAcpRunEventsRequest generates requests for StreamAcpRunEvents
+func NewStreamAcpRunEventsRequest(server string, runId AcpRunId, params *StreamAcpRunEventsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "runId", runtime.ParamLocationPath, runId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs/%s/events", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Actor-Id", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Role-Id", headerParam1)
+
+		if params.LastEventID != nil {
+			var headerParam2 string
+
+			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("Last-Event-ID", headerParam2)
+		}
+
+	}
+
+	return req, nil
 }
 
 // NewListAgentsRequest generates requests for ListAgents
@@ -3924,129 +4458,6 @@ func NewGetMetricsRuntimeRequest(server string, params *GetMetricsRuntimeParams)
 	return req, nil
 }
 
-// NewGetPlanningOperationRequest generates requests for GetPlanningOperation
-func NewGetPlanningOperationRequest(server string, id PlanningOperationId, params *GetPlanningOperationParams) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/planning-operations/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
-	return req, nil
-}
-
-// NewStreamPlanningOperationEventsRequest generates requests for StreamPlanningOperationEvents
-func NewStreamPlanningOperationEventsRequest(server string, id PlanningOperationId, params *StreamPlanningOperationEventsParams) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/planning-operations/%s/events", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		if params.LastEventID != nil {
-			var headerParam2 string
-
-			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("Last-Event-ID", headerParam2)
-		}
-
-	}
-
-	return req, nil
-}
-
 // NewListPlanningSessionsRequest generates requests for ListPlanningSessions
 func NewListPlanningSessionsRequest(server string, params *ListPlanningSessionsParams) (*http.Request, error) {
 	var err error
@@ -4453,71 +4864,6 @@ func NewRefreshPlanningSessionContextRequest(server string, id PlanningSessionId
 	return req, nil
 }
 
-// NewGeneratePlanningSessionTitleRequest generates requests for GeneratePlanningSessionTitle
-func NewGeneratePlanningSessionTitleRequest(server string, id PlanningSessionId, params *GeneratePlanningSessionTitleParams) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/planning-sessions/%s/generate-title", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
-
-	}
-
-	return req, nil
-}
-
 // NewListPlanningSessionMessagesRequest generates requests for ListPlanningSessionMessages
 func NewListPlanningSessionMessagesRequest(server string, id PlanningSessionId, params *ListPlanningSessionMessagesParams) (*http.Request, error) {
 	var err error
@@ -4741,84 +5087,6 @@ func NewListPlanningMessageVariantsRequest(server string, id PlanningSessionId, 
 		}
 
 		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
-	return req, nil
-}
-
-// NewCreatePlanningSessionOperationRequest calls the generic CreatePlanningSessionOperation builder with application/json body
-func NewCreatePlanningSessionOperationRequest(server string, id PlanningSessionId, params *CreatePlanningSessionOperationParams, body CreatePlanningSessionOperationJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewCreatePlanningSessionOperationRequestWithBody(server, id, params, "application/json", bodyReader)
-}
-
-// NewCreatePlanningSessionOperationRequestWithBody generates requests for CreatePlanningSessionOperation with any type of body
-func NewCreatePlanningSessionOperationRequestWithBody(server string, id PlanningSessionId, params *CreatePlanningSessionOperationParams, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/planning-sessions/%s/operations", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -7056,6 +7324,31 @@ func WithBaseURL(baseURL string) ClientOption {
 
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
+	// ListAcpAgentsWithResponse request
+	ListAcpAgentsWithResponse(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error)
+
+	// GetAcpAgentWithResponse request
+	GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error)
+
+	// CreateAcpRunWithBodyWithResponse request with any body
+	CreateAcpRunWithBodyWithResponse(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error)
+
+	CreateAcpRunWithResponse(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error)
+
+	// GetAcpRunWithResponse request
+	GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error)
+
+	// GetAcpRunActivityWithResponse request
+	GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error)
+
+	// CancelAcpRunWithBodyWithResponse request with any body
+	CancelAcpRunWithBodyWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error)
+
+	CancelAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, body CancelAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error)
+
+	// StreamAcpRunEventsWithResponse request
+	StreamAcpRunEventsWithResponse(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*StreamAcpRunEventsResponse, error)
+
 	// ListAgentsWithResponse request
 	ListAgentsWithResponse(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error)
 
@@ -7090,12 +7383,6 @@ type ClientWithResponsesInterface interface {
 	// GetMetricsRuntimeWithResponse request
 	GetMetricsRuntimeWithResponse(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error)
 
-	// GetPlanningOperationWithResponse request
-	GetPlanningOperationWithResponse(ctx context.Context, id PlanningOperationId, params *GetPlanningOperationParams, reqEditors ...RequestEditorFn) (*GetPlanningOperationResponse, error)
-
-	// StreamPlanningOperationEventsWithResponse request
-	StreamPlanningOperationEventsWithResponse(ctx context.Context, id PlanningOperationId, params *StreamPlanningOperationEventsParams, reqEditors ...RequestEditorFn) (*StreamPlanningOperationEventsResponse, error)
-
 	// ListPlanningSessionsWithResponse request
 	ListPlanningSessionsWithResponse(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionsResponse, error)
 
@@ -7118,9 +7405,6 @@ type ClientWithResponsesInterface interface {
 	// RefreshPlanningSessionContextWithResponse request
 	RefreshPlanningSessionContextWithResponse(ctx context.Context, id PlanningSessionId, params *RefreshPlanningSessionContextParams, reqEditors ...RequestEditorFn) (*RefreshPlanningSessionContextResponse, error)
 
-	// GeneratePlanningSessionTitleWithResponse request
-	GeneratePlanningSessionTitleWithResponse(ctx context.Context, id PlanningSessionId, params *GeneratePlanningSessionTitleParams, reqEditors ...RequestEditorFn) (*GeneratePlanningSessionTitleResponse, error)
-
 	// ListPlanningSessionMessagesWithResponse request
 	ListPlanningSessionMessagesWithResponse(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionMessagesResponse, error)
 
@@ -7129,11 +7413,6 @@ type ClientWithResponsesInterface interface {
 
 	// ListPlanningMessageVariantsWithResponse request
 	ListPlanningMessageVariantsWithResponse(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*ListPlanningMessageVariantsResponse, error)
-
-	// CreatePlanningSessionOperationWithBodyWithResponse request with any body
-	CreatePlanningSessionOperationWithBodyWithResponse(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreatePlanningSessionOperationResponse, error)
-
-	CreatePlanningSessionOperationWithResponse(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, body CreatePlanningSessionOperationJSONRequestBody, reqEditors ...RequestEditorFn) (*CreatePlanningSessionOperationResponse, error)
 
 	// GetPlanningSessionPlanWithResponse request
 	GetPlanningSessionPlanWithResponse(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*GetPlanningSessionPlanResponse, error)
@@ -7241,6 +7520,186 @@ type ClientWithResponsesInterface interface {
 
 	// GetWorkspaceCapabilitiesWithResponse request
 	GetWorkspaceCapabilitiesWithResponse(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*GetWorkspaceCapabilitiesResponse, error)
+}
+
+type ListAcpAgentsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AcpAgentListResponse
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAcpAgentsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAcpAgentsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetAcpAgentResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AcpAgent
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAcpAgentResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAcpAgentResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateAcpRunResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *AcpRun
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateAcpRunResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateAcpRunResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetAcpRunResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AcpRun
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAcpRunResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAcpRunResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetAcpRunActivityResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AcpRunActivityResponse
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAcpRunActivityResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAcpRunActivityResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CancelAcpRunResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AcpRun
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CancelAcpRunResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CancelAcpRunResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type StreamAcpRunEventsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r StreamAcpRunEventsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StreamAcpRunEventsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
 }
 
 type ListAgentsResponse struct {
@@ -7493,57 +7952,6 @@ func (r GetMetricsRuntimeResponse) StatusCode() int {
 	return 0
 }
 
-type GetPlanningOperationResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *PlanningOperationDetail
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetPlanningOperationResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetPlanningOperationResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type StreamPlanningOperationEventsResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r StreamPlanningOperationEventsResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r StreamPlanningOperationEventsResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
 type ListPlanningSessionsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -7697,32 +8105,6 @@ func (r RefreshPlanningSessionContextResponse) StatusCode() int {
 	return 0
 }
 
-type GeneratePlanningSessionTitleResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *GeneratePlanningSessionTitleResult
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GeneratePlanningSessionTitleResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GeneratePlanningSessionTitleResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
 type ListPlanningSessionMessagesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -7795,32 +8177,6 @@ func (r ListPlanningMessageVariantsResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListPlanningMessageVariantsResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type CreatePlanningSessionOperationResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON201      *CreatePlanningOperationResult
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r CreatePlanningSessionOperationResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r CreatePlanningSessionOperationResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -8612,6 +8968,85 @@ func (r GetWorkspaceCapabilitiesResponse) StatusCode() int {
 	return 0
 }
 
+// ListAcpAgentsWithResponse request returning *ListAcpAgentsResponse
+func (c *ClientWithResponses) ListAcpAgentsWithResponse(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error) {
+	rsp, err := c.ListAcpAgents(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAcpAgentsResponse(rsp)
+}
+
+// GetAcpAgentWithResponse request returning *GetAcpAgentResponse
+func (c *ClientWithResponses) GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error) {
+	rsp, err := c.GetAcpAgent(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAcpAgentResponse(rsp)
+}
+
+// CreateAcpRunWithBodyWithResponse request with arbitrary body returning *CreateAcpRunResponse
+func (c *ClientWithResponses) CreateAcpRunWithBodyWithResponse(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error) {
+	rsp, err := c.CreateAcpRunWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateAcpRunResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateAcpRunWithResponse(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error) {
+	rsp, err := c.CreateAcpRun(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateAcpRunResponse(rsp)
+}
+
+// GetAcpRunWithResponse request returning *GetAcpRunResponse
+func (c *ClientWithResponses) GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error) {
+	rsp, err := c.GetAcpRun(ctx, runId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAcpRunResponse(rsp)
+}
+
+// GetAcpRunActivityWithResponse request returning *GetAcpRunActivityResponse
+func (c *ClientWithResponses) GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error) {
+	rsp, err := c.GetAcpRunActivity(ctx, runId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAcpRunActivityResponse(rsp)
+}
+
+// CancelAcpRunWithBodyWithResponse request with arbitrary body returning *CancelAcpRunResponse
+func (c *ClientWithResponses) CancelAcpRunWithBodyWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error) {
+	rsp, err := c.CancelAcpRunWithBody(ctx, runId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCancelAcpRunResponse(rsp)
+}
+
+func (c *ClientWithResponses) CancelAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, body CancelAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error) {
+	rsp, err := c.CancelAcpRun(ctx, runId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCancelAcpRunResponse(rsp)
+}
+
+// StreamAcpRunEventsWithResponse request returning *StreamAcpRunEventsResponse
+func (c *ClientWithResponses) StreamAcpRunEventsWithResponse(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*StreamAcpRunEventsResponse, error) {
+	rsp, err := c.StreamAcpRunEvents(ctx, runId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStreamAcpRunEventsResponse(rsp)
+}
+
 // ListAgentsWithResponse request returning *ListAgentsResponse
 func (c *ClientWithResponses) ListAgentsWithResponse(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error) {
 	rsp, err := c.ListAgents(ctx, params, reqEditors...)
@@ -8718,24 +9153,6 @@ func (c *ClientWithResponses) GetMetricsRuntimeWithResponse(ctx context.Context,
 	return ParseGetMetricsRuntimeResponse(rsp)
 }
 
-// GetPlanningOperationWithResponse request returning *GetPlanningOperationResponse
-func (c *ClientWithResponses) GetPlanningOperationWithResponse(ctx context.Context, id PlanningOperationId, params *GetPlanningOperationParams, reqEditors ...RequestEditorFn) (*GetPlanningOperationResponse, error) {
-	rsp, err := c.GetPlanningOperation(ctx, id, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetPlanningOperationResponse(rsp)
-}
-
-// StreamPlanningOperationEventsWithResponse request returning *StreamPlanningOperationEventsResponse
-func (c *ClientWithResponses) StreamPlanningOperationEventsWithResponse(ctx context.Context, id PlanningOperationId, params *StreamPlanningOperationEventsParams, reqEditors ...RequestEditorFn) (*StreamPlanningOperationEventsResponse, error) {
-	rsp, err := c.StreamPlanningOperationEvents(ctx, id, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseStreamPlanningOperationEventsResponse(rsp)
-}
-
 // ListPlanningSessionsWithResponse request returning *ListPlanningSessionsResponse
 func (c *ClientWithResponses) ListPlanningSessionsWithResponse(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionsResponse, error) {
 	rsp, err := c.ListPlanningSessions(ctx, params, reqEditors...)
@@ -8806,15 +9223,6 @@ func (c *ClientWithResponses) RefreshPlanningSessionContextWithResponse(ctx cont
 	return ParseRefreshPlanningSessionContextResponse(rsp)
 }
 
-// GeneratePlanningSessionTitleWithResponse request returning *GeneratePlanningSessionTitleResponse
-func (c *ClientWithResponses) GeneratePlanningSessionTitleWithResponse(ctx context.Context, id PlanningSessionId, params *GeneratePlanningSessionTitleParams, reqEditors ...RequestEditorFn) (*GeneratePlanningSessionTitleResponse, error) {
-	rsp, err := c.GeneratePlanningSessionTitle(ctx, id, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGeneratePlanningSessionTitleResponse(rsp)
-}
-
 // ListPlanningSessionMessagesWithResponse request returning *ListPlanningSessionMessagesResponse
 func (c *ClientWithResponses) ListPlanningSessionMessagesWithResponse(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionMessagesResponse, error) {
 	rsp, err := c.ListPlanningSessionMessages(ctx, id, params, reqEditors...)
@@ -8840,23 +9248,6 @@ func (c *ClientWithResponses) ListPlanningMessageVariantsWithResponse(ctx contex
 		return nil, err
 	}
 	return ParseListPlanningMessageVariantsResponse(rsp)
-}
-
-// CreatePlanningSessionOperationWithBodyWithResponse request with arbitrary body returning *CreatePlanningSessionOperationResponse
-func (c *ClientWithResponses) CreatePlanningSessionOperationWithBodyWithResponse(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreatePlanningSessionOperationResponse, error) {
-	rsp, err := c.CreatePlanningSessionOperationWithBody(ctx, id, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseCreatePlanningSessionOperationResponse(rsp)
-}
-
-func (c *ClientWithResponses) CreatePlanningSessionOperationWithResponse(ctx context.Context, id PlanningSessionId, params *CreatePlanningSessionOperationParams, body CreatePlanningSessionOperationJSONRequestBody, reqEditors ...RequestEditorFn) (*CreatePlanningSessionOperationResponse, error) {
-	rsp, err := c.CreatePlanningSessionOperation(ctx, id, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseCreatePlanningSessionOperationResponse(rsp)
 }
 
 // GetPlanningSessionPlanWithResponse request returning *GetPlanningSessionPlanResponse
@@ -9192,6 +9583,370 @@ func (c *ClientWithResponses) GetWorkspaceCapabilitiesWithResponse(ctx context.C
 		return nil, err
 	}
 	return ParseGetWorkspaceCapabilitiesResponse(rsp)
+}
+
+// ParseListAcpAgentsResponse parses an HTTP response from a ListAcpAgentsWithResponse call
+func ParseListAcpAgentsResponse(rsp *http.Response) (*ListAcpAgentsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAcpAgentsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AcpAgentListResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAcpAgentResponse parses an HTTP response from a GetAcpAgentWithResponse call
+func ParseGetAcpAgentResponse(rsp *http.Response) (*GetAcpAgentResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAcpAgentResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AcpAgent
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateAcpRunResponse parses an HTTP response from a CreateAcpRunWithResponse call
+func ParseCreateAcpRunResponse(rsp *http.Response) (*CreateAcpRunResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateAcpRunResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest AcpRun
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAcpRunResponse parses an HTTP response from a GetAcpRunWithResponse call
+func ParseGetAcpRunResponse(rsp *http.Response) (*GetAcpRunResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAcpRunResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AcpRun
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAcpRunActivityResponse parses an HTTP response from a GetAcpRunActivityWithResponse call
+func ParseGetAcpRunActivityResponse(rsp *http.Response) (*GetAcpRunActivityResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAcpRunActivityResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AcpRunActivityResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCancelAcpRunResponse parses an HTTP response from a CancelAcpRunWithResponse call
+func ParseCancelAcpRunResponse(rsp *http.Response) (*CancelAcpRunResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CancelAcpRunResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AcpRun
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStreamAcpRunEventsResponse parses an HTTP response from a StreamAcpRunEventsWithResponse call
+func ParseStreamAcpRunEventsResponse(rsp *http.Response) (*StreamAcpRunEventsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StreamAcpRunEventsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
 }
 
 // ParseListAgentsResponse parses an HTTP response from a ListAgentsWithResponse call
@@ -9664,107 +10419,6 @@ func ParseGetMetricsRuntimeResponse(rsp *http.Response) (*GetMetricsRuntimeRespo
 	return response, nil
 }
 
-// ParseGetPlanningOperationResponse parses an HTTP response from a GetPlanningOperationWithResponse call
-func ParseGetPlanningOperationResponse(rsp *http.Response) (*GetPlanningOperationResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetPlanningOperationResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest PlanningOperationDetail
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseStreamPlanningOperationEventsResponse parses an HTTP response from a StreamPlanningOperationEventsWithResponse call
-func ParseStreamPlanningOperationEventsResponse(rsp *http.Response) (*StreamPlanningOperationEventsResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &StreamPlanningOperationEventsResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
 // ParseListPlanningSessionsResponse parses an HTTP response from a ListPlanningSessionsWithResponse call
 func ParseListPlanningSessionsResponse(rsp *http.Response) (*ListPlanningSessionsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -10068,60 +10722,6 @@ func ParseRefreshPlanningSessionContextResponse(rsp *http.Response) (*RefreshPla
 	return response, nil
 }
 
-// ParseGeneratePlanningSessionTitleResponse parses an HTTP response from a GeneratePlanningSessionTitleWithResponse call
-func ParseGeneratePlanningSessionTitleResponse(rsp *http.Response) (*GeneratePlanningSessionTitleResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GeneratePlanningSessionTitleResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest GeneratePlanningSessionTitleResult
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
 // ParseListPlanningSessionMessagesResponse parses an HTTP response from a ListPlanningSessionMessagesWithResponse call
 func ParseListPlanningSessionMessagesResponse(rsp *http.Response) (*ListPlanningSessionMessagesResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -10250,60 +10850,6 @@ func ParseListPlanningMessageVariantsResponse(rsp *http.Response) (*ListPlanning
 			return nil, err
 		}
 		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseCreatePlanningSessionOperationResponse parses an HTTP response from a CreatePlanningSessionOperationWithResponse call
-func ParseCreatePlanningSessionOperationResponse(rsp *http.Response) (*CreatePlanningSessionOperationResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &CreatePlanningSessionOperationResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest CreatePlanningOperationResult
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON201 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
 		var dest BadRequestError
@@ -11868,209 +12414,215 @@ func ParseGetWorkspaceCapabilitiesResponse(rsp *http.Response) (*GetWorkspaceCap
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
+	"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",
+	"q/8fAAD//5B0kADQhAEA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

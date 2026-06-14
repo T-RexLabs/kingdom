@@ -9,56 +9,7 @@ import type { TranscriptItem } from "./planner-transcript-view-model";
 let capturedVirtuosoProps: Record<string, unknown> | null = null;
 const scrollIntoViewSpy = vi.fn();
 const scrollToIndexSpy = vi.fn();
-const autoscrollToBottomSpy = vi.fn();
-const intersectionObservers: MockIntersectionObserver[] = [];
 const resizeObservers: MockResizeObserver[] = [];
-
-class MockIntersectionObserver {
-  readonly elements = new Set<Element>();
-  readonly root: Element | Document | null;
-  readonly rootMargin: string;
-  readonly thresholds: ReadonlyArray<number>;
-  private callback: IntersectionObserverCallback;
-
-  constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit = {}) {
-    this.callback = callback;
-    this.root = options.root ?? null;
-    this.rootMargin = options.rootMargin ?? "0px";
-    this.thresholds = Array.isArray(options.threshold) ? options.threshold : [options.threshold ?? 0];
-    intersectionObservers.push(this);
-  }
-
-  disconnect = vi.fn(() => {
-    this.elements.clear();
-  });
-
-  observe = vi.fn((element: Element) => {
-    this.elements.add(element);
-  });
-
-  takeRecords = vi.fn(() => []);
-
-  unobserve = vi.fn((element: Element) => {
-    this.elements.delete(element);
-  });
-
-  trigger(element: Element, isIntersecting: boolean) {
-    this.callback(
-      [
-        {
-          target: element,
-          isIntersecting,
-          intersectionRatio: isIntersecting ? 1 : 0,
-          boundingClientRect: element.getBoundingClientRect(),
-          intersectionRect: element.getBoundingClientRect(),
-          rootBounds: null,
-          time: 0,
-        } as IntersectionObserverEntry,
-      ],
-      this as unknown as IntersectionObserver,
-    );
-  }
-}
 
 class MockResizeObserver {
   readonly elements = new Set<Element>();
@@ -116,14 +67,12 @@ vi.mock("react-virtuoso", async () => {
       ref: React.Ref<{
         scrollIntoView: typeof scrollIntoViewSpy;
         scrollToIndex: typeof scrollToIndexSpy;
-        autoscrollToBottom: typeof autoscrollToBottomSpy;
       }>,
     ) {
       const scrollerRef = ReactMod.useRef<HTMLDivElement | null>(null);
       ReactMod.useImperativeHandle(ref, () => ({
         scrollIntoView: scrollIntoViewSpy,
         scrollToIndex: scrollToIndexSpy,
-        autoscrollToBottom: autoscrollToBottomSpy,
       }));
       ReactMod.useEffect(() => {
         props.scrollerRef?.(scrollerRef.current);
@@ -161,12 +110,9 @@ function assistantItem(id: string, content: string): TranscriptItem {
     message: {
       planning_message_id: id,
       planning_session_id: "session-1",
-      turn_index: 1,
       role: "assistant",
       content_markdown: content,
       created_at: "2026-04-22T10:00:00Z",
-      variant_index: 0,
-      active: true,
     },
     isInteractive: false,
   };
@@ -179,12 +125,9 @@ function userItem(id: string, content: string): TranscriptItem {
     message: {
       planning_message_id: id,
       planning_session_id: "session-1",
-      turn_index: 1,
       role: "user",
       content_markdown: content,
       created_at: "2026-04-22T10:00:00Z",
-      variant_index: 0,
-      active: true,
     },
     isInteractive: false,
   };
@@ -197,14 +140,11 @@ describe("PlannerTranscript virtualization wiring", () => {
       return 1;
     });
     vi.stubGlobal("cancelAnimationFrame", () => {});
-    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
     capturedVirtuosoProps = null;
-    intersectionObservers.length = 0;
     resizeObservers.length = 0;
     scrollIntoViewSpy.mockClear();
     scrollToIndexSpy.mockClear();
-    autoscrollToBottomSpy.mockClear();
   });
 
   afterEach(() => {
@@ -227,15 +167,18 @@ describe("PlannerTranscript virtualization wiring", () => {
     return scroller;
   }
 
-  function triggerLatestVisibility(isIntersecting: boolean) {
-    const observer = intersectionObservers.at(-1);
+  // The transcript registers a single ResizeObserver over the scroller and the
+  // tail item's content box. Firing it simulates the tail growing as reply
+  // text / thinking / ACP events / sources stream in.
+  function triggerTailResize() {
+    const observer = resizeObservers.at(-1);
     const element = observer ? Array.from(observer.elements).at(-1) : null;
     if (!observer || !element) {
-      throw new Error("Latest anchor observer was not registered");
+      throw new Error("Tail content resize observer was not registered");
     }
 
     act(() => {
-      observer.trigger(element, isIntersecting);
+      observer.trigger(element);
     });
   }
 
@@ -307,7 +250,10 @@ describe("PlannerTranscript virtualization wiring", () => {
     expect(resolveFollowOutput()).toBe("auto");
   });
 
-  it("re-syncs to the true latest message when an older row reflow pushes the tail below view", async () => {
+  it("re-pins to the bottom when the tail content grows while following", async () => {
+    // Regression: live thinking / ACP events / sources grow the tail bubble
+    // without changing the `items` array, so `followOutput` never fires. The
+    // tail-content ResizeObserver is what keeps the view glued to the bottom.
     render(
       <VirtuosoMockContext.Provider value={{ viewportHeight: 500, itemHeight: 40 }}>
         <PlannerTranscript
@@ -319,14 +265,40 @@ describe("PlannerTranscript virtualization wiring", () => {
       </VirtuosoMockContext.Provider>
     );
 
-    autoscrollToBottomSpy.mockClear();
+    scrollToIndexSpy.mockClear();
 
-    triggerLatestVisibility(false);
+    triggerTailResize();
 
     await waitFor(() => {
-      expect(autoscrollToBottomSpy).toHaveBeenCalledTimes(1);
+      expect(scrollToIndexSpy).toHaveBeenCalledWith({ index: "LAST", align: "end", behavior: "auto" });
     });
     expect(resolveFollowOutput()).toBe("auto");
+  });
+
+  it("does not re-pin on tail growth after the operator has scrolled away", () => {
+    render(
+      <VirtuosoMockContext.Provider value={{ viewportHeight: 500, itemHeight: 40 }}>
+        <PlannerTranscript
+          items={[assistantItem("m-1", "m-1"), assistantItem("m-2", "m-2")]}
+          firstItemIndex={0}
+          totalCount={2}
+          callbacks={{}}
+        />
+      </VirtuosoMockContext.Provider>
+    );
+
+    const scroller = setScrollerScrollTop(240);
+    fireEvent.scroll(scroller);
+    fireEvent.pointerDown(scroller);
+    setScrollerScrollTop(120);
+    fireEvent.scroll(scroller);
+
+    expect(resolveFollowOutput()).toBe(false);
+
+    scrollToIndexSpy.mockClear();
+    triggerTailResize();
+
+    expect(scrollToIndexSpy).not.toHaveBeenCalled();
   });
 
   it("detaches only when the operator actually scrolls away from the bottom", () => {
@@ -422,7 +394,7 @@ describe("PlannerTranscript virtualization wiring", () => {
       </VirtuosoMockContext.Provider>
     );
 
-    autoscrollToBottomSpy.mockClear();
+    scrollToIndexSpy.mockClear();
 
     rerender(
       <VirtuosoMockContext.Provider value={{ viewportHeight: 500, itemHeight: 40 }}>
@@ -436,8 +408,14 @@ describe("PlannerTranscript virtualization wiring", () => {
       </VirtuosoMockContext.Provider>
     );
 
+    // Still pinned after the append (Virtuoso's followOutput stays active), and
+    // the tail bubble growing as the reply streams rides the bottom.
+    expect(resolveFollowOutput()).toBe("auto");
+
+    triggerTailResize();
+
     await waitFor(() => {
-      expect(autoscrollToBottomSpy.mock.calls.length + scrollToIndexSpy.mock.calls.length).toBeGreaterThan(0);
+      expect(scrollToIndexSpy).toHaveBeenCalledWith({ index: "LAST", align: "end", behavior: "auto" });
     });
   });
 

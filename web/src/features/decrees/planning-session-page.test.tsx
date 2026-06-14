@@ -270,7 +270,7 @@ describe("PlanningSessionPage", () => {
         conversation_state: "ready",
         current_question_message_id: "assistant-1",
         current_operation_id: undefined,
-        current_title_operation_id: "title-operation-1",
+        current_title_run_id: "title-operation-1",
         current_draft_id: undefined,
         context_snapshot_id: "planning-context-1",
         created_at: "2026-04-21T10:00:00Z",
@@ -282,12 +282,12 @@ describe("PlanningSessionPage", () => {
     });
     mockUsePlanningOperation.mockReturnValue({
       data: {
-        operation_id: "title-operation-1",
+        run_id: "title-operation-1",
+        session_id: "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
         planning_session_id: "planning-session-1",
-        type: "generate_title",
-        status: "running",
+        agent_name: "planner-generate-title",
+        status: "in-progress",
         created_at: "2026-04-21T10:05:00Z",
-        request: {},
       },
     });
 
@@ -300,8 +300,8 @@ describe("PlanningSessionPage", () => {
         ([value]) =>
           typeof value === "object" &&
           value !== null &&
-          "operation_id" in (value as Record<string, unknown>) &&
-          (value as { operation_id?: string }).operation_id === "title-operation-1",
+          "run_id" in (value as Record<string, unknown>) &&
+          (value as { run_id?: string }).run_id === "title-operation-1",
       ),
     ).toBe(true);
   });
@@ -346,6 +346,7 @@ describe("PlanningSessionPage", () => {
         replyText: "",
         formalizeText: "drafting",
         error: null,
+        activityItems: [],
       },
       connection: { state: "open", attempt: 1 },
     });
@@ -401,6 +402,7 @@ describe("PlanningSessionPage", () => {
         replyText: "",
         formalizeText: "partial draft",
         error: "operation cancelled during shutdown",
+        activityItems: [],
       },
       connection: { state: "idle", attempt: 0 },
     });
@@ -470,6 +472,7 @@ describe("PlanningSessionPage", () => {
 				replyText: "",
 				formalizeText: "partial draft",
 				error: "formalize failed",
+				activityItems: [],
 			},
 			connection: { state: "idle", attempt: 0 },
 		});

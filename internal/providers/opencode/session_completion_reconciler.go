@@ -158,13 +158,27 @@ func (e cliSessionExporter) Export(ctx context.Context, req sessionExportRequest
 	}
 	cmd.Env = append(os.Environ(), ConfigDirEnvironment(req.ConfigDir)...)
 	cmd.Env = append(cmd.Env, DatabasePathEnvironment(req.DatabasePath)...)
-	var stdout bytes.Buffer
+	stdoutFile, err := os.CreateTemp("", "opencode-export-*.json")
+	if err != nil {
+		return sessionExportResult{}, fmt.Errorf("create temp export file: %w", err)
+	}
+	defer func() {
+		_ = stdoutFile.Close()
+		_ = os.Remove(stdoutFile.Name())
+	}()
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	cmd.Stdout = stdoutFile
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
+	if _, seekErr := stdoutFile.Seek(0, 0); seekErr != nil {
+		return sessionExportResult{}, fmt.Errorf("rewind temp export file: %w", seekErr)
+	}
+	stdout, readErr := io.ReadAll(stdoutFile)
+	if readErr != nil {
+		return sessionExportResult{}, fmt.Errorf("read temp export file: %w", readErr)
+	}
 	result := sessionExportResult{
-		Stdout: append([]byte(nil), stdout.Bytes()...),
+		Stdout: append([]byte(nil), stdout...),
 		Stderr: strings.TrimSpace(stderr.String()),
 	}
 	if err != nil {

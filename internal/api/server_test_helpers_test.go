@@ -32,28 +32,20 @@ import (
 
 type testPlannerAgent struct{}
 
+// apiTestReceiptMetadata models a planner turn that settles server-side: the
+// provider reports a terminal success outcome and the runtime assembles the
+// final text. There is no model-invoked completion receipt; the API tests just
+// surface the provider session so the invocation opens.
 func apiTestReceiptMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
-	metadata := planning.ProviderExecutionMetadata{FinalText: finalText, OutcomeState: "success", CompletionStructuredPayloadJSON: "{}"}
-	if input.ProviderInvocation == nil || input.ProviderInvocation.OnCompletionReceipt == nil {
-		return metadata, nil
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		input.ProviderInvocation.OnProviderSession("provider-session-1")
 	}
-	accepted, err := input.ProviderInvocation.OnCompletionReceipt(planning.CompletionReceipt{
-		ProtocolVersion:       "v1",
-		AttemptID:             input.ProviderInvocation.AttemptID,
-		InvocationID:          input.ProviderInvocation.InvocationID,
-		CompletionCapability:  input.ProviderInvocation.CompletionCapability,
-		FinalText:             finalText,
-		StructuredPayloadJSON: "{}",
-	})
-	if err != nil {
-		return planning.ProviderExecutionMetadata{}, err
-	}
-	metadata.CompletionReceiptEvidenceID = accepted.EvidenceID
-	metadata.CompletionStructuredPayloadJSON = accepted.StructuredPayloadJSON
-	if metadata.CompletionStructuredPayloadJSON == "" {
-		metadata.CompletionStructuredPayloadJSON = "{}"
-	}
-	return metadata, nil
+	return planning.ProviderExecutionMetadata{
+		FinalText:                       finalText,
+		ProviderSessionID:               "provider-session-1",
+		OutcomeState:                    "success",
+		CompletionStructuredPayloadJSON: "{}",
+	}, nil
 }
 
 var defaultPlannerAPITestScript = planningfixture.DefaultAPIScript()

@@ -57,33 +57,39 @@ const (
 )
 
 type PlanningSession struct {
-	PlanningSessionID        string
-	Title                    string
-	TitleState               string
-	LifecycleState           PlanningSessionLifecycleState
-	ConversationState        PlanningSessionConversationState
-	CurrentQuestionMessageID *string
-	CurrentOperationID       *string
-	CurrentTitleOperationID  *string
-	CurrentDraftID           *string
-	ContextSnapshotID        *string
-	ProjectRoot              string
-	ModelSelectionJSON       string
-	CreatedAt                string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   string
+	TitleState              string
+	LifecycleState          PlanningSessionLifecycleState
+	ConversationState       PlanningSessionConversationState
+	ActiveLeafMessageID     *string
+	CurrentOperationID      *string
+	CurrentTitleOperationID *string
+	CurrentDraftID          *string
+	ContextSnapshotID       *string
+	ProjectRoot             string
+	ModelSelectionJSON      string
+	CreatedAt               string
+	UpdatedAt               string
 }
 
 type PlanningMessage struct {
 	PlanningMessageID   string
 	PlanningSessionID   string
-	TurnIndex           int
+	ParentMessageID     *string
 	Role                PlanningMessageRole
 	ContentMarkdown     string
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
-	VariantIndex        int
-	Active              bool
 	CreatedAt           string
+}
+
+// PlanningMessageBranchInfo positions a message among its siblings (messages
+// sharing a parent, ordered by created_at). Derived, never stored; drives the
+// `‹ k/n ›` branch navigator wherever Count > 1.
+type PlanningMessageBranchInfo struct {
+	Index int
+	Count int
 }
 
 type PlanningMessagePage struct {
@@ -113,6 +119,7 @@ type PlanningContextSnapshot struct {
 
 type PlanningOperation struct {
 	OperationID                string
+	AcpRunID                   string
 	PlanningSessionID          string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
@@ -148,52 +155,49 @@ type PlanningOperationTelemetrySample struct {
 	FinishedAt            *string
 	ProviderSessionOpenAt *string
 	FirstTextDeltaAt      *string
-	ReceiptPersistedAt    *string
 	FinalizingAt          *string
 }
 
 type CreatePlanningSessionRequest struct {
-	PlanningSessionID        string
-	Title                    string
-	TitleState               string
-	LifecycleState           PlanningSessionLifecycleState
-	ConversationState        PlanningSessionConversationState
-	CurrentQuestionMessageID string
-	CurrentOperationID       string
-	CurrentTitleOperationID  string
-	CurrentDraftID           string
-	ContextSnapshotID        string
-	ProjectRoot              string
-	ModelSelectionJSON       string
-	CreatedAt                string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   string
+	TitleState              string
+	LifecycleState          PlanningSessionLifecycleState
+	ConversationState       PlanningSessionConversationState
+	ActiveLeafMessageID     string
+	CurrentOperationID      string
+	CurrentTitleOperationID string
+	CurrentDraftID          string
+	ContextSnapshotID       string
+	ProjectRoot             string
+	ModelSelectionJSON      string
+	CreatedAt               string
+	UpdatedAt               string
 }
 
 type UpdatePlanningSessionRequest struct {
-	PlanningSessionID        string
-	Title                    *string
-	TitleState               *string
-	LifecycleState           *PlanningSessionLifecycleState
-	ConversationState        *PlanningSessionConversationState
-	CurrentQuestionMessageID *string
-	CurrentOperationID       *string
-	CurrentTitleOperationID  *string
-	CurrentDraftID           *string
-	ContextSnapshotID        *string
-	ModelSelectionJSON       *string
-	UpdatedAt                string
+	PlanningSessionID       string
+	Title                   *string
+	TitleState              *string
+	LifecycleState          *PlanningSessionLifecycleState
+	ConversationState       *PlanningSessionConversationState
+	ActiveLeafMessageID     *string
+	CurrentOperationID      *string
+	CurrentTitleOperationID *string
+	CurrentDraftID          *string
+	ContextSnapshotID       *string
+	ModelSelectionJSON      *string
+	UpdatedAt               string
 }
 
 type AppendPlanningMessageRequest struct {
 	PlanningMessageID   string
 	PlanningSessionID   string
-	TurnIndex           int
+	ParentMessageID     string
 	Role                PlanningMessageRole
 	ContentMarkdown     string
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
-	VariantIndex        int
-	Active              bool
 	CreatedAt           string
 }
 
@@ -217,6 +221,7 @@ type CreatePlanningContextSnapshotRequest struct {
 
 type CreatePlanningOperationRequest struct {
 	OperationID                string
+	AcpRunID                   string
 	PlanningSessionID          string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
@@ -262,6 +267,14 @@ type AppendPlanningOperationEventRequest struct {
 	CreatedAt   string
 }
 
+type CancelQueuedPlanningOperationRequest struct {
+	OperationID   string
+	ErrorMessage  string
+	UpdatedAt     string
+	FinishedAt    string
+	TerminalEvent *AppendPlanningOperationEventRequest
+}
+
 type CreatePlanningSessionBundleRequest struct {
 	Session            CreatePlanningSessionRequest
 	OpeningMessage     AppendPlanningMessageRequest
@@ -270,24 +283,29 @@ type CreatePlanningSessionBundleRequest struct {
 
 type CreatePlanningReplyBundleRequest struct {
 	SessionID         string
-	TruncateFromTurn  *int
 	UserMessage       AppendPlanningMessageRequest
 	Operation         CreatePlanningOperationRequest
+	InitialEvent      *AppendPlanningOperationEventRequest
 	ConversationState PlanningSessionConversationState
 	UpdatedAt         string
 }
 
 type CreateRegenerateBundleRequest struct {
-	SessionID         string
-	TargetTurnIndex   int
-	Operation         CreatePlanningOperationRequest
-	ConversationState PlanningSessionConversationState
-	UpdatedAt         string
+	SessionID string
+	// ActiveLeafMessageID is the regenerate target's parent: the active leaf
+	// moves here for the duration of the run so the planner is prompted with the
+	// conversation up to the fork point (empty = the conversation root).
+	ActiveLeafMessageID string
+	Operation           CreatePlanningOperationRequest
+	InitialEvent        *AppendPlanningOperationEventRequest
+	ConversationState   PlanningSessionConversationState
+	UpdatedAt           string
 }
 
 type CreatePlanningGenerateTitleBundleRequest struct {
 	SessionID               string
 	Operation               CreatePlanningOperationRequest
+	InitialEvent            *AppendPlanningOperationEventRequest
 	CurrentTitleOperationID string
 	UpdatedAt               string
 }
@@ -295,6 +313,7 @@ type CreatePlanningGenerateTitleBundleRequest struct {
 type CreatePlanningFormalizeBundleRequest struct {
 	SessionID          string
 	Operation          CreatePlanningOperationRequest
+	InitialEvent       *AppendPlanningOperationEventRequest
 	ConversationState  PlanningSessionConversationState
 	CurrentOperationID string
 	UpdatedAt          string
@@ -335,13 +354,11 @@ type FinalizeOperationRequest struct {
 	UpdatedAt         string
 	FinishedAt        string
 
-	// Reply / Regenerate
-	UserMessage              *AppendPlanningMessageRequest
-	AssistantMessage         *AppendPlanningMessageRequest
-	CurrentQuestionMessageID string
-	DeleteMessagesFromTurn   *int
-	DeleteMessagesAfterTurn  *int
-	DeactivateVariantsAtTurn *int
+	// Reply / Regenerate — append-only into the message tree; the active leaf
+	// pointer selects the newly produced branch.
+	UserMessage         *AppendPlanningMessageRequest
+	AssistantMessage    *AppendPlanningMessageRequest
+	ActiveLeafMessageID string
 
 	// Formalize
 	Draft          *CreatePlanningDraftRequest
@@ -443,8 +460,74 @@ type sqlQueryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// sqlQuerier is satisfied by both *sql.DB and *sql.Tx, so read/walk helpers can
+// run against the pool or inside a transaction.
+type sqlQuerier interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func NewPlanningStore(db *sql.DB) *PlanningStore {
 	return &PlanningStore{db: db}
+}
+
+func (s *PlanningStore) NormalizePlannerAcpRunIDs(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("planning store database is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT operation_id, acp_run_id FROM planning_operations`)
+	if err != nil {
+		return fmt.Errorf("list planning operations for acp run id normalization: %w", err)
+	}
+	defer rows.Close()
+	type normalizedUpdate struct {
+		operationID string
+		acpRunID    string
+	}
+	updates := make([]normalizedUpdate, 0)
+	for rows.Next() {
+		var operationID string
+		var acpRunID string
+		if err := rows.Scan(&operationID, &acpRunID); err != nil {
+			return fmt.Errorf("scan planning operation for acp run id normalization: %w", err)
+		}
+		normalized := normalizePlanningOperationAcpRunID(operationID, acpRunID)
+		if normalized == strings.TrimSpace(acpRunID) {
+			continue
+		}
+		updates = append(updates, normalizedUpdate{operationID: strings.TrimSpace(operationID), acpRunID: normalized})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate planning operations for acp run id normalization: %w", err)
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin planning acp run id normalization: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, update := range updates {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE planning_operations SET acp_run_id = ? WHERE operation_id = ?`,
+			update.acpRunID,
+			update.operationID,
+		); err != nil {
+			return fmt.Errorf("update planning acp run id for %s: %w", update.operationID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit planning acp run id normalization: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {
@@ -581,9 +664,6 @@ func validatePlanningMessageAppend(req AppendPlanningMessageRequest) error {
 	}
 	if strings.TrimSpace(req.PlanningSessionID) == "" {
 		return fmt.Errorf("planning session id is required")
-	}
-	if req.TurnIndex < 1 {
-		return fmt.Errorf("planning message turn index must be >= 1")
 	}
 	if !isValidPlanningMessageRole(req.Role) {
 		return fmt.Errorf("invalid planning message role: %q", req.Role)

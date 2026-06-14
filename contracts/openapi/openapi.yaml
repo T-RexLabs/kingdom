@@ -260,29 +260,75 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /planning-sessions/{id}/operations:
-    post:
-      tags: [planning]
-      operationId: createPlanningSessionOperation
-      summary: Create a durable planner operation.
+  /acp/agents:
+    get:
+      tags: [acp]
+      operationId: listAcpAgents
+      summary: List planner ACP agents.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - $ref: "#/components/parameters/RoleId"
-        - $ref: "#/components/parameters/PlanningSessionId"
+      responses:
+        "200":
+          description: Available planner ACP agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcpAgentListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /acp/agents/{name}:
+    get:
+      tags: [acp]
+      operationId: getAcpAgent
+      summary: Get planner ACP agent metadata.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/AcpAgentName"
+      responses:
+        "200":
+          description: Planner ACP agent metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcpAgent"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /acp/runs:
+    post:
+      tags: [acp]
+      operationId: createAcpRun
+      summary: Create a planner ACP run backed by a durable planner operation.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreatePlanningOperationRequest"
+              $ref: "#/components/schemas/CreateAcpRunRequest"
       responses:
         "201":
-          description: Planner operation created.
+          description: ACP run created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreatePlanningOperationResult"
+                $ref: "#/components/schemas/AcpRun"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -292,22 +338,22 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /planning-operations/{id}:
+  /acp/runs/{runId}:
     get:
-      tags: [planning]
-      operationId: getPlanningOperation
-      summary: Get planner operation status and result references.
+      tags: [acp]
+      operationId: getAcpRun
+      summary: Get planner ACP run status and metadata.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - $ref: "#/components/parameters/RoleId"
-        - $ref: "#/components/parameters/PlanningOperationId"
+        - $ref: "#/components/parameters/AcpRunId"
       responses:
         "200":
-          description: Planner operation detail.
+          description: ACP run detail.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PlanningOperationDetail"
+                $ref: "#/components/schemas/AcpRun"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -317,23 +363,80 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /planning-operations/{id}/events:
+  /acp/runs/{runId}/events:
     get:
-      tags: [planning]
-      operationId: streamPlanningOperationEvents
-      summary: Stream durable planner operation events with Last-Event-ID resume.
+      tags: [acp]
+      operationId: streamAcpRunEvents
+      summary: Stream durable planner ACP run events with Last-Event-ID resume.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - $ref: "#/components/parameters/RoleId"
-        - $ref: "#/components/parameters/PlanningOperationId"
+        - $ref: "#/components/parameters/AcpRunId"
         - $ref: "#/components/parameters/LastEventId"
       responses:
         "200":
-          description: SSE stream of durable planner operation events.
+          description: SSE stream of durable ACP run events.
           content:
             text/event-stream:
               schema:
                 type: string
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /acp/runs/{runId}/activity:
+    get:
+      tags: [acp]
+      operationId: getAcpRunActivity
+      summary: Get planner ACP run activity history for display.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/AcpRunId"
+      responses:
+        "200":
+          description: ACP run activity history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcpRunActivityResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /acp/runs/{runId}/cancel:
+    post:
+      tags: [acp]
+      operationId: cancelAcpRun
+      summary: Cancel a planner ACP run.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/AcpRunId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelAcpRunRequest"
+      responses:
+        "200":
+          description: ACP run cancelled or cancellation acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcpRun"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -360,32 +463,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RefreshPlanningSessionContextResult"
-        "400":
-          $ref: "#/components/responses/BadRequestError"
-        "401":
-          $ref: "#/components/responses/UnauthorizedError"
-        "404":
-          $ref: "#/components/responses/NotFoundError"
-        default:
-          $ref: "#/components/responses/ErrorResponse"
-
-  /planning-sessions/{id}/generate-title:
-    post:
-      tags: [planning]
-      operationId: generatePlanningSessionTitle
-      summary: Auto-generate a title from the conversation so far.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
-        - $ref: "#/components/parameters/PlanningSessionId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200":
-          description: Generated title.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/GeneratePlanningSessionTitleResult"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -1616,6 +1693,23 @@ components:
         type: string
         minLength: 1
 
+    AcpAgentName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          [planner-reply, planner-regenerate, planner-formalize, planner-generate-title]
+
+    AcpRunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+
     PlanningMessagesBefore:
       name: before
       in: query
@@ -1862,7 +1956,7 @@ components:
       type: object
       additionalProperties: false
       required:
-        [recent_sample_size, queue, launch, first_output, output_to_receipt, finalize, total]
+        [recent_sample_size, queue, launch, first_output, finalize, total]
       properties:
         recent_sample_size:
           type: integer
@@ -1872,8 +1966,6 @@ components:
         launch:
           $ref: "#/components/schemas/PlannerLatencyMetric"
         first_output:
-          $ref: "#/components/schemas/PlannerLatencyMetric"
-        output_to_receipt:
           $ref: "#/components/schemas/PlannerLatencyMetric"
         finalize:
           $ref: "#/components/schemas/PlannerLatencyMetric"
@@ -2463,37 +2555,17 @@ components:
         model_selection:
           $ref: "#/components/schemas/PlanningAgentModelSelection"
 
-    CreatePlanningOperationRequest:
-      type: object
-      additionalProperties: false
-      required: [type]
-      properties:
-        type:
-          type: string
-          enum: [reply, formalize, regenerate]
-        reply:
-          $ref: "#/components/schemas/PlanningReplyOperationRequest"
-        regenerate:
-          $ref: "#/components/schemas/PlanningRegenerateOperationRequest"
-
-    CreatePlanningOperationResult:
-      type: object
-      additionalProperties: false
-      required: [operation, session]
-      properties:
-        operation:
-          $ref: "#/components/schemas/PlanningOperationDetail"
-        session:
-          $ref: "#/components/schemas/PlanningSessionDetail"
-
     PlanningSessionSummary:
       type: object
       additionalProperties: false
-      required: [planning_session_id, title, title_state, lifecycle_state, conversation_state, created_at, updated_at]
+      required: [planning_session_id, acp_session_id, title, title_state, lifecycle_state, conversation_state, created_at, updated_at]
       properties:
         planning_session_id:
           type: string
           minLength: 1
+        acp_session_id:
+          type: string
+          format: uuid
         title:
           type: string
           minLength: 1
@@ -2506,15 +2578,16 @@ components:
         conversation_state:
           type: string
           enum: [ready, processing]
-        current_question_message_id:
+        active_leaf_message_id:
           type: string
+          description: Leaf of the active conversation path; the visible transcript ends here.
           minLength: 1
-        current_operation_id:
+        current_run_id:
           type: string
-          minLength: 1
-        current_title_operation_id:
+          format: uuid
+        current_title_run_id:
           type: string
-          minLength: 1
+          format: uuid
         current_draft_id:
           type: string
           minLength: 1
@@ -2531,13 +2604,14 @@ components:
     PlanningSessionDetail:
       example:
         planning_session_id: ps_123
+        acp_session_id: 8cfa85f2-f95a-53ec-ae58-2c46f21495dc
         title: Harden the run approval path
         title_state: custom
         lifecycle_state: active
         conversation_state: ready
-        current_question_message_id: msg_123
-        current_operation_id: op_123
-        current_title_operation_id: op_title_123
+        active_leaf_message_id: msg_123
+        current_run_id: 96b0d561-cbe7-5c50-bf54-cd1dc3c76d47
+        current_title_run_id: 61b3f4e0-8bb2-5dd0-89a1-9b084688c17d
         current_draft_id: draft_123
         context_snapshot_id: ctx_123
         created_at: "2026-04-30T12:00:00Z"
@@ -2571,39 +2645,99 @@ components:
           minLength: 1
         answer_payload:
           $ref: "#/components/schemas/StructuredQuestionAnswer"
-        truncate_from_turn:
-          type: integer
-          minimum: 1
+        parent_message_id:
+          type: string
+          description: >-
+            Branch the reply off this message (editing an earlier message creates
+            a sibling). Omitted = continue from the session's active leaf.
+          minLength: 1
 
     PlanningRegenerateOperationRequest:
       type: object
       additionalProperties: false
-      required: [target_turn_index]
+      required: [target_message_id]
       properties:
-        target_turn_index:
-          type: integer
-          minimum: 1
+        target_message_id:
+          type: string
+          description: The assistant message to fork a new sibling branch from.
+          minLength: 1
 
-    PlanningOperationSummary:
+    AcpAgent:
       type: object
       additionalProperties: false
-      required: [operation_id, planning_session_id, type, status, created_at]
+      required: [name, title, description, operation_type]
       properties:
-        operation_id:
+        name:
+          type: string
+          enum: [planner-reply, planner-regenerate, planner-formalize, planner-generate-title]
+        title:
           type: string
           minLength: 1
+        description:
+          type: string
+          minLength: 1
+        operation_type:
+          type: string
+          enum: [reply, regenerate, formalize, generate_title]
+
+    AcpAgentListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AcpAgent"
+
+    CreateAcpRunRequest:
+      type: object
+      additionalProperties: false
+      required: [agent_name, planning_session_id]
+      properties:
+        agent_name:
+          type: string
+          enum: [planner-reply, planner-regenerate, planner-formalize, planner-generate-title]
         planning_session_id:
           type: string
           minLength: 1
-        type:
+        reply:
+          $ref: "#/components/schemas/PlanningReplyOperationRequest"
+        regenerate:
+          $ref: "#/components/schemas/PlanningRegenerateOperationRequest"
+
+    AcpRun:
+      example:
+        run_id: 96b0d561-cbe7-5c50-bf54-cd1dc3c76d47
+        session_id: 8cfa85f2-f95a-53ec-ae58-2c46f21495dc
+        planning_session_id: ps_123
+        agent_name: planner-reply
+        status: in-progress
+        created_at: "2026-04-30T12:03:00Z"
+        started_at: "2026-04-30T12:03:01Z"
+        output_text: Partial streamed planner output
+      type: object
+      additionalProperties: false
+      required: [run_id, session_id, planning_session_id, agent_name, status, created_at]
+      properties:
+        run_id:
           type: string
-          enum: [bootstrap_context, reply, formalize, regenerate, generate_title]
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
+        planning_session_id:
+          type: string
+          minLength: 1
+        agent_name:
+          type: string
+          enum: [planner-reply, planner-regenerate, planner-formalize, planner-generate-title]
         status:
           type: string
-          enum: [queued, running, succeeded, failed, cancelled]
+          enum: [created, in-progress, awaiting, completed, failed, cancelled]
         error:
           type: string
-        result_ref:
+        output_text:
           type: string
         created_at:
           type: string
@@ -2615,50 +2749,24 @@ components:
           type: string
           format: date-time
 
-    PlanningOperationDetail:
-      example:
-        operation_id: op_123
-        planning_session_id: ps_123
-        type: reply
-        status: succeeded
-        request:
-          type: reply
-          content_markdown: Please narrow the scope to API error-contract work only.
-          answer_payload:
-            text: Focus on API canonical errors and OpenAPI examples.
-          user_message_id: msg_user_123
-          user_created_at: "2026-04-30T12:03:00Z"
-        created_at: "2026-04-30T12:03:00Z"
-        started_at: "2026-04-30T12:03:01Z"
-        finished_at: "2026-04-30T12:03:08Z"
-      allOf:
-        - $ref: "#/components/schemas/PlanningOperationSummary"
-        - type: object
-          additionalProperties: false
-          required: [request]
-          properties:
-            request:
-              $ref: "#/components/schemas/PlanningOperationRequestEnvelope"
-            observed_output_text:
-              type: string
-
-    PlanningOperationEvent:
+    AcpRunEvent:
       type: object
       additionalProperties: false
-      required: [event_id, operation_id, seq, event_type, payload, created_at]
+      required: [event_id, run_id, seq, type, payload, created_at]
       properties:
         event_id:
           type: string
           minLength: 1
-        operation_id:
+        run_id:
           type: string
-          minLength: 1
+          format: uuid
         seq:
           type: integer
           minimum: 1
-        event_type:
+        type:
           type: string
-          minLength: 1
+          enum:
+            [run.created, run.in-progress, message.part, message.completed, run.completed, run.failed, run.cancelled, error, generic]
         payload:
           type: object
           additionalProperties: true
@@ -2666,40 +2774,13 @@ components:
           type: string
           format: date-time
 
-    PlanningOperationRequestEnvelope:
+    CancelAcpRunRequest:
       type: object
       additionalProperties: false
-      required: [type]
       properties:
-        type:
-          type: string
-          enum: [bootstrap_context, reply, formalize, regenerate, generate_title]
-        content_markdown:
+        reason:
           type: string
           minLength: 1
-        answer_payload:
-          $ref: "#/components/schemas/StructuredQuestionAnswer"
-        user_message_id:
-          type: string
-          minLength: 1
-        user_created_at:
-          type: string
-          format: date-time
-        turn_index:
-          type: integer
-          minimum: 1
-        assistant_message_id:
-          type: string
-          minLength: 1
-        assistant_created_at:
-          type: string
-          format: date-time
-        draft_id:
-          type: string
-          minLength: 1
-        draft_created_at:
-          type: string
-          format: date-time
 
     PlanningAgentModelSelection:
       type: object
@@ -2794,7 +2875,7 @@ components:
     PlanningMessage:
       type: object
       additionalProperties: false
-      required: [planning_message_id, planning_session_id, turn_index, role, content_markdown, variant_index, active, created_at]
+      required: [planning_message_id, planning_session_id, role, content_markdown, created_at]
       properties:
         planning_message_id:
           type: string
@@ -2802,9 +2883,9 @@ components:
         planning_session_id:
           type: string
           minLength: 1
-        turn_index:
-          type: integer
-          minimum: 1
+        parent_message_id:
+          type: string
+          description: Parent in the conversation tree; omitted for the root message.
         role:
           type: string
           enum: [user, assistant]
@@ -2814,17 +2895,54 @@ components:
           $ref: "#/components/schemas/StructuredQuestion"
         answer_payload:
           $ref: "#/components/schemas/StructuredQuestionAnswer"
-        variant_index:
+        branch_index:
           type: integer
           minimum: 0
-        active:
-          type: boolean
-        variant_count:
+          description: Zero-based position of this message among its siblings (same parent).
+        branch_count:
           type: integer
           minimum: 1
+          description: Number of sibling branches at this point; the navigator shows when > 1.
+        source_run_id:
+          type: string
+          format: uuid
         created_at:
           type: string
           format: date-time
+
+    AcpRunActivityItem:
+      type: object
+      additionalProperties: false
+      required: [id, kind, label, occurred_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        kind:
+          type: string
+          enum: [thinking, tool, progress]
+        label:
+          type: string
+          minLength: 1
+        detail:
+          type: string
+        input:
+          type: string
+        output:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+
+    AcpRunActivityResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AcpRunActivityItem"
 
     PlanningMessagesPage:
       type: object
@@ -2931,9 +3049,6 @@ components:
           $ref: "#/components/schemas/PlanningSessionDetail"
         context_snapshot:
           $ref: "#/components/schemas/PlanningContextSnapshot"
-
-    GeneratePlanningSessionTitleResult:
-      $ref: "#/components/schemas/PlanningSessionDetail"
 
     PublishWorkflowRequest:
       type: object

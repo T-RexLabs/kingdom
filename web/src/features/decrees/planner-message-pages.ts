@@ -112,3 +112,48 @@ export function replaceAssistantMessageInLatestPlanningPage(
 
   return { ...data, pages };
 }
+
+// replaceAssistantMessageAtTurn swaps the assistant on the active path that
+// shares the new message's parent (the branch being replaced by a regenerate)
+// for the new sibling, in place. The authoritative branch metadata arrives on
+// the subsequent messages refetch; this just keeps the optimistic view smooth.
+export function replaceAssistantMessageAtTurn(
+  data: PlanningMessagesInfiniteData | undefined,
+  message: PlanningMessage
+): PlanningMessagesInfiniteData | undefined {
+  if (!data?.pages?.length) {
+    return data;
+  }
+
+  let inserted = false;
+  const pages = data.pages.map((page) => {
+    let replacementIndex = -1;
+    const nextItems = page.items.filter((item, index) => {
+      if (item.planning_message_id === message.planning_message_id) {
+        replacementIndex = index;
+        return false;
+      }
+      const isSupersededAssistant = item.role === "assistant" && item.parent_message_id === message.parent_message_id;
+      if (isSupersededAssistant) {
+        replacementIndex = index;
+        return false;
+      }
+      return true;
+    });
+    if (!inserted && replacementIndex >= 0) {
+      const boundedIndex = Math.min(replacementIndex, nextItems.length);
+      nextItems.splice(boundedIndex, 0, message);
+      inserted = true;
+    }
+    return { ...page, items: nextItems };
+  });
+
+  if (!inserted) {
+    pages[0] = {
+      ...pages[0],
+      items: [...pages[0].items, message],
+    };
+  }
+
+  return { ...data, pages };
+}

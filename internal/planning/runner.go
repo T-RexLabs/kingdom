@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"kingdom/internal/acp"
+	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -44,9 +47,11 @@ type operationRunner struct {
 	// loop means a single recoveryCancel terminates both shutdown paths.
 	ctx context.Context
 
-	mu      sync.Mutex
-	running map[string]struct{}
-	idle    chan struct{}
+	mu            sync.Mutex
+	running       map[string]struct{}
+	cancels       map[string]context.CancelFunc
+	cancelReasons map[string]string
+	idle          chan struct{}
 	// cancelDrainErr accumulates errors observed while the service ctx
 	// was cancelled — most importantly, cancel-write timeouts from the
 	// bounded writeCtx in cancelOperation. Surfaced via Wait →
@@ -98,11 +103,13 @@ func newOperationRunner(deps runtimeDeps, ctx context.Context) *operationRunner 
 	idle := make(chan struct{})
 	close(idle)
 	return &operationRunner{
-		deps:    deps,
-		events:  newOperationEventService(deps),
-		ctx:     ctx,
-		running: make(map[string]struct{}),
-		idle:    idle,
+		deps:          deps,
+		events:        newOperationEventService(deps),
+		ctx:           ctx,
+		running:       make(map[string]struct{}),
+		cancels:       make(map[string]context.CancelFunc),
+		cancelReasons: make(map[string]string),
+		idle:          idle,
 	}
 }
 
@@ -134,15 +141,17 @@ func (r *operationRunner) startWithSource(operationID string, source operationSt
 	if len(r.running) == 0 {
 		r.idle = make(chan struct{})
 	}
+	opCtx, cancel := context.WithCancel(r.ctx)
 	r.observeStartRequested(source)
 	r.running[operationID] = struct{}{}
+	r.cancels[operationID] = cancel
 	r.wg.Add(1)
 	r.mu.Unlock()
 
-	go func() {
+	go func(execCtx context.Context) {
 		defer r.wg.Done()
 		defer r.finish(operationID)
-		if err := r.execute(r.ctx, operationID, source); err != nil {
+		if err := r.execute(execCtx, operationID, source); err != nil {
 			if r.shouldRecordCancelDrainFailure(err) {
 				r.recordCancelDrainFailure(operationID, err)
 			}
@@ -151,7 +160,7 @@ func (r *operationRunner) startWithSource(operationID string, source operationSt
 				log.Printf("planner start source=%s operation_id=%s err=%v", source, operationID, err)
 			}
 		}
-	}()
+	}(opCtx)
 }
 
 // shouldRecordCancelDrainFailure narrows the recorded set to genuine
@@ -227,14 +236,68 @@ func (r *operationRunner) finish(operationID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.running, operationID)
+	if cancel := r.cancels[operationID]; cancel != nil {
+		cancel()
+	}
+	delete(r.cancels, operationID)
+	delete(r.cancelReasons, operationID)
 	if len(r.running) == 0 && r.idle != nil {
 		close(r.idle)
 	}
 }
 
+func (r *operationRunner) RequestCancel(operationID, reason string) bool {
+	if r == nil {
+		return false
+	}
+	trimmedID := strings.TrimSpace(operationID)
+	if trimmedID == "" {
+		return false
+	}
+	trimmedReason := strings.TrimSpace(reason)
+	if trimmedReason == "" {
+		trimmedReason = "operation cancelled"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cancel, ok := r.cancels[trimmedID]
+	if !ok {
+		return false
+	}
+	r.cancelReasons[trimmedID] = trimmedReason
+	cancel()
+	return true
+}
+
+func (r *operationRunner) cancelReasonOrNil(operationID string) *string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reason, ok := r.cancelReasons[strings.TrimSpace(operationID)]
+	if !ok || strings.TrimSpace(reason) == "" {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	return &reason
+}
+
+func (r *operationRunner) interruptReasonOrNil(operationID string) *string {
+	if reason := r.cancelReasonOrNil(operationID); reason != nil {
+		return reason
+	}
+	return r.shutdownReasonOrNil()
+}
+
 func (r *operationRunner) execute(ctx context.Context, operationID string, source operationStartSource) error {
 	claimed, ok, err := r.claimOperationWithRetry(ctx, operationID, source)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			if reason := r.cancelReasonOrNil(operationID); reason != nil {
+				return r.cancelQueuedOperation(ctx, operationID, *reason)
+			}
+		}
 		return err
 	}
 	if !ok {
@@ -251,6 +314,40 @@ func (r *operationRunner) execute(ctx context.Context, operationID string, sourc
 		execErr = heartbeatErr
 	}
 	return execErr
+}
+
+func (r *operationRunner) cancelQueuedOperation(ctx context.Context, operationID, reason string) error {
+	if r == nil || r.deps.store == nil {
+		return context.Canceled
+	}
+	operation, found, err := r.deps.store.GetOperation(ctx, operationID)
+	if err != nil || !found {
+		return err
+	}
+	if operation.Status != state.PlanningOperationStatusQueued {
+		return context.Canceled
+	}
+	now := r.deps.nowString()
+	terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunCancelledEventType, plannerMessagePayload(operation, map[string]any{"reason": reason}))
+	if err != nil {
+		return err
+	}
+	if err := r.deps.store.CancelQueuedOperation(ctx, state.CancelQueuedPlanningOperationRequest{
+		OperationID:   operation.OperationID,
+		ErrorMessage:  reason,
+		UpdatedAt:     now,
+		FinishedAt:    now,
+		TerminalEvent: terminalEvent,
+	}); err != nil {
+		if errors.Is(err, state.ErrPlanningLeaseConflict) {
+			return context.Canceled
+		}
+		return err
+	}
+	if r.deps.broker != nil {
+		r.deps.broker.Publish(operation.OperationID)
+	}
+	return context.Canceled
 }
 
 func (r *operationRunner) executeClaimed(ctx context.Context, operation state.PlanningOperation, source operationStartSource) error {
@@ -273,14 +370,18 @@ func (r *operationRunner) executeClaimed(ctx context.Context, operation state.Pl
 	}
 
 	startedPayload := map[string]any{
-		"status":         "running",
+		"status":         acp.PlannerRunStatusInProgress,
 		"operation_type": operation.Type,
 		"start_source":   source,
 	}
 	if queueAgeMs := queueAgeMilliseconds(operation); queueAgeMs >= 0 {
 		startedPayload["queue_age_ms"] = queueAgeMs
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "started", startedPayload); err != nil {
+	payload := plannerRunPayload(operation.OperationID, operation.PlanningSessionID, operation.Type)
+	for key, value := range startedPayload {
+		payload[key] = value
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.RunInProgressEventType, payload); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 
@@ -352,27 +453,15 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "user_message", planningMessagePayload(state.PlanningMessage{
-		PlanningMessageID:   request.UserMessageID,
-		PlanningSessionID:   session.PlanningSessionID,
-		TurnIndex:           request.TurnIndex,
-		Role:                state.PlanningMessageRoleUser,
-		ContentMarkdown:     request.ContentMarkdown,
-		QuestionPayloadJSON: `{}`,
-		AnswerPayloadJSON:   firstNonEmpty(string(request.AnswerPayload), `{}`),
-		CreatedAt:           request.UserCreatedAt,
-	})); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !request.ForceNewSession))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
+	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
@@ -388,14 +477,18 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	// and writing a `done` terminal event for an operation the user
 	// expected to be cancelled would lie. Same pattern repeats after
 	// every long planner call below.
-	if reason := r.shutdownReasonOrNil(); reason != nil {
+	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
+	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
+	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
+	}
+	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
 	}
 	var autoTitleSession *state.PlanningSession
 	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
@@ -403,7 +496,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
 		autoTitleSession = nil
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	questionPayloadJSON, err := marshalQuestion(turn.Question)
@@ -414,63 +507,59 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	assistantMessage := state.AppendPlanningMessageRequest{
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
-		TurnIndex:           request.TurnIndex,
+		ParentMessageID:     request.UserMessageID,
 		Role:                state.PlanningMessageRoleAssistant,
 		ContentMarkdown:     turn.ContentMarkdown,
 		QuestionPayloadJSON: questionPayloadJSON,
 		AnswerPayloadJSON:   `{}`,
-		Active:              true,
 		CreatedAt:           request.AssistantCreatedAt,
 	}
-	donePayload := planningMessagePayload(state.PlanningMessage{
+	messageCompletedPayload := planningMessagePayload(state.PlanningMessage{
 		PlanningMessageID:   assistantMessage.PlanningMessageID,
 		PlanningSessionID:   assistantMessage.PlanningSessionID,
-		TurnIndex:           assistantMessage.TurnIndex,
+		ParentMessageID:     &request.UserMessageID,
 		Role:                assistantMessage.Role,
 		ContentMarkdown:     assistantMessage.ContentMarkdown,
 		QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
 		AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-		VariantIndex:        0,
-		Active:              true,
 		CreatedAt:           assistantMessage.CreatedAt,
 	})
-	donePayload["variant_count"] = 1
+	messageCompletedPayload = plannerMessagePayload(operation, messageCompletedPayload)
+	messageCompletedPayload["text"] = assistantMessage.ContentMarkdown
 	if autoTitleSession != nil {
-		donePayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
+		messageCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
 	}
-	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", donePayload)
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	runCompletedPayload := plannerMessagePayload(operation, map[string]any{
+		"result_ref":          request.AssistantMessageID,
+		"planning_message_id": request.AssistantMessageID,
+	})
+	if autoTitleSession != nil {
+		runCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
+	}
+	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, runCompletedPayload)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	now := r.deps.nowString()
+	// The user message was appended at create time; finalize appends the
+	// assistant under it and moves the active leaf onto the new reply.
 	finalizeReq := state.FinalizeOperationRequest{
-		Kind:                     state.FinalizeReply,
-		SessionID:                session.PlanningSessionID,
-		OperationID:              operation.OperationID,
-		LeaseOwner:               operation.LeaseOwner,
-		LeaseVersion:             operation.LeaseVersion,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		UpdatedAt:                now,
-		FinishedAt:               now,
-		AssistantMessage:         &assistantMessage,
-		CurrentQuestionMessageID: request.AssistantMessageID,
-		ResultRef:                request.AssistantMessageID,
-		ProviderSettlement:       providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:            terminalEvent,
-	}
-	if request.ForceNewSession {
-		finalizeReq.UserMessage = &state.AppendPlanningMessageRequest{
-			PlanningMessageID:   request.UserMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TurnIndex,
-			Role:                state.PlanningMessageRoleUser,
-			ContentMarkdown:     request.ContentMarkdown,
-			QuestionPayloadJSON: `{}`,
-			AnswerPayloadJSON:   firstNonEmpty(string(request.AnswerPayload), `{}`),
-			Active:              true,
-			CreatedAt:           request.UserCreatedAt,
-		}
-		finalizeReq.DeleteMessagesFromTurn = &request.TurnIndex
+		Kind:                state.FinalizeReply,
+		SessionID:           session.PlanningSessionID,
+		OperationID:         operation.OperationID,
+		LeaseOwner:          operation.LeaseOwner,
+		LeaseVersion:        operation.LeaseVersion,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		UpdatedAt:           now,
+		FinishedAt:          now,
+		AssistantMessage:    &assistantMessage,
+		ActiveLeafMessageID: request.AssistantMessageID,
+		ResultRef:           request.AssistantMessageID,
+		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		TerminalEvent:       terminalEvent,
 	}
 	if err := r.deps.store.FinalizeOperation(ctx, finalizeReq); err != nil {
 		return err
@@ -493,15 +582,15 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
+	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
@@ -510,16 +599,20 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
-	if reason := r.shutdownReasonOrNil(); reason != nil {
+	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	if err := requireReceiptEvidenceID(turn.Metadata); err != nil {
+	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
+	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	regenQuestionPayloadJSON, err := marshalQuestion(turn.Question)
@@ -527,52 +620,54 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 
+	regenParentID := nilIfEmpty(request.ParentMessageID)
 	assistantMessage := state.AppendPlanningMessageRequest{
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
-		TurnIndex:           request.TargetTurnIndex,
+		ParentMessageID:     request.ParentMessageID,
 		Role:                state.PlanningMessageRoleAssistant,
 		ContentMarkdown:     turn.ContentMarkdown,
 		QuestionPayloadJSON: regenQuestionPayloadJSON,
 		AnswerPayloadJSON:   `{}`,
-		VariantIndex:        request.VariantIndex,
-		Active:              true,
 		CreatedAt:           request.AssistantCreatedAt,
 	}
-	donePayload := planningMessagePayload(state.PlanningMessage{
+	messageCompletedPayload := planningMessagePayload(state.PlanningMessage{
 		PlanningMessageID:   assistantMessage.PlanningMessageID,
 		PlanningSessionID:   assistantMessage.PlanningSessionID,
-		TurnIndex:           assistantMessage.TurnIndex,
+		ParentMessageID:     regenParentID,
 		Role:                assistantMessage.Role,
 		ContentMarkdown:     assistantMessage.ContentMarkdown,
 		QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
 		AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-		VariantIndex:        assistantMessage.VariantIndex,
-		Active:              assistantMessage.Active,
 		CreatedAt:           assistantMessage.CreatedAt,
 	})
-	donePayload["variant_count"] = request.VariantIndex + 1
-	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", donePayload)
+	messageCompletedPayload = plannerMessagePayload(operation, messageCompletedPayload)
+	messageCompletedPayload["text"] = assistantMessage.ContentMarkdown
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
+		"result_ref":          request.AssistantMessageID,
+		"planning_message_id": request.AssistantMessageID,
+	}))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	now := r.deps.nowString()
 	if err := r.deps.store.FinalizeOperation(ctx, state.FinalizeOperationRequest{
-		Kind:                     state.FinalizeRegenerate,
-		SessionID:                session.PlanningSessionID,
-		OperationID:              operation.OperationID,
-		LeaseOwner:               operation.LeaseOwner,
-		LeaseVersion:             operation.LeaseVersion,
-		ConversationState:        state.PlanningSessionConversationStateReady,
-		UpdatedAt:                now,
-		FinishedAt:               now,
-		AssistantMessage:         &assistantMessage,
-		CurrentQuestionMessageID: request.AssistantMessageID,
-		DeleteMessagesAfterTurn:  &request.TargetTurnIndex,
-		DeactivateVariantsAtTurn: &request.TargetTurnIndex,
-		ResultRef:                request.AssistantMessageID,
-		ProviderSettlement:       providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:            terminalEvent,
+		Kind:                state.FinalizeRegenerate,
+		SessionID:           session.PlanningSessionID,
+		OperationID:         operation.OperationID,
+		LeaseOwner:          operation.LeaseOwner,
+		LeaseVersion:        operation.LeaseVersion,
+		ConversationState:   state.PlanningSessionConversationStateReady,
+		UpdatedAt:           now,
+		FinishedAt:          now,
+		AssistantMessage:    &assistantMessage,
+		ActiveLeafMessageID: request.AssistantMessageID,
+		ResultRef:           request.AssistantMessageID,
+		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		TerminalEvent:       terminalEvent,
 	}); err != nil {
 		return err
 	}
@@ -594,14 +689,14 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
+	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext := r.deps.agentContext(session, snapshot, messages, false)
 	agentContext.ProviderInvocation = providerInvocation
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
@@ -610,16 +705,20 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
-	if reason := r.shutdownReasonOrNil(); reason != nil {
+	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	if err := requireReceiptEvidenceID(plan.Metadata); err != nil {
+	persistObservedPlanningProviderSession(providerInvocation, plan.Metadata.ProviderSessionID)
+	if err := requirePlannerTurnSettled(plan.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(plan.Metadata, err), plan.Metadata.FinalText)
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	// Drafts no longer carry a hand-crafted summary placeholder; the Decree
@@ -634,9 +733,19 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 		SummaryJSON:       string(summaryJSON),
 		CreatedAt:         request.DraftCreatedAt,
 	}
-	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", map[string]any{
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
+		"content_markdown":  draft.DecreeText,
+		"text":              draft.DecreeText,
+		"decree_title":      draft.DecreeTitle,
 		"planning_draft_id": draft.PlanningDraftID,
-	})
+		"created_at":        draft.CreatedAt,
+	})); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
+		"result_ref":        draft.PlanningDraftID,
+		"planning_draft_id": draft.PlanningDraftID,
+	}))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -672,14 +781,14 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation)
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation.OperationID, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, r.appendOperationEvent)
+	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
 	agentContext := r.deps.titleAgentContext(session, messages)
 	agentContext.ProviderInvocation = providerInvocation
 	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext, func(text string) {
@@ -688,30 +797,44 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
-	if reason := r.shutdownReasonOrNil(); reason != nil {
+	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
 		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	if err := requireReceiptEvidenceID(generatedTitle.Metadata); err != nil {
+	persistObservedPlanningProviderSession(providerInvocation, generatedTitle.Metadata.ProviderSessionID)
+	if err := requirePlannerTurnSettled(generatedTitle.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(generatedTitle.Metadata, err), generatedTitle.Metadata.FinalText)
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, "finalizing", map[string]any{"status": "finalizing"}); err != nil {
+	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	finalTitle := strings.TrimSpace(generatedTitle.Title)
 	if finalTitle == "" {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("generated title is empty"))
 	}
-	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, "done", map[string]any{
+	now := r.deps.nowString()
+	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
+		"content_markdown": finalTitle,
+		"text":             finalTitle,
+		"title":            finalTitle,
+		"title_state":      "generated",
+		"created_at":       now,
+	})); err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
+		"result_ref":  finalTitle,
 		"title":       finalTitle,
 		"title_state": "generated",
-	})
+	}))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	now := r.deps.nowString()
 	if err := r.deps.store.FinalizeGenerateTitle(ctx, state.FinalizeGenerateTitleRequest{
 		SessionID:          session.PlanningSessionID,
 		OperationID:        operation.OperationID,
@@ -732,267 +855,6 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	return nil
 }
 
-func (r *operationRunner) finalizeRecoveredSuccessFromReceipt(ctx context.Context, operation state.PlanningOperation, metadata ProviderExecutionMetadata, now string) error {
-	if r == nil || r.deps.store == nil {
-		return fmt.Errorf("planning store is required for recovered success finalization")
-	}
-	if operation.ActiveProviderInvocationID == nil || strings.TrimSpace(*operation.ActiveProviderInvocationID) == "" {
-		return fmt.Errorf("recovered success finalization requires an active provider invocation")
-	}
-	if now = strings.TrimSpace(now); now == "" {
-		now = r.deps.nowString()
-	}
-	request, err := decodeOperationRequest(operation.RequestPayloadJSON)
-	if err != nil {
-		return err
-	}
-	session, found, err := r.deps.store.GetSession(ctx, operation.PlanningSessionID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return ErrSessionNotFound
-	}
-	if operation.Type == state.PlanningOperationTypeGenerateTitle {
-		finalizeReq, err := r.buildRecoveredGenerateTitleFinalizeRequest(ctx, session, operation, metadata, now)
-		if err != nil {
-			return err
-		}
-		if err := r.deps.store.FinalizeGenerateTitle(ctx, finalizeReq); err != nil {
-			if errors.Is(err, state.ErrPlanningLeaseConflict) {
-				return nil
-			}
-			return err
-		}
-		if r.deps.broker != nil {
-			r.deps.broker.Publish(operation.OperationID)
-		}
-		return nil
-	}
-	finalizeReq, err := r.buildRecoveredSuccessFinalizeRequest(ctx, session, operation, request, metadata, now)
-	if err != nil {
-		return err
-	}
-	if err := r.deps.store.FinalizeOperation(ctx, finalizeReq); err != nil {
-		if errors.Is(err, state.ErrPlanningLeaseConflict) {
-			return nil
-		}
-		return err
-	}
-	if r.deps.broker != nil {
-		r.deps.broker.Publish(operation.OperationID)
-	}
-	return nil
-}
-
-func (r *operationRunner) buildRecoveredSuccessFinalizeRequest(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, metadata ProviderExecutionMetadata, now string) (state.FinalizeOperationRequest, error) {
-	base := state.FinalizeOperationRequest{
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		ConversationState:  state.PlanningSessionConversationStateReady,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		ProviderSettlement: providerSettlementForSuccess(*operation.ActiveProviderInvocationID, metadata, now),
-	}
-	if base.ProviderSettlement == nil {
-		return state.FinalizeOperationRequest{}, fmt.Errorf("recovered success finalization requires completion receipt settlement")
-	}
-
-	switch operation.Type {
-	case state.PlanningOperationTypeReply:
-		assistantMessageID := strings.TrimSpace(request.AssistantMessageID)
-		if assistantMessageID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("reply recovery requires assistant_message_id in request payload")
-		}
-		cleanMarkdown, question := parseStructuredQuestion(metadata.FinalText)
-		questionPayloadJSON, err := marshalQuestion(question)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		assistantMessage := state.AppendPlanningMessageRequest{
-			PlanningMessageID:   assistantMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TurnIndex,
-			Role:                state.PlanningMessageRoleAssistant,
-			ContentMarkdown:     cleanMarkdown,
-			QuestionPayloadJSON: questionPayloadJSON,
-			AnswerPayloadJSON:   `{}`,
-			Active:              true,
-			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
-		}
-		donePayload := planningMessagePayload(state.PlanningMessage{
-			PlanningMessageID:   assistantMessage.PlanningMessageID,
-			PlanningSessionID:   assistantMessage.PlanningSessionID,
-			TurnIndex:           assistantMessage.TurnIndex,
-			Role:                assistantMessage.Role,
-			ContentMarkdown:     assistantMessage.ContentMarkdown,
-			QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
-			AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-			VariantIndex:        0,
-			Active:              true,
-			CreatedAt:           assistantMessage.CreatedAt,
-		})
-		donePayload["variant_count"] = 1
-		messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		autoTitleSession, err := maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
-		if err != nil {
-			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageFinalize, session.PlanningSessionID, err)
-		} else if autoTitleSession != nil {
-			donePayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
-		}
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, "done", donePayload)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeReply
-		base.AssistantMessage = &assistantMessage
-		base.CurrentQuestionMessageID = assistantMessage.PlanningMessageID
-		base.ResultRef = assistantMessage.PlanningMessageID
-		base.TerminalEvent = terminalEvent
-		if request.ForceNewSession {
-			userMessageID := strings.TrimSpace(request.UserMessageID)
-			if userMessageID == "" {
-				return state.FinalizeOperationRequest{}, fmt.Errorf("reply recovery requires user_message_id when force_new_session is set")
-			}
-			base.UserMessage = &state.AppendPlanningMessageRequest{
-				PlanningMessageID:   userMessageID,
-				PlanningSessionID:   session.PlanningSessionID,
-				TurnIndex:           request.TurnIndex,
-				Role:                state.PlanningMessageRoleUser,
-				ContentMarkdown:     request.ContentMarkdown,
-				QuestionPayloadJSON: `{}`,
-				AnswerPayloadJSON:   firstNonEmpty(string(request.AnswerPayload), `{}`),
-				Active:              true,
-				CreatedAt:           firstNonEmpty(strings.TrimSpace(request.UserCreatedAt), now),
-			}
-			base.DeleteMessagesFromTurn = &request.TurnIndex
-		}
-		return base, nil
-	case state.PlanningOperationTypeRegenerate:
-		assistantMessageID := strings.TrimSpace(request.AssistantMessageID)
-		if assistantMessageID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("regenerate recovery requires assistant_message_id in request payload")
-		}
-		cleanMarkdown, question := parseStructuredQuestion(metadata.FinalText)
-		questionPayloadJSON, err := marshalQuestion(question)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		assistantMessage := state.AppendPlanningMessageRequest{
-			PlanningMessageID:   assistantMessageID,
-			PlanningSessionID:   session.PlanningSessionID,
-			TurnIndex:           request.TargetTurnIndex,
-			Role:                state.PlanningMessageRoleAssistant,
-			ContentMarkdown:     cleanMarkdown,
-			QuestionPayloadJSON: questionPayloadJSON,
-			AnswerPayloadJSON:   `{}`,
-			VariantIndex:        request.VariantIndex,
-			Active:              true,
-			CreatedAt:           firstNonEmpty(strings.TrimSpace(request.AssistantCreatedAt), now),
-		}
-		donePayload := planningMessagePayload(state.PlanningMessage{
-			PlanningMessageID:   assistantMessage.PlanningMessageID,
-			PlanningSessionID:   assistantMessage.PlanningSessionID,
-			TurnIndex:           assistantMessage.TurnIndex,
-			Role:                assistantMessage.Role,
-			ContentMarkdown:     assistantMessage.ContentMarkdown,
-			QuestionPayloadJSON: assistantMessage.QuestionPayloadJSON,
-			AnswerPayloadJSON:   assistantMessage.AnswerPayloadJSON,
-			VariantIndex:        assistantMessage.VariantIndex,
-			Active:              assistantMessage.Active,
-			CreatedAt:           assistantMessage.CreatedAt,
-		})
-		donePayload["variant_count"] = request.VariantIndex + 1
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, "done", donePayload)
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeRegenerate
-		base.AssistantMessage = &assistantMessage
-		base.CurrentQuestionMessageID = assistantMessage.PlanningMessageID
-		base.DeleteMessagesAfterTurn = &request.TargetTurnIndex
-		base.DeactivateVariantsAtTurn = &request.TargetTurnIndex
-		base.ResultRef = assistantMessage.PlanningMessageID
-		base.TerminalEvent = terminalEvent
-		return base, nil
-	case state.PlanningOperationTypeFormalize:
-		draftID := strings.TrimSpace(request.DraftID)
-		if draftID == "" {
-			return state.FinalizeOperationRequest{}, fmt.Errorf("formalize recovery requires draft_id in request payload")
-		}
-		title, text := parseFormalizedOutput(metadata.FinalText, session.Title)
-		draft := state.CreatePlanningDraftRequest{
-			PlanningDraftID:   draftID,
-			PlanningSessionID: session.PlanningSessionID,
-			DecreeTitle:       firstNonEmpty(title, session.Title),
-			DecreeText:        text,
-			SummaryJSON:       `{}`,
-			CreatedAt:         firstNonEmpty(strings.TrimSpace(request.DraftCreatedAt), now),
-		}
-		terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, "done", map[string]any{"planning_draft_id": draft.PlanningDraftID})
-		if err != nil {
-			return state.FinalizeOperationRequest{}, err
-		}
-		base.Kind = state.FinalizeFormalize
-		base.Draft = &draft
-		base.CurrentDraftID = draft.PlanningDraftID
-		base.ResultRef = draft.PlanningDraftID
-		base.TerminalEvent = terminalEvent
-		return base, nil
-	default:
-		return state.FinalizeOperationRequest{}, fmt.Errorf("recovered success finalization is unsupported for operation type %q", operation.Type)
-	}
-}
-
-func (r *operationRunner) buildRecoveredGenerateTitleFinalizeRequest(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, metadata ProviderExecutionMetadata, now string) (state.FinalizeGenerateTitleRequest, error) {
-	finalTitle, err := normalizeGeneratedTitle(metadata.FinalText)
-	if err != nil {
-		return state.FinalizeGenerateTitleRequest{}, &invalidRecoveredGeneratedTitleError{cause: err}
-	}
-	terminalEvent, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, "done", map[string]any{
-		"title":       finalTitle,
-		"title_state": "generated",
-	})
-	if err != nil {
-		return state.FinalizeGenerateTitleRequest{}, err
-	}
-	return state.FinalizeGenerateTitleRequest{
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		GeneratedTitle:     finalTitle,
-		ObservedOutputText: finalTitle,
-		ProviderSettlement: providerSettlementForSuccess(*operation.ActiveProviderInvocationID, metadata, now),
-		TerminalEvent:      terminalEvent,
-	}, nil
-}
-
-type invalidRecoveredGeneratedTitleError struct {
-	cause error
-}
-
-func (e *invalidRecoveredGeneratedTitleError) Error() string {
-	if e == nil || e.cause == nil {
-		return "invalid recovered generated title"
-	}
-	return e.cause.Error()
-}
-
-func (e *invalidRecoveredGeneratedTitleError) Unwrap() error {
-	if e == nil {
-		return nil
-	}
-	return e.cause
-}
-
 func (r *operationRunner) failOperation(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, cause error) error {
 	return r.failOperationWithObservedOutput(ctx, operation, cursor, cause, providerMetadataFromError(cause).FinalText)
 }
@@ -1008,14 +870,14 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	// path — anywhere failOperation gets called during shutdown
 	// finalises consistently as cancelled instead of leaving the row
 	// in `running` for next-startup recovery to clean up.
-	if r.ctx != nil && r.ctx.Err() != nil {
-		return r.cancelOperation(ctx, operation, cursor, "operation cancelled during shutdown")
+	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
+		return r.cancelOperation(ctx, operation, cursor, *reason)
 	}
 	if cause == nil {
 		cause = fmt.Errorf("planner operation failed")
 	}
-	errPayload := map[string]any{"error": cause.Error()}
-	terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, "error", errPayload)
+	errPayload := plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": cause.Error()})
+	terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, acp.RunFailedEventType, errPayload)
 	if eventErr != nil {
 		return eventErr
 	}
@@ -1023,10 +885,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))
 	observedOutputText = sanitizeObservedPlannerOutput(operation.Type, observedOutputText)
-	providerSettlement, err := terminalPlanningProviderSettlement(ctx, r.deps.store, operation, providerMetadata, now, cause.Error(), cause, false)
-	if err != nil {
-		return err
-	}
+	providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
 	finalizeErr := r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent)
 	if finalizeErr != nil {
 		// A concurrent finaliser (recovery vs SSE-observer, or any
@@ -1080,16 +939,13 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 	// past the shutdown coordinator's grace window.
 	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), terminalCancelWriteTimeout)
 	defer cancelWrite()
-	payload := map[string]any{"reason": reason}
-	terminalEvent, eventErr := r.buildTerminalEventFromCursor(writeCtx, operation.OperationID, cursor, "cancelled", payload)
+	payload := plannerMessagePayload(operation, map[string]any{"reason": reason})
+	terminalEvent, eventErr := r.buildTerminalEventFromCursor(writeCtx, operation.OperationID, cursor, acp.RunCancelledEventType, payload)
 	if eventErr != nil {
 		return eventErr
 	}
 	now := r.deps.nowString()
-	providerSettlement, err := terminalPlanningProviderSettlement(writeCtx, r.deps.store, operation, ProviderExecutionMetadata{}, now, reason, nil, true)
-	if err != nil {
-		return err
-	}
+	providerSettlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, now, reason, nil, true)
 	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent); err != nil {
 		return err
 	}
@@ -1226,38 +1082,354 @@ func (r *operationRunner) buildTerminalEvent(operationID string, cursor *sequenc
 	}, nil
 }
 
-func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context, operationID string, cursor *sequenceCursor, invocation *ProviderInvocationContext) {
+func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, invocation *ProviderInvocationContext) {
 	if r == nil || invocation == nil || cursor == nil {
 		return
 	}
-	_, _ = r.appendOperationEvent(ctx, operationID, cursor, "provider_launching", map[string]any{"status": "launching"})
+	_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_launching", nil))
 	originalProviderSession := invocation.OnProviderSession
 	invocation.OnProviderSession = func(providerSessionID string) {
 		if originalProviderSession != nil {
 			originalProviderSession(providerSessionID)
 		}
-		_, _ = r.appendOperationEvent(ctx, operationID, cursor, "provider_session_open", map[string]any{
-			"provider_session_id": strings.TrimSpace(providerSessionID),
+		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_session_open", map[string]any{"provider_session_id": strings.TrimSpace(providerSessionID)}))
+	}
+	originalActivity := invocation.OnActivity
+	invocation.OnActivity = func(activity ProviderActivity) {
+		if originalActivity != nil {
+			originalActivity(activity)
+		}
+		// Prefer the provider part id so a live activity and the same part
+		// recovered later by export reconciliation share one stable id; the
+		// frontend and reconciliation both de-dup on it. Fall back to a
+		// generated id only when the provider omits a part id.
+		activityID := firstNonEmpty(strings.TrimSpace(activity.ProviderPartID), strings.TrimSpace(r.deps.nextID("planning_activity")))
+		payload := plannerActivityPayload(operation, activityID, activity)
+		if len(payload) == 0 {
+			return
+		}
+		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, payload)
+	}
+}
+
+func plannerActivityPayload(operation state.PlanningOperation, activityID string, activity ProviderActivity) map[string]any {
+	occurredAt := strings.TrimSpace(activity.OccurredAt)
+	switch strings.TrimSpace(activity.Kind) {
+	case "tool":
+		toolName := strings.TrimSpace(activity.ToolName)
+		if toolName == "" {
+			return nil
+		}
+		payload := plannerGenericPayload(operation, acp.KingdomToolKind, map[string]any{"tool_name": toolName})
+		if label := acp.ToolActivityLabel(toolName, activity.ToolStatus, activity.ToolTitle, activity.ToolInput); label != "" {
+			payload["label"] = label
+		}
+		if activityID != "" {
+			payload["activity_id"] = activityID
+		}
+		if occurredAt != "" {
+			payload["occurred_at"] = occurredAt
+		}
+		if trimmedStatus := strings.TrimSpace(activity.ToolStatus); trimmedStatus != "" {
+			payload["tool_status"] = trimmedStatus
+			if detail := acp.ToolActivityDetail(trimmedStatus); detail != "" {
+				payload["detail"] = detail
+			}
+		}
+		if trimmedTitle := strings.TrimSpace(activity.ToolTitle); trimmedTitle != "" {
+			payload["tool_title"] = trimmedTitle
+		}
+		if trimmedInput := strings.TrimSpace(activity.ToolInput); trimmedInput != "" {
+			payload["tool_input"] = trimmedInput
+		}
+		return payload
+	case "reasoning":
+		payload := plannerGenericPayload(operation, acp.KingdomReasoningKind, map[string]any{"state": "thinking"})
+		payload["label"] = "Thinking"
+		if activityID != "" {
+			payload["activity_id"] = activityID
+		}
+		if occurredAt != "" {
+			payload["occurred_at"] = occurredAt
+		}
+		if summary := firstNonEmpty(strings.TrimSpace(activity.Summary), strings.TrimSpace(activity.RawText)); summary != "" {
+			payload["summary"] = summary
+			payload["detail"] = summary
+		}
+		return payload
+	case "progress":
+		label := strings.TrimSpace(activity.Label)
+		if label == "" {
+			return nil
+		}
+		normalizedLabel, ok := acp.NormalizeProgressActivityLabel(label)
+		if !ok {
+			return nil
+		}
+		payload := plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"label": normalizedLabel})
+		if activityID != "" {
+			payload["activity_id"] = activityID
+		}
+		if occurredAt != "" {
+			payload["occurred_at"] = occurredAt
+		}
+		return payload
+	default:
+		return nil
+	}
+}
+
+func (r *operationRunner) reconcileProviderSessionActivity(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, invocation *ProviderInvocationContext) error {
+	if r == nil || r.deps.store == nil || cursor == nil || invocation == nil {
+		return nil
+	}
+	providerSessionID := strings.TrimSpace(invocation.ProviderSessionID)
+	invocationID := strings.TrimSpace(invocation.InvocationID)
+	if providerSessionID == "" || invocationID == "" || strings.TrimSpace(r.deps.projectRoot) == "" {
+		return nil
+	}
+	items, err := inspectPlannerProviderSessionActivity(ctx, r.deps.projectRoot, operation.OperationID, providerSessionID, invocationID, operation.StartedAt, operation.CreatedAt)
+	if err != nil {
+		return nil
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	storedEvents, err := listAllPlanningOperationEvents(ctx, r.deps.store, operation.OperationID)
+	if err != nil {
+		return err
+	}
+	// Live activity events already carry the provider part id as their
+	// `activity_id`, so the durable backstop de-dups primarily on that stable
+	// id. The content signature stays as a secondary guard for the rare event
+	// the provider emits without a part id.
+	seenIDs := make(map[string]struct{}, len(storedEvents))
+	seen := make(map[string]struct{}, len(storedEvents))
+	for _, event := range storedEvents {
+		if activityID, ok := plannerActivityIDFromStoredEvent(event); ok {
+			seenIDs[activityID] = struct{}{}
+		}
+		if signature, ok := plannerActivitySignatureFromStoredEvent(event); ok {
+			seen[signature] = struct{}{}
+		}
+	}
+	for _, item := range items {
+		activity := providerActivityFromSessionActivityItem(item)
+		if activity.Kind == "" {
+			continue
+		}
+		itemID := strings.TrimSpace(item.ID)
+		if itemID != "" {
+			if _, exists := seenIDs[itemID]; exists {
+				continue
+			}
+		}
+		signature := plannerActivitySignature(activity)
+		if _, exists := seen[signature]; exists {
+			continue
+		}
+		payload := plannerActivityPayload(operation, itemID, activity)
+		if len(payload) == 0 {
+			continue
+		}
+		if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, payload); err != nil {
+			return err
+		}
+		if itemID != "" {
+			seenIDs[itemID] = struct{}{}
+		}
+		seen[signature] = struct{}{}
+	}
+	return nil
+}
+
+func inspectPlannerProviderSessionActivity(ctx context.Context, projectRoot, operationID, providerSessionID, invocationID string, startedAt *string, createdAt string) ([]sessionActivityItem, error) {
+	invocationStartedAt := time.Time{}
+	if startedAt != nil && strings.TrimSpace(*startedAt) != "" {
+		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*startedAt)); err == nil {
+			invocationStartedAt = parsed.UTC()
+		}
+	}
+	if invocationStartedAt.IsZero() && strings.TrimSpace(createdAt) != "" {
+		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAt)); err == nil {
+			invocationStartedAt = parsed.UTC()
+		}
+	}
+	items, err := opencode.InspectSessionActivity(ctx, opencode.SessionActivityRequest{
+		ProviderSessionID:   strings.TrimSpace(providerSessionID),
+		WorkDir:             strings.TrimSpace(projectRoot),
+		ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(projectRoot),
+		DatabasePath:        bootstrapassets.ManagedOpenCodeDatabasePath(projectRoot),
+		AttemptID:           strings.TrimSpace(operationID),
+		InvocationID:        strings.TrimSpace(invocationID),
+		InvocationStartedAt: invocationStartedAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]sessionActivityItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, sessionActivityItem{
+			ID:         strings.TrimSpace(item.ID),
+			Kind:       strings.TrimSpace(item.Kind),
+			Label:      strings.TrimSpace(item.Label),
+			Detail:     strings.TrimSpace(item.Detail),
+			Input:      strings.TrimSpace(item.Input),
+			Output:     strings.TrimSpace(item.Output),
+			OccurredAt: strings.TrimSpace(item.OccurredAt),
 		})
 	}
-	originalReceipt := invocation.OnCompletionReceipt
-	var receiptOnce sync.Once
-	invocation.OnCompletionReceipt = func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-		var (
-			acceptance CompletionReceiptAcceptance
-			err        error
-		)
-		if originalReceipt != nil {
-			acceptance, err = originalReceipt(receipt)
+	return result, nil
+}
+
+type sessionActivityItem struct {
+	ID         string
+	Kind       string
+	Label      string
+	Detail     string
+	Input      string
+	Output     string
+	OccurredAt string
+}
+
+func providerActivityFromSessionActivityItem(item sessionActivityItem) ProviderActivity {
+	activity := ProviderActivity{
+		OccurredAt: strings.TrimSpace(item.OccurredAt),
+	}
+	switch strings.TrimSpace(item.Kind) {
+	case "thinking":
+		activity.Kind = "reasoning"
+		activity.Summary = strings.TrimSpace(item.Detail)
+	case "tool":
+		activity.Kind = "tool"
+		activity.ToolInput = strings.TrimSpace(item.Input)
+		activity.ToolName, activity.ToolStatus, activity.ToolTitle = inferToolActivityFields(item)
+	case "progress":
+		activity.Kind = "progress"
+		activity.Label = strings.TrimSpace(item.Label)
+	}
+	return activity
+}
+
+func inferToolActivityFields(item sessionActivityItem) (string, string, string) {
+	label := strings.TrimSpace(item.Label)
+	input := strings.TrimSpace(item.Input)
+	if strings.HasPrefix(label, "Fetched ") {
+		return "webfetch", "completed", strings.TrimSpace(strings.TrimPrefix(label, "Fetched "))
+	}
+	if strings.HasPrefix(label, "Fetching ") {
+		return "webfetch", "running", strings.TrimSpace(strings.TrimPrefix(label, "Fetching "))
+	}
+	if strings.Contains(label, "webfetch failed") {
+		return "webfetch", "failed", strings.TrimSpace(strings.TrimPrefix(label, "webfetch failed for "))
+	}
+	if input != "" {
+		return "webfetch", "completed", ""
+	}
+	return "", "", ""
+}
+
+func plannerActivitySignature(activity ProviderActivity) string {
+	return strings.Join([]string{
+		strings.TrimSpace(activity.Kind),
+		strings.TrimSpace(activity.ToolName),
+		strings.TrimSpace(activity.ToolStatus),
+		strings.TrimSpace(activity.ToolTitle),
+		strings.TrimSpace(activity.ToolInput),
+		strings.TrimSpace(activity.Label),
+		strings.TrimSpace(activity.Summary),
+		strings.TrimSpace(activity.OccurredAt),
+	}, "\x00")
+}
+
+func plannerActivityIDFromStoredEvent(event state.PlanningOperationEvent) (string, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return "", false
+	}
+	activityID := strings.TrimSpace(plannerStringValue(payload["activity_id"]))
+	if activityID == "" {
+		return "", false
+	}
+	return activityID, true
+}
+
+func plannerActivitySignatureFromStoredEvent(event state.PlanningOperationEvent) (string, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return "", false
+	}
+	if strings.TrimSpace(plannerStringValue(payload["kind"])) == "" {
+		return "", false
+	}
+	activity := ProviderActivity{OccurredAt: strings.TrimSpace(plannerStringValue(payload["occurred_at"]))}
+	switch strings.TrimSpace(plannerStringValue(payload["kind"])) {
+	case acp.KingdomToolKind:
+		activity.Kind = "tool"
+		activity.ToolName = strings.TrimSpace(plannerStringValue(payload["tool_name"]))
+		activity.ToolStatus = strings.TrimSpace(plannerStringValue(payload["tool_status"]))
+		activity.ToolTitle = strings.TrimSpace(plannerStringValue(payload["tool_title"]))
+		activity.ToolInput = strings.TrimSpace(plannerStringValue(payload["tool_input"]))
+	case acp.KingdomReasoningKind:
+		activity.Kind = "reasoning"
+		activity.Summary = firstNonEmpty(strings.TrimSpace(plannerStringValue(payload["detail"])), strings.TrimSpace(plannerStringValue(payload["summary"])))
+	case acp.KingdomProgressKind:
+		activity.Kind = "progress"
+		activity.Label = strings.TrimSpace(plannerStringValue(payload["label"]))
+	default:
+		return "", false
+	}
+	return plannerActivitySignature(activity), true
+}
+
+func plannerStringValue(value any) string {
+	if typed, ok := value.(string); ok {
+		return typed
+	}
+	return ""
+}
+
+func persistObservedPlanningProviderSession(invocation *ProviderInvocationContext, providerSessionID string) {
+	if invocation == nil {
+		return
+	}
+	trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
+	if trimmedProviderSessionID == "" || strings.TrimSpace(invocation.ProviderSessionID) == trimmedProviderSessionID {
+		return
+	}
+	invocation.ProviderSessionID = trimmedProviderSessionID
+}
+
+func providerSessionIDForPlanningInvocation(ctx context.Context, store *state.PlanningStore, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) string {
+	if !reuseExistingProviderSession || store == nil {
+		return ""
+	}
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, planningLogicalSessionID(session.PlanningSessionID, operation.Type))
+	if err != nil || !found {
+		return ""
+	}
+	return strings.TrimSpace(invocation.ProviderSessionID)
+}
+
+func listAllPlanningOperationEvents(ctx context.Context, store *state.PlanningStore, operationID string) ([]state.PlanningOperationEvent, error) {
+	if store == nil {
+		return nil, fmt.Errorf("planning store is required")
+	}
+	all := make([]state.PlanningOperationEvent, 0)
+	cursor := ""
+	for {
+		page, err := store.ListOperationEventsAfterEventIDPage(ctx, operationID, cursor, state.DefaultPlanningOperationEventListLimit)
+		if err != nil {
+			return nil, err
 		}
-		if err == nil && !acceptance.Rejected {
-			receiptOnce.Do(func() {
-				_, _ = r.appendOperationEvent(ctx, operationID, cursor, "receipt_persisted", map[string]any{
-					"evidence_id": strings.TrimSpace(acceptance.EvidenceID),
-				})
-			})
+		if len(page) == 0 {
+			return all, nil
 		}
-		return acceptance, err
+		all = append(all, page...)
+		if len(page) < state.DefaultPlanningOperationEventListLimit {
+			return all, nil
+		}
+		cursor = page[len(page)-1].EventID
 	}
 }
 
@@ -1425,16 +1597,25 @@ func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.Pl
 	return result
 }
 
+// nilIfEmpty returns a *string for a possibly-empty parent id (nil = root).
+func nilIfEmpty(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 func planningMessagePayload(message state.PlanningMessage) map[string]any {
 	payload := map[string]any{
 		"planning_message_id": message.PlanningMessageID,
 		"planning_session_id": message.PlanningSessionID,
-		"turn_index":          message.TurnIndex,
 		"role":                message.Role,
 		"content_markdown":    message.ContentMarkdown,
-		"variant_index":       message.VariantIndex,
-		"active":              message.Active,
 		"created_at":          message.CreatedAt,
+	}
+	if message.ParentMessageID != nil {
+		payload["parent_message_id"] = *message.ParentMessageID
 	}
 	if question := questionPayloadFromJSON(message.QuestionPayloadJSON); question != nil {
 		payload["question_payload"] = structuredQuestionPayload(question)
@@ -1443,6 +1624,24 @@ func planningMessagePayload(message state.PlanningMessage) map[string]any {
 		payload["answer_payload"] = answer
 	}
 	return payload
+}
+
+func streamingMessagePartPayload(operation state.PlanningOperation, request operationRequest) map[string]any {
+	payload := map[string]any{}
+	switch operation.Type {
+	case state.PlanningOperationTypeReply, state.PlanningOperationTypeRegenerate:
+		if trimmed := strings.TrimSpace(request.AssistantMessageID); trimmed != "" {
+			payload["planning_message_id"] = trimmed
+		}
+		if trimmed := strings.TrimSpace(request.ParentMessageID); trimmed != "" {
+			payload["parent_message_id"] = trimmed
+		}
+		payload["role"] = state.PlanningMessageRoleAssistant
+		if trimmed := strings.TrimSpace(request.AssistantCreatedAt); trimmed != "" {
+			payload["created_at"] = trimmed
+		}
+	}
+	return plannerMessagePayload(operation, payload)
 }
 
 func structuredQuestionPayload(question *StructuredQuestion) map[string]any {
@@ -1467,7 +1666,7 @@ func sessionPatchPayload(session state.PlanningSession) map[string]any {
 	fields := map[string]any{}
 	if session.CurrentTitleOperationID != nil {
 		if trimmed := strings.TrimSpace(*session.CurrentTitleOperationID); trimmed != "" {
-			fields["current_title_operation_id"] = trimmed
+			fields["current_title_run_id"] = acp.PlannerRunID(trimmed)
 			fields["auto_title_eligible"] = false
 		}
 	}

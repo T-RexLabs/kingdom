@@ -62,6 +62,107 @@ func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	}
 }
 
+func TestSetActiveBranchRefreshesSessionRecency(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_old_branch",
+		Title:              "older branch session",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-21T16:00:00Z",
+		UpdatedAt:          "2026-04-21T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("create older session: %v", err)
+	}
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_recent",
+		Title:              "recent session",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"m"}`,
+		CreatedAt:          "2026-04-21T16:10:00Z",
+		UpdatedAt:          "2026-04-21T16:10:00Z",
+	}); err != nil {
+		t.Fatalf("create recent session: %v", err)
+	}
+
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_root_old",
+		PlanningSessionID:   "ps_old_branch",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "opening",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-21T16:00:05Z",
+	}); err != nil {
+		t.Fatalf("append root: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_branch_old",
+		PlanningSessionID:   "ps_old_branch",
+		ParentMessageID:     "pm_root_old",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "older branch",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{"text":"older branch"}`,
+		CreatedAt:           "2026-04-21T16:00:06Z",
+	}); err != nil {
+		t.Fatalf("append old branch: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_branch_newer",
+		PlanningSessionID:   "ps_old_branch",
+		ParentMessageID:     "pm_root_old",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "newer branch",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{"text":"newer branch"}`,
+		CreatedAt:           "2026-04-21T16:00:07Z",
+	}); err != nil {
+		t.Fatalf("append newer branch: %v", err)
+	}
+
+	before, err := store.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("list sessions before activation: %v", err)
+	}
+	if len(before) != 2 || before[0].PlanningSessionID != "ps_recent" {
+		t.Fatalf("expected recent session first before activation, got %+v", before)
+	}
+
+	if _, err := store.SetActiveBranch(ctx, "ps_old_branch", "pm_branch_old"); err != nil {
+		t.Fatalf("activate older branch: %v", err)
+	}
+
+	after, err := store.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("list sessions after activation: %v", err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("expected 2 sessions after activation, got %d", len(after))
+	}
+	if after[0].PlanningSessionID != "ps_old_branch" {
+		t.Fatalf("expected activated session to become most recent, got %+v", after)
+	}
+	if after[0].UpdatedAt <= "2026-04-21T16:10:00Z" {
+		t.Fatalf("expected activated session updated_at to move forward, got %q", after[0].UpdatedAt)
+	}
+	if after[0].ActiveLeafMessageID == nil || *after[0].ActiveLeafMessageID != "pm_branch_old" {
+		t.Fatalf("expected active leaf to move to selected branch, got %+v", after[0].ActiveLeafMessageID)
+	}
+}
+
 func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	t.Parallel()
 
@@ -84,15 +185,16 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
+	// pm_user is the conversation root; pm_assistant is its child. ListMessages
+	// walks the active path from the session's active leaf, so point the leaf at
+	// the deepest message.
 	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
 		PlanningMessageID:   "pm_user",
 		PlanningSessionID:   "ps_flow",
-		TurnIndex:           1,
 		Role:                PlanningMessageRoleUser,
 		ContentMarkdown:     "Need a planner",
 		QuestionPayloadJSON: `{}`,
 		AnswerPayloadJSON:   `{"text":"Need a planner"}`,
-		Active:              true,
 		CreatedAt:           "2026-04-21T16:11:00Z",
 	})
 	if err != nil {
@@ -102,16 +204,22 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
 		PlanningMessageID:   "pm_assistant",
 		PlanningSessionID:   "ps_flow",
-		TurnIndex:           1,
+		ParentMessageID:     "pm_user",
 		Role:                PlanningMessageRoleAssistant,
 		ContentMarkdown:     "What scope should we cover?",
 		QuestionPayloadJSON: `{"prompt":"What scope should we cover?","type":"long_text"}`,
 		AnswerPayloadJSON:   `{}`,
-		Active:              true,
 		CreatedAt:           "2026-04-21T16:12:00Z",
 	})
 	if err != nil {
 		t.Fatalf("append assistant message: %v", err)
+	}
+	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
+		PlanningSessionID:   "ps_flow",
+		ActiveLeafMessageID: refString("pm_assistant"),
+		UpdatedAt:           "2026-04-21T16:12:30Z",
+	}); err != nil {
+		t.Fatalf("set active leaf: %v", err)
 	}
 
 	messages, err := store.ListMessages(context.Background(), "ps_flow")
@@ -167,15 +275,15 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 
 	conversationState := PlanningSessionConversationStateProcessing
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_flow",
-		Title:                    refString("Planner flow updated"),
-		TitleState:               refString("generated"),
-		ConversationState:        &conversationState,
-		CurrentQuestionMessageID: refString("pm_assistant"),
-		CurrentDraftID:           refString("pd_1"),
-		ContextSnapshotID:        refString("pcs_1"),
-		ModelSelectionJSON:       refString(`{"model":"opencode/gpt-5-nano"}`),
-		UpdatedAt:                "2026-04-21T16:15:00Z",
+		PlanningSessionID:   "ps_flow",
+		Title:               refString("Planner flow updated"),
+		TitleState:          refString("generated"),
+		ConversationState:   &conversationState,
+		ActiveLeafMessageID: refString("pm_assistant"),
+		CurrentDraftID:      refString("pd_1"),
+		ContextSnapshotID:   refString("pcs_1"),
+		ModelSelectionJSON:  refString(`{"model":"opencode/gpt-5-nano"}`),
+		UpdatedAt:           "2026-04-21T16:15:00Z",
 	}); err != nil {
 		t.Fatalf("update session: %v", err)
 	}
@@ -197,8 +305,8 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	if fetched.ConversationState != PlanningSessionConversationStateProcessing {
 		t.Fatalf("expected updated conversation state processing, got %q", fetched.ConversationState)
 	}
-	if fetched.CurrentQuestionMessageID == nil || *fetched.CurrentQuestionMessageID != "pm_assistant" {
-		t.Fatalf("expected current question message id pm_assistant, got %+v", fetched.CurrentQuestionMessageID)
+	if fetched.ActiveLeafMessageID == nil || *fetched.ActiveLeafMessageID != "pm_assistant" {
+		t.Fatalf("expected active leaf message id pm_assistant, got %+v", fetched.ActiveLeafMessageID)
 	}
 }
 
@@ -458,19 +566,19 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
-		Title:                    "Original title",
-		TitleState:               "custom",
-		LifecycleState:           PlanningSessionLifecycleStateActive,
-		ConversationState:        PlanningSessionConversationStateReady,
-		CurrentQuestionMessageID: "pm_original",
-		CurrentOperationID:       "po_original",
-		CurrentDraftID:           "pd_original",
-		ContextSnapshotID:        "pcs_original",
-		ProjectRoot:              "/workspace/project",
-		ModelSelectionJSON:       `{"model":"github-copilot/gpt-5.4"}`,
-		CreatedAt:                "2026-04-21T16:00:00Z",
-		UpdatedAt:                "2026-04-21T16:00:00Z",
+		PlanningSessionID:   "ps_update_optional",
+		Title:               "Original title",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateReady,
+		ActiveLeafMessageID: "pm_original",
+		CurrentOperationID:  "po_original",
+		CurrentDraftID:      "pd_original",
+		ContextSnapshotID:   "pcs_original",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:           "2026-04-21T16:00:00Z",
+		UpdatedAt:           "2026-04-21T16:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -490,8 +598,8 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected unchanged session to exist")
 	}
-	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_original" {
-		t.Fatalf("expected current_question_message_id to stay set, got %+v", session.CurrentQuestionMessageID)
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_original" {
+		t.Fatalf("expected current_question_message_id to stay set, got %+v", session.ActiveLeafMessageID)
 	}
 	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_original" {
 		t.Fatalf("expected current_operation_id to stay set, got %+v", session.CurrentOperationID)
@@ -504,12 +612,12 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	}
 
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
-		CurrentQuestionMessageID: refString(""),
-		CurrentOperationID:       refString(""),
-		CurrentDraftID:           refString(""),
-		ContextSnapshotID:        refString(""),
-		UpdatedAt:                "2026-04-21T16:02:00Z",
+		PlanningSessionID:   "ps_update_optional",
+		ActiveLeafMessageID: refString(""),
+		CurrentOperationID:  refString(""),
+		CurrentDraftID:      refString(""),
+		ContextSnapshotID:   refString(""),
+		UpdatedAt:           "2026-04-21T16:02:00Z",
 	}); err != nil {
 		t.Fatalf("clear session optional fields: %v", err)
 	}
@@ -521,17 +629,17 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected cleared session to exist")
 	}
-	if session.CurrentQuestionMessageID != nil || session.CurrentOperationID != nil || session.CurrentDraftID != nil || session.ContextSnapshotID != nil {
+	if session.ActiveLeafMessageID != nil || session.CurrentOperationID != nil || session.CurrentDraftID != nil || session.ContextSnapshotID != nil {
 		t.Fatalf("expected nullable fields to clear to NULL, got %+v", session)
 	}
 
 	if err := store.UpdateSession(context.Background(), UpdatePlanningSessionRequest{
-		PlanningSessionID:        "ps_update_optional",
-		CurrentQuestionMessageID: refString("pm_new"),
-		CurrentOperationID:       refString("po_new"),
-		CurrentDraftID:           refString("pd_new"),
-		ContextSnapshotID:        refString("pcs_new"),
-		UpdatedAt:                "2026-04-21T16:03:00Z",
+		PlanningSessionID:   "ps_update_optional",
+		ActiveLeafMessageID: refString("pm_new"),
+		CurrentOperationID:  refString("po_new"),
+		CurrentDraftID:      refString("pd_new"),
+		ContextSnapshotID:   refString("pcs_new"),
+		UpdatedAt:           "2026-04-21T16:03:00Z",
 	}); err != nil {
 		t.Fatalf("set session optional fields: %v", err)
 	}
@@ -543,8 +651,8 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	if !ok {
 		t.Fatal("expected updated session to exist")
 	}
-	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_new" {
-		t.Fatalf("expected current_question_message_id pm_new, got %+v", session.CurrentQuestionMessageID)
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_new" {
+		t.Fatalf("expected current_question_message_id pm_new, got %+v", session.ActiveLeafMessageID)
 	}
 	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_new" {
 		t.Fatalf("expected current_operation_id po_new, got %+v", session.CurrentOperationID)
@@ -685,52 +793,6 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 	}
 	if operation.FinishedAt == nil || *operation.FinishedAt != "2026-04-21T16:31:10Z" {
 		t.Fatalf("expected finished_at to update, got %+v", operation.FinishedAt)
-	}
-}
-
-func TestPlanningStoreDeleteMessage(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-
-	store := NewPlanningStore(db)
-	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_delete_message",
-		Title:              "Planner delete message",
-		TitleState:         "custom",
-		LifecycleState:     PlanningSessionLifecycleStateActive,
-		ConversationState:  PlanningSessionConversationStateReady,
-		ProjectRoot:        "/workspace/project",
-		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
-		CreatedAt:          "2026-04-21T16:35:00Z",
-		UpdatedAt:          "2026-04-21T16:35:00Z",
-	})
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-
-	_, err = store.AppendMessage(context.Background(), AppendPlanningMessageRequest{
-		PlanningMessageID:   "pm_delete",
-		PlanningSessionID:   "ps_delete_message",
-		TurnIndex:           1,
-		Role:                PlanningMessageRoleAssistant,
-		ContentMarkdown:     "Delete me",
-		QuestionPayloadJSON: `{}`,
-		AnswerPayloadJSON:   `{}`,
-		Active:              true,
-		CreatedAt:           "2026-04-21T16:35:10Z",
-	})
-	if err != nil {
-		t.Fatalf("append message: %v", err)
-	}
-
-	deleted, err := store.DeleteMessage(context.Background(), "pm_delete")
-	if err != nil {
-		t.Fatalf("delete message: %v", err)
-	}
-	if !deleted {
-		t.Fatal("expected message delete to report true")
 	}
 }
 
@@ -925,12 +987,10 @@ func TestFinalizeOperationRejectsStaleLeaseOwner(t *testing.T) {
 		AssistantMessage: &AppendPlanningMessageRequest{
 			PlanningMessageID:   "pm_done",
 			PlanningSessionID:   "ps_fence",
-			TurnIndex:           1,
 			Role:                PlanningMessageRoleAssistant,
 			ContentMarkdown:     "stale",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           "2026-04-25T16:41:00Z",
 		},
 	})
@@ -997,15 +1057,13 @@ func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageIn
 		AssistantMessage: &AppendPlanningMessageRequest{
 			PlanningMessageID:   "pm_reply_done",
 			PlanningSessionID:   "ps_reply_race",
-			TurnIndex:           1,
 			Role:                PlanningMessageRoleAssistant,
 			ContentMarkdown:     "Canonical reply",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			Active:              true,
 			CreatedAt:           "2026-04-27T10:01:00Z",
 		},
-		CurrentQuestionMessageID: "pm_reply_done",
+		ActiveLeafMessageID: "pm_reply_done",
 	}
 	if err := store.FinalizeOperation(ctx, finalizeReq); err != nil {
 		t.Fatalf("winner finalize: %v", err)
@@ -1034,8 +1092,8 @@ func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageIn
 	if session.CurrentOperationID != nil {
 		t.Fatalf("expected current_operation_id cleared, got %+v", session.CurrentOperationID)
 	}
-	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_reply_done" {
-		t.Fatalf("expected current question to point at canonical reply, got %+v", session.CurrentQuestionMessageID)
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_reply_done" {
+		t.Fatalf("expected current question to point at canonical reply, got %+v", session.ActiveLeafMessageID)
 	}
 
 	op, found, err := store.GetOperation(ctx, "po_reply_race")
@@ -1056,30 +1114,27 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 	ctx := context.Background()
 
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
-		PlanningSessionID:        "ps_regen_race",
-		Title:                    "regen-race",
-		TitleState:               "custom",
-		LifecycleState:           PlanningSessionLifecycleStateActive,
-		ConversationState:        PlanningSessionConversationStateProcessing,
-		CurrentQuestionMessageID: "pm_regen_old",
-		CurrentOperationID:       "po_regen_race",
-		ProjectRoot:              "/workspace/project",
-		ModelSelectionJSON:       `{"model":"m"}`,
-		CreatedAt:                "2026-04-27T11:00:00Z",
-		UpdatedAt:                "2026-04-27T11:00:00Z",
+		PlanningSessionID:   "ps_regen_race",
+		Title:               "regen-race",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
+		ActiveLeafMessageID: "pm_regen_old",
+		CurrentOperationID:  "po_regen_race",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T11:00:00Z",
+		UpdatedAt:           "2026-04-27T11:00:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
 		PlanningMessageID:   "pm_regen_old",
 		PlanningSessionID:   "ps_regen_race",
-		TurnIndex:           1,
 		Role:                PlanningMessageRoleAssistant,
 		ContentMarkdown:     "Old answer",
 		QuestionPayloadJSON: `{}`,
 		AnswerPayloadJSON:   `{}`,
-		VariantIndex:        0,
-		Active:              true,
 		CreatedAt:           "2026-04-27T11:00:01Z",
 	}); err != nil {
 		t.Fatalf("append old assistant message: %v", err)
@@ -1087,12 +1142,10 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
 		PlanningMessageID:   "pm_regen_future_user",
 		PlanningSessionID:   "ps_regen_race",
-		TurnIndex:           2,
 		Role:                PlanningMessageRoleUser,
 		ContentMarkdown:     "Future turn",
 		QuestionPayloadJSON: `{}`,
 		AnswerPayloadJSON:   `{}`,
-		Active:              true,
 		CreatedAt:           "2026-04-27T11:00:02Z",
 	}); err != nil {
 		t.Fatalf("append future user message: %v", err)
@@ -1112,30 +1165,24 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
-	targetTurn := 1
 	finalizeReq := FinalizeOperationRequest{
-		Kind:                     FinalizeRegenerate,
-		SessionID:                "ps_regen_race",
-		OperationID:              "po_regen_race",
-		LeaseOwner:               claimed.LeaseOwner,
-		LeaseVersion:             claimed.LeaseVersion,
-		ConversationState:        PlanningSessionConversationStateReady,
-		UpdatedAt:                "2026-04-27T11:01:00Z",
-		FinishedAt:               "2026-04-27T11:01:00Z",
-		CurrentQuestionMessageID: "pm_regen_new",
-		DeleteMessagesAfterTurn:  &targetTurn,
-		DeactivateVariantsAtTurn: &targetTurn,
-		ResultRef:                "pm_regen_new",
+		Kind:                FinalizeRegenerate,
+		SessionID:           "ps_regen_race",
+		OperationID:         "po_regen_race",
+		LeaseOwner:          claimed.LeaseOwner,
+		LeaseVersion:        claimed.LeaseVersion,
+		ConversationState:   PlanningSessionConversationStateReady,
+		UpdatedAt:           "2026-04-27T11:01:00Z",
+		FinishedAt:          "2026-04-27T11:01:00Z",
+		ActiveLeafMessageID: "pm_regen_new",
+		ResultRef:           "pm_regen_new",
 		AssistantMessage: &AppendPlanningMessageRequest{
 			PlanningMessageID:   "pm_regen_new",
 			PlanningSessionID:   "ps_regen_race",
-			TurnIndex:           1,
 			Role:                PlanningMessageRoleAssistant,
 			ContentMarkdown:     "New answer",
 			QuestionPayloadJSON: `{}`,
 			AnswerPayloadJSON:   `{}`,
-			VariantIndex:        1,
-			Active:              true,
 			CreatedAt:           "2026-04-27T11:01:00Z",
 		},
 	}
@@ -1166,8 +1213,208 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 	if session.CurrentOperationID != nil {
 		t.Fatalf("expected current_operation_id cleared, got %+v", session.CurrentOperationID)
 	}
-	if session.CurrentQuestionMessageID == nil || *session.CurrentQuestionMessageID != "pm_regen_new" {
-		t.Fatalf("expected regenerated assistant to remain canonical, got %+v", session.CurrentQuestionMessageID)
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_regen_new" {
+		t.Fatalf("expected regenerated assistant to remain canonical, got %+v", session.ActiveLeafMessageID)
+	}
+}
+
+func TestFinalizeOperationRegenerateCancelRestoresPreviousActiveLeaf(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:   "ps_regen_cancel_restore",
+		Title:               "regen-cancel-restore",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
+		ActiveLeafMessageID: "pm_followup",
+		CurrentOperationID:  "po_regen_cancel_restore",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T12:00:00Z",
+		UpdatedAt:           "2026-04-27T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target",
+		PlanningSessionID:   "ps_regen_cancel_restore",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Original answer",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("append target assistant: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_followup",
+		PlanningSessionID:   "ps_regen_cancel_restore",
+		ParentMessageID:     "pm_target",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Follow-up question",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("append follow-up user: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:       "po_regen_cancel_restore",
+		PlanningSessionID: "ps_regen_cancel_restore",
+		Type:              PlanningOperationTypeRegenerate,
+		Status:            PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"target_message_id":"pm_target","parent_message_id":"","previous_active_leaf_message_id":"pm_followup"}`,
+		CreatedAt:         "2026-04-27T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_regen_cancel_restore", "worker-a", "2026-04-27T13:00:00Z", "2026-04-27T12:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind:              FinalizeCancel,
+		SessionID:         "ps_regen_cancel_restore",
+		OperationID:       "po_regen_cancel_restore",
+		LeaseOwner:        claimed.LeaseOwner,
+		LeaseVersion:      claimed.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-27T12:01:00Z",
+		FinishedAt:        "2026-04-27T12:01:00Z",
+		ErrorMessage:      "cancelled during shutdown",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_regen_cancel_restore:1",
+			OperationID: "po_regen_cancel_restore",
+			Seq:         1,
+			EventType:   "cancelled",
+			PayloadJSON: `{"reason":"cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-27T12:01:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize cancel: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_regen_cancel_restore")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_followup" {
+		t.Fatalf("expected active leaf restored to previous transcript tip, got %+v", session.ActiveLeafMessageID)
+	}
+	if session.ConversationState != PlanningSessionConversationStateReady {
+		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_regen_cancel_restore" {
+		t.Fatalf("expected cancelled regenerate lineage retained, got %+v", session.CurrentOperationID)
+	}
+	messages, err := store.ListMessages(ctx, "ps_regen_cancel_restore")
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected no new messages on cancelled regenerate, got %+v", messages)
+	}
+}
+
+func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:   "ps_regen_fail_restore",
+		Title:               "regen-fail-restore",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
+		ActiveLeafMessageID: "pm_followup_fail",
+		CurrentOperationID:  "po_regen_fail_restore",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T14:00:00Z",
+		UpdatedAt:           "2026-04-27T14:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target_fail",
+		PlanningSessionID:   "ps_regen_fail_restore",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Original answer",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T14:00:01Z",
+	}); err != nil {
+		t.Fatalf("append target assistant: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_followup_fail",
+		PlanningSessionID:   "ps_regen_fail_restore",
+		ParentMessageID:     "pm_target_fail",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Follow-up question",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T14:00:02Z",
+	}); err != nil {
+		t.Fatalf("append follow-up user: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:       "po_regen_fail_restore",
+		PlanningSessionID: "ps_regen_fail_restore",
+		Type:              PlanningOperationTypeRegenerate,
+		Status:            PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"target_message_id":"pm_target_fail","parent_message_id":"","previous_active_leaf_message_id":"pm_followup_fail"}`,
+		CreatedAt:         "2026-04-27T14:00:03Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	claimed, ok, err := store.ClaimOperation(ctx, "po_regen_fail_restore", "worker-a", "2026-04-27T15:00:00Z", "2026-04-27T14:00:10Z")
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind:              FinalizeFail,
+		SessionID:         "ps_regen_fail_restore",
+		OperationID:       "po_regen_fail_restore",
+		LeaseOwner:        claimed.LeaseOwner,
+		LeaseVersion:      claimed.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         "2026-04-27T14:01:00Z",
+		FinishedAt:        "2026-04-27T14:01:00Z",
+		ErrorMessage:      "planner failed",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_regen_fail_restore:1",
+			OperationID: "po_regen_fail_restore",
+			Seq:         1,
+			EventType:   "failed",
+			PayloadJSON: `{"reason":"planner failed"}`,
+			CreatedAt:   "2026-04-27T14:01:00Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize fail: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_regen_fail_restore")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_followup_fail" {
+		t.Fatalf("expected active leaf restored to previous transcript tip, got %+v", session.ActiveLeafMessageID)
+	}
+	if session.ConversationState != PlanningSessionConversationStateReady {
+		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)
 	}
 }
 
@@ -1265,8 +1512,8 @@ func TestFinalizeOperationCancel(t *testing.T) {
 	if session.ConversationState != PlanningSessionConversationStateReady {
 		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)
 	}
-	if session.CurrentOperationID != nil {
-		t.Fatalf("expected current_operation_id cleared, got %q", *session.CurrentOperationID)
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_cancel" {
+		t.Fatalf("expected current_operation_id to retain the cancelled lineage, got %+v", session.CurrentOperationID)
 	}
 
 	events, err := store.ListOperationEventsAfterEventIDPage(ctx, "po_cancel", "", DefaultPlanningOperationEventListLimit)
@@ -1702,9 +1949,248 @@ func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T
 	}
 }
 
-// TestActivateVariantRequiresMatchingSession verifies that variant lookup is
+func TestFinalizeGenerateTitleAbortClearsTitleSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:       "ps_title_abort",
+		Title:                   "placeholder",
+		TitleState:              "placeholder",
+		LifecycleState:          PlanningSessionLifecycleStateActive,
+		ConversationState:       PlanningSessionConversationStateReady,
+		CurrentTitleOperationID: "po_title_abort",
+		ProjectRoot:             "/workspace/project",
+		ModelSelectionJSON:      `{"model":"m"}`,
+		CreatedAt:               "2026-04-26T14:00:00Z",
+		UpdatedAt:               "2026-04-26T14:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_title_abort",
+		PlanningSessionID:  "ps_title_abort",
+		Type:               PlanningOperationTypeGenerateTitle,
+		Status:             PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{}`,
+		LeaseOwner:         "title-worker",
+		LeaseExpiresAt:     "2026-04-26T15:00:00Z",
+		LeaseVersion:       2,
+		CreatedAt:          "2026-04-26T14:00:01Z",
+		StartedAt:          "2026-04-26T14:00:02Z",
+	}); err != nil {
+		t.Fatalf("create title op: %v", err)
+	}
+
+	if err := store.FinalizeGenerateTitleAbort(ctx, FinalizeGenerateTitleAbortRequest{
+		SessionID:    "ps_title_abort",
+		OperationID:  "po_title_abort",
+		LeaseOwner:   "title-worker",
+		LeaseVersion: 2,
+		Status:       PlanningOperationStatusCancelled,
+		UpdatedAt:    "2026-04-26T14:00:30Z",
+		FinishedAt:   "2026-04-26T14:00:30Z",
+		ErrorMessage: "cancelled during shutdown",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_title_abort:1",
+			OperationID: "po_title_abort",
+			Seq:         1,
+			EventType:   "run.cancelled",
+			PayloadJSON: `{"reason":"cancelled during shutdown"}`,
+			CreatedAt:   "2026-04-26T14:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("finalize generate title abort: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_title_abort")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentTitleOperationID != nil {
+		t.Fatalf("expected title slot cleared after abort, got %+v", session.CurrentTitleOperationID)
+	}
+
+	op, found, err := store.GetOperation(ctx, "po_title_abort")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected cancelled title operation, got %q", op.Status)
+	}
+}
+
+func TestCancelQueuedGenerateTitleOperationClearsTitleSlot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:       "ps_title_cancel_queued",
+		Title:                   "placeholder",
+		TitleState:              "placeholder",
+		LifecycleState:          PlanningSessionLifecycleStateActive,
+		ConversationState:       PlanningSessionConversationStateReady,
+		CurrentTitleOperationID: "po_title_cancel_queued",
+		ProjectRoot:             "/workspace/project",
+		ModelSelectionJSON:      `{"model":"m"}`,
+		CreatedAt:               "2026-04-27T16:00:00Z",
+		UpdatedAt:               "2026-04-27T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_title_cancel_queued",
+		PlanningSessionID:  "ps_title_cancel_queued",
+		Type:               PlanningOperationTypeGenerateTitle,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-27T16:00:01Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	if err := store.CancelQueuedOperation(ctx, CancelQueuedPlanningOperationRequest{
+		OperationID:  "po_title_cancel_queued",
+		ErrorMessage: "cancelled before claim",
+		UpdatedAt:    "2026-04-27T16:00:30Z",
+		FinishedAt:   "2026-04-27T16:00:30Z",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_title_cancel_queued:1",
+			OperationID: "po_title_cancel_queued",
+			Seq:         1,
+			EventType:   "run.cancelled",
+			PayloadJSON: `{"reason":"cancelled before claim"}`,
+			CreatedAt:   "2026-04-27T16:00:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("cancel queued operation: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_title_cancel_queued")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.CurrentTitleOperationID != nil {
+		t.Fatalf("expected queued title cancel to clear title slot, got %+v", session.CurrentTitleOperationID)
+	}
+	op, found, err := store.GetOperation(ctx, "po_title_cancel_queued")
+	if err != nil || !found {
+		t.Fatalf("get operation: ok=%v err=%v", found, err)
+	}
+	if op.Status != PlanningOperationStatusCancelled {
+		t.Fatalf("expected cancelled title op, got %q", op.Status)
+	}
+}
+
+func TestCancelQueuedRegenerateRestoresPreviousActiveLeaf(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		Title:               "regen-cancel-queued",
+		TitleState:          "custom",
+		LifecycleState:      PlanningSessionLifecycleStateActive,
+		ConversationState:   PlanningSessionConversationStateProcessing,
+		ActiveLeafMessageID: "pm_target_parent",
+		CurrentOperationID:  "po_regen_cancel_queued",
+		ProjectRoot:         "/workspace/project",
+		ModelSelectionJSON:  `{"model":"m"}`,
+		CreatedAt:           "2026-04-27T16:30:00Z",
+		UpdatedAt:           "2026-04-27T16:30:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target_parent",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Original prompt",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:00Z",
+	}); err != nil {
+		t.Fatalf("append target parent: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_target",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		ParentMessageID:     "pm_target_parent",
+		Role:                PlanningMessageRoleAssistant,
+		ContentMarkdown:     "Original answer",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:01Z",
+	}); err != nil {
+		t.Fatalf("append target assistant: %v", err)
+	}
+	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
+		PlanningMessageID:   "pm_followup",
+		PlanningSessionID:   "ps_regen_cancel_queued",
+		ParentMessageID:     "pm_target",
+		Role:                PlanningMessageRoleUser,
+		ContentMarkdown:     "Follow-up question",
+		QuestionPayloadJSON: `{}`,
+		AnswerPayloadJSON:   `{}`,
+		CreatedAt:           "2026-04-27T16:30:02Z",
+	}); err != nil {
+		t.Fatalf("append follow-up user: %v", err)
+	}
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_regen_cancel_queued",
+		PlanningSessionID:  "ps_regen_cancel_queued",
+		Type:               PlanningOperationTypeRegenerate,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{"target_message_id":"pm_target","parent_message_id":"pm_target_parent","previous_active_leaf_message_id":"pm_followup"}`,
+		CreatedAt:          "2026-04-27T16:30:03Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	if err := store.CancelQueuedOperation(ctx, CancelQueuedPlanningOperationRequest{
+		OperationID:  "po_regen_cancel_queued",
+		ErrorMessage: "cancelled before claim",
+		UpdatedAt:    "2026-04-27T16:30:30Z",
+		FinishedAt:   "2026-04-27T16:30:30Z",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID:     "po_regen_cancel_queued:1",
+			OperationID: "po_regen_cancel_queued",
+			Seq:         1,
+			EventType:   "run.cancelled",
+			PayloadJSON: `{"reason":"cancelled before claim"}`,
+			CreatedAt:   "2026-04-27T16:30:30Z",
+		},
+	}); err != nil {
+		t.Fatalf("cancel queued operation: %v", err)
+	}
+
+	session, found, err := store.GetSession(ctx, "ps_regen_cancel_queued")
+	if err != nil || !found {
+		t.Fatalf("get session: ok=%v err=%v", found, err)
+	}
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_followup" {
+		t.Fatalf("expected queued regenerate cancel to restore active leaf, got %+v", session.ActiveLeafMessageID)
+	}
+	if session.CurrentOperationID == nil || *session.CurrentOperationID != "po_regen_cancel_queued" {
+		t.Fatalf("expected cancelled regenerate lineage retained, got %+v", session.CurrentOperationID)
+	}
+}
+
+// TestSetActiveBranchRequiresMatchingSession verifies that branch switching is
 // scoped by both session id and message id.
-func TestActivateVariantRequiresMatchingSession(t *testing.T) {
+func TestSetActiveBranchRequiresMatchingSession(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1730,19 +2216,17 @@ func TestActivateVariantRequiresMatchingSession(t *testing.T) {
 	if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{
 		PlanningMessageID:   "pm_a",
 		PlanningSessionID:   "ps_a",
-		TurnIndex:           1,
 		Role:                PlanningMessageRoleAssistant,
 		ContentMarkdown:     "answer in A",
 		QuestionPayloadJSON: `{}`,
 		AnswerPayloadJSON:   `{}`,
-		Active:              true,
 		CreatedAt:           "2026-04-25T16:40:10Z",
 	}); err != nil {
 		t.Fatalf("append message: %v", err)
 	}
 
-	// pm_a belongs to ps_a; activating it via ps_b must return Not Found.
-	if _, err := store.ActivateVariant(ctx, "ps_b", "pm_a"); !errors.Is(err, ErrPlanningMessageNotFound) {
+	// pm_a belongs to ps_a; switching to it via ps_b must return Not Found.
+	if _, err := store.SetActiveBranch(ctx, "ps_b", "pm_a"); !errors.Is(err, ErrPlanningMessageNotFound) {
 		t.Fatalf("expected ErrPlanningMessageNotFound, got %v", err)
 	}
 	if _, err := store.GetMessageInSession(ctx, "ps_b", "pm_a"); !errors.Is(err, ErrPlanningMessageNotFound) {

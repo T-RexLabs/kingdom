@@ -198,6 +198,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	workflowParser := workflow.NewParser(state.CanonicalRoleIDs())
 	workflowCompiler := workflow.NewCompiler(schemaSet, workflowParser)
 	planningStore := state.NewPlanningStore(cfg.DB)
+	if err := planningStore.NormalizePlannerAcpRunIDs(context.Background()); err != nil {
+		return nil, fmt.Errorf("normalize planner acp run ids: %w", err)
+	}
 
 	cursorSigner, err := newCursorSigner()
 	if err != nil {
@@ -303,7 +306,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	// SSE streaming endpoints bypass idempotency middleware (which buffers the full response)
 	// but still go through OpenAPI validation.
 	streamingMux := http.NewServeMux()
-	streamingMux.HandleFunc("GET /planning-operations/{id}/events", s.handleStreamPlanningOperationEvents)
+	streamingMux.HandleFunc("GET /acp/runs/{runId}/events", s.handleStreamAcpRunEvents)
 	wrappedStreaming := validator(streamingMux)
 
 	mux := http.NewServeMux()
@@ -312,7 +315,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	// asset paths are browser content URLs, not a good fit for strict OpenAPI
 	// request validation without changing the public route contract.
 	mux.HandleFunc("GET "+basePath+"/preview/{token}/{assetPath...}", s.handlePreviewArtifactContent)
-	mux.Handle("GET "+basePath+"/planning-operations/{id}/events", http.StripPrefix(basePath, wrappedStreaming))
+	mux.Handle("GET "+basePath+"/acp/runs/{runId}/events", http.StripPrefix(basePath, wrappedStreaming))
 	mux.Handle(basePath+"/", http.StripPrefix(basePath, wrapped))
 
 	s.handler = mux
@@ -333,15 +336,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /planning-sessions/{id}", s.handleGetPlanningSession)
 	mux.HandleFunc("PATCH /planning-sessions/{id}", s.handleUpdatePlanningSession)
 	mux.HandleFunc("DELETE /planning-sessions/{id}", s.handleDeletePlanningSession)
+	mux.HandleFunc("GET /acp/agents", s.handleListAcpAgents)
+	mux.HandleFunc("GET /acp/agents/{name}", s.handleGetAcpAgent)
+	mux.HandleFunc("POST /acp/runs", s.handleCreateAcpRun)
+	mux.HandleFunc("GET /acp/runs/{runId}", s.handleGetAcpRun)
+	mux.HandleFunc("GET /acp/runs/{runId}/events", s.handleStreamAcpRunEvents)
+	mux.HandleFunc("GET /acp/runs/{runId}/activity", s.handleGetAcpRunActivity)
+	mux.HandleFunc("POST /acp/runs/{runId}/cancel", s.handleCancelAcpRun)
 	mux.HandleFunc("GET /planning-sessions/{id}/messages", s.handleListPlanningSessionMessages)
 	mux.HandleFunc("PUT /planning-sessions/{id}/messages/{messageId}/activate", s.handleActivatePlanningMessageVariant)
 	mux.HandleFunc("GET /planning-sessions/{id}/messages/{messageId}/variants", s.handleListPlanningMessageVariants)
-	mux.HandleFunc("POST /planning-sessions/{id}/operations", s.handleCreatePlanningSessionOperation)
 	mux.HandleFunc("GET /planning-sessions/{id}/plan", s.handleGetPlanningSessionPlan)
-	mux.HandleFunc("GET /planning-operations/{id}", s.handleGetPlanningOperation)
-	mux.HandleFunc("GET /planning-operations/{id}/events", s.handleStreamPlanningOperationEvents)
 	mux.HandleFunc("POST /planning-sessions/{id}/context/refresh", s.handleRefreshPlanningSessionContext)
-	mux.HandleFunc("POST /planning-sessions/{id}/generate-title", s.handleGeneratePlanningSessionTitle)
 	mux.HandleFunc("POST /workflows/publish", s.handlePublishWorkflow)
 	mux.HandleFunc("POST /runs", s.handleCreateRun)
 	mux.HandleFunc("GET /runs", s.handleListRuns)

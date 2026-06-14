@@ -30,13 +30,18 @@ export const THROTTLE_MS = 30;
  * ReactMarkdown re-parsing at ~30 fps, then switch to full MarkdownBlock once
  * `isStreamActive` becomes false.
  */
-export function useTextReveal(targetText: string, isStreaming: boolean) {
+export function useTextReveal(
+  targetText: string,
+  isStreaming: boolean,
+  mode: "baseline" | "zero" = "baseline",
+) {
   const targetRef = useRef(targetText);
-  const revealedRef = useRef(targetText.length);
+  const initialLength = mode === "zero" && isStreaming ? 0 : targetText.length;
+  const revealedRef = useRef(initialLength);
   const rafRef = useRef(0);
   const streamingRef = useRef(isStreaming);
 
-  const [displayText, setDisplayText] = useState(targetText);
+  const [displayText, setDisplayText] = useState(mode === "zero" && isStreaming ? "" : targetText);
   const [isStreamActive, setIsRevealing] = useState(false);
 
   // Keep targetRef in sync — the rAF callback reads from it.
@@ -52,8 +57,13 @@ export function useTextReveal(targetText: string, isStreaming: boolean) {
       // Streaming started — capture the already-buffered baseline instantly and
       // animate only text that arrives after this point.
       const target = targetRef.current;
-      revealedRef.current = target.length;
-      setDisplayText(target);
+      if (mode === "zero") {
+        revealedRef.current = 0;
+        setDisplayText("");
+      } else {
+        revealedRef.current = target.length;
+        setDisplayText(target);
+      }
     }
 
     if (isStreaming) {
@@ -65,7 +75,7 @@ export function useTextReveal(targetText: string, isStreaming: boolean) {
       setDisplayText(targetRef.current);
       setIsRevealing(false);
     }
-  }, [isStreaming]);
+  }, [isStreaming, mode]);
 
   useEffect(() => {
     let lastRender = 0;

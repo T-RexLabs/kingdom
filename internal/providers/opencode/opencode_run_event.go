@@ -9,12 +9,35 @@ import (
 
 const maxOpencodeRunEventLineBytes = 8 * 1024 * 1024
 
+// opencodeRunEventWire mirrors one line of `opencode run --format json`. The
+// runner formatter nests the whole payload under `part`: the part's kind,
+// id, tool name, execution state and reasoning metadata all live inside
+// `part`, never at the top level. Only `type`, `sessionID`, `error` and
+// `message` are top-level envelope fields.
 type opencodeRunEventWire struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	Part      struct {
+		Type   string  `json:"type"`
+		ID     string  `json:"id"`
 		Text   string  `json:"text"`
+		Tool   string  `json:"tool"`
 		Reason *string `json:"reason"`
+		State  struct {
+			Status string          `json:"status"`
+			Title  string          `json:"title"`
+			Input  json.RawMessage `json:"input"`
+		} `json:"state"`
+		Metadata struct {
+			OpenAI struct {
+				ReasoningEncryptedContent string `json:"reasoningEncryptedContent"`
+			} `json:"openai"`
+			Redacted string `json:"redacted"`
+		} `json:"metadata"`
+		Time struct {
+			Start *int64 `json:"start"`
+			End   *int64 `json:"end"`
+		} `json:"time"`
 		Tokens *struct {
 			Total     int64 `json:"total"`
 			Input     int64 `json:"input"`
@@ -69,11 +92,21 @@ func decodeNextOpencodeRunEvent(decoder *json.Decoder) (opencodeRunEvent, error)
 		Type:      strings.TrimSpace(envelope.Type),
 		SessionID: strings.TrimSpace(envelope.SessionID),
 	}
+	event.Part.Type = strings.TrimSpace(envelope.Part.Type)
+	event.Part.ID = strings.TrimSpace(envelope.Part.ID)
 	event.Part.Text = envelope.Part.Text
+	event.Part.Tool = strings.TrimSpace(envelope.Part.Tool)
 	if envelope.Part.Reason != nil {
 		event.Part.ReasonPresent = true
 		event.Part.Reason = *envelope.Part.Reason
 	}
+	event.Part.State.Status = strings.TrimSpace(envelope.Part.State.Status)
+	event.Part.State.Title = strings.TrimSpace(envelope.Part.State.Title)
+	event.Part.State.Input = append(json.RawMessage(nil), envelope.Part.State.Input...)
+	event.Part.Metadata.OpenAI.ReasoningEncryptedContent = strings.TrimSpace(envelope.Part.Metadata.OpenAI.ReasoningEncryptedContent)
+	event.Part.Metadata.Redacted = strings.TrimSpace(envelope.Part.Metadata.Redacted)
+	event.Part.Time.Start = envelope.Part.Time.Start
+	event.Part.Time.End = envelope.Part.Time.End
 	event.Part.Tokens = envelope.Part.Tokens
 	event.ErrorText = extractRunEventErrorText(envelope.Error, envelope.Message)
 	return event, nil

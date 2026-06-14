@@ -1,13 +1,7 @@
-import { useEffect, useReducer, useRef } from "react";
-import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useEffect, useReducer, useRef, type Dispatch } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, apiFetch, buildAuthHeaders } from "@/api/client";
-import type {
-  PlanningMessageVariantsResponse,
-  PlanningMessagesPage,
-  PlanningOperationDetail,
-  PlanningOperationEvent,
-  PlanningSessionDetail,
-} from "@/api/hooks";
+import type { AcpRun, AcpRunEvent, PlanningMessage, PlanningSessionDetail } from "@/api/hooks";
 import { subscribeSSE } from "@/lib/sse-stream";
 import {
   buildPlannerOperationState,
@@ -15,19 +9,12 @@ import {
   type PlannerOperationState,
 } from "./planner-operation-controller";
 import {
-  patchLatestPlanningMessagesPage,
+  replaceAssistantMessageAtTurn,
   replaceAssistantMessageInLatestPlanningPage,
 } from "./planner-message-pages";
-import {
-  applyGeneratedPlanningSessionTitleIfPlaceholder,
-  applyPlanningSessionFields,
-} from "./planner-session-cache";
+import { applyGeneratedPlanningSessionTitleIfPlaceholder, applyPlanningSessionFields } from "./planner-session-cache";
 import { plannerKeys } from "./planner-query-keys";
 
-/**
- * UI-friendly summary of the SSE connection state. Mirrors `SSEConnectionState`
- * but is shaped for direct consumption by banners/badges in the planner UI.
- */
 export type PlannerConnection =
   | { state: "idle" }
   | { state: "connecting"; attempt: number }
@@ -47,8 +34,8 @@ type OperationStreamState = {
 
 type OperationStreamAction =
   | { type: "reset" }
-  | { type: "hydrate"; operation: PlanningOperationDetail }
-  | { type: "event"; event: PlanningOperationEvent }
+  | { type: "hydrate"; operation: AcpRun }
+  | { type: "event"; event: AcpRunEvent }
   | { type: "connection"; connection: PlannerConnection };
 
 const initialState: OperationStreamState = {
@@ -66,7 +53,7 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
         connection: state.connection,
       };
     case "event":
-      if (!state.operation || state.operation.operationId !== action.event.operation_id) {
+      if (!state.operation || state.operation.operationId !== action.event.run_id) {
         return state;
       }
       return {
@@ -80,24 +67,7 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
   }
 }
 
-/**
- * Subscribes to the planning operation's SSE event stream and returns the
- * accumulated operation state plus a granular connection summary.
- *
- * Replaces the previous infinite `while(!aborted) { catch{} sleep 500ms }`
- * loop, which silently retried forever and gave the UI no signal that the
- * stream had failed. Now: full-jitter exponential backoff via subscribeSSE
- * and a hard cap on attempts. SSE failure surfaces purely through the
- * `connection` field — the UI banner reads that — and a poll-fallback
- * effect (below) hydrates the canonical operation row when retries are
- * exhausted. Operation status is server-attested only: it transitions to
- * a terminal value via real SSE events or a poll-fallback hydrate, never
- * via a synthetic event. (R7 added the poll fallback; R8 removed an
- * earlier synthetic-error dispatch that conflated transport state with
- * operation state — that change resolved cascade bugs in
- * GlobalFormalizeProvider and the page's terminal-clear effect.)
- */
-export function usePlannerOperation(operation?: PlanningOperationDetail | null): UsePlannerOperationResult {
+export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperationResult {
   const [state, dispatch] = useReducer(reducer, initialState);
   const abortRef = useRef<AbortController | null>(null);
   const queryClient = useQueryClient();
@@ -110,7 +80,7 @@ export function usePlannerOperation(operation?: PlanningOperationDetail | null):
 
     dispatch({ type: "hydrate", operation });
 
-    if (operation.status === "succeeded" || operation.status === "failed" || operation.status === "cancelled") {
+    if (operation.status === "completed" || operation.status === "failed" || operation.status === "cancelled") {
       reconcileTerminalOperationSnapshot(queryClient, operation);
       dispatch({ type: "connection", connection: { state: "idle" } });
       return;
@@ -120,31 +90,15 @@ export function usePlannerOperation(operation?: PlanningOperationDetail | null):
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let lastEventId: string | null = null;
-
     void subscribeSSE({
-      url: `${API_BASE}/planning-operations/${operation.operation_id}/events`,
+      url: `${API_BASE}/acp/runs/${operation.run_id}/events`,
       buildHeaders: (lastId) => buildAuthHeaders(lastId ? { "Last-Event-ID": lastId } : undefined),
-      isTerminalEventType: (type) => type === "done" || type === "error" || type === "cancelled",
+      isTerminalEventType: (type) => type === "run.completed" || type === "run.failed" || type === "run.cancelled",
       signal: controller.signal,
       onConnectionChange: (next) => {
-        // Connection state and operation status are independent concerns.
-        // Dispatching a synthetic terminal "error" event here would lie to
-        // the operation reducer: the server may still be processing the
-        // operation, and a fake terminal status causes the page to clear
-        // its activeOperationId, which can tear down the poll-fallback
-        // before it ever reconciles. UI surfaces the transport hiccup via
-        // result.connection (PlannerThread renders the connection-lost
-        // banner from that field); the poll-fallback effect below is the
-        // sole authority for hydrating a real terminal status.
         dispatch({ type: "connection", connection: next });
       },
       onEvent: (parsed) => {
-        // handleEventPayload returns true when the event was applied (cache
-        // patched + reducer updated), false when JSON parse / cache write
-        // failed. The library uses this signal to advance lastEventId only
-        // on apply success, so a malformed payload triggers replay rather
-        // than a silent skip.
         const applied = handleEventPayload({
           operation,
           eventType: parsed.type,
@@ -153,17 +107,12 @@ export function usePlannerOperation(operation?: PlanningOperationDetail | null):
           dispatch,
           queryClient,
         });
-        if (applied && parsed.id) lastEventId = parsed.id;
         return applied;
       },
     }).catch((err: unknown) => {
       if (controller.signal.aborted) return;
-      // subscribeSSE only rejects on programmer error; defend defensively.
-      // eslint-disable-next-line no-console
       console.error("planner SSE subscription failed", err);
     });
-
-    void lastEventId; // referenced via closure; prevents lint dead-code flag.
 
     return () => {
       controller.abort();
@@ -173,65 +122,40 @@ export function usePlannerOperation(operation?: PlanningOperationDetail | null):
     };
   }, [operation, queryClient]);
 
-  // Bounded poll-fallback when SSE retries are exhausted. Reconciliation is
-  // strictly canonical: on terminal status we hydrate the reducer from the
-  // polled operation row and invalidate the dependent queries so server
-  // truth replaces whatever stale optimistic state the client held. We do
-  // NOT synthesise terminal payloads — the normal "done" handlers expect a
-  // full PlanningMessage shape (reply/regenerate) or a draft id (formalize),
-  // and a fabricated `{ result_ref }` would poison the message cache.
   useEffect(() => {
     if (state.connection.state !== "failed" || !operation) return;
 
     const controller = new AbortController();
-    const pollIntervalMs = 5_000;
-    const maxPolls = 60;
 
     void (async () => {
-      for (let attempt = 0; attempt < maxPolls; attempt++) {
+      for (let attempt = 0; attempt < 60; attempt += 1) {
         if (controller.signal.aborted) return;
         try {
-          const fresh = await apiFetch<PlanningOperationDetail>(
-            `/planning-operations/${operation.operation_id}`,
-            { signal: controller.signal },
-          );
-          if (fresh.status === "succeeded" || fresh.status === "failed" || fresh.status === "cancelled") {
-            // Hydrate the local reducer from the canonical operation row.
-            // This sets status to "done"/"error"/"cancelled" so the
-            // operationError banner clears and the composer recovers.
+          const fresh = await apiFetch<AcpRun>(`/acp/runs/${operation.run_id}`, { signal: controller.signal });
+          if (fresh.status === "completed" || fresh.status === "failed" || fresh.status === "cancelled") {
             dispatch({ type: "hydrate", operation: fresh });
-            // Reset connection state so the SSE-failed banner disappears.
             dispatch({ type: "connection", connection: { state: "idle" } });
-            // Refetch every dependent surface so the UI reflects whatever
-            // the server persisted while we were disconnected. Use the
-            // canonical query keys so any other consumer of these caches
-            // (sidebar, list, plan modal, variant pickers) re-renders.
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.operation(operation.operation_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.operation(operation.run_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id) });
+			void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
             void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id) });
-            // Sidebar/list views also need refresh after SSE
-            // exhaustion — without this, a session whose status flipped
-            // while we were disconnected stays stale in the list cache.
-            // listPrefix() matches every cached limit slice.
             void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
             return;
           }
-        } catch (err) {
+        } catch {
           if (controller.signal.aborted) return;
-          // Network still down — continue polling. A persistent server
-          // outage just means the loop walks to its cap.
         }
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            controller.signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, pollIntervalMs);
-          const onAbort = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-          controller.signal.addEventListener("abort", onAbort, { once: true });
+          const timer = setTimeout(resolve, 5_000);
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
         });
       }
     })();
@@ -246,34 +170,26 @@ export function usePlannerOperation(operation?: PlanningOperationDetail | null):
 
 export function reconcileTerminalOperationSnapshot(
   queryClient: ReturnType<typeof useQueryClient>,
-  operation: PlanningOperationDetail,
+  operation: AcpRun,
 ) {
-  const isTerminal = operation.status === "succeeded" || operation.status === "failed" || operation.status === "cancelled";
-  if (!isTerminal) return;
-
-  if (operation.type === "generate_title" && operation.status === "succeeded") {
-    const generatedTitle = operation.observed_output_text?.trim();
-    if (generatedTitle) {
-      applyGeneratedPlanningSessionTitleIfPlaceholder(queryClient, operation.planning_session_id, generatedTitle);
-    }
+  if (operation.status !== "completed" && operation.status !== "failed" && operation.status !== "cancelled") {
+    return;
   }
 
   const fields: Partial<PlanningSessionDetail> =
-    operation.type === "generate_title"
-      ? {
-          current_title_operation_id: undefined,
-        }
+    operation.agent_name === "planner-generate-title"
+      ? { current_title_run_id: undefined }
       : {
           conversation_state: "ready",
-          current_operation_id: undefined,
+          current_run_id: undefined,
         };
   applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
   void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id), exact: true });
   void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
-  if (operation.type === "reply" || operation.type === "regenerate") {
+  if (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate") {
     void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
   }
-  if (operation.type === "formalize") {
+  if (operation.agent_name === "planner-formalize") {
     void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id), exact: true });
   }
 }
@@ -287,42 +203,50 @@ function handleEventPayload(
     dispatch,
     queryClient,
   }: {
-    operation: PlanningOperationDetail;
+    operation: AcpRun;
     eventType: string;
     data: string;
     eventId: string | null;
-    dispatch: React.Dispatch<OperationStreamAction>;
+    dispatch: Dispatch<OperationStreamAction>;
     queryClient: ReturnType<typeof useQueryClient>;
   },
 ): boolean {
-  // Keepalives are framing only — they have no payload and no caches to
-  // touch. Treat them as applied so the SSE library is free to advance
-  // lastEventId past them (they have no id anyway, but explicit is safer).
   if (eventType === "keepalive") return true;
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(data) as Record<string, unknown>;
   } catch {
-    // Refuse to advance lastEventId for an unparseable event so the next
-    // reconnect replays this event rather than silently skipping it.
-    // The reducer is left untouched — we don't want a phantom error event
-    // poisoning the operation state for what may be a transient parse
-    // glitch (truncated EOF, proxy mid-record close).
     return false;
   }
-  const seq = parseEventSeq(eventId);
+  if (!isAcpEventType(eventType)) {
+    return true;
+  }
   const event = {
-    event_id: eventId ?? `${operation.operation_id}-${Date.now()}`,
-    operation_id: operation.operation_id,
-    seq: seq ?? 0,
-    event_type: eventType,
+    event_id: eventId ?? `${operation.run_id}-${Date.now()}`,
+    run_id: operation.run_id,
+    seq: parseEventSeq(eventId) ?? 0,
+    type: eventType,
     payload,
     created_at: new Date().toISOString(),
-  } satisfies PlanningOperationEvent;
+  } satisfies AcpRunEvent;
   patchPlanningCaches(queryClient, operation, event);
   patchPlannerTerminalCaches(queryClient, operation, event);
   dispatch({ type: "event", event });
   return true;
+}
+
+function isAcpEventType(eventType: string): eventType is AcpRunEvent["type"] {
+  return [
+    "run.created",
+    "run.in-progress",
+    "message.part",
+    "message.completed",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "error",
+    "generic",
+  ].includes(eventType);
 }
 
 function parseEventSeq(eventId: string | null): number | null {
@@ -333,64 +257,43 @@ function parseEventSeq(eventId: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-// Exported for direct unit testing of the field-scoped reconciliation
-// path. The hook itself is hard to set up in isolation (SSE fixtures,
-// query-client wiring, async sequencing) and the reconciliation
-// contract is what matters: a terminal event must apply only the
-// fields it owns, leaving concurrent unrelated cache state intact.
 export function patchPlannerTerminalCaches(
   queryClient: ReturnType<typeof useQueryClient>,
-  operation: PlanningOperationDetail,
-  event: PlanningOperationEvent,
+  operation: AcpRun,
+  event: AcpRunEvent,
 ) {
-  // `cancelled` is treated like `error` for cache-reset purposes:
-  // conversation_state returns to ready and current_operation_id is
-  // cleared so the composer re-enables. The status difference lives in
-  // the local PlannerOperationState reducer (and the banner styling),
-  // not in the session-detail cache shape.
-  if (event.event_type !== "done" && event.event_type !== "error" && event.event_type !== "cancelled") return;
-  // Field-scoped reconciliation: only the fields the terminal event
-  // actually owns are written. A previous full-snapshot replace
-  // would clobber any concurrent SSE/poll updates that landed
-  // between the cached read and the patch — the same race class the
-  // optimistic title write fix addresses on the user-input side.
+  if (event.type !== "run.completed" && event.type !== "run.failed" && event.type !== "run.cancelled") return;
   const fields: Partial<PlanningSessionDetail> =
-    operation.type === "generate_title"
-      ? {
-          current_title_operation_id: undefined,
-        }
+    operation.agent_name === "planner-generate-title"
+      ? { current_title_run_id: undefined }
       : {
           conversation_state: "ready",
-          current_operation_id: undefined,
+          current_run_id: undefined,
         };
-  if (event.event_type === "done" && (operation.type === "reply" || operation.type === "regenerate")) {
-    const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
+	if (event.type === "run.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
+		const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
     if (messageId) {
-      fields.current_question_message_id = messageId;
+      fields.active_leaf_message_id = messageId;
     }
     const sessionPatch = sessionPatchFields(event.payload.session_patch);
     if (sessionPatch) {
       Object.assign(fields, sessionPatch);
-    }
-  }
-  if (event.event_type === "done" && operation.type === "formalize") {
+		}
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
+	}
+	if (event.type === "run.completed" && operation.agent_name === "planner-formalize") {
     const draftId = typeof event.payload.planning_draft_id === "string" ? event.payload.planning_draft_id : undefined;
-    if (draftId) {
-      fields.current_draft_id = draftId;
-      void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id), exact: true });
-    }
-  }
-  if (event.event_type === "done" && operation.type === "generate_title") {
-    const title = typeof event.payload.title === "string" ? event.payload.title : undefined;
-    if (title) {
-      // Backend only adopts a generated title if the session still has a
-      // placeholder title when the operation settles. Mirror that canonical
-      // rule in cache reconciliation so a late terminal event cannot clobber a
-      // newer user-edited custom title.
-      applyGeneratedPlanningSessionTitleIfPlaceholder(queryClient, operation.planning_session_id, title);
-    }
-  }
-  applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+		if (draftId) {
+			fields.current_draft_id = draftId;
+		}
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id), exact: true });
+	}
+	if (event.type === "run.failed" || event.type === "run.cancelled") {
+		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+	}
+	applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
 }
 
 function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | null {
@@ -402,8 +305,8 @@ function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | nu
   if (typeof candidate.auto_title_eligible === "boolean") {
     fields.auto_title_eligible = candidate.auto_title_eligible;
   }
-  if (typeof candidate.current_title_operation_id === "string" && candidate.current_title_operation_id.trim() !== "") {
-    fields.current_title_operation_id = candidate.current_title_operation_id.trim();
+  if (typeof candidate.current_title_run_id === "string" && candidate.current_title_run_id.trim() !== "") {
+    fields.current_title_run_id = candidate.current_title_run_id.trim();
   }
   if (typeof candidate.updated_at === "string" && candidate.updated_at.trim() !== "") {
     fields.updated_at = candidate.updated_at.trim();
@@ -413,36 +316,58 @@ function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | nu
 
 function patchPlanningCaches(
   queryClient: ReturnType<typeof useQueryClient>,
-  operation: PlanningOperationDetail,
-  event: PlanningOperationEvent,
+  operation: AcpRun,
+  event: AcpRunEvent,
 ) {
-  const messagesKey = plannerKeys.messages(operation.planning_session_id);
-
-  if (event.event_type === "user_message") {
-    const message = event.payload as PlanningMessagesPage["items"][number];
-    queryClient.setQueryData<InfiniteData<PlanningMessagesPage, unknown>>(messagesKey, (current) =>
-      patchLatestPlanningMessagesPage(current, message),
-    );
+  if (event.type === "message.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
+    const message = planningMessageFromEvent(operation, event);
+    if (message) {
+      queryClient.setQueryData(
+        plannerKeys.messages(operation.planning_session_id),
+        (current: unknown) => (
+          operation.agent_name === "planner-regenerate"
+            ? replaceAssistantMessageAtTurn(current as never, message)
+            : replaceAssistantMessageInLatestPlanningPage(current as never, message)
+        ) as never,
+      );
+    }
     return;
   }
-
-  if (event.event_type === "done" && (operation.type === "reply" || operation.type === "regenerate")) {
-    const message = event.payload as PlanningMessagesPage["items"][number];
-    queryClient.setQueryData<InfiniteData<PlanningMessagesPage, unknown>>(messagesKey, (current) =>
-      replaceAssistantMessageInLatestPlanningPage(current, message),
-    );
-    void queryClient.invalidateQueries({ queryKey: messagesKey });
-
-    if (operation.type === "regenerate") {
-      const messageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id : undefined;
-      if (messageId) {
-        void queryClient.prefetchQuery({
-          queryKey: plannerKeys.variants(operation.planning_session_id, messageId),
-          queryFn: () => apiFetch<PlanningMessageVariantsResponse>(
-            `/planning-sessions/${operation.planning_session_id}/messages/${messageId}/variants`,
-          ),
-        });
-      }
+  if (event.type === "message.completed" && operation.agent_name === "planner-generate-title") {
+    const title = typeof event.payload.title === "string" ? event.payload.title : undefined;
+    if (title) {
+      applyGeneratedPlanningSessionTitleIfPlaceholder(queryClient, operation.planning_session_id, title);
     }
   }
+}
+
+function planningMessageFromEvent(operation: AcpRun, event: AcpRunEvent): PlanningMessage | null {
+  const planningMessageId = typeof event.payload.planning_message_id === "string" ? event.payload.planning_message_id.trim() : "";
+  const contentMarkdown = typeof event.payload.content_markdown === "string"
+    ? event.payload.content_markdown
+    : typeof event.payload.text === "string"
+      ? event.payload.text
+      : "";
+  const createdAt = typeof event.payload.created_at === "string" ? event.payload.created_at : event.created_at;
+  if (!planningMessageId || !contentMarkdown) {
+    return null;
+  }
+  return {
+    planning_message_id: planningMessageId,
+    planning_session_id: operation.planning_session_id,
+    parent_message_id: typeof event.payload.parent_message_id === "string" ? event.payload.parent_message_id : undefined,
+    role: (typeof event.payload.role === "string" ? event.payload.role : "assistant") as PlanningMessage["role"],
+    content_markdown: contentMarkdown,
+    source_run_id: operation.run_id,
+    created_at: createdAt,
+    // A freshly produced reply/regenerate is the newest branch at its point;
+    // the authoritative branch_count arrives on the messages refetch.
+    branch_index: 0,
+    branch_count: 1,
+    question_payload: isObject(event.payload.question_payload) ? (event.payload.question_payload as PlanningMessage["question_payload"]) : undefined,
+  };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

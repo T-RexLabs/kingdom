@@ -407,11 +407,26 @@ if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
     echo "unexpected config dir: $REAL_CONFIG_DIR" >&2
     exit 1
   fi
-  REAL_DB_PATH="$(cd "$(dirname "$OPENCODE_DB")" && pwd -P)/$(basename "$OPENCODE_DB")"
-  if [ "$REAL_DB_PATH" != "$EXPECTED_DB_PATH_REAL" ]; then
-    echo "unexpected db path: $REAL_DB_PATH" >&2
+  if [ -z "$OPENCODE_DB" ]; then
+    echo "missing db path" >&2
     exit 1
   fi
+  REAL_DB_PATH="$(cd "$(dirname "$OPENCODE_DB")" && pwd -P)/$(basename "$OPENCODE_DB")"
+  if [ "$REAL_DB_PATH" = "$EXPECTED_MANAGED_DB_PATH_REAL" ]; then
+    echo "unexpected shared managed db path: $REAL_DB_PATH" >&2
+    exit 1
+  fi
+  if [ "$(basename "$REAL_DB_PATH")" != "opencode.db" ]; then
+    echo "unexpected db basename: $REAL_DB_PATH" >&2
+    exit 1
+  fi
+  case "$(basename "$(dirname "$REAL_DB_PATH")")" in
+    kingdom-opencode-validate-*) ;;
+    *)
+      echo "unexpected isolated db dir: $REAL_DB_PATH" >&2
+      exit 1
+      ;;
+  esac
   echo "{}"
   exit 0
 fi
@@ -442,7 +457,7 @@ exit 2
 		t.Fatalf("resolve managed db dir symlinks: %v", err)
 	}
 	t.Setenv("EXPECTED_CONFIG_DIR_REAL", realManagedConfigDir)
-	t.Setenv("EXPECTED_DB_PATH_REAL", filepath.Join(realManagedDBDir, filepath.Base(managedOpenCode.DatabasePath)))
+	t.Setenv("EXPECTED_MANAGED_DB_PATH_REAL", filepath.Join(realManagedDBDir, filepath.Base(managedOpenCode.DatabasePath)))
 
 	_, err = NewRuntime(Config{
 		DB:             db,
@@ -456,6 +471,72 @@ exit 2
 	})
 	if err != nil {
 		t.Fatalf("expected strict runtime bootstrap to resolve agents in configured workdir: %v", err)
+	}
+}
+
+func TestNewRuntimeStrictAgentValidationUsesIsolatedDatabasesToAvoidSQLiteLockContention(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+
+	workspaceRoot := t.TempDir()
+	if err := bootstrapassets.WriteScaffold(filepath.Join(workspaceRoot, ".kingdom"), workspaceRoot, false); err != nil {
+		t.Fatalf("write managed opencode scaffold: %v", err)
+	}
+	managedOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(workspaceRoot)
+	binaryPath := filepath.Join(t.TempDir(), "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
+  if [ -z "$OPENCODE_DB" ]; then
+    echo "missing db path" >&2
+    exit 1
+  fi
+  if [ "$OPENCODE_DB" = "$MANAGED_DB_PATH" ]; then
+    LOCK_DIR="$LOCK_ROOT/shared"
+  else
+    LOCK_DIR="$LOCK_ROOT/$3"
+  fi
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "database is locked" >&2
+    exit 1
+  fi
+  sleep 0.1
+  rmdir "$LOCK_DIR"
+  echo "{}"
+  exit 0
+fi
+
+if [ "$1" = "run" ]; then
+  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
+  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
+  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
+  exit 0
+fi
+
+exit 2
+`
+	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode binary: %v", err)
+	}
+	lockRoot := filepath.Join(t.TempDir(), "locks")
+	if err := os.MkdirAll(lockRoot, 0o755); err != nil {
+		t.Fatalf("create lock root: %v", err)
+	}
+	t.Setenv("LOCK_ROOT", lockRoot)
+	t.Setenv("MANAGED_DB_PATH", managedOpenCode.DatabasePath)
+
+	_, err := NewRuntime(Config{
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		ProviderEngine: "opencode",
+		ProviderStrict: true,
+		ProviderSession: opencode.SessionAdapterConfig{
+			BinaryPath: binaryPath,
+			WorkDir:    workspaceRoot,
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected strict runtime bootstrap to avoid shared SQLite validation lock contention: %v", err)
 	}
 }
 
