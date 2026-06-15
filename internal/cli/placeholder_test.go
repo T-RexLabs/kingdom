@@ -830,6 +830,12 @@ func TestExecuteSummonHelpDescribesForegroundDefault(t *testing.T) {
 	if !strings.Contains(stdout.String(), "-d") || !strings.Contains(stdout.String(), "--detach") {
 		t.Fatalf("expected summon help to mention detached flags, got %q", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "-d, --detach") {
+		t.Fatalf("expected summon help to group detached aliases, got %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "\n  -d  ") || strings.Contains(stdout.String(), "\n  --detach  ") {
+		t.Fatalf("expected summon help to avoid separate detached alias rows, got %q", stdout.String())
+	}
 	if !strings.Contains(stdout.String(), "--listen") || !strings.Contains(stdout.String(), "--host") || !strings.Contains(stdout.String(), "--port") {
 		t.Fatalf("expected summon help to mention listen overrides, got %q", stdout.String())
 	}

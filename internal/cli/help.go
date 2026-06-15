@@ -15,6 +15,7 @@ type helpTopic struct {
 	usage              []string
 	flags              flagBinder
 	flagOrder          []string
+	flagAliases        [][]string
 	notes              []string
 	includeGlobalFlags bool
 	subcommands        [][]string
@@ -103,7 +104,8 @@ var helpTopics = []*helpTopic{
 		flags: func(flags *flag.FlagSet) {
 			bindSummonFlags(flags, &summonOptions{})
 		},
-		notes: []string{"`kd summon` keeps the runtime attached to the current terminal. Use `-d` or `--detach` to start it in the background and return after readiness."},
+		flagAliases: [][]string{{"d", "detach"}},
+		notes: []string{"`kd summon` uses `.kingdom/config.yaml` by default and keeps the runtime attached to the current terminal. Use `-d` or `--detach` to start it in the background. Use `--listen` to fully override the listen address for this summon process only, or `--host` and `--port` to override one side of the configured address. `--listen` cannot be combined with `--host` or `--port`."},
 	},
 	{
 		path:    []string{"summon", "status"},
@@ -349,7 +351,7 @@ func writeHelpTopic(stdout io.Writer, topic *helpTopic) {
 		writeCommandSummaries(stdout, topic.subcommands)
 	}
 
-	writeBoundFlagsSection(stdout, topic.flags, topic.flagOrder)
+	writeBoundFlagsSection(stdout, topic.flags, topic.flagOrder, topic.flagAliases)
 	if topic.includeGlobalFlags {
 		writeGlobalFlagsSection(stdout)
 	}
@@ -436,13 +438,13 @@ func writeGlobalFlagsSection(stdout io.Writer) {
 	_, _ = io.WriteString(stdout, "  Server defaults come from `.kingdom/config.yaml` when `--server` is omitted.\n")
 }
 
-func writeBoundFlagsSection(stdout io.Writer, binder flagBinder, order []string) {
+func writeBoundFlagsSection(stdout io.Writer, binder flagBinder, order []string, aliasGroups [][]string) {
 	if binder == nil {
 		return
 	}
 	flags := newFlagSet("help")
 	binder(flags)
-	rendered := renderFlagLines(flags, order)
+	rendered := renderFlagLines(flags, order, aliasGroups)
 	if len(rendered) == 0 {
 		return
 	}
@@ -464,13 +466,28 @@ type renderedFlagLine struct {
 	description string
 }
 
-func renderFlagLines(flags *flag.FlagSet, order []string) []renderedFlagLine {
+func renderFlagLines(flags *flag.FlagSet, order []string, aliasGroups [][]string) []renderedFlagLine {
 	if flags == nil {
 		return nil
 	}
 	lines := make([]renderedFlagLine, 0)
+	consumed := make(map[string]struct{})
+	for _, group := range aliasGroups {
+		line, ok := renderFlagAliasGroup(flags, group)
+		if !ok {
+			continue
+		}
+		lines = append(lines, line)
+		for _, name := range group {
+			consumed[name] = struct{}{}
+		}
+	}
 	seen := make(map[string]struct{}, len(order))
 	for _, name := range order {
+		if _, ok := consumed[name]; ok {
+			seen[name] = struct{}{}
+			continue
+		}
 		entry := flags.Lookup(name)
 		if entry == nil {
 			continue
@@ -479,6 +496,9 @@ func renderFlagLines(flags *flag.FlagSet, order []string) []renderedFlagLine {
 		seen[name] = struct{}{}
 	}
 	flags.VisitAll(func(f *flag.Flag) {
+		if _, ok := consumed[f.Name]; ok {
+			return
+		}
 		if _, ok := seen[f.Name]; ok {
 			return
 		}
@@ -487,9 +507,46 @@ func renderFlagLines(flags *flag.FlagSet, order []string) []renderedFlagLine {
 	return lines
 }
 
+func renderFlagAliasGroup(flags *flag.FlagSet, names []string) (renderedFlagLine, bool) {
+	if flags == nil || len(names) == 0 {
+		return renderedFlagLine{}, false
+	}
+	entries := make([]*flag.Flag, 0, len(names))
+	for _, name := range names {
+		entry := flags.Lookup(name)
+		if entry == nil {
+			return renderedFlagLine{}, false
+		}
+		entries = append(entries, entry)
+	}
+	placeholder, usage := flag.UnquoteUsage(entries[0])
+	defaultValue, hasDefault := flagDefaultValue(entries[0])
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		prefix := "--"
+		if len(entry.Name) == 1 {
+			prefix = "-"
+		}
+		parts = append(parts, prefix+entry.Name)
+	}
+	syntax := strings.Join(parts, ", ")
+	if placeholder != "" {
+		syntax += " <" + placeholder + ">"
+	}
+	description := usage
+	if hasDefault {
+		description += fmt.Sprintf(" (default: %s)", defaultValue)
+	}
+	return renderedFlagLine{syntax: syntax, description: description}, true
+}
+
 func renderFlagLine(f *flag.Flag) renderedFlagLine {
 	placeholder, usage := flag.UnquoteUsage(f)
-	syntax := "--" + f.Name
+	prefix := "--"
+	if len(f.Name) == 1 {
+		prefix = "-"
+	}
+	syntax := prefix + f.Name
 	if placeholder != "" {
 		syntax += " <" + placeholder + ">"
 	}
