@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useRunExecutionActivity } from "@/api/hooks-runs";
-import { activityItemFromApi, buildActivityState } from "@/features/activity/activity-view";
-import { ActivityLiveStream, ActivitySources, ActivityThoughts } from "@/features/activity/activity-stream";
+import { activityItemFromApi, buildActivityState, selectLatestTodoList } from "@/features/activity/activity-view";
+import { ActivityChecklist, ActivityLiveStream, ActivitySources, ActivityThoughts } from "@/features/activity/activity-stream";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 
 // RunExecutionActivity surfaces the fine-grained agent activity (reasoning + tool
@@ -36,10 +36,12 @@ export function RunExecutionActivity({
     [durableQuery.data?.items, liveItems],
   );
 
+  const todoList = useMemo(() => selectLatestTodoList(state.items), [state.items]);
   const showLive = isRunning && Boolean(state.currentEvent || state.liveThoughtText.trim());
   const showThoughts = !isRunning && state.thoughts.length > 0;
   const showSources = !isRunning && state.sources.length > 0;
-  if (!showLive && !showThoughts && !showSources) {
+  const showChecklist = todoList !== null;
+  if (!showLive && !showThoughts && !showSources && !showChecklist) {
     return null;
   }
 
@@ -66,6 +68,7 @@ export function RunExecutionActivity({
       </button>
       {open ? (
         <div className="space-y-3 border-t border-border px-4 py-3">
+          {showChecklist && todoList ? <ActivityChecklist list={todoList} /> : null}
           {showLive ? <ActivityLiveStream state={state} isStreaming={isRunning} /> : null}
           {showThoughts ? <ActivityThoughts thoughts={state.thoughts} /> : null}
           {showSources ? <ActivitySources sources={state.sources} /> : null}

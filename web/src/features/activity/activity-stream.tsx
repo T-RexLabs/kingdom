@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ChevronDown, ExternalLink, Feather } from "lucide-react";
+import { CheckCircle2, ChevronDown, Circle, CircleDot, CircleSlash, ExternalLink, Feather } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useTextReveal } from "@/lib/use-text-reveal";
-import type { ActivityState, ActivitySourceEntry, ActivityThoughtEntry } from "./activity-view";
+import type { ActivityState, ActivitySourceEntry, ActivityThoughtEntry, TodoList, TodoStatus } from "./activity-view";
 
 // ActivityLiveStream renders the in-flight activity: the agent's reasoning revealed
 // at a natural pace, with the current action (thinking / tool call) anchored beneath
@@ -56,6 +57,43 @@ export function ActivityThoughts({ thoughts }: { thoughts: ActivityThoughtEntry[
   );
 }
 
+// ActivityChecklist renders the agent's current todo list (from its latest todowrite)
+// as a foldable checklist with live progress, collapsed by default like Thoughts.
+export function ActivityChecklist({ list }: { list: TodoList }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <ActivityDisclosure title="Checklist" count={`${list.done}/${list.total}`} open={open} onToggle={() => setOpen((current) => !current)}>
+      <ul className="space-y-1.5 text-xs leading-relaxed">
+        {list.items.map((item, index) => {
+          const struck = item.status === "completed" || item.status === "cancelled";
+          return (
+            <li key={index} className="flex items-start gap-2">
+              <TodoStatusIcon status={item.status} />
+              <span className={cn("min-w-0 text-wrap-anywhere", struck ? "text-foreground-subtle/55 line-through" : "text-foreground-subtle/85")}>
+                {item.content}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </ActivityDisclosure>
+  );
+}
+
+function TodoStatusIcon({ status }: { status: TodoStatus }) {
+  const base = "mt-0.5 h-3.5 w-3.5 shrink-0";
+  switch (status) {
+    case "completed":
+      return <CheckCircle2 className={cn(base, "text-gold")} aria-label="completed" />;
+    case "in_progress":
+      return <CircleDot className={cn(base, "animate-pulse text-gold/80")} aria-label="in progress" />;
+    case "cancelled":
+      return <CircleSlash className={cn(base, "text-foreground-subtle/50")} aria-label="cancelled" />;
+    default:
+      return <Circle className={cn(base, "text-foreground-subtle/40")} aria-label="pending" />;
+  }
+}
+
 // ActivitySources renders fetched web sources as chips. A short handful read cleanly
 // inline; 5+ collapse behind a disclosure so a long research burst stays compact.
 export function ActivitySources({ sources }: { sources: ActivitySourceEntry[] }) {
@@ -99,7 +137,7 @@ export function ActivityDisclosure({
   children,
 }: {
   title: string;
-  count: number;
+  count: number | string;
   open: boolean;
   onToggle: () => void;
   children: React.ReactNode;

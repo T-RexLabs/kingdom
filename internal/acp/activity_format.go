@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -31,6 +32,11 @@ func NormalizeProgressActivityLabel(label string) (string, bool) {
 
 func ToolActivityLabel(toolName string, status string, toolTitle string, toolInput string) string {
 	trimmedToolName := strings.TrimSpace(toolName)
+	// todowrite carries the agent's full checklist; surface progress instead of
+	// dumping the JSON blob. The structured list is rendered separately in the UI.
+	if trimmedToolName == "todowrite" {
+		return todoChecklistLabel(toolInput)
+	}
 	target := toolActivityTarget(trimmedToolName, toolTitle, toolInput)
 	switch strings.TrimSpace(status) {
 	case "completed":
@@ -49,6 +55,36 @@ func ToolActivityLabel(toolName string, status string, toolTitle string, toolInp
 		}
 		return "Calling " + trimmedToolName
 	}
+}
+
+func todoChecklistLabel(toolInput string) string {
+	done, total := todoChecklistCounts(toolInput)
+	if total == 0 {
+		return "Updated checklist"
+	}
+	return fmt.Sprintf("Checklist · %d/%d", done, total)
+}
+
+func todoChecklistCounts(toolInput string) (int, int) {
+	trimmed := strings.TrimSpace(toolInput)
+	if trimmed == "" {
+		return 0, 0
+	}
+	var payload struct {
+		Todos []struct {
+			Status string `json:"status"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return 0, 0
+	}
+	done := 0
+	for _, todo := range payload.Todos {
+		if strings.TrimSpace(todo.Status) == "completed" {
+			done++
+		}
+	}
+	return done, len(payload.Todos)
 }
 
 func ToolActivityDetail(status string) string {

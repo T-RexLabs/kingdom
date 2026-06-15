@@ -1,5 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { buildActivityState, parseActivityEvent } from "./activity-view";
+import { buildActivityState, parseActivityEvent, parseTodoList, selectLatestTodoList } from "./activity-view";
+
+describe("parseTodoList", () => {
+  it("decodes a todowrite payload and counts completed items", () => {
+    const list = parseTodoList(
+      '{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},{"content":"c","status":"pending"}]}',
+    );
+    expect(list).not.toBeNull();
+    expect(list?.total).toBe(3);
+    expect(list?.done).toBe(1);
+    expect(list?.items[1]).toMatchObject({ content: "b", status: "in_progress" });
+  });
+
+  it("defaults unknown statuses to pending and drops empty-content entries", () => {
+    const list = parseTodoList('{"todos":[{"content":"a","status":"weird"},{"content":""}]}');
+    expect(list?.total).toBe(1);
+    expect(list?.items[0].status).toBe("pending");
+  });
+
+  it("returns null for missing todos arrays or malformed JSON", () => {
+    expect(parseTodoList(undefined)).toBeNull();
+    expect(parseTodoList("not json")).toBeNull();
+    expect(parseTodoList('{"foo":1}')).toBeNull();
+    expect(parseTodoList('{"todos":[]}')).toBeNull();
+  });
+});
+
+describe("selectLatestTodoList", () => {
+  it("returns the most recent tool item carrying a todo list", () => {
+    const list = selectLatestTodoList([
+      { id: "t1", kind: "tool", label: "Checklist", input: '{"todos":[{"content":"x","status":"pending"}]}' },
+      { id: "r1", kind: "thinking", label: "Thinking", detail: "..." },
+      { id: "t2", kind: "tool", label: "Checklist", input: '{"todos":[{"content":"x","status":"completed"}]}' },
+    ]);
+    expect(list?.done).toBe(1);
+    expect(list?.items[0].status).toBe("completed");
+  });
+
+  it("returns null when no tool item carries a todo list", () => {
+    expect(selectLatestTodoList([{ id: "r1", kind: "thinking", label: "Thinking", detail: "x" }])).toBeNull();
+  });
+});
 
 describe("parseActivityEvent", () => {
   it("maps a reasoning payload into a thinking item", () => {

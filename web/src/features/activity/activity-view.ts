@@ -38,6 +38,7 @@ export type ActivityState = {
   liveThoughtText: string;
   thoughts: ActivityThoughtEntry[];
   sources: ActivitySourceEntry[];
+  items: ActivityItem[];
 };
 
 export function emptyActivityState(): ActivityState {
@@ -46,6 +47,7 @@ export function emptyActivityState(): ActivityState {
     liveThoughtText: "",
     thoughts: [],
     sources: [],
+    items: [],
   };
 }
 
@@ -128,6 +130,7 @@ export function buildActivityState({
     liveThoughtText,
     thoughts,
     sources: buildSourceEntries(mergedItems),
+    items: mergedItems,
   };
 }
 
@@ -291,4 +294,97 @@ function readString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+// --- Agent todo checklists -------------------------------------------------
+// Agents call the `todowrite` tool with the full updated checklist each time, so the
+// latest tool item carrying a `todos` array is the current state.
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+export type TodoItem = {
+  content: string;
+  status: TodoStatus;
+  priority?: string;
+};
+
+export type TodoList = {
+  items: TodoItem[];
+  done: number;
+  total: number;
+};
+
+// parseTodoList decodes a todowrite tool_input into a checklist. It is defensive: the
+// schema is not pinned in-repo, so anything that isn't a {todos:[{content,status}]}
+// object yields null.
+export function parseTodoList(input?: string): TodoList | null {
+  if (!input) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const rawTodos = (parsed as { todos?: unknown }).todos;
+  if (!Array.isArray(rawTodos)) {
+    return null;
+  }
+  const items: TodoItem[] = [];
+  for (const entry of rawTodos) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    if (!content) {
+      continue;
+    }
+    items.push({
+      content,
+      status: normalizeTodoStatus(record.status),
+      priority: typeof record.priority === "string" ? record.priority : undefined,
+    });
+  }
+  if (items.length === 0) {
+    return null;
+  }
+  return {
+    items,
+    done: items.filter((item) => item.status === "completed").length,
+    total: items.length,
+  };
+}
+
+// selectLatestTodoList returns the current checklist: the most recent tool activity
+// whose input parses to a todo list, or null if the agent hasn't written one.
+export function selectLatestTodoList(items: ActivityItem[]): TodoList | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "tool") {
+      continue;
+    }
+    const todoList = parseTodoList(item.input);
+    if (todoList) {
+      return todoList;
+    }
+  }
+  return null;
+}
+
+function normalizeTodoStatus(value: unknown): TodoStatus {
+  switch (typeof value === "string" ? value.trim() : "") {
+    case "completed":
+      return "completed";
+    case "in_progress":
+      return "in_progress";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "pending";
+  }
 }

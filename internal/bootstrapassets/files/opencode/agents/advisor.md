@@ -9,8 +9,8 @@ tools:
   grep: true
   webfetch: true
   task: false
-  todowrite: false
-  todoread: false
+  todowrite: true
+  todoread: true
 permission:
   edit:
     "*": deny
