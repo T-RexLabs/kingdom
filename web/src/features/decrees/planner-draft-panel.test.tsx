@@ -8,7 +8,7 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: any) => <a {...props}>{children}</a>,
 }));
 
-vi.mock("./use-text-reveal", () => ({
+vi.mock("@/lib/use-text-reveal", () => ({
   useTextReveal: (text: string) => ({
     displayText: text,
     isStreamActive: false,

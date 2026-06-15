@@ -1,4 +1,5 @@
 import type { AcpRun, AcpRunEvent, PlanningMessage } from "@/api/hooks";
+import { parseActivityEvent, type ActivityItem, type ActivityKind } from "@/features/activity/activity-view";
 
 export type QuestionPayload = NonNullable<PlanningMessage["question_payload"]>;
 export type AnswerPayload = NonNullable<PlanningMessage["answer_payload"]>;
@@ -8,17 +9,10 @@ export type PlannerPendingReply = {
   answer?: AnswerPayload;
 };
 
-export type PlannerActivityKind = "thinking" | "tool" | "progress";
-
-export type PlannerActivityItem = {
-  id: string;
-  kind: PlannerActivityKind;
-  label: string;
-  detail?: string;
-  input?: string;
-  output?: string;
-  occurredAt?: string;
-};
+// Planner activity reuses the canonical, source-agnostic activity model shared with
+// decree-run node activity.
+export type PlannerActivityKind = ActivityKind;
+export type PlannerActivityItem = ActivityItem;
 
 export type PlannerOperationKind = "reply" | "formalize" | "regenerate" | "generate_title";
 
@@ -182,52 +176,11 @@ export function reducePlannerOperationEvent(
 }
 
 function parsePlannerActivityEvent(event: AcpRunEvent): PlannerActivityItem | null {
-  const kind = readString(event.payload.kind);
-  const id = readString(event.payload.activity_id) ?? event.event_id;
-  if (!kind || !id) {
-    return null;
-  }
-  switch (kind) {
-    case "kingdom.phase": {
-      const label = readString(event.payload.label);
-      if (!label) {
-        return null;
-      }
-      return { id, kind: "progress", label, occurredAt: event.created_at };
-    }
-    case "kingdom.progress": {
-      const label = readString(event.payload.label);
-      if (!label) {
-        return null;
-      }
-      return { id, kind: "progress", label, occurredAt: event.created_at };
-    }
-    case "kingdom.tool": {
-      const label = readString(event.payload.label);
-      if (!label) {
-        return null;
-      }
-      return {
-        id,
-        kind: "tool",
-        label,
-        detail: readString(event.payload.detail),
-        input: readString(event.payload.tool_input),
-        occurredAt: event.created_at,
-      };
-    }
-    case "kingdom.reasoning": {
-      return {
-        id,
-        kind: "thinking",
-        label: readString(event.payload.label) ?? "Thinking",
-        detail: readString(event.payload.detail) ?? readString(event.payload.summary),
-        occurredAt: event.created_at,
-      };
-    }
-    default:
-      return null;
-  }
+  return parseActivityEvent({
+    payload: event.payload,
+    eventId: event.event_id,
+    createdAt: event.created_at,
+  });
 }
 
 function upsertPlannerActivity(items: PlannerActivityItem[], nextItem: PlannerActivityItem): PlannerActivityItem[] {

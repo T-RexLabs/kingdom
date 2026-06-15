@@ -103,7 +103,7 @@ describe("dag visualization", () => {
 		expect(legend).toHaveClass("right-3");
 		expect(legend).toHaveClass("sm:bottom-4");
 		expect(legend).toHaveClass("sm:right-4");
-		expect(legend).toHaveTextContent("Running");
+		expect(legend).toHaveTextContent("Active");
 		expect(legend).toHaveTextContent("Pending");
 		expect(legend).not.toHaveTextContent("Ready");
 		expect(legend).not.toHaveTextContent("Blocked");

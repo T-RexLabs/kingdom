@@ -586,6 +586,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch fine-grained provider activity (reasoning + tool calls) for one attempt. */
+        get: operations["getRunExecutionActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/agents": {
         parameters: {
             query?: never;
@@ -1857,8 +1874,6 @@ export interface components {
             spawn_depth: number;
             /** Format: date-time */
             created_at: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
         };
         RunParticipant: {
             agent_id: string;
@@ -1870,8 +1885,6 @@ export interface components {
             spawn_depth: number;
             /** Format: date-time */
             first_seen_at: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
         };
         RunExecution: {
             attempt_id: string;
@@ -1886,8 +1899,6 @@ export interface components {
             status: "queued" | "starting" | "running" | "blocked" | "verifying" | "succeeded" | "failed" | "cancelled";
             logical_session_id?: string;
             provider_session_id?: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
             /** Format: date-time */
             queued_at: string;
             /** Format: date-time */
@@ -3348,6 +3359,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunExecutionDetail"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getRunExecutionActivity: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Actor-Id": components["parameters"]["ActorId"];
+                "X-Role-Id": components["parameters"]["RoleId"];
+            };
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable provider activity history for one attempt. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcpRunActivityResponse"];
                 };
             };
             400: components["responses"]["BadRequestError"];

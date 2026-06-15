@@ -2714,7 +2714,6 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-agent-builder', ?, 'implementation', 1,1, 'running', 'council-member', 'agent-builder', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-agent-builder', 'running', 'worker-1', '2026-03-01T14:00:00Z', 1, 'session-agent-builder', 'ses-agent-builder', ?, NULL, NULL, '', '', ?, ?)`, runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-run-agents-1', ?, 'agent-root', 'agent-council', 'thread-agents', 'status_update', 'normal', '{}', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session-agent-builder', 'agent-builder', 'active', '2026-03-01T14:00:00Z', '2026-03-01T13:55:00Z', ?, ?)`, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents", actorID: "actor-1", roleID: "chancellor"})
 	if res.Code != http.StatusOK {
@@ -2724,10 +2723,9 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 	var payload struct {
 		RunID string `json:"run_id"`
 		Items []struct {
-			AgentID         string  `json:"agent_id"`
-			ParentAgentID   *string `json:"parent_agent_id"`
-			FirstSeenAt     string  `json:"first_seen_at"`
-			LastHeartbeatAt *string `json:"last_heartbeat_at"`
+			AgentID       string  `json:"agent_id"`
+			ParentAgentID *string `json:"parent_agent_id"`
+			FirstSeenAt   string  `json:"first_seen_at"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
@@ -2761,9 +2759,6 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 	if payload.Items[2].FirstSeenAt != now {
 		t.Fatalf("expected run-scoped first_seen_at for agent-builder, got %#v", payload.Items[2].FirstSeenAt)
 	}
-	if payload.Items[2].LastHeartbeatAt == nil || *payload.Items[2].LastHeartbeatAt != "2026-03-01T13:55:00Z" {
-		t.Fatalf("expected heartbeat fallback for agent-builder, got %#v", payload.Items[2].LastHeartbeatAt)
-	}
 }
 
 func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.T) {
@@ -2781,7 +2776,6 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-provider-exec', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-builder-exec', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:execution_kickoff:1', ?, 'nr-runtime-exec', 'committed_failure', 'runtime_owned', '', NULL, 0, '', '', ?, ?, ?, 'execution_setup_failed', 'kickoff failed', ?, ?)`, runID, earlier, earlier, earlier, earlier, earlier)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-provider-exec', 'running', 'provider_backed', 'worker-1', '2026-03-01T14:00:00Z', 1, 'session-exec-builder', 'ses-exec-builder', ?, NULL, NULL, '', '', ?, ?)`, runID, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session-exec-builder', 'agent-builder-exec', 'active', '2026-03-01T14:00:00Z', '2026-03-01T13:55:00Z', ?, ?)`, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
 	if res.Code != http.StatusOK {
@@ -2801,7 +2795,6 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 			Status            string  `json:"status"`
 			LogicalSessionID  *string `json:"logical_session_id"`
 			ProviderSessionID *string `json:"provider_session_id"`
-			LastHeartbeatAt   *string `json:"last_heartbeat_at"`
 			QueuedAt          string  `json:"queued_at"`
 			ActivityAt        string  `json:"activity_at"`
 			FailureCode       *string `json:"failure_code"`
@@ -2831,9 +2824,6 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	if payload.Items[0].ProviderSessionID == nil || *payload.Items[0].ProviderSessionID != "ses-exec-builder" {
 		t.Fatalf("expected provider session id, got %#v", payload.Items[0].ProviderSessionID)
 	}
-	if payload.Items[0].LastHeartbeatAt == nil || *payload.Items[0].LastHeartbeatAt != "2026-03-01T13:55:00Z" {
-		t.Fatalf("expected logical-session heartbeat fallback, got %#v", payload.Items[0].LastHeartbeatAt)
-	}
 	if payload.Items[0].ActivityAt != now {
 		t.Fatalf("expected provider-backed activity_at to match latest execution activity, got %#v", payload.Items[0].ActivityAt)
 	}
@@ -2847,7 +2837,7 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	if payload.Items[1].ExecutionMode != "runtime_owned" || payload.Items[1].Status != "failed" {
 		t.Fatalf("unexpected runtime-owned execution payload: %#v", payload.Items[1])
 	}
-	if payload.Items[1].LogicalSessionID != nil || payload.Items[1].ProviderSessionID != nil || payload.Items[1].LastHeartbeatAt != nil {
+	if payload.Items[1].LogicalSessionID != nil || payload.Items[1].ProviderSessionID != nil {
 		t.Fatalf("expected runtime-owned execution to omit session identity fields, got %#v", payload.Items[1])
 	}
 	if payload.Items[1].ActivityAt != earlier {
@@ -3378,83 +3368,6 @@ func TestServerListRunExecutionsOrdersByActivityAt(t *testing.T) {
 	}
 }
 
-func TestServerListRunExecutionsSuppressesHeartbeatForTerminalAttempts(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunViaAPI(t, handler)
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-terminal-heartbeat', 'king', 'Terminal Heartbeat King', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-terminal-heartbeat', ?, 'decree_intake', 1,1, 'failed', 'king', 'agent-terminal-heartbeat', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:decree_intake:1', ?, 'nr-terminal-heartbeat', 'committed_failure', 'provider_backed', '', NULL, 0, 'session-terminal-heartbeat', 'ses-terminal-heartbeat', ?, ?, ?, 'provider_process_failed', 'older failure', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session-terminal-heartbeat', 'agent-terminal-heartbeat', 'active', '2026-03-01T14:00:00Z', '2026-03-01T13:55:00Z', ?, ?)`, now, now)
-
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var payload struct {
-		Items []struct {
-			AttemptID       string  `json:"attempt_id"`
-			LastHeartbeatAt *string `json:"last_heartbeat_at"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode run executions payload: %v", err)
-	}
-	if len(payload.Items) == 0 {
-		t.Fatal("expected execution payload items")
-	}
-	if payload.Items[0].AttemptID != runID+`:decree_intake:1` {
-		t.Fatalf("expected terminal attempt first, got %#v", payload.Items)
-	}
-	if payload.Items[0].LastHeartbeatAt != nil {
-		t.Fatalf("expected terminal execution heartbeat to be suppressed, got %#v", payload.Items[0].LastHeartbeatAt)
-	}
-}
-
-func TestServerListRunAgentsSuppressesStaleHeartbeatFromOlderExecution(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunViaAPI(t, handler)
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, ?)`, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-heartbeat-freshness', 'council-member', 'Heartbeat Freshness Agent', 'busy', 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-heartbeat-freshness', 'council-member', 'Heartbeat Freshness Agent', NULL, 0, '2026-03-01T12:00:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-heartbeat-old', ?, 'plan_drafting', 1,1, 'failed', 'council-member', 'agent-heartbeat-freshness', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-heartbeat-new', ?, 'plan_drafting', 2,2, 'ready', 'council-member', 'agent-heartbeat-freshness', 1, '2026-03-01T12:11:00Z', NULL)`, runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:plan_drafting:1', ?, 'nr-heartbeat-old', 'committed_failure', 'provider_backed', '', NULL, 0, 'session-heartbeat-old', 'ses-heartbeat-old', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z', 'provider_process_failed', 'older failure', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session-heartbeat-old', 'agent-heartbeat-freshness', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:09:00Z', ?, ?)`, now, now)
-
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents", actorID: "actor-1", roleID: "chancellor"})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var payload struct {
-		Items []struct {
-			AgentID         string  `json:"agent_id"`
-			LastHeartbeatAt *string `json:"last_heartbeat_at"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode run agents payload: %v", err)
-	}
-	if len(payload.Items) == 0 {
-		t.Fatal("expected run agent payload items")
-	}
-	if payload.Items[0].AgentID != "agent-heartbeat-freshness" {
-		t.Fatalf("unexpected run agent payload: %#v", payload.Items)
-	}
-	if payload.Items[0].LastHeartbeatAt != nil {
-		t.Fatalf("expected stale heartbeat to be suppressed for newer execution without heartbeat, got %#v", payload.Items[0].LastHeartbeatAt)
-	}
-}
-
 func TestServerListRunAgentsPreservesUnavailableStatuses(t *testing.T) {
 	t.Parallel()
 
@@ -3566,6 +3479,123 @@ func TestServerListRunExecutionsReturnsNotFoundForUnknownRun(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/executions", actorID: "actor-1", roleID: "chancellor"})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", res.Code)
+	}
+	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+}
+
+func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+
+	const attemptID = "attempt-activity-1"
+	const otherAttemptID = "attempt-activity-2"
+	now := "2026-06-14T10:00:00Z"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-1', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_1', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_2', ?, 'delegated_execution_berserker', 2,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	seedAttemptExecution(t, db, attemptID, runID, "nr_attempt_activity_1", "2026-06-14T10:00:00Z")
+	seedAttemptExecution(t, db, otherAttemptID, runID, "nr_attempt_activity_2", "2026-06-14T10:00:00Z")
+	insertActivityEvent := func(eventID, attempt string, runEventSeq, seq int, payloadJSON string) {
+		t.Helper()
+		mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, NULL, ?, 'v1', 'attempt.activity', ?, ?, 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', ?, ?, ?, '2026-06-14T10:00:00Z')`,
+			eventID, runID, runEventSeq, attempt, seq, payloadJSON, "caus-"+eventID, "prev-"+eventID, "entry-"+eventID)
+	}
+
+	insertActivityEvent("evt-act-r1", attemptID, 9001, 1, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
+	insertActivityEvent("evt-act-t1", attemptID, 9002, 2, `{"kind":"kingdom.tool","activity_id":"part-t1","tool_name":"read","tool_status":"completed","tool_title":"foo.go","occurred_at":"2026-06-14T10:00:02Z"}`)
+	// Same provider part streamed again — must collapse to one item on read.
+	insertActivityEvent("evt-act-r1-dup", attemptID, 9003, 3, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
+	// A different attempt's activity must not leak into this attempt's feed.
+	insertActivityEvent("evt-act-other", otherAttemptID, 9004, 1, `{"kind":"kingdom.reasoning","activity_id":"part-other","detail":"Other","occurred_at":"2026-06-14T10:00:03Z"}`)
+	// A coarse lifecycle event for the same attempt must be ignored by the activity feed.
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-progress', ?, 9005, NULL, ?, 'v1', 'attempt.progress', 4, '{"step":1}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_invoked', 'progress', 'corr-activity', 'caus-act-progress', 'prev-act-progress', 'entry-act-progress', '2026-06-14T10:00:04Z')`, runID, attemptID)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+
+	var response gen.AcpRunActivityResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode activity response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("expected 2 deduped activity items for the attempt, got %d: %#v", len(response.Items), response.Items)
+	}
+	if response.Items[0].Id != "part-r1" || response.Items[0].Kind != gen.Thinking {
+		t.Fatalf("expected first item to be reasoning part-r1, got %#v", response.Items[0])
+	}
+	if response.Items[1].Id != "part-t1" || response.Items[1].Kind != gen.Tool {
+		t.Fatalf("expected second item to be tool part-t1, got %#v", response.Items[1])
+	}
+
+	// The coarse timeline must never surface activity events.
+	timeline := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/timeline?limit=200",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if timeline.Code != http.StatusOK {
+		t.Fatalf("expected timeline 200, got %d", timeline.Code)
+	}
+	var timelinePage gen.RunTimelineResponse
+	if err := json.Unmarshal(timeline.Body.Bytes(), &timelinePage); err != nil {
+		t.Fatalf("decode timeline: %v", err)
+	}
+	for _, item := range timelinePage.Items {
+		if item.EventType == "attempt.activity" {
+			t.Fatalf("attempt.activity must be excluded from the timeline, got %#v", item)
+		}
+	}
+}
+
+func TestServerRunExecutionActivityReturnsNotFoundForUnknownAttempt(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/attempt-missing/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
+	}
+	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+}
+
+func TestServerRunExecutionActivityReturnsNotFoundForMismatchedRunAttempt(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	otherRunID := seedRunWithCustomPlanDraftingWorkflow(t, handler, "plan_drafting_cross_run")
+	const attemptID = "attempt-activity-cross-run"
+	now := "2026-06-14T10:00:00Z"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-cross-run', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_cross_run', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-cross-run', 1, ?, ?)`, otherRunID, now, now)
+	seedAttemptExecution(t, db, attemptID, otherRunID, "nr_attempt_activity_cross_run", "2026-06-14T10:00:00Z")
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-cross-run', ?, 9001, NULL, ?, 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","activity_id":"part-cross-run","detail":"Other run","occurred_at":"2026-06-14T10:00:01Z"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', 'caus-cross-run', 'prev-cross-run', 'entry-cross-run', '2026-06-14T10:00:00Z')`, otherRunID, attemptID)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
 	}
 	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
 }

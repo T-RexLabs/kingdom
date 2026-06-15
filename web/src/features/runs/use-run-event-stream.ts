@@ -10,6 +10,8 @@ import {
 import type { RunDetailSummary, RunExecution, TimelineEvent } from "@/api/hooks-types";
 import { subscribeSSE, type ParsedSSEEvent, type SSEConnectionState } from "@/lib/sse-stream";
 import { appendLiveTimelineEvent } from "./run-live-timeline";
+import { appendLiveRunActivity } from "./run-live-activity";
+import { parseActivityEvent } from "@/features/activity/activity-view";
 import { liveExecutionLabel, patchLiveExecutionProjection } from "./run-live-execution-projection";
 import {
 	applyRunStreamHighWaterMark,
@@ -38,6 +40,10 @@ const RUN_STREAM_TIMELINE_ONLY_EVENT_TYPES = new Set([
 	"attempt.sequence_gap",
 	"attempt.timeout_warning",
 ]);
+// Fine-grained provider activity is observability-only: it is routed into the
+// per-attempt live activity buffer and must never enter the coarse timeline or
+// trigger surface refetches.
+const RUN_ACTIVITY_EVENT_TYPE = "attempt.activity";
 
 export type RunStreamConnectionState = SSEConnectionState["state"];
 
@@ -169,6 +175,13 @@ export function applyRunStreamEvent(
 	const eventType = normalizeEventType(event.type, data);
 	const normalized = normalizeRunStreamData(data, eventType);
 
+	// Route agent activity into its own buffer before any timeline / high-water-mark
+	// / surface-invalidation machinery so it stays isolated from the coarse stream.
+	if (eventType === RUN_ACTIVITY_EVENT_TYPE) {
+		routeLiveRunActivity(queryClient, runId, normalized);
+		return true;
+	}
+
 	const accepted = applyRunStreamHighWaterMark(queryClient, runId, normalized.runEventSeq);
 	if (!accepted) {
 		return true;
@@ -289,6 +302,29 @@ function applyRunStreamSideEffects(
 				}
 			return;
 	}
+}
+
+function routeLiveRunActivity(
+	queryClient: ReturnType<typeof useQueryClient>,
+	runId: string,
+	event: NormalizedRunStreamData,
+) {
+	const attemptId = readString(event.payload.attempt_id);
+	if (!attemptId) {
+		return;
+	}
+	const item = parseActivityEvent({
+		payload: event.payload,
+		eventId: event.eventId ?? "",
+		createdAt: event.createdAt,
+	});
+	if (!item) {
+		return;
+	}
+	appendLiveRunActivity(queryClient, runId, attemptId, item);
+	// Keep the run's "last activity" fresh so the live status headline reads as
+	// cooking, but do not invalidate any surfaces.
+	patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
 }
 
 function patchExecutionLiveProjection(

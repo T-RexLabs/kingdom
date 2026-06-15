@@ -295,80 +295,84 @@ func acpRunActivityItemsFromEvents(events []state.PlanningOperationEvent) []gen.
 }
 
 func acpRunActivityItemFromEvent(event state.PlanningOperationEvent) (gen.AcpRunActivityItem, bool) {
+	return acpActivityItemFromPayload(event.PayloadJSON, event.EventID, event.CreatedAt)
+}
+
+// acpActivityItemFromPayload maps a stored activity event into a renderable item by
+// inspecting its payload "kind". It is source-agnostic: planner operation events and
+// decree-run attempt.activity events share the same payload shape, so both feed the
+// same parser (and the same frontend renderer). Events without a recognized activity
+// kind are skipped.
+func acpActivityItemFromPayload(payloadJSON, eventID, createdAt string) (gen.AcpRunActivityItem, bool) {
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		return gen.AcpRunActivityItem{}, false
 	}
-	createdAt := mustParseRFC3339(event.CreatedAt)
-	occurredAt := createdAt
+	occurredAt := mustParseRFC3339(createdAt)
 	if rawOccurredAt := strings.TrimSpace(stringValue(payload["occurred_at"])); rawOccurredAt != "" {
 		if parsed, err := time.Parse(time.RFC3339, rawOccurredAt); err == nil {
 			occurredAt = parsed.UTC()
 		}
 	}
-	switch strings.TrimSpace(event.EventType) {
-	case acp.GenericEventType:
-		activityID := activityItemID(payload, event.EventID)
-		kind := strings.TrimSpace(stringValue(payload["kind"]))
-		switch kind {
-		case acp.KingdomPhaseKind:
-			phase := strings.TrimSpace(stringValue(payload["phase"]))
-			label := strings.TrimSpace(stringValue(payload["label"]))
-			if label == "" {
-				var ok bool
-				label, ok = acp.PhaseActivityLabel(phase)
-				if !ok {
-					return gen.AcpRunActivityItem{}, false
-				}
-			}
-			return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
-		case acp.KingdomProgressKind:
-			label := strings.TrimSpace(stringValue(payload["label"]))
+	activityID := activityItemID(payload, eventID)
+	switch strings.TrimSpace(stringValue(payload["kind"])) {
+	case acp.KingdomPhaseKind:
+		phase := strings.TrimSpace(stringValue(payload["phase"]))
+		label := strings.TrimSpace(stringValue(payload["label"]))
+		if label == "" {
 			var ok bool
-			label, ok = acp.NormalizeProgressActivityLabel(label)
+			label, ok = acp.PhaseActivityLabel(phase)
 			if !ok {
 				return gen.AcpRunActivityItem{}, false
 			}
-			return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
-		case acp.KingdomToolKind:
-			toolName := strings.TrimSpace(stringValue(payload["tool_name"]))
-			if toolName == "" || toolName == "kingdom_complete_attempt" {
-				return gen.AcpRunActivityItem{}, false
-			}
-			status := strings.TrimSpace(stringValue(payload["tool_status"]))
-			toolTitle := strings.TrimSpace(stringValue(payload["tool_title"]))
-			toolInput := strings.TrimSpace(stringValue(payload["tool_input"]))
-			label := strings.TrimSpace(stringValue(payload["label"]))
-			if label == "" {
-				label = acp.ToolActivityLabel(toolName, status, toolTitle, toolInput)
-			}
-			item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Tool, Label: label, OccurredAt: occurredAt}
-			detail := strings.TrimSpace(stringValue(payload["detail"]))
-			if detail == "" {
-				detail = acp.ToolActivityDetail(status)
-			}
-			if detail != "" {
-				item.Detail = &detail
-			}
-			if toolInput != "" {
-				item.Input = &toolInput
-			}
-			return item, true
-		case acp.KingdomReasoningKind:
-			detail := strings.TrimSpace(stringValue(payload["detail"]))
-			if detail == "" {
-				detail = strings.TrimSpace(stringValue(payload["summary"]))
-			}
-			label := strings.TrimSpace(stringValue(payload["label"]))
-			if label == "" {
-				label = "Thinking"
-			}
-			item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Thinking, Label: label, OccurredAt: occurredAt}
-			if detail != "" {
-				item.Detail = &detail
-			}
-			return item, true
 		}
+		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
+	case acp.KingdomProgressKind:
+		label := strings.TrimSpace(stringValue(payload["label"]))
+		var ok bool
+		label, ok = acp.NormalizeProgressActivityLabel(label)
+		if !ok {
+			return gen.AcpRunActivityItem{}, false
+		}
+		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
+	case acp.KingdomToolKind:
+		toolName := strings.TrimSpace(stringValue(payload["tool_name"]))
+		if toolName == "" || toolName == "kingdom_complete_attempt" {
+			return gen.AcpRunActivityItem{}, false
+		}
+		status := strings.TrimSpace(stringValue(payload["tool_status"]))
+		toolTitle := strings.TrimSpace(stringValue(payload["tool_title"]))
+		toolInput := strings.TrimSpace(stringValue(payload["tool_input"]))
+		label := strings.TrimSpace(stringValue(payload["label"]))
+		if label == "" {
+			label = acp.ToolActivityLabel(toolName, status, toolTitle, toolInput)
+		}
+		item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Tool, Label: label, OccurredAt: occurredAt}
+		detail := strings.TrimSpace(stringValue(payload["detail"]))
+		if detail == "" {
+			detail = acp.ToolActivityDetail(status)
+		}
+		if detail != "" {
+			item.Detail = &detail
+		}
+		if toolInput != "" {
+			item.Input = &toolInput
+		}
+		return item, true
+	case acp.KingdomReasoningKind:
+		detail := strings.TrimSpace(stringValue(payload["detail"]))
+		if detail == "" {
+			detail = strings.TrimSpace(stringValue(payload["summary"]))
+		}
+		label := strings.TrimSpace(stringValue(payload["label"]))
+		if label == "" {
+			label = "Thinking"
+		}
+		item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Thinking, Label: label, OccurredAt: occurredAt}
+		if detail != "" {
+			item.Detail = &detail
+		}
+		return item, true
 	}
 	return gen.AcpRunActivityItem{}, false
 }

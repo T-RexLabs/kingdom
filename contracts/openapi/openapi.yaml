@@ -988,6 +988,32 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /runs/{id}/executions/{attemptId}/activity:
+    get:
+      tags: [runs]
+      operationId: getRunExecutionActivity
+      summary: Fetch fine-grained provider activity (reasoning + tool calls) for one attempt.
+      parameters:
+        - $ref: "#/components/parameters/ActorId"
+        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+      responses:
+        "200":
+          description: Durable provider activity history for one attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcpRunActivityResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /runs/{id}/agents:
     get:
       tags: [runs]
@@ -3889,9 +3915,6 @@ components:
         created_at:
           type: string
           format: date-time
-        last_heartbeat_at:
-          type: string
-          format: date-time
 
     RunParticipant:
       type: object
@@ -3917,9 +3940,6 @@ components:
           type: integer
           minimum: 0
         first_seen_at:
-          type: string
-          format: date-time
-        last_heartbeat_at:
           type: string
           format: date-time
 
@@ -3958,9 +3978,6 @@ components:
         provider_session_id:
           type: string
           minLength: 1
-        last_heartbeat_at:
-          type: string
-          format: date-time
         queued_at:
           type: string
           format: date-time

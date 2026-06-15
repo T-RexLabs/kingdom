@@ -5,7 +5,11 @@ import { RelativeTime } from "@/components/ui/relative-time";
 import { nodeLabel } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
+import { statusLabel } from "@/lib/status-system";
 import type { ActivityStepGroup } from "./run-activity-selection";
+import { useNodeActivityRecency } from "./use-node-activity-recency";
+import { RunActivityLanes } from "./run-activity-lanes";
+import { RunExecutionActivity } from "./run-execution-activity";
 import { RunExecutionsPanel } from "./run-executions-panel";
 import { executionDisplayStatus, executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isCurrentActivityExecutionStatus, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { TimelinePanel } from "./timeline-panel";
@@ -69,7 +73,11 @@ export function RunExecutionSurface({
 	const primaryExecutionErrorVisible = showPrimaryExecutionError && typeof executionsErrorMessage === "string" && executionsErrorMessage.trim() !== "";
 	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(currentExecution, detail);
 	const summary = executionSummary(run, currentExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);
-	const summaryActivityAt = currentExecution?.activity_at ?? run.last_activity_at;
+	const isExecutionRunning = isActiveExecutionStatus(currentExecution?.status);
+	const nodeActivityAt = useNodeActivityRecency(run.run_id, currentExecution?.attempt_id ?? selectedAttemptId, isExecutionRunning);
+	// Prefer honest ACP activity recency; fall back to the coarse execution timestamp
+	// only before any agent activity has been recorded.
+	const summaryActivityAt = nodeActivityAt ?? currentExecution?.activity_at ?? run.last_activity_at;
 	const activityHeroLabel = primaryExecutionErrorVisible ? "Execution Steps" : activityHeroLabelText(currentExecutionDisplayStatus, selectedAttemptSource);
 	const stepSelectorId = useId();
 	const attemptSelectorId = useId();
@@ -101,6 +109,12 @@ export function RunExecutionSurface({
 
 	return (
 		<div className="space-y-3">
+			<RunActivityLanes
+				runId={run.run_id}
+				executions={executions}
+				selectedNodeId={selectedNodeId}
+				onSelectStep={onSelectStep}
+			/>
 			{primaryExecutionErrorVisible && (
 				<section className="rounded-xl border border-status-blocked/40 bg-status-blocked/10 p-4 text-status-blocked">
 					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -148,7 +162,7 @@ export function RunExecutionSurface({
 					</div>
 					<div className="flex flex-col items-start gap-2 sm:items-end">
 						{currentExecution && currentExecutionDisplayStatus
-							? <Badge variant="status" status={currentExecutionDisplayStatus}>{plainStatus(currentExecutionDisplayStatus)}</Badge>
+							? <Badge variant="status" status={currentExecutionDisplayStatus}>{statusLabel(currentExecutionDisplayStatus)}</Badge>
 							: null}
 						{currentStepGroup && currentStepGroup.attempts.length > 1 ? (
 							<div className="min-w-[6.75rem] sm:min-w-[7rem]">
@@ -174,6 +188,12 @@ export function RunExecutionSurface({
 					</div>
 				</div>
 			</section>
+
+			<RunExecutionActivity
+				runId={run.run_id}
+				attemptId={currentExecution?.attempt_id ?? selectedAttemptId}
+				isRunning={isActiveExecutionStatus(currentExecution?.status)}
+			/>
 
 			<RunExecutionsPanel
 				detail={detail}
@@ -333,9 +353,3 @@ function selectedExecutionDisplayStatus(
 	return executionDisplayStatus(execution);
 }
 
-function plainStatus(status: string): string {
-	if (status === "starting") {
-		return "Launching";
-	}
-	return status.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}

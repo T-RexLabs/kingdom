@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/acp"
 	"kingdom/internal/bootstrapassets"
 	coreverdict "kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
@@ -553,6 +554,7 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 		CompletionProtocolVersion: opencode.CompletionProtocolVersion,
 		CompletionCapability:      result.completionCapability,
 		CompletionReceiptDir:      result.completionReceiptDir,
+		OnActivity:                o.providerExecutionActivityObserver(ctx, result),
 		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
 	}, result.outputText)
 	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
@@ -1027,7 +1029,12 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			projectionAllowed = true
 		}
 	}
-	if (transitionCommitted || projectionAllowed) && o.registry != nil {
+	// Reconcile the agent's registry status from live node_runs on every completion.
+	// SyncOperationalStatus derives the status from current node_runs (idempotent), so
+	// it is safe to run unconditionally. Gating it on a committed/projected transition
+	// left runtime-owned agents (e.g. the King's plan-decision node) stuck "busy" when
+	// their completion landed after the run/node had already moved past "running".
+	if o.registry != nil {
 		if statusErr := o.registry.SyncOperationalStatus(ctx, result.attempt.AgentID, now); statusErr != nil {
 			slog.Warn("failed to sync agent operational status after completion", "agent_id", result.attempt.AgentID, "error", statusErr)
 		}
@@ -1378,6 +1385,86 @@ func (o *orchestrationLoop) providerExecutionLifecycleObserver(ctx context.Conte
 	}
 }
 
+// providerExecutionActivityObserver returns the OnActivity sink wired into the
+// provider execution. Each observation is persisted as an attempt.activity event
+// so the run Activity tab can render the agent's reasoning and tool calls live and
+// durably, exactly as the planner does for planning operations.
+func (o *orchestrationLoop) providerExecutionActivityObserver(ctx context.Context, result asyncExecutionResult) func(opencode.ExecuteActivityObservation) {
+	if o == nil || o.events == nil {
+		return nil
+	}
+	baseCtx := ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	baseCtx = context.WithoutCancel(baseCtx)
+	return func(observation opencode.ExecuteActivityObservation) {
+		o.emitProviderActivityObservation(baseCtx, result, observation)
+	}
+}
+
+func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context, result asyncExecutionResult, observation opencode.ExecuteActivityObservation) {
+	if o == nil || o.events == nil || strings.TrimSpace(result.attemptID) == "" {
+		return
+	}
+	occurredAt := strings.TrimSpace(observation.OccurredAt)
+	if occurredAt == "" {
+		occurredAt = o.now().UTC().Format(time.RFC3339)
+	}
+
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
+	seq := o.nextEventSeq(ctx, result.attemptID)
+	// Prefer the provider part id so a live activity and the same part recovered
+	// later by reconciliation share one stable id the reader de-dupes on; fall
+	// back to a seq-derived id only when the provider omits a part id.
+	activityID := strings.TrimSpace(observation.ProviderPartID)
+	if activityID == "" {
+		activityID = fmt.Sprintf("%s_act_%d", result.attemptID, seq)
+	}
+	payload := acp.ActivityPayload(map[string]any{
+		"run_id":      strings.TrimSpace(result.run.RunID),
+		"node_id":     strings.TrimSpace(result.node.NodeID),
+		"node_run_id": strings.TrimSpace(result.attempt.NodeRunID),
+		"attempt_id":  strings.TrimSpace(result.attemptID),
+	}, activityID, acp.ActivityInput{
+		Kind:       string(observation.Kind),
+		ToolName:   observation.ToolName,
+		ToolStatus: observation.ToolStatus,
+		ToolTitle:  observation.ToolTitle,
+		ToolInput:  observation.ToolInput,
+		Label:      observation.Label,
+		Summary:    observation.Summary,
+		RawText:    observation.RawText,
+		OccurredAt: occurredAt,
+	})
+	if len(payload) == 0 {
+		return
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
+		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_act_%d", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt, seq),
+		RunID:           result.run.RunID,
+		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: strings.TrimSpace(result.attempt.NodeRunID) != ""},
+		AttemptID:       result.attemptID,
+		SchemaVersion:   "v1",
+		EventType:       state.AttemptActivityEventType,
+		Seq:             seq,
+		PayloadJSON:     string(raw),
+		ActorID:         "runtime_orchestrator",
+		RoleID:          result.node.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "provider_activity",
+		ReasonText:      "provider activity telemetry",
+		CorrelationID:   "corr_orch_" + result.run.RunID,
+		CausationID:     fmt.Sprintf("caus_orch_%s_%s_act_%s", result.run.RunID, result.attempt.NodeRunID, sanitizeFileToken(activityID)),
+		CreatedAt:       occurredAt,
+	})
+}
+
 func shouldRetryEmptyOutput(outputText string, artifactCount int, suppress bool) bool {
 	if suppress {
 		return false
@@ -1479,6 +1566,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 			OnProviderSession: func(providerSessionID string) {
 				o.observeProviderSessionForInvocation(ctx, result.attemptID, result.providerInvocationID, providerSessionID)
 			},
+			OnActivity:          o.providerExecutionActivityObserver(ctx, result),
 			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, result),
 			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, result),
 		})

@@ -79,15 +79,6 @@ export const AGENT_STATUS_ORDER: AgentStatus[] = [
   "failed",
 ];
 
-/** Tailwind dot-color classes for each agent status. */
-export const AGENT_STATUS_DOT_COLORS: Record<AgentStatus, string> = {
-	busy: "bg-status-running",
-	idle: "bg-status-blocked",
-	blocked: "bg-status-blocked",
-	offline: "bg-status-pending",
-	failed: "bg-status-failed",
-};
-
 // ---------------------------------------------------------------------------
 // Heartbeat
 // ---------------------------------------------------------------------------
@@ -95,14 +86,6 @@ export const AGENT_STATUS_DOT_COLORS: Record<AgentStatus, string> = {
 /**
  * Classify a heartbeat timestamp as alive (< 30 s), stale (≥ 30 s), or none.
  */
-export function getHeartbeatState(
-  lastHeartbeatAt?: string,
-): "alive" | "stale" | "none" {
-  if (!lastHeartbeatAt) return "none";
-  const diff = Date.now() - new Date(lastHeartbeatAt).getTime();
-  if (diff < 30_000) return "alive";
-  return "stale";
-}
 
 // ---------------------------------------------------------------------------
 // Role helpers
@@ -258,4 +241,15 @@ export function nodeLabel(nodeId: string): string {
       return w.charAt(0).toUpperCase() + w.slice(1);
     })
     .join(" ");
+}
+
+/**
+ * Friendly name for the agent behind an execution: the role title once it is known,
+ * falling back to the node label before the role resolves. Avoids surfacing the
+ * "Unknown Role" placeholder at the very start of a run, when execution records can
+ * briefly lack a required_role.
+ */
+export function agentLabelForExecution(requiredRole: string | undefined, nodeId: string): string {
+  const role = (requiredRole ?? "").trim();
+  return role ? roleTitle(role) : nodeLabel(nodeId);
 }

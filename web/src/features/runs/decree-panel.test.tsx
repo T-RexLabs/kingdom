@@ -88,7 +88,8 @@ describe("decree panel", () => {
     });
   });
 
-  it("does not render decree metadata in the run sidebar", () => {
+  it("shows the decree title inline and opens the full decree in a read modal", async () => {
+    const user = userEvent.setup();
     render(
       <DecreePanel
         run={baseRun}
@@ -96,10 +97,19 @@ describe("decree panel", () => {
       />,
     );
 
+    // The sidebar stays compact: title is shown, but the body lives behind a modal.
     expect(screen.getByText("Royal Landing Page")).toBeInTheDocument();
-    expect(screen.getByText("Build the new experience.")).toBeInTheDocument();
+    expect(screen.queryByText("Build the new experience.")).not.toBeInTheDocument();
     expect(screen.queryByText("Metadata")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open decree settings" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Read royal decree" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Royal decree" });
+    expect(within(dialog).getByText("Build the new experience.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    expect(screen.queryByRole("dialog", { name: "Royal decree" })).not.toBeInTheDocument();
   });
 
   it("opens a decree settings modal with structured run configuration", async () => {

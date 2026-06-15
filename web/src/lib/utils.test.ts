@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_STATUS_DOT_COLORS, getStatusBg, nodeExecutionSemantics } from "./utils";
+import { getStatusBg, nodeExecutionSemantics } from "./utils";
 
 describe("agent status color mappings", () => {
-	it("maps idle to orange and busy to blue for status dots", () => {
-		expect(AGENT_STATUS_DOT_COLORS.idle).toBe("bg-status-blocked");
-		expect(AGENT_STATUS_DOT_COLORS.busy).toBe("bg-status-running");
-	});
-
 	it("maps idle and busy badge styles to the unified palette", () => {
 		expect(getStatusBg("idle")).toBe("bg-status-blocked/15 text-status-blocked");
 		expect(getStatusBg("busy")).toBe("bg-status-running/15 text-status-running");

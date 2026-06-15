@@ -1479,7 +1479,7 @@ describe("run detail page", () => {
   it("renders run controls directly inside the fixed header", () => {
     render(<RunDetailPage />);
     const strip = screen.getByTestId("run-header-command-strip");
-    expect(strip).toHaveTextContent("Running");
+    expect(strip).toHaveTextContent("Active");
     expect(strip).not.toHaveTextContent("Mode:");
     expect(strip).not.toHaveTextContent("Created:");
   });
@@ -1512,7 +1512,7 @@ describe("run detail page", () => {
     render(<RunDetailPage />);
     const controls = screen.getByTestId("run-primary-controls");
     const text = controls.textContent ?? "";
-    expect(text.indexOf("Running")).toBeLessThan(text.indexOf("Cancel Run"));
+    expect(text.indexOf("Active")).toBeLessThan(text.indexOf("Cancel Run"));
   });
 
   it("opens a themed cancel dialog without invoking browser confirm", async () => {
@@ -1600,7 +1600,7 @@ describe("run detail page", () => {
     const text = controls.textContent ?? "";
     const notices = screen.getByTestId("run-header-notices");
     expect(notices).toHaveTextContent("Unbounded review/validation mode");
-    expect(text.indexOf("Running")).toBeLessThan(text.indexOf("Cancel Run"));
+    expect(text.indexOf("Active")).toBeLessThan(text.indexOf("Cancel Run"));
     mockRun.run_until_all_approve = false;
   });
 

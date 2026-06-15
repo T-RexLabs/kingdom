@@ -360,6 +360,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/artifacts", s.handleListRunArtifacts)
 	mux.HandleFunc("GET /runs/{id}/artifacts/archive", s.handleGetRunArtifactsArchive)
 	mux.HandleFunc("GET /runs/{id}/graph", s.handleGetRunGraph)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetRunExecutionActivity)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}", s.handleGetRunExecution)
 	mux.HandleFunc("GET /runs/{id}/executions", s.handleListRunExecutions)
 	mux.HandleFunc("GET /runs/{id}/agents", s.handleListRunAgents)
@@ -425,7 +426,6 @@ type runParticipantItem struct {
 	ParentAgentID   *string    `json:"parent_agent_id,omitempty"`
 	SpawnDepth      int        `json:"spawn_depth"`
 	FirstSeenAt     time.Time  `json:"first_seen_at"`
-	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
 }
 
 type agentItem struct {
@@ -436,7 +436,6 @@ type agentItem struct {
 	ParentAgentID   *string    `json:"parent_agent_id,omitempty"`
 	SpawnDepth      int        `json:"spawn_depth"`
 	CreatedAt       time.Time  `json:"created_at"`
-	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
 }
 
 type runExecutionItem struct {
@@ -450,7 +449,6 @@ type runExecutionItem struct {
 	Status             string     `json:"status"`
 	LogicalSessionID   *string    `json:"logical_session_id,omitempty"`
 	ProviderSessionID  *string    `json:"provider_session_id,omitempty"`
-	LastHeartbeatAt    *time.Time `json:"last_heartbeat_at,omitempty"`
 	QueuedAt           time.Time  `json:"queued_at"`
 	ActivityAt         time.Time  `json:"activity_at"`
 	ProgressEventType  *string    `json:"progress_event_type,omitempty"`
@@ -585,10 +583,6 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		if agent.ParentAgentID.Valid {
 			item.ParentAgentID = &agent.ParentAgentID.String
-		}
-		if agent.LastHeartbeatAt.Valid {
-			parsed := mustParseRFC3339(agent.LastHeartbeatAt.String)
-			item.LastHeartbeatAt = &parsed
 		}
 		items = append(items, item)
 	}

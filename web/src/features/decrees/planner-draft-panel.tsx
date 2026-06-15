@@ -13,7 +13,7 @@ import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Spinner } from "@/components/ui/spinner";
 import type { PlanningDraft } from "@/api/hooks";
 import { isPlannerOperationTerminal, type PlannerOperationState } from "./planner-operation-controller";
-import { useTextReveal } from "./use-text-reveal";
+import { useTextReveal } from "@/lib/use-text-reveal";
 
 export function PlanResultModal({
   open,

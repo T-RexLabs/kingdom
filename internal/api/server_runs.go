@@ -959,10 +959,6 @@ func (s *Server) handleListRunAgents(w http.ResponseWriter, r *http.Request) {
 		if agent.ParentAgentID.Valid {
 			item.ParentAgentID = &agent.ParentAgentID.String
 		}
-		if agent.LastHeartbeatAt.Valid {
-			parsed := mustParseRFC3339(agent.LastHeartbeatAt.String)
-			item.LastHeartbeatAt = &parsed
-		}
 		items = append(items, item)
 	}
 
@@ -1035,6 +1031,73 @@ func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+// handleGetRunExecutionActivity returns the durable, fine-grained provider activity
+// (agent reasoning + tool calls) for a single node attempt. It is the durable
+// backstop for the run Activity tab; live activity arrives over the run event
+// stream. The payload shape mirrors the planner's activity endpoint so the same
+// frontend renderer serves both.
+func (s *Server) handleGetRunExecutionActivity(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_run_execution_activity"); !ok {
+		return
+	}
+
+	runID := strings.TrimSpace(r.PathValue("id"))
+	if !s.runExists(r.Context(), runID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run_execution_activity", map[string]any{"run_id": runID})
+		return
+	}
+	attemptID := strings.TrimSpace(r.PathValue("attemptId"))
+	if attemptID == "" {
+		s.writeBadRequest(w, "attempt id is required")
+		return
+	}
+
+	store := executionstore.New(s.db)
+	if _, found, err := store.GetRunExecutionDetail(r.Context(), runID, attemptID); err != nil {
+		s.writeInternalError(w, "get run execution activity failed")
+		return
+	} else if !found {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run execution not found", "api.get_run_execution_activity", map[string]any{"run_id": runID, "attempt_id": attemptID})
+		return
+	}
+
+	rows, err := s.db.QueryContext(
+		r.Context(),
+		`SELECT event_id, payload_json, created_at
+		 FROM events
+		 WHERE run_id = ? AND attempt_id = ? AND event_type = ?
+		 ORDER BY seq ASC`,
+		runID,
+		attemptID,
+		state.AttemptActivityEventType,
+	)
+	if err != nil {
+		s.writeInternalError(w, "fetch run execution activity failed")
+		return
+	}
+	defer rows.Close()
+
+	items := make([]gen.AcpRunActivityItem, 0)
+	for rows.Next() {
+		var eventID string
+		var payloadJSON string
+		var createdAt string
+		if err := rows.Scan(&eventID, &payloadJSON, &createdAt); err != nil {
+			s.writeInternalError(w, "decode run execution activity row failed")
+			return
+		}
+		if item, ok := acpActivityItemFromPayload(payloadJSON, eventID, createdAt); ok {
+			items = append(items, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		s.writeInternalError(w, "read run execution activity failed")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, gen.AcpRunActivityResponse{Items: dedupeAcpRunActivityItems(items)})
+}
+
 func (s *Server) loadRunExecutionPublication(ctx context.Context, attemptID string) (string, string, []runExecutionPublicationEntryItem, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(attemptID) == "" {
 		return "", "", nil, nil
@@ -1090,10 +1153,6 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	}
 	if record.ProviderSessionID.Valid {
 		item.ProviderSessionID = &record.ProviderSessionID.String
-	}
-	if record.LastHeartbeatAt.Valid {
-		parsed := mustParseRFC3339(record.LastHeartbeatAt.String)
-		item.LastHeartbeatAt = &parsed
 	}
 	if record.ProgressEventType.Valid {
 		item.ProgressEventType = &record.ProgressEventType.String
@@ -1355,10 +1414,12 @@ func (s *Server) handleGetRunTimeline(w http.ResponseWriter, r *http.Request) {
 		`SELECT event_id, run_event_seq, seq, event_type, reason_code, payload_json, created_at
 		 FROM events
 		 WHERE run_id = ?
+		   AND event_type != ?
 		   AND (? = 0 OR run_event_seq < ?)
 		 ORDER BY run_event_seq DESC
 		 LIMIT ?`,
 		runID,
+		state.AttemptActivityEventType,
 		beforeRunEventSeq,
 		beforeRunEventSeq,
 		limit+1,
