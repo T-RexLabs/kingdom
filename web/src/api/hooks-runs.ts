@@ -34,6 +34,7 @@ import type {
   RunPlanSnapshot,
   RunSummary,
   RunTimelineResponse,
+  AcpRunActivityResponse,
 } from "./hooks-types";
 
 export type { RunsStateFilter } from "@/lib/run-filters";
@@ -66,6 +67,7 @@ export const runQueryKeys = {
 	graph: (runId: string) => ["runs", runId, "graph"] as const,
 	executions: (runId: string) => ["runs", runId, "executions"] as const,
 	executionDetail: (runId: string, attemptId: string) => ["runs", runId, "executions", "detail", attemptId] as const,
+	executionActivity: (runId: string, attemptId: string) => ["runs", runId, "executions", "activity", attemptId] as const,
 	timelineRoot: (runId: string) => ["runs", runId, "timeline"] as const,
 	timeline: (runId: string, limit: number) => ["runs", runId, "timeline", limit] as const,
 	agents: (runId: string) => ["runs", runId, "agents"] as const,
@@ -350,6 +352,28 @@ export function useRunExecution(runId: string, attemptId?: string | null, option
 		retry: retryRunDetailQuery,
 		...manualRefetchQueryOptions,
 	});
+}
+
+// useRunExecutionActivity fetches the durable provider activity (agent reasoning +
+// tool calls) for one node attempt. Live activity arrives over the run event stream;
+// this is the durable backstop. Poll while the attempt is in-flight, idle otherwise.
+export function useRunExecutionActivity(
+  runId: string,
+  attemptId?: string | null,
+  options?: { enabled?: boolean; refetchIntervalMs?: number | false },
+) {
+  const trimmedAttemptId = attemptId?.trim() ?? "";
+  const enabled = (options?.enabled ?? true) && !!runId && trimmedAttemptId !== "";
+  return useQuery({
+    queryKey: runQueryKeys.executionActivity(runId, trimmedAttemptId),
+    queryFn: enabled
+      ? () => apiFetch<AcpRunActivityResponse>(`/runs/${runId}/executions/${trimmedAttemptId}/activity`)
+      : skipToken,
+    enabled,
+    refetchInterval: options?.refetchIntervalMs,
+    retry: retryRunDetailQuery,
+    ...manualRefetchQueryOptions,
+  });
 }
 
 export function useTimeline(runId: string, limit = 50, options?: RunDetailQueryOptions) {

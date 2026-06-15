@@ -360,6 +360,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/artifacts", s.handleListRunArtifacts)
 	mux.HandleFunc("GET /runs/{id}/artifacts/archive", s.handleGetRunArtifactsArchive)
 	mux.HandleFunc("GET /runs/{id}/graph", s.handleGetRunGraph)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetRunExecutionActivity)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}", s.handleGetRunExecution)
 	mux.HandleFunc("GET /runs/{id}/executions", s.handleListRunExecutions)
 	mux.HandleFunc("GET /runs/{id}/agents", s.handleListRunAgents)

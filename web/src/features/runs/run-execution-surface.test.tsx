@@ -41,6 +41,14 @@ vi.mock("./timeline-panel", () => ({
 	TimelinePanel: () => <div data-testid="timeline-panel" />,
 }));
 
+vi.mock("./run-execution-activity", () => ({
+	RunExecutionActivity: () => <div data-testid="run-execution-activity" />,
+}));
+
+vi.mock("./run-activity-lanes", () => ({
+	RunActivityLanes: () => <div data-testid="run-activity-lanes" />,
+}));
+
 function makeRun(overrides: Partial<RunDetailSummary> = {}): RunDetailSummary {
 	return {
 		run_id: "run-1",

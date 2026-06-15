@@ -22,11 +22,6 @@ const (
 	ErrorEventType         = "error"
 	GenericEventType       = "generic"
 
-	KingdomPhaseKind     = "kingdom.phase"
-	KingdomToolKind      = "kingdom.tool"
-	KingdomReasoningKind = "kingdom.reasoning"
-	KingdomProgressKind  = "kingdom.progress"
-
 	PlannerRunStatusCreated    = "created"
 	PlannerRunStatusInProgress = "in-progress"
 	PlannerRunStatusAwaiting   = "awaiting"

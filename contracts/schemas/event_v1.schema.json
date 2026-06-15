@@ -63,6 +63,7 @@
         "attempt.failed",
         "attempt.succeeded",
         "attempt.cancelled",
+        "attempt.activity",
         "attempt.retrying",
         "attempt.retry_recovered",
         "attempt.retry_exhausted",

@@ -45,6 +45,7 @@ import { DAGVisualization } from "./dag-visualization";
 import { AgentDetailPanel } from "./agent-detail-panel";
 import { MailboxPanel } from "./mailbox-panel";
 import { RunExecutionSurface } from "./run-execution-surface";
+import { RunLiveStatus } from "./run-live-status";
 import { GovernanceActions } from "./governance-actions";
 import { CurrentPlanPanel } from "./current-plan-panel";
 import { DecreePanel } from "./decree-panel";
@@ -726,6 +727,8 @@ export function RunDetailPage() {
           </div>
         </div>
       </PageHeader>
+
+      <RunLiveStatus runId={runId} executions={presentedExecutions} />
 
       {showHeaderNotices && (
         <div data-testid="run-header-notices" className="border-b border-border bg-surface-raised/20 px-page py-2">

@@ -14,6 +14,14 @@ import (
 
 const (
 	AttemptIngestGapEventType = "attempt.sequence_gap"
+
+	// AttemptActivityEventType carries fine-grained provider activity (agent
+	// reasoning + tool calls) for a node attempt. It is observability-only: it is
+	// excluded from run-activity tracking, attempt state transitions, and mailbox
+	// mirroring, and is distinguished from coarse lifecycle events by its payload
+	// "kind". The run Activity tab renders it live and durably, mirroring the
+	// planner's activity stream.
+	AttemptActivityEventType = "attempt.activity"
 )
 
 var terminalAttemptEventTypes = map[string]struct{}{
@@ -495,7 +503,7 @@ func shouldProjectAttemptEventToMailboxTx(ctx context.Context, tx *sql.Tx, req A
 func shouldMirrorAttemptEventToMailbox(req AttemptEventIngestionRequest) bool {
 	code := strings.TrimSpace(strings.ToLower(req.ReasonCode))
 	switch code {
-	case "runtime_observation", "runtime_completion_observation":
+	case "runtime_observation", "runtime_completion_observation", "provider_activity":
 		return false
 	default:
 		return true

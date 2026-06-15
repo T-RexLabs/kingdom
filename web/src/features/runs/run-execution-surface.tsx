@@ -6,6 +6,8 @@ import { nodeLabel } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import type { ActivityStepGroup } from "./run-activity-selection";
+import { RunActivityLanes } from "./run-activity-lanes";
+import { RunExecutionActivity } from "./run-execution-activity";
 import { RunExecutionsPanel } from "./run-executions-panel";
 import { executionDisplayStatus, executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isCurrentActivityExecutionStatus, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { TimelinePanel } from "./timeline-panel";
@@ -101,6 +103,12 @@ export function RunExecutionSurface({
 
 	return (
 		<div className="space-y-3">
+			<RunActivityLanes
+				runId={run.run_id}
+				executions={executions}
+				selectedNodeId={selectedNodeId}
+				onSelectStep={onSelectStep}
+			/>
 			{primaryExecutionErrorVisible && (
 				<section className="rounded-xl border border-status-blocked/40 bg-status-blocked/10 p-4 text-status-blocked">
 					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -174,6 +182,12 @@ export function RunExecutionSurface({
 					</div>
 				</div>
 			</section>
+
+			<RunExecutionActivity
+				runId={run.run_id}
+				attemptId={currentExecution?.attempt_id ?? selectedAttemptId}
+				isRunning={isActiveExecutionStatus(currentExecution?.status)}
+			/>
 
 			<RunExecutionsPanel
 				detail={detail}

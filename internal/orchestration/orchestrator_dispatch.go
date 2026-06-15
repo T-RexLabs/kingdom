@@ -676,6 +676,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			OnProviderSession: func(providerSessionID string) {
 				o.observeProviderSessionForInvocation(ctx, job.attemptID, job.providerInvocationID, providerSessionID)
 			},
+			OnActivity:          o.providerExecutionActivityObserver(ctx, job),
 			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, job),
 			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, job),
 		})

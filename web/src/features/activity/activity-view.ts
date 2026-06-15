@@ -1,31 +1,46 @@
-import type { PlannerActivityItem } from "./planner-operation-controller";
+import type { AcpRunActivityItem } from "@/api/hooks";
 
-export type PlannerCurrentEvent = {
+// ActivityItem is the canonical, source-agnostic shape for one unit of agent
+// activity. Both the planner (planning operations) and decree runs (node attempts)
+// emit the same shape, so a single view-model builder and renderer serve both.
+export type ActivityKind = "thinking" | "tool" | "progress";
+
+export type ActivityItem = {
+  id: string;
+  kind: ActivityKind;
+  label: string;
+  detail?: string;
+  input?: string;
+  output?: string;
+  occurredAt?: string;
+};
+
+export type ActivityCurrentEvent = {
   id: string;
   label: string;
 };
 
-export type PlannerThoughtEntry = {
+export type ActivityThoughtEntry = {
   id: string;
   label: string;
   detail: string;
   occurredAt?: string;
 };
 
-export type PlannerSourceEntry = {
+export type ActivitySourceEntry = {
   id: string;
   label: string;
   url: string;
 };
 
-export type PlannerMessageActivityState = {
-  currentEvent: PlannerCurrentEvent | null;
+export type ActivityState = {
+  currentEvent: ActivityCurrentEvent | null;
   liveThoughtText: string;
-  thoughts: PlannerThoughtEntry[];
-  sources: PlannerSourceEntry[];
+  thoughts: ActivityThoughtEntry[];
+  sources: ActivitySourceEntry[];
 };
 
-export function emptyPlannerMessageActivityState(): PlannerMessageActivityState {
+export function emptyActivityState(): ActivityState {
   return {
     currentEvent: null,
     liveThoughtText: "",
@@ -34,14 +49,78 @@ export function emptyPlannerMessageActivityState(): PlannerMessageActivityState 
   };
 }
 
-export function buildPlannerMessageActivityState({
+export function activityItemFromApi(item: AcpRunActivityItem): ActivityItem {
+  return {
+    id: item.id,
+    kind: item.kind,
+    label: item.label,
+    detail: item.detail,
+    input: item.input,
+    output: item.output,
+    occurredAt: item.occurred_at,
+  };
+}
+
+// parseActivityEvent maps a raw activity event payload (carrying a kingdom.* kind)
+// into an ActivityItem. It is shared by the planner SSE controller and the run
+// event stream, since both deliver the same payload shape. Returns null for events
+// that are not renderable activity.
+export function parseActivityEvent(args: {
+  payload: Record<string, unknown>;
+  eventId: string;
+  createdAt?: string;
+}): ActivityItem | null {
+  const { payload, eventId, createdAt } = args;
+  const kind = readString(payload.kind);
+  const id = readString(payload.activity_id) ?? eventId;
+  if (!kind || !id) {
+    return null;
+  }
+  switch (kind) {
+    case "kingdom.phase":
+    case "kingdom.progress": {
+      const label = readString(payload.label);
+      if (!label) {
+        return null;
+      }
+      return { id, kind: "progress", label, occurredAt: createdAt };
+    }
+    case "kingdom.tool": {
+      const label = readString(payload.label);
+      if (!label) {
+        return null;
+      }
+      return {
+        id,
+        kind: "tool",
+        label,
+        detail: readString(payload.detail),
+        input: readString(payload.tool_input),
+        occurredAt: createdAt,
+      };
+    }
+    case "kingdom.reasoning": {
+      return {
+        id,
+        kind: "thinking",
+        label: readString(payload.label) ?? "Thinking",
+        detail: readString(payload.detail) ?? readString(payload.summary),
+        occurredAt: createdAt,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+export function buildActivityState({
   durableItems,
   liveItems,
 }: {
-  durableItems?: PlannerActivityItem[];
-  liveItems?: PlannerActivityItem[];
-}): PlannerMessageActivityState {
-  const mergedItems = mergePlannerActivityTimeline(durableItems ?? [], liveItems ?? []);
+  durableItems?: ActivityItem[];
+  liveItems?: ActivityItem[];
+}): ActivityState {
+  const mergedItems = mergeActivityTimeline(durableItems ?? [], liveItems ?? []);
   const thoughts = buildThoughtEntries(mergedItems);
   const liveThoughtText = thoughts.map((thought) => thought.detail).join("\n\n");
   return {
@@ -52,14 +131,14 @@ export function buildPlannerMessageActivityState({
   };
 }
 
-export function mergePlannerActivityTimeline(
-  durableItems: PlannerActivityItem[],
-  liveItems: PlannerActivityItem[],
-): PlannerActivityItem[] {
-  const merged = new Map<string, PlannerActivityItem>();
+export function mergeActivityTimeline(
+  durableItems: ActivityItem[],
+  liveItems: ActivityItem[],
+): ActivityItem[] {
+  const merged = new Map<string, ActivityItem>();
   const orderedIDs: string[] = [];
 
-  const consume = (item: PlannerActivityItem) => {
+  const consume = (item: ActivityItem) => {
     const existing = merged.get(item.id);
     if (!existing) {
       merged.set(item.id, item);
@@ -83,12 +162,12 @@ export function mergePlannerActivityTimeline(
     consume(item);
   }
 
-  return orderedIDs.map((id) => merged.get(id)).filter((item): item is PlannerActivityItem => Boolean(item));
+  return orderedIDs.map((id) => merged.get(id)).filter((item): item is ActivityItem => Boolean(item));
 }
 
-export function buildCurrentEvent(items: PlannerActivityItem[], liveThoughtText: string) {
-  let currentEvent: PlannerCurrentEvent | null = null;
-  let latestProcessingEvent: PlannerCurrentEvent | null = null;
+export function buildCurrentEvent(items: ActivityItem[], liveThoughtText: string) {
+  let currentEvent: ActivityCurrentEvent | null = null;
+  let latestProcessingEvent: ActivityCurrentEvent | null = null;
   let webfetchBurst = new Set<string>();
   let webfetchBurstState: "fetching" | "fetched" = "fetched";
 
@@ -142,10 +221,8 @@ export function buildCurrentEvent(items: PlannerActivityItem[], liveThoughtText:
   return currentEvent;
 }
 
-export function buildThoughtEntries(
-  items: PlannerActivityItem[],
-): PlannerThoughtEntry[] {
-  return items.reduce<PlannerThoughtEntry[]>((result, item) => {
+export function buildThoughtEntries(items: ActivityItem[]): ActivityThoughtEntry[] {
+  return items.reduce<ActivityThoughtEntry[]>((result, item) => {
     if (item.kind !== "thinking") {
       return result;
     }
@@ -163,8 +240,8 @@ export function buildThoughtEntries(
   }, []);
 }
 
-export function buildSourceEntries(items: PlannerActivityItem[]): PlannerSourceEntry[] {
-  const result: PlannerSourceEntry[] = [];
+export function buildSourceEntries(items: ActivityItem[]): ActivitySourceEntry[] {
+  const result: ActivitySourceEntry[] = [];
   const seen = new Set<string>();
   for (const item of items) {
     if (item.kind !== "tool") {
@@ -188,7 +265,7 @@ export function buildSourceEntries(items: PlannerActivityItem[]): PlannerSourceE
   return result;
 }
 
-function extractWebfetchURL(item: PlannerActivityItem): string | null {
+function extractWebfetchURL(item: ActivityItem): string | null {
   if (!item.label.startsWith("Fetching ") && !item.label.startsWith("Fetched ")) {
     return extractURLFromLabel(item.label);
   }
@@ -206,4 +283,12 @@ function extractWebfetchURL(item: PlannerActivityItem): string | null {
 function extractURLFromLabel(label: string): string | null {
   const match = label.match(/https?:\/\/\S+/);
   return match?.[0] ?? null;
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed === "" ? undefined : trimmed;
 }

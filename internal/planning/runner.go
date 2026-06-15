@@ -1113,70 +1113,18 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 }
 
 func plannerActivityPayload(operation state.PlanningOperation, activityID string, activity ProviderActivity) map[string]any {
-	occurredAt := strings.TrimSpace(activity.OccurredAt)
-	switch strings.TrimSpace(activity.Kind) {
-	case "tool":
-		toolName := strings.TrimSpace(activity.ToolName)
-		if toolName == "" {
-			return nil
-		}
-		payload := plannerGenericPayload(operation, acp.KingdomToolKind, map[string]any{"tool_name": toolName})
-		if label := acp.ToolActivityLabel(toolName, activity.ToolStatus, activity.ToolTitle, activity.ToolInput); label != "" {
-			payload["label"] = label
-		}
-		if activityID != "" {
-			payload["activity_id"] = activityID
-		}
-		if occurredAt != "" {
-			payload["occurred_at"] = occurredAt
-		}
-		if trimmedStatus := strings.TrimSpace(activity.ToolStatus); trimmedStatus != "" {
-			payload["tool_status"] = trimmedStatus
-			if detail := acp.ToolActivityDetail(trimmedStatus); detail != "" {
-				payload["detail"] = detail
-			}
-		}
-		if trimmedTitle := strings.TrimSpace(activity.ToolTitle); trimmedTitle != "" {
-			payload["tool_title"] = trimmedTitle
-		}
-		if trimmedInput := strings.TrimSpace(activity.ToolInput); trimmedInput != "" {
-			payload["tool_input"] = trimmedInput
-		}
-		return payload
-	case "reasoning":
-		payload := plannerGenericPayload(operation, acp.KingdomReasoningKind, map[string]any{"state": "thinking"})
-		payload["label"] = "Thinking"
-		if activityID != "" {
-			payload["activity_id"] = activityID
-		}
-		if occurredAt != "" {
-			payload["occurred_at"] = occurredAt
-		}
-		if summary := firstNonEmpty(strings.TrimSpace(activity.Summary), strings.TrimSpace(activity.RawText)); summary != "" {
-			payload["summary"] = summary
-			payload["detail"] = summary
-		}
-		return payload
-	case "progress":
-		label := strings.TrimSpace(activity.Label)
-		if label == "" {
-			return nil
-		}
-		normalizedLabel, ok := acp.NormalizeProgressActivityLabel(label)
-		if !ok {
-			return nil
-		}
-		payload := plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"label": normalizedLabel})
-		if activityID != "" {
-			payload["activity_id"] = activityID
-		}
-		if occurredAt != "" {
-			payload["occurred_at"] = occurredAt
-		}
-		return payload
-	default:
-		return nil
-	}
+	base := plannerRunPayload(operation.OperationID, operation.PlanningSessionID, operation.Type)
+	return acp.ActivityPayload(base, activityID, acp.ActivityInput{
+		Kind:       activity.Kind,
+		ToolName:   activity.ToolName,
+		ToolStatus: activity.ToolStatus,
+		ToolTitle:  activity.ToolTitle,
+		ToolInput:  activity.ToolInput,
+		Label:      activity.Label,
+		Summary:    activity.Summary,
+		RawText:    activity.RawText,
+		OccurredAt: activity.OccurredAt,
+	})
 }
 
 func (r *operationRunner) reconcileProviderSessionActivity(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, invocation *ProviderInvocationContext) error {

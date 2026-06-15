@@ -3569,3 +3569,71 @@ func TestServerListRunExecutionsReturnsNotFoundForUnknownRun(t *testing.T) {
 	}
 	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
 }
+
+func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+
+	const attemptID = "attempt-activity-1"
+	const otherAttemptID = "attempt-activity-2"
+	insertActivityEvent := func(eventID, attempt string, runEventSeq, seq int, payloadJSON string) {
+		t.Helper()
+		mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, NULL, ?, 'v1', 'attempt.activity', ?, ?, 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', ?, ?, ?, '2026-06-14T10:00:00Z')`,
+			eventID, runID, runEventSeq, attempt, seq, payloadJSON, "caus-"+eventID, "prev-"+eventID, "entry-"+eventID)
+	}
+
+	insertActivityEvent("evt-act-r1", attemptID, 9001, 1, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
+	insertActivityEvent("evt-act-t1", attemptID, 9002, 2, `{"kind":"kingdom.tool","activity_id":"part-t1","tool_name":"read","tool_status":"completed","tool_title":"foo.go","occurred_at":"2026-06-14T10:00:02Z"}`)
+	// Same provider part streamed again — must collapse to one item on read.
+	insertActivityEvent("evt-act-r1-dup", attemptID, 9003, 3, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
+	// A different attempt's activity must not leak into this attempt's feed.
+	insertActivityEvent("evt-act-other", otherAttemptID, 9004, 1, `{"kind":"kingdom.reasoning","activity_id":"part-other","detail":"Other","occurred_at":"2026-06-14T10:00:03Z"}`)
+	// A coarse lifecycle event for the same attempt must be ignored by the activity feed.
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-progress', ?, 9005, NULL, ?, 'v1', 'attempt.progress', 4, '{"step":1}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_invoked', 'progress', 'corr-activity', 'caus-act-progress', 'prev-act-progress', 'entry-act-progress', '2026-06-14T10:00:04Z')`, runID, attemptID)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
+	}
+
+	var response gen.AcpRunActivityResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode activity response: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("expected 2 deduped activity items for the attempt, got %d: %#v", len(response.Items), response.Items)
+	}
+	if response.Items[0].Id != "part-r1" || response.Items[0].Kind != gen.Thinking {
+		t.Fatalf("expected first item to be reasoning part-r1, got %#v", response.Items[0])
+	}
+	if response.Items[1].Id != "part-t1" || response.Items[1].Kind != gen.Tool {
+		t.Fatalf("expected second item to be tool part-t1, got %#v", response.Items[1])
+	}
+
+	// The coarse timeline must never surface activity events.
+	timeline := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/timeline?limit=200",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if timeline.Code != http.StatusOK {
+		t.Fatalf("expected timeline 200, got %d", timeline.Code)
+	}
+	var timelinePage gen.RunTimelineResponse
+	if err := json.Unmarshal(timeline.Body.Bytes(), &timelinePage); err != nil {
+		t.Fatalf("decode timeline: %v", err)
+	}
+	for _, item := range timelinePage.Items {
+		if item.EventType == "attempt.activity" {
+			t.Fatalf("attempt.activity must be excluded from the timeline, got %#v", item)
+		}
+	}
+}

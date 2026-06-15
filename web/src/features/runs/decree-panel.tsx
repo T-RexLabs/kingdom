@@ -14,65 +14,58 @@ import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
 import { cn, roleTitle } from "@/lib/utils";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
-import { ChevronDown, ChevronRight, Scroll, Settings2 } from "lucide-react";
+import { ChevronRight, Scroll, Settings2 } from "lucide-react";
 
 export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role[] }) {
-  const [isOpen, setIsOpen] = useState(true);
+  const [readOpen, setReadOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { data: decree, isLoading, error } = useDecree(run.decree_id);
   const providerModelsQuery = useProviderModels({ enabled: settingsOpen });
   const providerModels = providerModelsQuery.data?.items ?? [];
+  const decreeTitle = decree?.decree_title?.trim();
 
   return (
     <>
       <section className="rounded-md border border-border bg-surface-raised/40 p-3">
-        <div className="rounded-md border border-border bg-background p-3">
-          <div className="flex flex-wrap items-start gap-2">
-            <button
-              type="button"
-              onClick={() => setIsOpen(!isOpen)}
-              className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                {isOpen ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground-subtle" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-foreground-subtle" />}
-                <Scroll className="h-4 w-4 shrink-0 text-gold" />
-                <h2 className="truncate text-sm font-semibold text-foreground">Royal Decree</h2>
-              </div>
-            </button>
-
-            <div className="ml-auto flex items-center">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                aria-label="Open decree settings"
-                title="Decree settings"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings2 className="h-4 w-4" />
-              </Button>
+        <div className="flex items-center gap-2 rounded-md border border-border bg-background p-3">
+          <button
+            type="button"
+            onClick={() => setReadOpen(true)}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-gold"
+            aria-label="Read royal decree"
+          >
+            <Scroll className="h-4 w-4 shrink-0 text-gold" />
+            <div className="min-w-0">
+              <h2 className="truncate text-sm font-semibold text-foreground">Royal Decree</h2>
+              <p className="truncate text-xs text-foreground-subtle">
+                {decreeTitle ?? (isLoading ? "Loading decree…" : "View the decree")}
+              </p>
             </div>
-          </div>
+            <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
+          </button>
 
-          {isOpen && (
-            <div className="mt-3">
-              {isLoading ? (
-                <p className="text-sm text-foreground-subtle">Loading decree...</p>
-              ) : error || !decree ? (
-                <p className="text-sm text-foreground-subtle">Decree not available.</p>
-              ) : (
-                <div className="space-y-2">
-                  <h3 className="text-sm font-semibold text-gold">{decree.decree_title}</h3>
-                  <div className="max-h-[30vh] overflow-auto rounded-md border border-border bg-background p-3">
-                    <MarkdownBlock content={decree.decree_text} className="text-sm text-foreground-muted" />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            aria-label="Open decree settings"
+            title="Decree settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings2 className="h-4 w-4" />
+          </Button>
         </div>
       </section>
+
+      <DecreeReadDialog
+        open={readOpen}
+        title={decreeTitle}
+        text={decree?.decree_text}
+        isLoading={isLoading}
+        hasError={Boolean(error) || !decree}
+        onClose={() => setReadOpen(false)}
+      />
 
       <DecreeSettingsDialog
         open={settingsOpen}
@@ -83,6 +76,43 @@ export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role
         onClose={() => setSettingsOpen(false)}
       />
     </>
+  );
+}
+
+function DecreeReadDialog({
+  open,
+  title,
+  text,
+  isLoading,
+  hasError,
+  onClose,
+}: {
+  open: boolean;
+  title?: string;
+  text?: string;
+  isLoading: boolean;
+  hasError: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <ModalDialog
+      open={open}
+      onClose={onClose}
+      ariaLabel="Royal decree"
+      panelClassName={cn("w-full", modalShellSizeClass("lg"))}
+    >
+      <ModalShell title={title && title !== "" ? title : "Royal Decree"} caption="Royal Decree" onClose={onClose}>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {isLoading ? (
+            <p className="text-sm text-foreground-subtle">Loading decree…</p>
+          ) : hasError ? (
+            <p className="text-sm text-foreground-subtle">Decree not available.</p>
+          ) : (
+            <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
+          )}
+        </div>
+      </ModalShell>
+    </ModalDialog>
   );
 }
 
