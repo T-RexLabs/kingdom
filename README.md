@@ -355,7 +355,7 @@ Start here when you want more detail:
 | --- | --- |
 | `kd: command not found` | Ensure `$(go env GOPATH)/bin` is on your `PATH` after `make install` |
 | `summon already running` | Run `kd summon status`, then `kd summon stop` |
-| `address already in use` | Run `kd summon status`, `kd summon stop`, or change `server.listen` |
+| `address already in use` | Free port `8080` or change `server.listen` |
 | `initialize opencode session adapter` | Install `opencode` or set `provider.binary_path` |
 | `model_selection.global.model is required` | Choose a model in the UI or pass `--global-model` |
 | `GET /api/v1/health` returns `401` | Include `X-Actor-Id` and `X-Role-Id` |

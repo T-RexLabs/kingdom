@@ -118,9 +118,8 @@ Expected behavior:
 ## Troubleshooting
 
 - `listen tcp 127.0.0.1:8080: bind: address already in use`
-  - run `kd summon status`
-  - run `kd summon stop`
-  - or change `server.listen`
+  - if another summon is using the port, run `kd summon status` and `kd summon stop`
+  - if another local service is using the port, stop it or change `server.listen`
 - `summon already running with pid=<pid>`
   - use `kd summon status`, then `kd summon stop`
 - `summon readiness timeout`

@@ -333,6 +333,9 @@ func TestRunSummonReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	if !strings.Contains(err.Error(), "kd summon status") {
 		t.Fatalf("expected actionable bind error guidance, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "another summon or another process") {
+		t.Fatalf("expected non-biased bind error guidance, got %v", err)
+	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("expected bind failure before readiness timeout, got duration %s", time.Since(start))
 	}
@@ -342,7 +345,7 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	t.Parallel()
 
 	logPath := filepath.Join(t.TempDir(), "summon.log")
-	if err := os.WriteFile(logPath, []byte("runtime error: summon could not listen on 127.0.0.1:8080: address already in use; try `kd summon status`, `kd summon stop`, or change `server.listen`\n"), 0o644); err != nil {
+	if err := os.WriteFile(logPath, []byte("runtime error: summon could not listen on 127.0.0.1:8080; another summon or another process may already be using that address; try `kd summon status`, `kd summon stop`, or change `server.listen`\n"), 0o644); err != nil {
 		t.Fatalf("write summon log: %v", err)
 	}
 
@@ -356,7 +359,7 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected readiness to fail when process exits")
 	}
-	if !strings.Contains(err.Error(), "address already in use") {
+	if !strings.Contains(err.Error(), "another summon or another process") {
 		t.Fatalf("expected startup log detail in error, got %v", err)
 	}
 }

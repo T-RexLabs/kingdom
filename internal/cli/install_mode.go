@@ -1513,7 +1513,7 @@ func formatSummonServerStartError(err error, listen string, logPath string) erro
 		if listen == "" {
 			listen = "the configured listen address"
 		}
-		message := fmt.Sprintf("summon could not listen on %s; try `kd summon status`, `kd summon stop`, or change `server.listen`", listen)
+		message := fmt.Sprintf("summon could not listen on %s; another summon or another process may already be using that address; try `kd summon status`, `kd summon stop`, or change `server.listen`", listen)
 		if trimmedLogPath := strings.TrimSpace(logPath); trimmedLogPath != "" {
 			message = fmt.Sprintf("%s; inspect %s or run `kd summon logs`", message, trimmedLogPath)
 		}
