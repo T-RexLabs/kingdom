@@ -284,7 +284,7 @@ That scaffold includes:
 - logs
 - runtime control files
 
-`kd summon` starts the local runtime, API server, and embedded web UI. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
+`kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
 
 Use `kd clean` to remove the local `.kingdom/` scaffold before re-initializing from a clean state.
 
@@ -355,7 +355,7 @@ Start here when you want more detail:
 | --- | --- |
 | `kd: command not found` | Ensure `$(go env GOPATH)/bin` is on your `PATH` after `make install` |
 | `summon already running` | Run `kd summon status`, then `kd summon stop` |
-| `address already in use` | Free port `8080` or change `server.listen` |
+| `address already in use` | Run `kd summon status`, `kd summon stop`, or change `server.listen` |
 | `initialize opencode session adapter` | Install `opencode` or set `provider.binary_path` |
 | `model_selection.global.model is required` | Choose a model in the UI or pass `--global-model` |
 | `GET /api/v1/health` returns `401` | Include `X-Actor-Id` and `X-Role-Id` |

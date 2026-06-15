@@ -501,14 +501,11 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 }
 
 func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) error {
-	args = normalizeSummonCommandArgs(args)
 	if len(args) == 0 {
-		return runSummonServe(ctx, stdout, stderr, []string{"--detach"})
+		return runSummon(ctx, stdout, stderr, nil)
 	}
 
 	switch args[0] {
-	case "serve":
-		return runSummonServe(ctx, stdout, stderr, args[1:])
 	case "status":
 		return runSummonStatus(stdout, args[1:])
 	case "logs":
@@ -516,33 +513,15 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 	case "stop":
 		return runSummonStop(stdout, args[1:])
 	default:
-		return runSummonServe(ctx, stdout, stderr, args)
+		return runSummon(ctx, stdout, stderr, args)
 	}
 }
 
-func normalizeSummonCommandArgs(args []string) []string {
-	if len(args) == 0 {
-		return nil
-	}
-	switch args[0] {
-	case "serve", "status", "logs", "stop":
-		return args
-	}
-	for _, arg := range args {
-		if arg == "--detach" || strings.HasPrefix(arg, "--detach=") {
-			return args
-		}
-	}
-	normalized := make([]string, 0, len(args)+1)
-	normalized = append(normalized, "--detach")
-	return append(normalized, args...)
-}
-
-func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
-	opts := summonServeOptions{}
+func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
+	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	readyTimeoutExplicit := false
-	bindSummonServeFlags(flags, &opts)
+	bindSummonFlags(flags, &opts)
 	if err := flags.Parse(args); err != nil {
 		return usageError{err: err}
 	}
@@ -684,7 +663,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Single graceful-path Coordinator owned by runSummonServe. Both
+	// Single graceful-path Coordinator owned by runSummon. Both
 	// the awaitSummonTermination graceful callback AND the deferred
 	// safety-net drain pass through this same instance, so the
 	// once-guard guarantees the underlying teardowns run at most once
@@ -721,7 +700,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		errCh <- server.ListenAndServe()
 	}()
 
-	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh); err != nil {
+	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh, ""); err != nil {
 		// The deferred safety-net above owns shutdown. Returning
 		// here drains apiHandler + server through the lifted
 		// Coordinator instead of doing a duplicate
@@ -822,7 +801,7 @@ func awaitSummonTermination(ctx context.Context, stderr io.Writer, serverErrCh <
 			return errSummonForcedShutdown
 		case err := <-shutdownDone:
 			if gracefulServerErr != nil && !errors.Is(gracefulServerErr, http.ErrServerClosed) {
-				return errors.Join(err, fmt.Errorf("serve summon endpoints: %w", gracefulServerErr))
+				return errors.Join(err, formatSummonServerStartError(gracefulServerErr, "", ""))
 			}
 			return err
 		case err := <-activeServerErrCh:
@@ -845,7 +824,7 @@ func awaitSummonTermination(ctx context.Context, stderr io.Writer, serverErrCh <
 			if err == nil || errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
-			return fmt.Errorf("serve summon endpoints: %w", err)
+			return formatSummonServerStartError(err, "", "")
 		}
 	}
 }
@@ -980,7 +959,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return fmt.Errorf("open summon log file: %w", err)
 	}
 
-	commandArgs := []string{"summon", "serve", "--config", configPath}
+	commandArgs := []string{"summon", "--config", configPath}
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -1402,8 +1381,8 @@ func isSummonStopped(pidPath string, pid int) (bool, error) {
 	return false, nil
 }
 
-func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error) error {
-	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, "", "", nil)
+func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error, startupLogPath string) error {
+	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, startupLogPath, "", nil)
 }
 
 func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string, statePath string, renderer *summonDetachedProgressRenderer) error {
@@ -1426,7 +1405,7 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 				}
 			}
 		}
-		if err := pollSummonServerStartError(serverErrCh); err != nil {
+		if err := pollSummonServerStartError(serverErrCh, cfg.Server.Listen, startupLogPath); err != nil {
 			return err
 		}
 
@@ -1448,7 +1427,7 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		apiReq.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
 		apiReq.Header.Set("X-Role-Id", cfg.Operator.RoleID)
 
-		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh)
+		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh, cfg.Server.Listen, startupLogPath)
 		if err != nil {
 			return err
 		}
@@ -1463,11 +1442,11 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 	return fmt.Errorf("summon readiness timeout after %s", timeout)
 }
 
-func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-chan error) (bool, error) {
+func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-chan error, listen string, startupLogPath string) (bool, error) {
 	if client == nil || req == nil {
 		return false, nil
 	}
-	if err := pollSummonServerStartError(serverErrCh); err != nil {
+	if err := pollSummonServerStartError(serverErrCh, listen, startupLogPath); err != nil {
 		return false, err
 	}
 	if serverErrCh == nil {
@@ -1501,7 +1480,7 @@ func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-cha
 	select {
 	case result := <-resultCh:
 		if result.err != nil {
-			if err := pollSummonServerStartError(serverErrCh); err != nil {
+			if err := pollSummonServerStartError(serverErrCh, listen, startupLogPath); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -1509,27 +1488,42 @@ func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-cha
 		return result.ready, nil
 	case err := <-serverErrCh:
 		cancel()
-		return false, formatSummonServerStartError(err)
+		return false, formatSummonServerStartError(err, listen, startupLogPath)
 	}
 }
 
-func pollSummonServerStartError(serverErrCh <-chan error) error {
+func pollSummonServerStartError(serverErrCh <-chan error, listen string, logPath string) error {
 	if serverErrCh == nil {
 		return nil
 	}
 	select {
 	case err := <-serverErrCh:
-		return formatSummonServerStartError(err)
+		return formatSummonServerStartError(err, listen, logPath)
 	default:
 		return nil
 	}
 }
 
-func formatSummonServerStartError(err error) error {
+func formatSummonServerStartError(err error, listen string, logPath string) error {
 	if err == nil || errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("summon server stopped before readiness")
 	}
-	return fmt.Errorf("serve summon endpoints: %w", err)
+	if strings.Contains(strings.TrimSpace(err.Error()), "address already in use") {
+		listen = strings.TrimSpace(listen)
+		if listen == "" {
+			listen = "the configured listen address"
+		}
+		message := fmt.Sprintf("summon could not listen on %s; try `kd summon status`, `kd summon stop`, or change `server.listen`", listen)
+		if trimmedLogPath := strings.TrimSpace(logPath); trimmedLogPath != "" {
+			message = fmt.Sprintf("%s; inspect %s or run `kd summon logs`", message, trimmedLogPath)
+		}
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	message := "start summon server"
+	if trimmedLogPath := strings.TrimSpace(logPath); trimmedLogPath != "" {
+		message = fmt.Sprintf("%s; inspect %s or run `kd summon logs`", message, trimmedLogPath)
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func readSummonStartupLogDetail(path string) string {

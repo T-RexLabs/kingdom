@@ -98,21 +98,12 @@ var helpTopics = []*helpTopic{
 	{
 		path:        []string{"summon"},
 		summary:     "Start or manage the local runtime.",
-		usage:       []string{"kd summon [flags]", "kd summon serve [flags]", "kd summon status [flags]", "kd summon logs [flags]", "kd summon stop [flags]"},
-		subcommands: [][]string{{"summon"}, {"summon", "serve"}, {"summon", "status"}, {"summon", "logs"}, {"summon", "stop"}},
+		usage:       []string{"kd summon [flags]", "kd summon status [flags]", "kd summon logs [flags]", "kd summon stop [flags]"},
+		subcommands: [][]string{{"summon"}, {"summon", "status"}, {"summon", "logs"}, {"summon", "stop"}},
 		flags: func(flags *flag.FlagSet) {
-			bindSummonServeFlags(flags, &summonServeOptions{})
+			bindSummonFlags(flags, &summonOptions{})
 		},
-		notes: []string{"`kd summon` without a subcommand starts the runtime in the background and returns after readiness. Use `kd summon serve` to keep the runtime attached to the current terminal."},
-	},
-	{
-		path:    []string{"summon", "serve"},
-		summary: "Run the local runtime in the foreground.",
-		usage:   []string{"kd summon serve [flags]"},
-		flags: func(flags *flag.FlagSet) {
-			bindSummonServeFlags(flags, &summonServeOptions{})
-		},
-		notes: []string{"Foreground summon blocks the current terminal until shutdown. Use plain `kd summon` to start in the background instead."},
+		notes: []string{"`kd summon` keeps the runtime attached to the current terminal. Use `-d` or `--detach` to start it in the background and return after readiness."},
 	},
 	{
 		path:    []string{"summon", "status"},

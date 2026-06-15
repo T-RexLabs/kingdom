@@ -265,7 +265,7 @@ func TestWaitForSummonReadyTimesOut(t *testing.T) {
 	cfg.Server.Listen = "127.0.0.1:65534"
 
 	start := time.Now()
-	err := waitForSummonReady(cfg, 250*time.Millisecond, nil)
+	err := waitForSummonReady(cfg, 250*time.Millisecond, nil, "")
 	if err == nil {
 		t.Fatalf("expected readiness timeout error")
 	}
@@ -296,7 +296,7 @@ func TestWaitForSummonReadyWithProcessReturnsExitErrorEarly(t *testing.T) {
 	}
 }
 
-func TestRunSummonServeReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
+func TestRunSummonReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	t.Parallel()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -323,12 +323,15 @@ func TestRunSummonServeReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	err = runSummonServe(context.Background(), io.Discard, io.Discard, []string{"--config", configPath, "--ready-timeout", "5s"})
+	err = runSummon(context.Background(), io.Discard, io.Discard, []string{"--config", configPath, "--ready-timeout", "5s"})
 	if err == nil {
-		t.Fatal("expected summon serve to fail when listen address is already in use")
+		t.Fatal("expected summon to fail when listen address is already in use")
 	}
 	if !strings.Contains(err.Error(), "address already in use") {
 		t.Fatalf("expected bind error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "kd summon status") {
+		t.Fatalf("expected actionable bind error guidance, got %v", err)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("expected bind failure before readiness timeout, got duration %s", time.Since(start))
@@ -339,7 +342,7 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	t.Parallel()
 
 	logPath := filepath.Join(t.TempDir(), "summon.log")
-	if err := os.WriteFile(logPath, []byte("runtime error: serve summon endpoints: listen tcp 127.0.0.1:8080: bind: address already in use\n"), 0o644); err != nil {
+	if err := os.WriteFile(logPath, []byte("runtime error: summon could not listen on 127.0.0.1:8080: address already in use; try `kd summon status`, `kd summon stop`, or change `server.listen`\n"), 0o644); err != nil {
 		t.Fatalf("write summon log: %v", err)
 	}
 
@@ -1032,7 +1035,7 @@ func TestWaitForSummonReadyHitsCanonicalHealthURLForNonCanonicalConfigInput(t *t
 	// waitForSummonReady polls until 200; our recorder responds 200
 	// immediately so the first probe attempt succeeds. We pass a
 	// nil serverErrCh — the probe loop tolerates that.
-	if err := waitForSummonReady(cfg, 5*time.Second, nil); err != nil {
+	if err := waitForSummonReady(cfg, 5*time.Second, nil, ""); err != nil {
 		t.Fatalf("waitForSummonReady: %v", err)
 	}
 

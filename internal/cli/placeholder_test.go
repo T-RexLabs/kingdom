@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -728,7 +727,7 @@ func TestExecuteSummonStatusStopped(t *testing.T) {
 	}
 }
 
-func TestExecuteSummonServeRunsUntilContextCanceled(t *testing.T) {
+func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -746,9 +745,9 @@ func TestExecuteSummonServeRunsUntilContextCanceled(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "serve", "--config", configPath, "--ready-timeout", "10s"})
+	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "--config", configPath, "--ready-timeout", "10s"})
 	if exitCode != ExitSuccess {
-		t.Fatalf("expected summon serve success, got %d stderr=%q", exitCode, stderr.String())
+		t.Fatalf("expected summon success, got %d stderr=%q", exitCode, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "kingdom summoned") {
 		t.Fatalf("expected summon output, got %q", stdout.String())
@@ -758,41 +757,7 @@ func TestExecuteSummonServeRunsUntilContextCanceled(t *testing.T) {
 	}
 }
 
-func TestNormalizeSummonCommandArgsDefaultsToDetachForPlainSummon(t *testing.T) {
-	t.Parallel()
-
-	got := normalizeSummonCommandArgs([]string{"--config", "/tmp/kingdom/config.yaml", "--ready-timeout", "45s"})
-	want := []string{"--detach", "--config", "/tmp/kingdom/config.yaml", "--ready-timeout", "45s"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("normalize summon args: want %#v got %#v", want, got)
-	}
-}
-
-func TestNormalizeSummonCommandArgsPreservesExplicitSubcommandsAndDetach(t *testing.T) {
-	t.Parallel()
-
-	for _, tc := range []struct {
-		name string
-		in   []string
-		want []string
-	}{
-		{name: "serve unchanged", in: []string{"serve", "--config", "cfg.yaml"}, want: []string{"serve", "--config", "cfg.yaml"}},
-		{name: "status unchanged", in: []string{"status", "--config", "cfg.yaml"}, want: []string{"status", "--config", "cfg.yaml"}},
-		{name: "logs unchanged", in: []string{"logs", "--config", "cfg.yaml"}, want: []string{"logs", "--config", "cfg.yaml"}},
-		{name: "stop unchanged", in: []string{"stop", "--config", "cfg.yaml"}, want: []string{"stop", "--config", "cfg.yaml"}},
-		{name: "explicit detach unchanged", in: []string{"--detach", "--config", "cfg.yaml"}, want: []string{"--detach", "--config", "cfg.yaml"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := normalizeSummonCommandArgs(tc.in)
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("normalize summon args: want %#v got %#v", tc.want, got)
-			}
-		})
-	}
-}
-
-func TestExecuteSummonHelpDescribesBackgroundDefault(t *testing.T) {
+func TestExecuteSummonHelpDescribesForegroundDefault(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
@@ -801,11 +766,14 @@ func TestExecuteSummonHelpDescribesBackgroundDefault(t *testing.T) {
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected summon help success, got %d stderr=%q", exitCode, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "starts the runtime in the background") {
-		t.Fatalf("expected summon help to describe background default, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "keeps the runtime attached to the current terminal") {
+		t.Fatalf("expected summon help to describe foreground default, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "kd summon serve [flags]") {
-		t.Fatalf("expected summon help to mention explicit foreground serve, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "-d") || !strings.Contains(stdout.String(), "--detach") {
+		t.Fatalf("expected summon help to mention detached flags, got %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "kd summon serve [flags]") {
+		t.Fatalf("expected summon help to omit removed serve command, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "kd summon logs [flags]") {
 		t.Fatalf("expected summon help to mention summon logs, got %q", stdout.String())
