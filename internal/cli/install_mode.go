@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -155,7 +156,21 @@ type installConfig struct {
 // for a non-canonical config to break some sites and not others;
 // centralizing here closes that drift surface.
 func summonAPIURL(cfg installConfig) string {
-	return fmt.Sprintf("http://%s%s", cfg.Server.Listen, cfg.Server.BasePath)
+	return fmt.Sprintf("http://%s%s", summonConnectAddress(cfg.Server.Listen), cfg.Server.BasePath)
+}
+
+func summonConnectAddress(listen string) string {
+	host, port, err := splitSummonListenAddress(listen)
+	if err != nil {
+		return strings.TrimSpace(listen)
+	}
+	switch strings.TrimSpace(host) {
+	case "0.0.0.0":
+		host = "127.0.0.1"
+	case "::", "[::]":
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 type summonStartupTracker struct {
@@ -181,7 +196,7 @@ func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConf
 			Phase:       startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
 			ConfigPath:  strings.TrimSpace(configPath),
 			KingdomHome: strings.TrimSpace(cfg.KingdomHome),
-			Listen:      strings.TrimSpace(cfg.Server.Listen),
+			Listen:      summonConnectAddress(cfg.Server.Listen),
 			BasePath:    strings.TrimSpace(cfg.Server.BasePath),
 			LogPath:     summonLogPath(cfg.KingdomHome),
 			StartedAt:   strings.TrimSpace(startedAt),
@@ -412,8 +427,8 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	opts := initCommandOptions{}
 	flags := newFlagSet("init")
 	bindInitFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"init"}); err != nil {
+		return err
 	}
 
 	autonomousApprovals, err := strconv.ParseBool(strings.TrimSpace(opts.autonomousApprovalsRaw))
@@ -479,8 +494,8 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 	opts := cleanCommandOptions{}
 	flags := newFlagSet("clean")
 	bindCleanFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"clean"}); err != nil {
+		return err
 	}
 
 	absProjectPath, err := filepath.Abs(strings.TrimSpace(opts.projectPath))
@@ -501,14 +516,14 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 }
 
 func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) error {
-	args = normalizeSummonCommandArgs(args)
+	if err := validateSummonRoute(args); err != nil {
+		return err
+	}
 	if len(args) == 0 {
-		return runSummonServe(ctx, stdout, stderr, []string{"--detach"})
+		return runSummon(ctx, stdout, stderr, nil)
 	}
 
 	switch args[0] {
-	case "serve":
-		return runSummonServe(ctx, stdout, stderr, args[1:])
 	case "status":
 		return runSummonStatus(stdout, args[1:])
 	case "logs":
@@ -516,38 +531,49 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 	case "stop":
 		return runSummonStop(stdout, args[1:])
 	default:
-		return runSummonServe(ctx, stdout, stderr, args)
+		return runSummon(ctx, stdout, stderr, args)
 	}
 }
 
-func normalizeSummonCommandArgs(args []string) []string {
-	if len(args) == 0 {
+func validateSummonRoute(args []string) error {
+	trimmed := commandPathPrefix(args)
+	if len(trimmed) == 0 {
 		return nil
 	}
-	switch args[0] {
-	case "serve", "status", "logs", "stop":
-		return args
-	}
-	for _, arg := range args {
-		if arg == "--detach" || strings.HasPrefix(arg, "--detach=") {
-			return args
+	if len(trimmed) == 1 {
+		switch trimmed[0] {
+		case "status", "logs", "stop":
+			return nil
 		}
+		if strings.HasPrefix(trimmed[0], "-") {
+			return nil
+		}
+		return usageError{err: fmt.Errorf("invalid command %q", trimmed[0]), helpTopic: []string{"summon"}}
 	}
-	normalized := make([]string, 0, len(args)+1)
-	normalized = append(normalized, "--detach")
-	return append(normalized, args...)
+	switch trimmed[0] {
+	case "status", "logs", "stop":
+		return usageError{err: fmt.Errorf("unexpected argument(s): %s", strings.Join(trimmed[1:], " ")), helpTopic: []string{"summon", trimmed[0]}}
+	default:
+		return nil
+	}
 }
 
-func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
-	opts := summonServeOptions{}
+func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
+	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	readyTimeoutExplicit := false
-	bindSummonServeFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	bindSummonFlags(flags, &opts)
+	if err := parseLeafFlags(flags, args, []string{"summon"}); err != nil {
+		return err
 	}
 	flags.Visit(func(f *flag.Flag) {
-		if f != nil && f.Name == "ready-timeout" {
+		if f == nil {
+			return
+		}
+		switch f.Name {
+		case "port":
+			opts.portExplicit = true
+		case "ready-timeout":
 			readyTimeoutExplicit = true
 		}
 	})
@@ -561,12 +587,17 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 	if err != nil {
 		return err
 	}
+	effectiveListen, err := resolveSummonListenAddress(cfg.Server.Listen, opts.listen, opts.host, opts.port, opts.portExplicit)
+	if err != nil {
+		return usageError{err: err}
+	}
+	cfg.Server.Listen = effectiveListen
 	opts.readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), opts.readyTimeout, readyTimeoutExplicit)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	statePath := summonStatePath(cfg.KingdomHome)
 
 	if opts.detach {
-		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts.readyTimeout)
+		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts)
 	}
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
@@ -684,7 +715,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	// Single graceful-path Coordinator owned by runSummonServe. Both
+	// Single graceful-path Coordinator owned by runSummon. Both
 	// the awaitSummonTermination graceful callback AND the deferred
 	// safety-net drain pass through this same instance, so the
 	// once-guard guarantees the underlying teardowns run at most once
@@ -721,7 +752,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		errCh <- server.ListenAndServe()
 	}()
 
-	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh); err != nil {
+	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh, ""); err != nil {
 		// The deferred safety-net above owns shutdown. Returning
 		// here drains apiHandler + server through the lifted
 		// Coordinator instead of doing a duplicate
@@ -732,7 +763,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		PID:         os.Getpid(),
 		ConfigPath:  resolvedConfigPath,
 		KingdomHome: cfg.KingdomHome,
-		Listen:      cfg.Server.Listen,
+		Listen:      summonConnectAddress(cfg.Server.Listen),
 		BasePath:    cfg.Server.BasePath,
 		StartedAt:   startedAt,
 	}); err != nil {
@@ -744,7 +775,7 @@ func runSummonServe(ctx context.Context, stdout io.Writer, stderr io.Writer, arg
 		_ = unregisterSummonInstance(os.Getpid())
 	}()
 
-	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), cfg.Server.Listen); err != nil {
+	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen)); err != nil {
 		return err
 	}
 
@@ -822,7 +853,7 @@ func awaitSummonTermination(ctx context.Context, stderr io.Writer, serverErrCh <
 			return errSummonForcedShutdown
 		case err := <-shutdownDone:
 			if gracefulServerErr != nil && !errors.Is(gracefulServerErr, http.ErrServerClosed) {
-				return errors.Join(err, fmt.Errorf("serve summon endpoints: %w", gracefulServerErr))
+				return errors.Join(err, formatSummonServerStartError(gracefulServerErr, "", ""))
 			}
 			return err
 		case err := <-activeServerErrCh:
@@ -845,7 +876,7 @@ func awaitSummonTermination(ctx context.Context, stderr io.Writer, serverErrCh <
 			if err == nil || errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
-			return fmt.Errorf("serve summon endpoints: %w", err)
+			return formatSummonServerStartError(err, "", "")
 		}
 	}
 }
@@ -969,7 +1000,7 @@ func shutdownSummonServerWithFallback(stderr io.Writer, timeout time.Duration, s
 	return nil
 }
 
-func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, readyTimeout time.Duration) error {
+func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opts summonOptions) error {
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
 	}
@@ -980,7 +1011,17 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return fmt.Errorf("open summon log file: %w", err)
 	}
 
-	commandArgs := []string{"summon", "serve", "--config", configPath}
+	commandArgs := []string{"summon", "--config", configPath}
+	if trimmed := strings.TrimSpace(opts.listen); trimmed != "" {
+		commandArgs = append(commandArgs, "--listen", trimmed)
+	} else {
+		if trimmed := strings.TrimSpace(opts.host); trimmed != "" {
+			commandArgs = append(commandArgs, "--host", trimmed)
+		}
+		if opts.port > 0 {
+			commandArgs = append(commandArgs, "--port", strconv.Itoa(opts.port))
+		}
+	}
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -1002,7 +1043,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 	}()
 
 	renderer := newSummonDetachedProgressRenderer(stdout)
-	if err := waitForSummonReadyWithProcess(cfg, readyTimeout, processDone, nil, logPath, summonStatePath(cfg.KingdomHome), renderer); err != nil {
+	if err := waitForSummonReadyWithProcess(cfg, opts.readyTimeout, processDone, nil, logPath, summonStatePath(cfg.KingdomHome), renderer); err != nil {
 		_ = cmd.Process.Kill()
 		return err
 	}
@@ -1022,8 +1063,63 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 		return fmt.Errorf("summon already running with pid=%d", runningPID)
 	}
 
-	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), cfg.Server.Listen, logPath, summonLogsFollowCommand(configPath))
+	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen), logPath, summonLogsFollowCommand(configPath))
 	return err
+}
+
+func resolveSummonListenAddress(configListen, overrideListen, overrideHost string, overridePort int, portExplicit bool) (string, error) {
+	trimmedListen := strings.TrimSpace(overrideListen)
+	trimmedHost := strings.TrimSpace(overrideHost)
+	if trimmedListen != "" && (trimmedHost != "" || portExplicit) {
+		return "", fmt.Errorf("--listen cannot be combined with --host or --port")
+	}
+	if portExplicit && (overridePort < 1 || overridePort > 65535) {
+		return "", fmt.Errorf("--port must be between 1 and 65535")
+	}
+	if !portExplicit && trimmedListen == "" && trimmedHost == "" {
+		return normalizeSummonListenAddress(configListen)
+	}
+	if trimmedListen != "" {
+		return normalizeSummonListenAddress(trimmedListen)
+	}
+	host, port, err := splitSummonListenAddress(configListen)
+	if err != nil {
+		return "", err
+	}
+	if trimmedHost != "" {
+		host = trimmedHost
+	}
+	if portExplicit {
+		port = strconv.Itoa(overridePort)
+	}
+	return normalizeSummonListenAddress(net.JoinHostPort(host, port))
+}
+
+func normalizeSummonListenAddress(listen string) (string, error) {
+	host, port, err := splitSummonListenAddress(listen)
+	if err != nil {
+		return "", err
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return "", fmt.Errorf("summon listen port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(host) == "" {
+		return "", fmt.Errorf("summon listen host cannot be empty")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(portNum)), nil
+}
+
+func splitSummonListenAddress(listen string) (string, string, error) {
+	trimmed := strings.TrimSpace(listen)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("summon listen address cannot be empty")
+	}
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return "", "", fmt.Errorf("summon listen address must be host:port")
+	}
+	return host, port, nil
 }
 
 func resolveSummonReadyTimeout(cfg installConfig, paths kingdom.BootstrapPaths, requested time.Duration, explicit bool) time.Duration {
@@ -1059,8 +1155,8 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 	opts := summonConfigOptions{}
 	flags := newFlagSet("summon status")
 	bindSummonConfigFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "status"}); err != nil {
+		return err
 	}
 
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
@@ -1096,7 +1192,7 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 		if record != nil {
 			return writeSummonStatus(stdout, *record, "config", "")
 		}
-		return writeSummonStatus(stdout, summonInstanceRecord{PID: pid, ConfigPath: resolvedConfigPath, KingdomHome: cfg.KingdomHome, Listen: cfg.Server.Listen, BasePath: cfg.Server.BasePath}, "config", "")
+		return writeSummonStatus(stdout, summonInstanceRecord{PID: pid, ConfigPath: resolvedConfigPath, KingdomHome: cfg.KingdomHome, Listen: summonConnectAddress(cfg.Server.Listen), BasePath: cfg.Server.BasePath}, "config", "")
 	}
 	record, discovered, recordErr := findSummonInstanceForConfig(resolvedConfigPath, cfg.KingdomHome)
 	if recordErr != nil {
@@ -1113,11 +1209,11 @@ func runSummonLogs(ctx context.Context, stdout io.Writer, args []string) error {
 	opts := summonLogsOptions{}
 	flags := newFlagSet("summon logs")
 	bindSummonLogsFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "logs"}); err != nil {
+		return err
 	}
 	if opts.lines < 0 {
-		return usageError{err: fmt.Errorf("--lines must be >= 0")}
+		return usageError{err: fmt.Errorf("--lines must be >= 0"), helpTopic: []string{"summon", "logs"}}
 	}
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
@@ -1147,8 +1243,8 @@ func runSummonStop(stdout io.Writer, args []string) error {
 	opts := summonConfigOptions{}
 	flags := newFlagSet("summon stop")
 	bindSummonConfigFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "stop"}); err != nil {
+		return err
 	}
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
@@ -1402,8 +1498,8 @@ func isSummonStopped(pidPath string, pid int) (bool, error) {
 	return false, nil
 }
 
-func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error) error {
-	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, "", "", nil)
+func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error, startupLogPath string) error {
+	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, startupLogPath, "", nil)
 }
 
 func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string, statePath string, renderer *summonDetachedProgressRenderer) error {
@@ -1426,7 +1522,7 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 				}
 			}
 		}
-		if err := pollSummonServerStartError(serverErrCh); err != nil {
+		if err := pollSummonServerStartError(serverErrCh, cfg.Server.Listen, startupLogPath); err != nil {
 			return err
 		}
 
@@ -1448,7 +1544,7 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		apiReq.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
 		apiReq.Header.Set("X-Role-Id", cfg.Operator.RoleID)
 
-		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh)
+		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh, cfg.Server.Listen, startupLogPath)
 		if err != nil {
 			return err
 		}
@@ -1463,11 +1559,11 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 	return fmt.Errorf("summon readiness timeout after %s", timeout)
 }
 
-func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-chan error) (bool, error) {
+func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-chan error, listen string, startupLogPath string) (bool, error) {
 	if client == nil || req == nil {
 		return false, nil
 	}
-	if err := pollSummonServerStartError(serverErrCh); err != nil {
+	if err := pollSummonServerStartError(serverErrCh, listen, startupLogPath); err != nil {
 		return false, err
 	}
 	if serverErrCh == nil {
@@ -1501,7 +1597,7 @@ func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-cha
 	select {
 	case result := <-resultCh:
 		if result.err != nil {
-			if err := pollSummonServerStartError(serverErrCh); err != nil {
+			if err := pollSummonServerStartError(serverErrCh, listen, startupLogPath); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -1509,27 +1605,42 @@ func probeSummonHealth(client *http.Client, req *http.Request, serverErrCh <-cha
 		return result.ready, nil
 	case err := <-serverErrCh:
 		cancel()
-		return false, formatSummonServerStartError(err)
+		return false, formatSummonServerStartError(err, listen, startupLogPath)
 	}
 }
 
-func pollSummonServerStartError(serverErrCh <-chan error) error {
+func pollSummonServerStartError(serverErrCh <-chan error, listen string, logPath string) error {
 	if serverErrCh == nil {
 		return nil
 	}
 	select {
 	case err := <-serverErrCh:
-		return formatSummonServerStartError(err)
+		return formatSummonServerStartError(err, listen, logPath)
 	default:
 		return nil
 	}
 }
 
-func formatSummonServerStartError(err error) error {
+func formatSummonServerStartError(err error, listen string, logPath string) error {
 	if err == nil || errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("summon server stopped before readiness")
 	}
-	return fmt.Errorf("serve summon endpoints: %w", err)
+	if strings.Contains(strings.TrimSpace(err.Error()), "address already in use") {
+		listen = strings.TrimSpace(listen)
+		if listen == "" {
+			listen = "the configured listen address"
+		}
+		message := fmt.Sprintf("summon could not listen on %s; another summon or another process may already be using that address; try `kd summon status`, `kd summon stop`, or change `server.listen`", listen)
+		if trimmedLogPath := strings.TrimSpace(logPath); trimmedLogPath != "" {
+			message = fmt.Sprintf("%s; inspect %s or run `kd summon logs`", message, trimmedLogPath)
+		}
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	message := "start summon server"
+	if trimmedLogPath := strings.TrimSpace(logPath); trimmedLogPath != "" {
+		message = fmt.Sprintf("%s; inspect %s or run `kd summon logs`", message, trimmedLogPath)
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func readSummonStartupLogDetail(path string) string {
@@ -1964,6 +2075,11 @@ func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
 	if strings.TrimSpace(cfg.Server.BasePath) == "" {
 		return installConfig{}, fmt.Errorf("config missing server.base_path")
 	}
+	normalizedListen, err := normalizeSummonListenAddress(cfg.Server.Listen)
+	if err != nil {
+		return installConfig{}, fmt.Errorf("config server.listen: %w", err)
+	}
+	cfg.Server.Listen = normalizedListen
 	// Single chokepoint: every downstream consumer (probe, seed,
 	// printed URL, NewHandler, NewSPAMux, the CLI's default
 	// ServerAddress builder) reads cfg.Server.BasePath, so they
@@ -2332,4 +2448,21 @@ func findSummonInstanceForConfig(configPath, kingdomHome string) (*summonInstanc
 		}
 	}
 	return nil, false, nil
+}
+
+func findActiveInstallModeSummon() (summonInstanceRecord, bool) {
+	configPath := filepath.Join(defaultInstallDirName, defaultConfigFileName)
+	resolvedConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return summonInstanceRecord{}, false
+	}
+	installCfg, err := readInstallConfig(resolvedConfigPath)
+	if err != nil {
+		return summonInstanceRecord{}, false
+	}
+	record, found, err := findSummonInstanceForConfig(resolvedConfigPath, installCfg.KingdomHome)
+	if err != nil || !found || record == nil {
+		return summonInstanceRecord{}, false
+	}
+	return *record, true
 }

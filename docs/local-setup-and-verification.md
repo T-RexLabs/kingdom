@@ -106,6 +106,7 @@ Expected behavior:
 - validates managed OpenCode assets and agent resolution in strict mode when enabled
 - starts the API at `http://127.0.0.1:8080/api/v1`
 - serves the web UI from the same process
+- accepts runtime-only address overrides via `--listen <host:port>` or symmetric `--host <host>` and `--port <port>` flags
 
 ## Installed-Mode Notes
 
@@ -118,7 +119,8 @@ Expected behavior:
 ## Troubleshooting
 
 - `listen tcp 127.0.0.1:8080: bind: address already in use`
-  - stop the existing summon process or change `server.listen`
+  - if another summon is using the port, run `kd summon status` and `kd summon stop`
+  - if another local service is using the port, stop it or change `server.listen`
 - `summon already running with pid=<pid>`
   - use `kd summon status`, then `kd summon stop`
 - `summon readiness timeout`

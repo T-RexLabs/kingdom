@@ -23,9 +23,13 @@ type cleanCommandOptions struct {
 	projectPath string
 }
 
-type summonServeOptions struct {
+type summonOptions struct {
 	configPath   string
 	detach       bool
+	listen       string
+	host         string
+	port         int
+	portExplicit bool
 	readyTimeout time.Duration
 }
 
@@ -123,12 +127,16 @@ func bindCleanFlags(flags *flag.FlagSet, opts *cleanCommandOptions) {
 	flags.StringVar(&opts.projectPath, "path", ".", "project root `path`")
 }
 
-func bindSummonServeFlags(flags *flag.FlagSet, opts *summonServeOptions) {
+func bindSummonFlags(flags *flag.FlagSet, opts *summonOptions) {
 	if flags == nil || opts == nil {
 		return
 	}
 	flags.StringVar(&opts.configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "summon config `path`")
+	flags.BoolVar(&opts.detach, "d", false, "run summon in the background")
 	flags.BoolVar(&opts.detach, "detach", false, "run summon in the background")
+	flags.StringVar(&opts.listen, "listen", "", "override summon listen `address` for this run only")
+	flags.StringVar(&opts.host, "host", "", "override summon listen `host` for this run only")
+	flags.IntVar(&opts.port, "port", 0, "override summon listen `port` for this run only")
 	flags.DurationVar(&opts.readyTimeout, "ready-timeout", defaultSummonReadyTimeout, "maximum readiness wait `duration`")
 }
 

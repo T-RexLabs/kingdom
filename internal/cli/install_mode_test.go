@@ -265,7 +265,7 @@ func TestWaitForSummonReadyTimesOut(t *testing.T) {
 	cfg.Server.Listen = "127.0.0.1:65534"
 
 	start := time.Now()
-	err := waitForSummonReady(cfg, 250*time.Millisecond, nil)
+	err := waitForSummonReady(cfg, 250*time.Millisecond, nil, "")
 	if err == nil {
 		t.Fatalf("expected readiness timeout error")
 	}
@@ -296,7 +296,7 @@ func TestWaitForSummonReadyWithProcessReturnsExitErrorEarly(t *testing.T) {
 	}
 }
 
-func TestRunSummonServeReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
+func TestRunSummonReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	t.Parallel()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -323,12 +323,18 @@ func TestRunSummonServeReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	}
 
 	start := time.Now()
-	err = runSummonServe(context.Background(), io.Discard, io.Discard, []string{"--config", configPath, "--ready-timeout", "5s"})
+	err = runSummon(context.Background(), io.Discard, io.Discard, []string{"--config", configPath, "--ready-timeout", "5s"})
 	if err == nil {
-		t.Fatal("expected summon serve to fail when listen address is already in use")
+		t.Fatal("expected summon to fail when listen address is already in use")
 	}
 	if !strings.Contains(err.Error(), "address already in use") {
 		t.Fatalf("expected bind error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "kd summon status") {
+		t.Fatalf("expected actionable bind error guidance, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "another summon or another process") {
+		t.Fatalf("expected non-biased bind error guidance, got %v", err)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("expected bind failure before readiness timeout, got duration %s", time.Since(start))
@@ -339,7 +345,7 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	t.Parallel()
 
 	logPath := filepath.Join(t.TempDir(), "summon.log")
-	if err := os.WriteFile(logPath, []byte("runtime error: serve summon endpoints: listen tcp 127.0.0.1:8080: bind: address already in use\n"), 0o644); err != nil {
+	if err := os.WriteFile(logPath, []byte("runtime error: summon could not listen on 127.0.0.1:8080; another summon or another process may already be using that address; try `kd summon status`, `kd summon stop`, or change `server.listen`\n"), 0o644); err != nil {
 		t.Fatalf("write summon log: %v", err)
 	}
 
@@ -353,8 +359,50 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected readiness to fail when process exits")
 	}
-	if !strings.Contains(err.Error(), "address already in use") {
+	if !strings.Contains(err.Error(), "another summon or another process") {
 		t.Fatalf("expected startup log detail in error, got %v", err)
+	}
+}
+
+func TestResolveSummonListenAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name           string
+		configListen  string
+		overrideListen string
+		overrideHost  string
+		overridePort  int
+		portExplicit  bool
+		want          string
+		wantErr       string
+	}{
+		{name: "config only", configListen: "127.0.0.1:8080", want: "127.0.0.1:8080"},
+		{name: "listen override", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", want: "127.0.0.1:19090"},
+		{name: "port override", configListen: "127.0.0.1:8080", overridePort: 19090, portExplicit: true, want: "127.0.0.1:19090"},
+		{name: "host override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", want: "0.0.0.0:8080"},
+		{name: "host and port override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", overridePort: 19090, portExplicit: true, want: "0.0.0.0:19090"},
+		{name: "listen conflicts with port", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", overridePort: 19090, portExplicit: true, wantErr: "--listen cannot be combined"},
+		{name: "invalid port", configListen: "127.0.0.1:8080", overridePort: 70000, portExplicit: true, wantErr: "--port must be between 1 and 65535"},
+		{name: "explicit zero port", configListen: "127.0.0.1:8080", overridePort: 0, portExplicit: true, wantErr: "--port must be between 1 and 65535"},
+		{name: "invalid listen", configListen: "127.0.0.1:8080", overrideListen: "19090", wantErr: "summon listen address must be host:port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveSummonListenAddress(tc.configListen, tc.overrideListen, tc.overrideHost, tc.overridePort, tc.portExplicit)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSummonListenAddress: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveSummonListenAddress = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -966,6 +1014,24 @@ func TestSummonAPIURLBuildsCanonicalURLString(t *testing.T) {
 				}{Listen: "host:9000", BasePath: "/internal/api"}},
 				want: "http://host:9000/internal/api",
 			},
+			{
+				name: "wildcard ipv4 bind maps to loopback connect address",
+				cfg: installConfig{Server: struct {
+					Listen            string `yaml:"listen"`
+					BasePath          string `yaml:"base_path"`
+					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+				}{Listen: "0.0.0.0:8080", BasePath: "/api/v1"}},
+				want: "http://127.0.0.1:8080/api/v1",
+			},
+			{
+				name: "wildcard ipv6 bind maps to loopback connect address",
+				cfg: installConfig{Server: struct {
+					Listen            string `yaml:"listen"`
+					BasePath          string `yaml:"base_path"`
+					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+				}{Listen: "[::]:8080", BasePath: "/api/v1"}},
+				want: "http://[::1]:8080/api/v1",
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1032,7 +1098,7 @@ func TestWaitForSummonReadyHitsCanonicalHealthURLForNonCanonicalConfigInput(t *t
 	// waitForSummonReady polls until 200; our recorder responds 200
 	// immediately so the first probe attempt succeeds. We pass a
 	// nil serverErrCh — the probe loop tolerates that.
-	if err := waitForSummonReady(cfg, 5*time.Second, nil); err != nil {
+	if err := waitForSummonReady(cfg, 5*time.Second, nil, ""); err != nil {
 		t.Fatalf("waitForSummonReady: %v", err)
 	}
 
@@ -1824,6 +1890,31 @@ func TestReadInstallConfigRejectsManualGovernanceMode(t *testing.T) {
 	_, err := readInstallConfig(configPath)
 	if err == nil || !strings.Contains(err.Error(), "governance_mode=manual is not implemented yet") {
 		t.Fatalf("expected manual governance mode rejection, got %v", err)
+	}
+}
+
+func TestReadInstallConfigRejectsInvalidListenAddress(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".kingdom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+
+	raw := "version: v1\n" +
+		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
+		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
+		"server:\n  listen: invalid\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
+		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := readInstallConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "config server.listen") {
+		t.Fatalf("expected listen validation error, got %v", err)
 	}
 }
 

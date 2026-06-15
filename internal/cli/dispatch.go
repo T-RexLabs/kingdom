@@ -37,6 +37,7 @@ const (
 )
 
 var loadInstallConfigForCLI = installConfigForCLI
+var findActiveSummonForCLI = findActiveInstallModeSummon
 
 type Config struct {
 	ServerAddress  string
@@ -67,7 +68,6 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 		writeCommandHelp(stdout, nil)
 		return ExitSuccess
 	}
-
 	switch args[0] {
 	case "init":
 		if hasHelpToken(args[1:]) {
@@ -115,6 +115,10 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 	if len(remaining) >= 2 && isHelpToken(remaining[1]) {
 		writeCommandHelp(stdout, []string{remaining[0]})
 		return ExitSuccess
+	}
+	if routeErr := validateCLIRoute(remaining); routeErr != nil {
+		writeUsageError(stderr, routeErr.err, routeErr.helpTopic)
+		return ExitUsage
 	}
 
 	runtime := &Runtime{config: cfg, stdout: stdout, stderr: stderr}
@@ -213,10 +217,6 @@ func parseGlobalFlags(args []string) (Config, []string, error) {
 }
 
 func (r *Runtime) run(ctx context.Context, args []string) error {
-	if len(args) == 1 {
-		return usageError{err: errors.New("incomplete command")}
-	}
-
 	if len(args) >= 2 && (isHelpToken(args[1]) || args[1] == "help") {
 		writeCommandHelp(r.stdout, []string{args[0]})
 		return nil
@@ -231,59 +231,127 @@ func (r *Runtime) run(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	switch args[0] {
-	case "create":
-		if args[1] != "decree" {
-			return usageError{err: fmt.Errorf("unsupported create command %q", args[1])}
-		}
+	switch {
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"create", "decree"}):
 		return r.handleCreateDecree(ctx, args[2:])
-	case "run":
-		switch args[1] {
-		case "start":
-			return r.handleRunStart(ctx, args[2:])
-		case "status":
-			return r.handleRunStatus(ctx, args[2:])
-		case "artifacts":
-			if len(args) < 3 || args[2] != "export" {
-				return usageError{err: fmt.Errorf("unsupported run artifacts command %q", strings.Join(args[2:], " "))}
-			}
-			return r.handleRunArtifactsExport(ctx, args[3:])
-		default:
-			return usageError{err: fmt.Errorf("unsupported run command %q", args[1])}
-		}
-	case "graph":
-		if args[1] != "show" {
-			return usageError{err: fmt.Errorf("unsupported graph command %q", args[1])}
-		}
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "start"}):
+		return r.handleRunStart(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "status"}):
+		return r.handleRunStatus(ctx, args[2:])
+	case len(args) >= 3 && sameHelpPath(args[:3], []string{"run", "artifacts", "export"}):
+		return r.handleRunArtifactsExport(ctx, args[3:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"graph", "show"}):
 		return r.handleGraphShow(ctx, args[2:])
-	case "node":
-		switch args[1] {
-		case "retry":
-			return r.handleNodeRetry(ctx, args[2:])
-		case "rerun-from":
-			return r.handleNodeRerunFrom(ctx, args[2:])
-		default:
-			return usageError{err: fmt.Errorf("unsupported node command %q", args[1])}
-		}
-	case "timeline":
-		if args[1] != "follow" {
-			return usageError{err: fmt.Errorf("unsupported timeline command %q", args[1])}
-		}
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"node", "retry"}):
+		return r.handleNodeRetry(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"node", "rerun-from"}):
+		return r.handleNodeRerunFrom(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"timeline", "follow"}):
 		return r.handleTimelineFollow(ctx, args[2:])
-	case "approvals":
-		switch args[1] {
-		case "list":
-			return r.handleApprovalsList(ctx, args[2:])
-		case "plan-decide":
-			return r.handleApprovalsPlanDecide(ctx, args[2:])
-		case "decide":
-			return r.handleApprovalsDecide(ctx, args[2:])
-		default:
-			return usageError{err: fmt.Errorf("unsupported approvals command %q", args[1])}
-		}
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"approvals", "list"}):
+		return r.handleApprovalsList(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"approvals", "plan-decide"}):
+		return r.handleApprovalsPlanDecide(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"approvals", "decide"}):
+		return r.handleApprovalsDecide(ctx, args[2:])
 	default:
-		return usageError{err: fmt.Errorf("unsupported command %q", args[0])}
+		return usageError{err: errors.New("invalid command"), helpTopic: nearestHelpTopic(args)}
 	}
+}
+
+type commandRoute struct {
+	path []string
+}
+
+var cliCommandRoutes = []commandRoute{
+	{path: []string{"init"}},
+	{path: []string{"clean"}},
+	{path: []string{"summon"}},
+	{path: []string{"summon", "status"}},
+	{path: []string{"summon", "logs"}},
+	{path: []string{"summon", "stop"}},
+	{path: []string{"create", "decree"}},
+	{path: []string{"run", "start"}},
+	{path: []string{"run", "status"}},
+	{path: []string{"run", "artifacts", "export"}},
+	{path: []string{"graph", "show"}},
+	{path: []string{"node", "retry"}},
+	{path: []string{"node", "rerun-from"}},
+	{path: []string{"timeline", "follow"}},
+	{path: []string{"approvals", "list"}},
+	{path: []string{"approvals", "plan-decide"}},
+	{path: []string{"approvals", "decide"}},
+}
+
+func validateCLIRoute(args []string) *usageError {
+	trimmed := commandPathPrefix(args)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if longestLeafRoutePrefix(trimmed) != nil {
+		return nil
+	}
+	longestParent := nearestKnownHelpPath(trimmed)
+	if len(longestParent) == 0 {
+		return &usageError{err: fmt.Errorf("invalid command %q", trimmed[0])}
+	}
+	if len(longestParent) == len(trimmed) {
+		return &usageError{err: errors.New("incomplete command"), helpTopic: longestParent}
+	}
+	next := trimmed[len(longestParent)]
+	return &usageError{err: fmt.Errorf("invalid command %q", next), helpTopic: longestParent}
+}
+
+func commandPathPrefix(args []string) []string {
+	trimmed := make([]string, 0, len(args))
+	for _, arg := range args {
+		normalized := strings.TrimSpace(strings.ToLower(arg))
+		if normalized == "" || normalized == "help" {
+			continue
+		}
+		if strings.HasPrefix(normalized, "-") {
+			break
+		}
+		trimmed = append(trimmed, normalized)
+	}
+	return trimmed
+}
+
+func longestLeafRoutePrefix(path []string) []string {
+	var longest []string
+	for _, route := range cliCommandRoutes {
+		if len(route.path) > len(path) {
+			continue
+		}
+		matched := true
+		for idx := range route.path {
+			if route.path[idx] != path[idx] {
+				matched = false
+				break
+			}
+		}
+		if matched && len(route.path) > len(longest) {
+			longest = route.path
+		}
+	}
+	if len(longest) == 0 {
+		return nil
+	}
+	resolved := make([]string, len(longest))
+	copy(resolved, longest)
+	return resolved
+}
+
+func nearestKnownHelpPath(path []string) []string {
+	for length := len(path); length > 0; length-- {
+		candidate := path[:length]
+		if lookupHelpTopic(candidate) != nil {
+			resolved := make([]string, len(candidate))
+			copy(resolved, candidate)
+			return resolved
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) newResponsesClient() (*gen.ClientWithResponses, error) {
@@ -338,7 +406,7 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 	}
 	flags := newFlagSet("create decree")
 	bindCreateDecreeFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
+	if err := parseLeafFlags(flags, args, []string{"create", "decree"}); err != nil {
 		return commandUsage(err)
 	}
 	if opts.title == "" || opts.text == "" {
@@ -455,7 +523,7 @@ func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 	}
 	flags := newFlagSet("run start")
 	bindRunStartFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
+	if err := parseLeafFlags(flags, args, []string{"run", "start"}); err != nil {
 		return commandUsage(err)
 	}
 	if opts.decreeID == "" {
@@ -520,11 +588,11 @@ func (r *Runtime) handleRunStatus(ctx context.Context, args []string) error {
 	opts := runStatusOptions{}
 	flags := newFlagSet("run status")
 	bindRunStatusFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"run", "status"}); err != nil {
+		return err
 	}
 	if opts.runID == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"run", "status"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -560,11 +628,11 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 	opts := runArtifactsExportOptions{}
 	flags := newFlagSet("run artifacts export")
 	bindRunArtifactsExportFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"run", "artifacts", "export"}); err != nil {
+		return err
 	}
 	if opts.runID == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"run", "artifacts", "export"}}
 	}
 	if strings.TrimSpace(opts.outputPath) == "" {
 		opts.outputPath = fmt.Sprintf("%s-artifacts.zip", opts.runID)
@@ -605,14 +673,14 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 	opts := graphShowOptions{}
 	flags := newFlagSet("graph show")
 	bindGraphShowFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"graph", "show"}); err != nil {
+		return err
 	}
 	if opts.runID == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"graph", "show"}}
 	}
 	if opts.asMermaid && opts.asASCII {
-		return usageError{err: errors.New("choose one of --ascii or --mermaid")}
+		return usageError{err: errors.New("choose one of --ascii or --mermaid"), helpTopic: []string{"graph", "show"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -644,11 +712,11 @@ func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
 	opts := nodeMutationOptions{}
 	flags := newFlagSet("node retry")
 	bindNodeMutationFlags(flags, &opts, "retry reason")
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"node", "retry"}); err != nil {
+		return err
 	}
 	if opts.runID == "" || opts.nodeKey == "" || opts.reason == "" {
-		return usageError{err: errors.New("--run-id, --node-key, and --reason are required")}
+		return usageError{err: errors.New("--run-id, --node-key, and --reason are required"), helpTopic: []string{"node", "retry"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -680,11 +748,11 @@ func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error 
 	opts := nodeMutationOptions{}
 	flags := newFlagSet("node rerun-from")
 	bindNodeMutationFlags(flags, &opts, "rerun reason")
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"node", "rerun-from"}); err != nil {
+		return err
 	}
 	if opts.runID == "" || opts.nodeKey == "" || opts.reason == "" {
-		return usageError{err: errors.New("--run-id, --node-key, and --reason are required")}
+		return usageError{err: errors.New("--run-id, --node-key, and --reason are required"), helpTopic: []string{"node", "rerun-from"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -716,11 +784,11 @@ func (r *Runtime) handleTimelineFollow(ctx context.Context, args []string) error
 	opts := timelineFollowOptions{}
 	flags := newFlagSet("timeline follow")
 	bindTimelineFollowFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"timeline", "follow"}); err != nil {
+		return err
 	}
 	if opts.runID == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"timeline", "follow"}}
 	}
 
 	client, err := r.newRawClient()
@@ -760,14 +828,14 @@ func (r *Runtime) handleApprovalsList(ctx context.Context, args []string) error 
 	opts := approvalsListOptions{}
 	flags := newFlagSet("approvals list")
 	bindApprovalsListFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"approvals", "list"}); err != nil {
+		return err
 	}
 	if opts.runID == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"approvals", "list"}}
 	}
 	if opts.limit <= 0 {
-		return usageError{err: errors.New("--limit must be greater than zero")}
+		return usageError{err: errors.New("--limit must be greater than zero"), helpTopic: []string{"approvals", "list"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -845,20 +913,20 @@ func (r *Runtime) handleApprovalsDecide(ctx context.Context, args []string) erro
 	opts := approvalDecisionOptions{}
 	flags := newFlagSet("approvals decide")
 	bindApprovalDecisionFlags(flags, &opts, "final decision `action`: confirm or rework")
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"approvals", "decide"}); err != nil {
+		return err
 	}
 	if strings.TrimSpace(opts.runID) == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"approvals", "decide"}}
 	}
 	opts.action = strings.ToLower(strings.TrimSpace(opts.action))
 	action := opts.action
 	if action != string(gen.CreateFinalApprovalRequestActionConfirm) && action != string(gen.CreateFinalApprovalRequestActionRework) {
-		return usageError{err: errors.New("--action must be confirm or rework")}
+		return usageError{err: errors.New("--action must be confirm or rework"), helpTopic: []string{"approvals", "decide"}}
 	}
 	reasonPtr, err := optionalReason(action, opts.reason)
 	if err != nil {
-		return usageError{err: err}
+		return usageError{err: err, helpTopic: []string{"approvals", "decide"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -893,20 +961,20 @@ func (r *Runtime) handleApprovalsPlanDecide(ctx context.Context, args []string) 
 	opts := approvalDecisionOptions{}
 	flags := newFlagSet("approvals plan-decide")
 	bindApprovalDecisionFlags(flags, &opts, "plan decision `action`: confirm or rework")
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"approvals", "plan-decide"}); err != nil {
+		return err
 	}
 	if strings.TrimSpace(opts.runID) == "" {
-		return usageError{err: errors.New("--run-id is required")}
+		return usageError{err: errors.New("--run-id is required"), helpTopic: []string{"approvals", "plan-decide"}}
 	}
 	opts.action = strings.ToLower(strings.TrimSpace(opts.action))
 	action := opts.action
 	if action != string(gen.CreatePlanApprovalRequestActionConfirm) && action != string(gen.CreatePlanApprovalRequestActionRework) {
-		return usageError{err: errors.New("--action must be confirm or rework")}
+		return usageError{err: errors.New("--action must be confirm or rework"), helpTopic: []string{"approvals", "plan-decide"}}
 	}
 	reasonPtr, err := optionalReason(action, opts.reason)
 	if err != nil {
-		return usageError{err: err}
+		return usageError{err: err, helpTopic: []string{"approvals", "plan-decide"}}
 	}
 
 	client, err := r.newResponsesClient()
@@ -1093,6 +1161,16 @@ func newFlagSet(name string) *flag.FlagSet {
 	return set
 }
 
+func parseLeafFlags(flags *flag.FlagSet, args []string, helpTopic []string) error {
+	if err := flags.Parse(args); err != nil {
+		return usageError{err: err, helpTopic: helpTopic}
+	}
+	if flags.NArg() == 0 {
+		return nil
+	}
+	return usageError{err: fmt.Errorf("unexpected argument(s): %s", strings.Join(flags.Args(), " ")), helpTopic: helpTopic}
+}
+
 func isHelpToken(value string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(value))
 	return trimmed == "--help" || trimmed == "-h"
@@ -1142,6 +1220,14 @@ func applyInstallModeDefaults(cfg *Config) {
 	if cfg == nil || cfg.ServerExplicit || strings.TrimSpace(cfg.ServerAddress) != defaultServerAddress {
 		return
 	}
+	if record, ok := findActiveSummonForCLI(); ok {
+		listen := strings.TrimSpace(record.Listen)
+		basePath := strings.TrimSpace(record.BasePath)
+		if listen != "" && basePath != "" {
+			cfg.ServerAddress = fmt.Sprintf("http://%s%s", summonConnectAddress(listen), basePath)
+			return
+		}
+	}
 	installCfg, ok := loadInstallConfigForCLI()
 	if !ok {
 		return
@@ -1152,7 +1238,7 @@ func applyInstallModeDefaults(cfg *Config) {
 	if listen == "" || installCfg.Server.BasePath == "" {
 		return
 	}
-	cfg.ServerAddress = fmt.Sprintf("http://%s%s", listen, installCfg.Server.BasePath)
+	cfg.ServerAddress = fmt.Sprintf("http://%s%s", summonConnectAddress(listen), installCfg.Server.BasePath)
 }
 
 func requireGlobalModelForInstallMode(globalModel string, cfg Config) error {
