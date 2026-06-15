@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import type { RunExecution } from "@/api/hooks";
 import { agentLabelForExecution, cn, getRoleColor } from "@/lib/utils";
 import { buildActivityState } from "@/features/activity/activity-view";
-import { isActiveExecutionStatus } from "./run-status-semantics";
+import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 
 // RunActivityLanes is the concurrency overview: while provider-backed nodes run
@@ -24,7 +24,7 @@ export function RunActivityLanes({
 
   const lanes = useMemo(() => {
     return executions
-      .filter((execution) => execution.execution_mode === "provider_backed" && isActiveExecutionStatus(execution.status))
+      .filter((execution) => isActiveProviderBackedExecution(execution))
       .map((execution) => {
         const state = buildActivityState({ liveItems: selectLiveRunActivity(liveBuffer, execution.attempt_id) });
         return {

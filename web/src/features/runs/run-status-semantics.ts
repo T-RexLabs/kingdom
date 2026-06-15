@@ -76,6 +76,13 @@ export function isActiveExecutionStatus(status?: string | null): boolean {
 	}
 }
 
+export function isActiveProviderBackedExecution(execution?: {
+	status?: string | null;
+	execution_mode?: string | null;
+} | null): boolean {
+	return execution?.execution_mode === "provider_backed" && isActiveExecutionStatus(execution.status);
+}
+
 export function isCurrentActivityExecutionStatus(status?: string | null): boolean {
 	return isQueuedExecutionStatus(status) || isActiveExecutionStatus(status) || isBlockedExecutionStatus(status);
 }

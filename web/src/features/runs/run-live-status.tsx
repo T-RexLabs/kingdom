@@ -2,7 +2,7 @@ import { Feather } from "lucide-react";
 import type { RunExecution } from "@/api/hooks";
 import { agentLabelForExecution } from "@/lib/utils";
 import { buildCurrentEvent } from "@/features/activity/activity-view";
-import { isActiveExecutionStatus } from "./run-status-semantics";
+import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 
 // Cap on how many running agents the headline names before collapsing the rest into
@@ -19,7 +19,7 @@ const MAX_NAMED_AGENTS = 2;
 export function RunLiveStatus({ runId, executions }: { runId: string; executions: RunExecution[] }) {
   const liveBuffer = useLiveRunActivity(runId);
   const active = executions
-    .filter((execution) => isActiveExecutionStatus(execution.status))
+    .filter((execution) => isActiveProviderBackedExecution(execution))
     .map((execution) => {
       const items = selectLiveRunActivity(liveBuffer, execution.attempt_id);
       const current = items.length > 0 ? buildCurrentEvent(items, "") : null;

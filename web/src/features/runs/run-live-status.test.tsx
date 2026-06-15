@@ -11,6 +11,7 @@ function execution(args: {
   requiredRole: string;
   activityAt?: string;
   status?: RunExecution["status"];
+  executionMode?: RunExecution["execution_mode"];
 }): RunExecution {
   return {
     node_id: args.node,
@@ -19,7 +20,7 @@ function execution(args: {
     attempt: 1,
     agent_id: "agent",
     required_role: args.requiredRole,
-    execution_mode: "provider_backed",
+    execution_mode: args.executionMode ?? "provider_backed",
     status: args.status ?? "running",
     activity_at: args.activityAt ?? "2026-06-15T10:00:00Z",
   } as RunExecution;
@@ -71,5 +72,16 @@ describe("RunLiveStatus", () => {
       execution({ node: "plan_drafting", attemptId: "att-plan", requiredRole: "builder-berserker", status: "succeeded" }),
     ]);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it("excludes runtime-owned executions from the headline", () => {
+    renderStatus([
+      execution({ node: "execution_kickoff", attemptId: "att-kickoff", requiredRole: "king", executionMode: "runtime_owned" }),
+      execution({ node: "advisor_consultation_clergy", attemptId: "att-clergy", requiredRole: "clergy-delegate" }),
+    ]);
+
+    expect(screen.getByText("Clergy Delegate")).toBeInTheDocument();
+    expect(screen.queryByTestId("run-live-status")).toHaveTextContent("Clergy Delegate");
+    expect(screen.queryByText("King")).not.toBeInTheDocument();
   });
 });
