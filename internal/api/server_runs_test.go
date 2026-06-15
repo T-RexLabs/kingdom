@@ -2723,9 +2723,9 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 	var payload struct {
 		RunID string `json:"run_id"`
 		Items []struct {
-			AgentID        string  `json:"agent_id"`
-			ParentAgentID  *string `json:"parent_agent_id"`
-			FirstSeenAt    string  `json:"first_seen_at"`
+			AgentID       string  `json:"agent_id"`
+			ParentAgentID *string `json:"parent_agent_id"`
+			FirstSeenAt   string  `json:"first_seen_at"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
@@ -3491,6 +3491,12 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 
 	const attemptID = "attempt-activity-1"
 	const otherAttemptID = "attempt-activity-2"
+	now := "2026-06-14T10:00:00Z"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-1', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_1', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_2', ?, 'delegated_execution_berserker', 2,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	seedAttemptExecution(t, db, attemptID, runID, "nr_attempt_activity_1", "2026-06-14T10:00:00Z")
+	seedAttemptExecution(t, db, otherAttemptID, runID, "nr_attempt_activity_2", "2026-06-14T10:00:00Z")
 	insertActivityEvent := func(eventID, attempt string, runEventSeq, seq int, payloadJSON string) {
 		t.Helper()
 		mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, NULL, ?, 'v1', 'attempt.activity', ?, ?, 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', ?, ?, ?, '2026-06-14T10:00:00Z')`,
@@ -3549,4 +3555,47 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 			t.Fatalf("attempt.activity must be excluded from the timeline, got %#v", item)
 		}
 	}
+}
+
+func TestServerRunExecutionActivityReturnsNotFoundForUnknownAttempt(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/attempt-missing/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
+	}
+	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+}
+
+func TestServerRunExecutionActivityReturnsNotFoundForMismatchedRunAttempt(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	otherRunID := seedRunWithCustomPlanDraftingWorkflow(t, handler, "plan_drafting_cross_run")
+	const attemptID = "attempt-activity-cross-run"
+	now := "2026-06-14T10:00:00Z"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-cross-run', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_cross_run', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-cross-run', 1, ?, ?)`, otherRunID, now, now)
+	seedAttemptExecution(t, db, attemptID, otherRunID, "nr_attempt_activity_cross_run", "2026-06-14T10:00:00Z")
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-cross-run', ?, 9001, NULL, ?, 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","activity_id":"part-cross-run","detail":"Other run","occurred_at":"2026-06-14T10:00:01Z"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', 'caus-cross-run', 'prev-cross-run', 'entry-cross-run', '2026-06-14T10:00:00Z')`, otherRunID, attemptID)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
+	}
+	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
 }

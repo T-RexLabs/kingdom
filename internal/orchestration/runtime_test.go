@@ -5669,7 +5669,20 @@ func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_retry_empty', 'wfdef_retry_empty', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_empty_1', 'run_retry_empty', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_builder', 1, '%s', NULL)`, now))
 
-	adapter := &sequenceExecutionAdapter{outputs: []string{"", "fixed output"}}
+	adapter := &sequenceExecutionAdapter{
+		outputs: []string{"", "fixed output"},
+		activities: [][]opencode.ExecuteActivityObservation{
+			nil,
+			{{
+				Kind:           opencode.ExecuteActivityKindTool,
+				ProviderPartID: "tool_retry_readme",
+				OccurredAt:     "2026-03-01T12:00:02Z",
+				ToolName:       "read",
+				ToolStatus:     "completed",
+				ToolTitle:      "README.md",
+			}},
+		},
+	}
 	loop := orchestrationLoop{
 		db:         db,
 		transition: state.NewTransitionService(db, nil),
@@ -5765,6 +5778,21 @@ func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(
 	}
 	if recoveryEventCount != 1 {
 		t.Fatalf("expected one recovery event after successful retry, got %d", recoveryEventCount)
+	}
+
+	var activityCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_retry_empty:delegated_execution_berserker:1' AND event_type = 'attempt.activity'`).Scan(&activityCount); err != nil {
+		t.Fatalf("count retry activity events: %v", err)
+	}
+	if activityCount != 1 {
+		t.Fatalf("expected one persisted activity event from retry execution, got %d", activityCount)
+	}
+	var activityID, activityKind, toolName string
+	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.activity_id'), json_extract(payload_json, '$.kind'), json_extract(payload_json, '$.tool_name') FROM events WHERE attempt_id = 'run_retry_empty:delegated_execution_berserker:1' AND event_type = 'attempt.activity'`).Scan(&activityID, &activityKind, &toolName); err != nil {
+		t.Fatalf("read retry activity payload: %v", err)
+	}
+	if activityID != "tool_retry_readme" || activityKind != "kingdom.tool" || toolName != "read" {
+		t.Fatalf("unexpected retry activity payload: id=%q kind=%q tool=%q", activityID, activityKind, toolName)
 	}
 
 	var storedModel, storedVariant string
@@ -13142,10 +13170,11 @@ type attemptNotFoundTimeoutAdapter struct {
 }
 
 type sequenceExecutionAdapter struct {
-	mu       sync.Mutex
-	outputs  []string
-	calls    int
-	requests []opencode.ExecuteRequest
+	mu         sync.Mutex
+	outputs    []string
+	activities [][]opencode.ExecuteActivityObservation
+	calls      int
+	requests   []opencode.ExecuteRequest
 }
 
 type workspaceWritingExecutionAdapter struct {
@@ -13164,15 +13193,16 @@ type outcomeSequenceExecutionAdapter struct {
 }
 
 type completionRecoveryTestAdapter struct {
-	mu               sync.Mutex
-	executeResponse  opencode.ExecuteResponse
-	executeErr       error
-	recoveryResponse opencode.ExecuteResponse
-	recoveryErr      error
-	recoveryWrites   map[string]string
-	recoveryCalls    int
-	recoveryRequests []opencode.ExecuteRequest
-	recoveryTexts    []string
+	mu                 sync.Mutex
+	executeResponse    opencode.ExecuteResponse
+	executeErr         error
+	recoveryResponse   opencode.ExecuteResponse
+	recoveryErr        error
+	recoveryWrites     map[string]string
+	recoveryActivities []opencode.ExecuteActivityObservation
+	recoveryCalls      int
+	recoveryRequests   []opencode.ExecuteRequest
+	recoveryTexts      []string
 }
 
 type lifecycleObservationExecutionAdapter struct{}
@@ -13244,6 +13274,13 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	a.requests = append(a.requests, req)
 	idx := a.calls
 	a.calls++
+	if idx < len(a.activities) {
+		for _, observation := range a.activities[idx] {
+			if req.OnActivity != nil {
+				req.OnActivity(observation)
+			}
+		}
+	}
 	outputText := ""
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
@@ -13367,6 +13404,11 @@ func (a *completionRecoveryTestAdapter) RecoverMissingCompletionReceipt(_ contex
 	a.recoveryCalls++
 	a.recoveryRequests = append(a.recoveryRequests, req)
 	a.recoveryTexts = append(a.recoveryTexts, strings.TrimSpace(finalText))
+	for _, observation := range a.recoveryActivities {
+		if req.OnActivity != nil {
+			req.OnActivity(observation)
+		}
+	}
 	return a.recoveryResponse, a.recoveryErr
 }
 
@@ -13992,6 +14034,19 @@ func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *t
 func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) {
 	t.Parallel()
 
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_recovery_plan', 'council-member', 'Council Member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_recovery_plan', 'recovery plan', 'recovery plan', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_recovery_plan', 'recovery-plan-flow', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_recovery_plan', NULL, 'decree_recovery_plan', 'wfdef_recovery_plan', 'running', 'approved', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_recovery_plan', 'wfdef_recovery_plan', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_recovery_plan_1', 'run_recovery_plan', 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_recovery_plan', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_recovery_plan:plan_drafting:1', 'run_recovery_plan', 'nr_recovery_plan_1', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session_recovery_plan', 'ses_recovery_plan', '`+now+`', '`+now+`', NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', '`+now+`', '`+now+`')`)
+
 	adapter := &completionRecoveryTestAdapter{
 		recoveryResponse: opencode.ExecuteResponse{
 			Accepted:                    true,
@@ -14006,9 +14061,19 @@ func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) 
 				ReasonCode: "execution_completed",
 			},
 		},
+		recoveryActivities: []opencode.ExecuteActivityObservation{{
+			Kind:           opencode.ExecuteActivityKindTool,
+			ProviderPartID: "tool_recovery_receipt",
+			OccurredAt:     "2026-03-01T12:00:09Z",
+			ToolName:       "write",
+			ToolStatus:     "completed",
+			ToolTitle:      "receipt.json",
+		}},
 	}
 	loop := orchestrationLoop{
 		adapter: adapter,
+		db:      db,
+		events:  state.NewAttemptEventIngestor(db, nil),
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -14058,6 +14123,21 @@ func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) 
 	}
 	if requests[0].DatabasePath != workspaceOpenCode.DatabasePath {
 		t.Fatalf("expected recovery database path %q, got %q", workspaceOpenCode.DatabasePath, requests[0].DatabasePath)
+	}
+
+	var activityCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_recovery_plan:plan_drafting:1' AND event_type = 'attempt.activity'`).Scan(&activityCount); err != nil {
+		t.Fatalf("count recovery activity events: %v", err)
+	}
+	if activityCount != 1 {
+		t.Fatalf("expected one persisted activity event from completion recovery, got %d", activityCount)
+	}
+	var activityID, activityKind, toolName string
+	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.activity_id'), json_extract(payload_json, '$.kind'), json_extract(payload_json, '$.tool_name') FROM events WHERE attempt_id = 'run_recovery_plan:plan_drafting:1' AND event_type = 'attempt.activity'`).Scan(&activityID, &activityKind, &toolName); err != nil {
+		t.Fatalf("read recovery activity payload: %v", err)
+	}
+	if activityID != "tool_recovery_receipt" || activityKind != "kingdom.tool" || toolName != "write" {
+		t.Fatalf("unexpected recovery activity payload: id=%q kind=%q tool=%q", activityID, activityKind, toolName)
 	}
 }
 

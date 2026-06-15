@@ -554,6 +554,7 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 		CompletionProtocolVersion: opencode.CompletionProtocolVersion,
 		CompletionCapability:      result.completionCapability,
 		CompletionReceiptDir:      result.completionReceiptDir,
+		OnActivity:                o.providerExecutionActivityObserver(ctx, result),
 		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
 	}, result.outputText)
 	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
@@ -1565,6 +1566,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 			OnProviderSession: func(providerSessionID string) {
 				o.observeProviderSessionForInvocation(ctx, result.attemptID, result.providerInvocationID, providerSessionID)
 			},
+			OnActivity:          o.providerExecutionActivityObserver(ctx, result),
 			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, result),
 			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, result),
 		})

@@ -1052,12 +1052,22 @@ func (s *Server) handleGetRunExecutionActivity(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	store := executionstore.New(s.db)
+	if _, found, err := store.GetRunExecutionDetail(r.Context(), runID, attemptID); err != nil {
+		s.writeInternalError(w, "get run execution activity failed")
+		return
+	} else if !found {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run execution not found", "api.get_run_execution_activity", map[string]any{"run_id": runID, "attempt_id": attemptID})
+		return
+	}
+
 	rows, err := s.db.QueryContext(
 		r.Context(),
 		`SELECT event_id, payload_json, created_at
 		 FROM events
-		 WHERE attempt_id = ? AND event_type = ?
+		 WHERE run_id = ? AND attempt_id = ? AND event_type = ?
 		 ORDER BY seq ASC`,
+		runID,
 		attemptID,
 		state.AttemptActivityEventType,
 	)

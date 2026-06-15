@@ -1922,6 +1922,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 				result.Tokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
 			}
 		}
+		emitActivityObservation(wrappedReq, event)
 		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
 			result.TextChunks = append(result.TextChunks, event.Part.Text)
 			sum := sha256.Sum256([]byte(event.Part.Text))

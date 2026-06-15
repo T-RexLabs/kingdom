@@ -433,6 +433,9 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 	receiptDir := t.TempDir()
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	receipts := make([]CompletionReceipt, 0, 1)
+	activities := make([]ExecuteActivityObservation, 0, 4)
+	t.Setenv("FAKE_OPENCODE_TEXT", "hello from fake")
+	t.Setenv("FAKE_OPENCODE_STDOUT_BANNER", `{"type":"tool_use","sessionID":"ses_receipt_recovery","part":{"type":"tool","tool":"webfetch","id":"prt_recovery_tool_1","state":{"status":"completed","title":"https://example.com","input":{"url":"https://example.com"}}}`)
 	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
 		SessionID:                 "session_receipt_recovery",
 		ProviderSessionID:         "ses_receipt_recovery",
@@ -447,6 +450,9 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 		CompletionProtocolVersion: CompletionProtocolVersion,
 		CompletionCapability:      "capability_receipt_recovery",
 		CompletionReceiptDir:      receiptDir,
+		OnActivity: func(activity ExecuteActivityObservation) {
+			activities = append(activities, activity)
+		},
 		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
 			receipts = append(receipts, receipt)
 			return CompletionReceiptAcceptance{
@@ -470,6 +476,12 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 	}
 	if receipts[0].FinalText != "hello from fake" {
 		t.Fatalf("expected recovery final_text to round-trip, got %#v", receipts[0])
+	}
+	if len(activities) == 0 {
+		t.Fatal("expected completion recovery to emit provider activity")
+	}
+	if activities[0].Kind != ExecuteActivityKindProgress {
+		t.Fatalf("expected recovery to surface live activity callbacks, got %#v", activities)
 	}
 
 	argsLogRaw, err := os.ReadFile(argsLogPath)
