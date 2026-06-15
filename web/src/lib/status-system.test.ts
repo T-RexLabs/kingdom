@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { STATUS_TONE_HEX, statusBadgeClass, statusTextClass, statusToneForKey } from "./status-system";
+import { STATUS_TONE_HEX, statusBadgeClass, statusLabel, statusTextClass, statusToneForKey } from "./status-system";
+
+describe("statusLabel", () => {
+	it("labels the working state 'Active' for both agents and nodes/runs", () => {
+		expect(statusLabel("busy")).toBe("Active");
+		expect(statusLabel("running")).toBe("Active");
+	});
+
+	it("keeps distinct sub-states and falls back to title case", () => {
+		expect(statusLabel("starting")).toBe("Launching");
+		expect(statusLabel("verifying")).toBe("Verifying");
+		expect(statusLabel("idle")).toBe("Idle");
+		expect(statusLabel("awaiting_plan_decision")).toBe("Awaiting Plan Decision");
+		expect(statusLabel("some_new_state")).toBe("Some New State");
+	});
+});
 
 describe("status system", () => {
 	it("keeps cancelled and rework on distinct tones", () => {

@@ -959,10 +959,6 @@ func (s *Server) handleListRunAgents(w http.ResponseWriter, r *http.Request) {
 		if agent.ParentAgentID.Valid {
 			item.ParentAgentID = &agent.ParentAgentID.String
 		}
-		if agent.LastHeartbeatAt.Valid {
-			parsed := mustParseRFC3339(agent.LastHeartbeatAt.String)
-			item.LastHeartbeatAt = &parsed
-		}
 		items = append(items, item)
 	}
 
@@ -1147,10 +1143,6 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	}
 	if record.ProviderSessionID.Valid {
 		item.ProviderSessionID = &record.ProviderSessionID.String
-	}
-	if record.LastHeartbeatAt.Valid {
-		parsed := mustParseRFC3339(record.LastHeartbeatAt.String)
-		item.LastHeartbeatAt = &parsed
 	}
 	if record.ProgressEventType.Valid {
 		item.ProgressEventType = &record.ProgressEventType.String

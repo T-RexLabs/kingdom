@@ -1874,8 +1874,6 @@ export interface components {
             spawn_depth: number;
             /** Format: date-time */
             created_at: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
         };
         RunParticipant: {
             agent_id: string;
@@ -1887,8 +1885,6 @@ export interface components {
             spawn_depth: number;
             /** Format: date-time */
             first_seen_at: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
         };
         RunExecution: {
             attempt_id: string;
@@ -1903,8 +1899,6 @@ export interface components {
             status: "queued" | "starting" | "running" | "blocked" | "verifying" | "succeeded" | "failed" | "cancelled";
             logical_session_id?: string;
             provider_session_id?: string;
-            /** Format: date-time */
-            last_heartbeat_at?: string;
             /** Format: date-time */
             queued_at: string;
             /** Format: date-time */

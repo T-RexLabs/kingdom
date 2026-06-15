@@ -6,8 +6,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-
-	executionstore "kingdom/internal/execution/store"
 )
 
 func applyAgentRegistrySchema(t *testing.T, db *sql.DB) {
@@ -339,143 +337,6 @@ func TestAgentRegistryListRunAgentsUsesRunScopedFirstSeenAt(t *testing.T) {
 	}
 	if agents[0].FirstSeenAt != "2026-03-01T12:03:00Z" {
 		t.Fatalf("expected run-scoped first_seen_at, got %#v", agents[0].FirstSeenAt)
-	}
-}
-
-func TestAgentRegistryListRunAgentsIncludesHeartbeatFallbackFromLogicalSessionLease(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_agents_lease', 'Agents Lease', 'lease fallback', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_agents_lease', 'royal-decree-v1', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_agents_lease', NULL, 'decree_agents_lease', 'wf_agents_lease', 'running', 'approved', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_lease', 'council-member', 'Lease Agent', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_agents_lease', 'agent_lease', 'council-member', 'Lease Agent', NULL, 0, '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_lease', 'run_agents_lease', 'kickoff', 1,1, 'running', 'council-member', 'agent_lease', 1, '2026-03-01T12:01:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_agents_lease:kickoff:1', 'run_agents_lease', 'nr_agents_lease', 'running', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session_run_agents_lease_1', 'ses_run_agents_lease_1', '2026-03-01T12:01:00Z', NULL, NULL, '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:16:00Z')`)
-
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_run_agents_lease_1', 'agent_lease', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:15:00Z', '2026-03-01T12:10:00Z', '2026-03-01T12:16:00Z')`)
-
-	registry := NewAgentRegistry(db)
-	agents, err := registry.ListRunAgents(context.Background(), "run_agents_lease")
-	if err != nil {
-		t.Fatalf("list run agents with lease fallback: %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("expected one participant, got %d", len(agents))
-	}
-
-	agent := agents[0]
-	if !agent.LastHeartbeatAt.Valid || agent.LastHeartbeatAt.String != "2026-03-01T12:15:00Z" {
-		t.Fatalf("expected fallback heartbeat timestamp, got %#v", agent.LastHeartbeatAt)
-	}
-}
-
-func TestAgentRegistryListRunAgentsScopesHeartbeatFallbackToCurrentRun(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_agents_scope', 'Agents Scope', 'scope session lineage', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_agents_scope', 'royal-decree-v1', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_agents_scope', NULL, 'decree_agents_scope', 'wf_agents_scope', 'running', 'approved', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, session_id, created_at, updated_at) VALUES ('agent_scope_shared', 'council-member', 'Shared Agent', 'busy', NULL, 0, 'session_other_run', '2026-03-01T12:00:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_agents_scope', 'agent_scope_shared', 'council-member', 'Shared Agent', NULL, 0, '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_scope', 'run_agents_scope', 'kickoff', 1,1, 'ready', 'council-member', 'agent_scope_shared', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_other_run', 'agent_scope_shared', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:15:00Z', '2026-03-01T12:10:00Z', '2026-03-01T12:16:00Z')`)
-
-	registry := NewAgentRegistry(db)
-	agents, err := registry.ListRunAgents(context.Background(), "run_agents_scope")
-	if err != nil {
-		t.Fatalf("list run agents with scoped sessions: %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("expected one participant, got %d", len(agents))
-	}
-	if agents[0].LastHeartbeatAt.Valid {
-		t.Fatalf("expected no cross-run heartbeat leakage, got %#v", agents[0].LastHeartbeatAt)
-	}
-}
-
-func TestAgentRegistryListRunAgentsDoesNotPreferStaleHeartbeatOverNewerExecution(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_agents_stale_heartbeat', 'Agents Stale Heartbeat', 'stale heartbeat selection', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_agents_stale_heartbeat', 'royal-decree-v1', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_agents_stale_heartbeat', NULL, 'decree_agents_stale_heartbeat', 'wf_agents_stale_heartbeat', 'running', 'approved', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_stale_heartbeat', 'council-member', 'Stale Heartbeat Agent', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_agents_stale_heartbeat', 'agent_stale_heartbeat', 'council-member', 'Stale Heartbeat Agent', NULL, 0, '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_stale_heartbeat_old', 'run_agents_stale_heartbeat', 'kickoff', 1,1, 'failed', 'council-member', 'agent_stale_heartbeat', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_stale_heartbeat_new', 'run_agents_stale_heartbeat', 'kickoff', 2,2, 'ready', 'council-member', 'agent_stale_heartbeat', 1, '2026-03-01T12:11:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_agents_stale_heartbeat:kickoff:1', 'run_agents_stale_heartbeat', 'nr_agents_stale_heartbeat_old', 'committed_failure', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session_agents_stale_heartbeat_old', 'ses_agents_stale_heartbeat_old', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z', 'provider_process_failed', 'old failure', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_agents_stale_heartbeat_old', 'agent_stale_heartbeat', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-
-	registry := NewAgentRegistry(db)
-	agents, err := registry.ListRunAgents(context.Background(), "run_agents_stale_heartbeat")
-	if err != nil {
-		t.Fatalf("list run agents with stale heartbeat competition: %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("expected one participant, got %d", len(agents))
-	}
-	if agents[0].LastHeartbeatAt.Valid {
-		t.Fatalf("expected stale heartbeat to be suppressed when newer execution has no heartbeat, got %#v", agents[0].LastHeartbeatAt)
-	}
-}
-
-func TestAgentRegistryListRunAgentsIgnoresProviderSessionMetadataWritesForFreshness(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_agents_session_freshness', 'Agents Session Freshness', 'metadata freshness', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_agents_session_freshness', 'royal-decree-v1', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_agents_session_freshness', NULL, 'decree_agents_session_freshness', 'wf_agents_session_freshness', 'running', 'approved', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_session_freshness', 'council-member', 'Session Freshness Agent', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_agents_session_freshness', 'agent_session_freshness', 'council-member', 'Session Freshness Agent', NULL, 0, '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_session_freshness_old', 'run_agents_session_freshness', 'kickoff', 1,1, 'failed', 'council-member', 'agent_session_freshness', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_agents_session_freshness_new', 'run_agents_session_freshness', 'kickoff', 2,2, 'ready', 'council-member', 'agent_session_freshness', 1, '2026-03-01T12:11:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_agents_session_freshness:kickoff:1', 'run_agents_session_freshness', 'nr_agents_session_freshness_old', 'committed_failure', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session_agents_session_freshness_old', '', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z', 'provider_process_failed', 'older failure', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_agents_session_freshness_old', 'agent_session_freshness', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:10:00Z')`)
-
-	store := executionstore.New(db)
-	if err := store.UpdateProviderSessionID(context.Background(), executionstore.UpdateProviderSessionIDRequest{
-		AttemptID:         "run_agents_session_freshness:kickoff:1",
-		ProviderSessionID: "ses_agents_session_freshness_real",
-		UpdatedAt:         "2026-03-01T12:12:00Z",
-	}); err != nil {
-		t.Fatalf("update provider session metadata: %v", err)
-	}
-
-	registry := NewAgentRegistry(db)
-	agents, err := registry.ListRunAgents(context.Background(), "run_agents_session_freshness")
-	if err != nil {
-		t.Fatalf("list run agents after provider session metadata write: %v", err)
-	}
-	if len(agents) != 1 {
-		t.Fatalf("expected one participant, got %#v", agents)
-	}
-	if agents[0].LastHeartbeatAt.Valid {
-		t.Fatalf("expected metadata-only provider session writes not to resurrect stale heartbeat, got %#v", agents[0].LastHeartbeatAt)
-	}
-	if got := queryAttemptExecutionUpdatedAt(t, db, "run_agents_session_freshness:kickoff:1"); got != "2026-03-01T12:10:00Z" {
-		t.Fatalf("expected metadata write to preserve execution updated_at, got %q", got)
 	}
 }
 
@@ -854,16 +715,6 @@ func queryAgentStatus(t *testing.T, db *sql.DB, agentID string) string {
 	return status
 }
 
-func queryAttemptExecutionUpdatedAt(t *testing.T, db *sql.DB, attemptID string) string {
-	t.Helper()
-
-	var updatedAt string
-	if err := db.QueryRow(`SELECT updated_at FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&updatedAt); err != nil {
-		t.Fatalf("query attempt execution updated_at: %v", err)
-	}
-	return updatedAt
-}
-
 func queryNodeAgentID(t *testing.T, db *sql.DB, nodeRunID string) string {
 	t.Helper()
 
@@ -872,4 +723,36 @@ func queryNodeAgentID(t *testing.T, db *sql.DB, nodeRunID string) string {
 		t.Fatalf("query node attempt agent_id: %v", err)
 	}
 	return agentID
+}
+
+// Regression for the King-stuck-busy bug: once an agent has no active node_runs, a
+// status reconcile must move it back to idle. The orchestrator now calls this on every
+// completion (no longer gated on a committed transition), so runtime-owned agents like
+// the King don't linger "busy".
+func TestAgentRegistrySyncOperationalStatusReconcilesStaleBusyToIdle(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_sync', 'Sync', 'sync', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_sync', 'royal-decree-v1', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_sync', NULL, 'decree_sync', 'wf_sync', 'running', 'approved', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_sync', 'king', 'King', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	// King's only node_run has already completed (not active).
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_king_sync', 'run_sync', 'king_plan_decision', 1, 1, 'succeeded', 'king', 'agent_king_sync', 1, '2026-03-01T12:00:30Z', '2026-03-01T12:01:00Z')`)
+
+	registry := NewAgentRegistry(db)
+	if err := registry.SyncOperationalStatus(context.Background(), "agent_king_sync", "2026-03-01T12:01:30Z"); err != nil {
+		t.Fatalf("sync operational status: %v", err)
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king_sync'`).Scan(&status); err != nil {
+		t.Fatalf("read agent status: %v", err)
+	}
+	if status != "idle" {
+		t.Fatalf("expected king to reconcile to idle, got %q", status)
+	}
 }

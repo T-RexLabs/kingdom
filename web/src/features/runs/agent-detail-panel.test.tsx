@@ -11,7 +11,6 @@ const agents: RunParticipant[] = [
     status: "busy",
     spawn_depth: 0,
     first_seen_at: "2026-03-22T10:00:00Z",
-    last_heartbeat_at: "2026-03-22T10:01:00Z",
   },
   {
     agent_id: "agent_nightraven",
@@ -41,9 +40,9 @@ describe("agent detail panel", () => {
   it("renders compact rows and toggles role descriptions on click", () => {
     render(<AgentDetailPanel agents={agents} roleDescriptions={roleDescriptions} />);
 
-    expect(screen.getByText("1 Busy")).toBeInTheDocument();
+    expect(screen.getByText("1 Active")).toBeInTheDocument();
     expect(screen.getByText("1 Blocked")).toBeInTheDocument();
-    expect(screen.queryByText("Busy: 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Active: 1")).not.toBeInTheDocument();
     expect(screen.queryByText("Blocked: 1")).not.toBeInTheDocument();
 
     expect(screen.queryByText("agent_king")).not.toBeInTheDocument();
@@ -52,7 +51,6 @@ describe("agent detail panel", () => {
     expect(screen.queryByText(/Depth/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Session:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Created:/)).not.toBeInTheDocument();
-    expect(screen.getAllByText("No heartbeat").length).toBeGreaterThan(0);
     expect(screen.getByTestId("role-description-king")).toHaveClass("grid-rows-[0fr]");
 
     fireEvent.click(screen.getByRole("button", { name: /King/i }));
@@ -66,7 +64,7 @@ describe("agent detail panel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Reviewer Shieldmaiden/i }));
     expect(screen.getByTestId("role-description-reviewer-shieldmaiden")).toHaveClass("grid-rows-[0fr]");
 
-    expect(screen.getAllByText("Busy").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Active").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Blocked").length).toBeGreaterThan(0);
   });
 

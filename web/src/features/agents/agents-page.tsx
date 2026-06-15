@@ -1,10 +1,7 @@
 import { useMemo } from "react";
 import { useAgents, usePendingGovernanceRuns, useRoles, useRuns, type RunAgent, type Role } from "@/api/hooks";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { HeartbeatIndicator } from "@/components/heartbeat-indicator";
 import {
-  capitalize,
   cn,
   getRoleColor,
   getRoleGlowStyle,
@@ -12,9 +9,9 @@ import {
   isAgentRole,
   ROLE_HIERARCHY_ORDER,
   AGENT_STATUS_ORDER,
-  AGENT_STATUS_DOT_COLORS,
 } from "@/lib/utils";
 import type { AgentStatus } from "@/lib/utils";
+import { statusDotClass, statusLabel } from "@/lib/status-system";
 import { Users, Shield } from "lucide-react";
 import { PageHeader, PageContent } from "@/components/page-layout";
 
@@ -81,9 +78,9 @@ function StatusSummaryBar({
             if (count === 0) return null;
             return (
               <div key={status} className="flex items-center gap-1.5">
-                <span className={cn("h-2 w-2 rounded-full", AGENT_STATUS_DOT_COLORS[status])} />
+                <span className={cn("h-2 w-2 rounded-full", statusDotClass(status))} />
                 <span className="text-xs text-foreground-muted">
-                  {count} {capitalize(status)}
+                  {count} {statusLabel(status)}
                 </span>
               </div>
             );
@@ -265,9 +262,9 @@ function RoleGroupCard({ group }: { group: RoleGroup }) {
       style={hasBusyAgent ? getRoleGlowStyle(roleId) : undefined}
     >
       <CardContent className="p-0">
-        <div className="px-3 py-2.5">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
+        <div className="space-y-1 px-3 py-2.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <Icon
                 className={cn(
                   "h-4 w-4 shrink-0",
@@ -283,61 +280,27 @@ function RoleGroupCard({ group }: { group: RoleGroup }) {
               >
                 {roleName}
               </h3>
-              {hasAgents && (
-                <Badge className="ml-1">{agents.length}</Badge>
-              )}
             </div>
-            <p className="text-[11px] text-foreground-muted">{roleDescription}</p>
             {hasAgents ? (
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
                 {AGENT_STATUS_ORDER.map((status) => {
                   const count = roleStatusCounts[status];
                   if (count === 0) return null;
                   return (
-                    <span
-                      key={status}
-                      className="inline-flex items-center gap-1 text-xs text-foreground-subtle"
-                    >
-                      <span
-                        className={cn(
-                          "h-1.5 w-1.5 rounded-full",
-                          AGENT_STATUS_DOT_COLORS[status],
-                        )}
-                      />
-                      {count} {capitalize(status)}
+                    <span key={status} className="inline-flex items-center gap-1 text-xs text-foreground-subtle">
+                      <span className={cn("h-1.5 w-1.5 rounded-full", statusDotClass(status))} />
+                      {count} {statusLabel(status)}
                     </span>
                   );
                 })}
               </div>
-            ) : (
-              <p className="pt-1 text-xs italic text-foreground-subtle">
-                Awaiting assignment
-              </p>
-            )}
+            ) : null}
           </div>
+          <p className="text-[11px] text-foreground-muted">{roleDescription}</p>
+          {!hasAgents ? (
+            <p className="text-xs italic text-foreground-subtle">Awaiting assignment</p>
+          ) : null}
         </div>
-
-        {hasAgents && (
-          <div className="space-y-1.5 border-t border-border px-3 py-2">
-            {agents.map((agent) => (
-              <div
-                key={agent.agent_id}
-                className="rounded-md border border-border/80 bg-surface px-2.5 py-1.5"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-[11px] text-foreground-subtle">
-                    <span>Depth {agent.spawn_depth}</span>
-                    <span className="text-border">·</span>
-                    <HeartbeatIndicator lastHeartbeatAt={agent.last_heartbeat_at} />
-                  </div>
-                  <Badge variant="status" status={agent.status}>
-                    {capitalize(agent.status)}
-                  </Badge>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </CardContent>
     </Card>
   );

@@ -19,7 +19,6 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		updated_at: overrides.updated_at ?? "2026-03-06T10:01:00.000Z",
 		provider_session_id: overrides.provider_session_id,
 		logical_session_id: overrides.logical_session_id,
-		last_heartbeat_at: overrides.last_heartbeat_at,
 		progress_event_type: overrides.progress_event_type,
 		progress_reason_code: overrides.progress_reason_code,
 		progress_at: overrides.progress_at,
@@ -304,7 +303,6 @@ describe("run executions panel", () => {
 			queued_at: "2026-03-06T10:00:00.000Z",
 			launch_started_at: "2026-03-06T10:00:30.000Z",
 			started_at: "2026-03-06T10:01:00.000Z",
-			last_heartbeat_at: "2026-03-06T10:01:30.000Z",
 		});
 
 		render(
@@ -320,7 +318,6 @@ describe("run executions panel", () => {
 
 		expect(screen.getByText("Queued for")).toBeInTheDocument();
 		expect(screen.getByText("30s")).toBeInTheDocument();
-		expect(screen.getByText("Last heartbeat")).toBeInTheDocument();
 
 		await user.hover(screen.getByLabelText("Queued for info"));
 		expect(screen.getByRole("tooltip")).toHaveTextContent("How long this step waited before it began running.");
@@ -332,10 +329,6 @@ describe("run executions panel", () => {
 
 		await user.hover(screen.getByLabelText("Started info"));
 		expect(screen.getByRole("tooltip")).toHaveTextContent("When Kingdom observed this step actually begin running.");
-		await user.unhover(screen.getByLabelText("Started info"));
-
-		await user.hover(screen.getByLabelText("Last heartbeat info"));
-		expect(screen.getByRole("tooltip")).toHaveTextContent("The last time Kingdom heard from the active session.");
 	});
 
 	it("shows durable progress messaging after a refetch without live signal state", async () => {

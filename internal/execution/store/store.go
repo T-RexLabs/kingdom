@@ -102,7 +102,6 @@ type RunExecutionRecord struct {
 	ExecutionMode      ExecutionMode
 	LogicalSessionID   sql.NullString
 	ProviderSessionID  sql.NullString
-	LastHeartbeatAt    sql.NullString
 	QueuedAt           string
 	ActivityAt         string
 	ProgressEventType  sql.NullString
@@ -416,10 +415,6 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        ae.execution_mode,
 		        NULLIF(TRIM(ae.session_ref), '') AS logical_session_id,
 			        NULLIF(TRIM(ae.provider_session_id), '') AS provider_session_id,
-		        CASE
-		          WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
-		          ELSE NULL
-		        END AS last_heartbeat_at,
 		        ae.created_at AS queued_at,
 		        COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
 		        NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
@@ -434,7 +429,6 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        NULLIF(TRIM(ae.failure_text), '') AS failure_text
 		 FROM attempt_executions ae
 		 JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
-		 LEFT JOIN session_leases sl ON sl.session_id = ae.session_ref
 		 WHERE ae.run_id = ?
 		 ORDER BY activity_at DESC,
 		          nr.node_id ASC,
@@ -464,7 +458,6 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&executionMode,
 			&rec.LogicalSessionID,
 			&rec.ProviderSessionID,
-			&rec.LastHeartbeatAt,
 			&rec.QueuedAt,
 			&rec.ActivityAt,
 			&rec.ProgressEventType,
@@ -541,10 +534,6 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       ae.execution_mode,
 	       NULLIF(TRIM(ae.session_ref), '') AS logical_session_id,
 	       NULLIF(TRIM(ae.provider_session_id), '') AS provider_session_id,
-	       CASE
-	         WHEN ae.state IN ('queued', 'starting', 'running') THEN sl.last_heartbeat_at
-	         ELSE NULL
-	       END AS last_heartbeat_at,
 	       ae.created_at AS queued_at,
 	       COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at) AS activity_at,
 	       NULLIF(TRIM(ae.progress_event_type), '') AS progress_event_type,
@@ -569,7 +558,6 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text
 	FROM attempt_executions ae
 	JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
-	LEFT JOIN session_leases sl ON sl.session_id = ae.session_ref
 	LEFT JOIN latest_attempt_outbox lao ON lao.attempt_id = ae.attempt_id AND lao.outbox_rank = 1
 	LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
 	LEFT JOIN provider_invocations api ON api.provider_invocation_id = ae.active_provider_invocation_id
@@ -589,7 +577,6 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&executionMode,
 		&rec.LogicalSessionID,
 		&rec.ProviderSessionID,
-		&rec.LastHeartbeatAt,
 		&rec.QueuedAt,
 		&rec.ActivityAt,
 		&rec.ProgressEventType,

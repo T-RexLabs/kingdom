@@ -129,6 +129,41 @@ export function statusBadgeClass(status: string, emphasis: "soft" | "strong" = "
 	}
 }
 
+// Canonical human label for any agent / node / run status. Single source of truth:
+// the working state ("busy", "running") reads as "Active" everywhere, sharing the one
+// blue "running" tone from statusToneForKey. Unknown statuses fall back to title case.
+const STATUS_LABELS: Record<string, string> = {
+	busy: "Active",
+	running: "Active",
+	starting: "Launching",
+	verifying: "Verifying",
+	queued: "Queued",
+	ready: "Ready",
+	blocked: "Blocked",
+	idle: "Idle",
+	offline: "Offline",
+	pending: "Pending",
+	skipped: "Skipped",
+	rework: "Rework",
+	cancelled: "Cancelled",
+	succeeded: "Succeeded",
+	failed: "Failed",
+	awaiting_plan_decision: "Awaiting Plan Decision",
+	awaiting_final_decision: "Awaiting Final Decision",
+	awaiting_human_confirmation: "Awaiting Confirmation",
+};
+
+export function statusLabel(status: string): string {
+	const key = status.trim();
+	const known = STATUS_LABELS[key];
+	if (known) {
+		return known;
+	}
+	return key
+		.replace(/_/g, " ")
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export function statusBannerClass(status: string): string {
 	switch (statusToneForKey(status)) {
 		case "running":

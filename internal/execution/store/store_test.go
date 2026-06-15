@@ -244,7 +244,6 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	if !acquired {
 		t.Fatal("expected provider-backed lease acquire to succeed")
 	}
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_builder_run_1', 'agent_builder', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:00:10Z', '2026-03-01T12:00:03Z', '2026-03-01T12:00:10Z')`)
 
 	records, err := s.ListRunExecutions(ctx, "run_1")
 	if err != nil {
@@ -270,9 +269,6 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	if !providerBacked.ProviderSessionID.Valid || providerBacked.ProviderSessionID.String != "ses_builder_run_1" {
 		t.Fatalf("expected provider session id, got %#v", providerBacked.ProviderSessionID)
 	}
-	if !providerBacked.LastHeartbeatAt.Valid || providerBacked.LastHeartbeatAt.String != "2026-03-01T12:00:10Z" {
-		t.Fatalf("expected logical-session heartbeat, got %#v", providerBacked.LastHeartbeatAt)
-	}
 	if providerBacked.ActivityAt != "2026-03-01T12:00:03Z" {
 		t.Fatalf("expected provider-backed activity_at from latest execution activity, got %q", providerBacked.ActivityAt)
 	}
@@ -292,9 +288,6 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	}
 	if runtimeOwned.ProviderSessionID.Valid {
 		t.Fatalf("expected runtime-owned attempt to omit provider session id, got %#v", runtimeOwned.ProviderSessionID)
-	}
-	if runtimeOwned.LastHeartbeatAt.Valid {
-		t.Fatalf("expected runtime-owned attempt to omit heartbeat, got %#v", runtimeOwned.LastHeartbeatAt)
 	}
 	if runtimeOwned.ActivityAt != "2026-03-01T12:00:01Z" {
 		t.Fatalf("expected runtime-owned activity_at from created execution row, got %q", runtimeOwned.ActivityAt)
@@ -373,51 +366,6 @@ func TestStoreListRunExecutionsOrdersByActivityAt(t *testing.T) {
 	}
 	if records[0].ActivityAt != "2026-03-01T12:05:00Z" {
 		t.Fatalf("expected first activity_at to reflect commit time, got %q", records[0].ActivityAt)
-	}
-}
-
-func TestStoreListRunExecutionsSuppressesHeartbeatForTerminalAttempts(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	s := New(db)
-	ctx := context.Background()
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:         "run_1:decree_intake:1",
-		RunID:             "run_1",
-		NodeRunID:         "nr_1",
-		ExecutionMode:     ExecutionModeProviderBacked,
-		SessionRef:        "session_decree_terminal",
-		ProviderSessionID: "ses_decree_terminal",
-		CreatedAt:         "2026-03-01T12:00:00Z",
-	}); err != nil {
-		t.Fatalf("enqueue terminal attempt: %v", err)
-	}
-	mustExec(t, db, `UPDATE attempt_executions
-		SET state = 'committed_failure',
-		    terminal_observed_at = '2026-03-01T12:05:00Z',
-		    committed_at = '2026-03-01T12:05:00Z',
-		    failure_code = 'provider_process_failed',
-		    failure_text = 'older failure',
-		    updated_at = '2026-03-01T12:05:00Z'
-		WHERE attempt_id = 'run_1:decree_intake:1'`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_decree_terminal', 'agent_king', 'active', '2026-03-01T12:20:00Z', '2026-03-01T12:19:00Z', '2026-03-01T12:00:03Z', '2026-03-01T12:19:00Z')`)
-
-	records, err := s.ListRunExecutions(ctx, "run_1")
-	if err != nil {
-		t.Fatalf("list run executions: %v", err)
-	}
-	if len(records) == 0 {
-		t.Fatal("expected run execution records")
-	}
-	if records[0].AttemptID != "run_1:decree_intake:1" {
-		t.Fatalf("expected terminal attempt first, got %#v", records[0])
-	}
-	if records[0].LastHeartbeatAt.Valid {
-		t.Fatalf("expected terminal attempt heartbeat to be suppressed, got %#v", records[0].LastHeartbeatAt)
 	}
 }
 

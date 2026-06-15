@@ -1028,7 +1028,12 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			projectionAllowed = true
 		}
 	}
-	if (transitionCommitted || projectionAllowed) && o.registry != nil {
+	// Reconcile the agent's registry status from live node_runs on every completion.
+	// SyncOperationalStatus derives the status from current node_runs (idempotent), so
+	// it is safe to run unconditionally. Gating it on a committed/projected transition
+	// left runtime-owned agents (e.g. the King's plan-decision node) stuck "busy" when
+	// their completion landed after the run/node had already moved past "running".
+	if o.registry != nil {
 		if statusErr := o.registry.SyncOperationalStatus(ctx, result.attempt.AgentID, now); statusErr != nil {
 			slog.Warn("failed to sync agent operational status after completion", "agent_id", result.attempt.AgentID, "error", statusErr)
 		}

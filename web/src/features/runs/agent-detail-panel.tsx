@@ -1,8 +1,6 @@
 import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
-import { HeartbeatIndicator } from "@/components/heartbeat-indicator";
 import {
-  capitalize,
   getRoleColor,
   getRoleGlowStyle,
   getRoleIcon,
@@ -13,6 +11,7 @@ import {
   cn,
 } from "@/lib/utils";
 import type { AgentStatus } from "@/lib/utils";
+import { statusLabel } from "@/lib/status-system";
 import { Users } from "lucide-react";
 import type { RunParticipant } from "@/api/hooks";
 
@@ -89,7 +88,7 @@ function StatusSummaryBar({ agents }: { agents: RunParticipant[] }) {
         return (
           <div key={status} className="flex items-center gap-1.5 text-xs text-foreground-muted">
             <span className="text-xs text-foreground-muted">
-              {count} {capitalize(status)}
+              {count} {statusLabel(status)}
             </span>
           </div>
         );
@@ -114,11 +113,6 @@ function RoleGroupSection({
   const RoleIcon = getRoleIcon(group.roleId);
   const roleColorClass = getRoleColor(group.roleId);
   const hasBusyAgent = group.agents.some((a) => a.status === "busy");
-  const latestHeartbeatAt = group.agents.reduce<string | undefined>((latest, agent) => {
-    if (!agent.last_heartbeat_at) return latest;
-    if (!latest) return agent.last_heartbeat_at;
-    return agent.last_heartbeat_at > latest ? agent.last_heartbeat_at : latest;
-  }, undefined);
   const statusCounts = group.agents.reduce<Record<string, number>>((acc, agent) => {
     acc[agent.status] = (acc[agent.status] ?? 0) + 1;
     return acc;
@@ -146,13 +140,12 @@ function RoleGroupSection({
         </span>
 
         <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-subtle sm:ml-auto">
-          <HeartbeatIndicator lastHeartbeatAt={latestHeartbeatAt} />
           {AGENT_STATUS_ORDER.map((status) => {
             const count = statusCounts[status];
             if (!count) return null;
             return (
               <Badge key={status} variant="status" status={status as AgentStatus}>
-                {capitalize(status)}
+                {statusLabel(status)}
                 {count > 1 ? ` ${count}` : ""}
               </Badge>
             );

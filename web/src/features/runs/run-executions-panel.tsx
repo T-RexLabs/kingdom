@@ -186,13 +186,6 @@ function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ l
 			value: <RelativeTime iso={detail.started_at} />,
 		});
 	}
-	if (detail.last_heartbeat_at) {
-		fields.push({
-			label: "Last heartbeat",
-			tooltip: "The last time Kingdom heard from the active session.",
-			value: <RelativeTime iso={detail.last_heartbeat_at} />,
-		});
-	}
 	return fields;
 }
 

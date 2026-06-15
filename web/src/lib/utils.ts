@@ -79,15 +79,6 @@ export const AGENT_STATUS_ORDER: AgentStatus[] = [
   "failed",
 ];
 
-/** Tailwind dot-color classes for each agent status. */
-export const AGENT_STATUS_DOT_COLORS: Record<AgentStatus, string> = {
-	busy: "bg-status-running",
-	idle: "bg-status-blocked",
-	blocked: "bg-status-blocked",
-	offline: "bg-status-pending",
-	failed: "bg-status-failed",
-};
-
 // ---------------------------------------------------------------------------
 // Heartbeat
 // ---------------------------------------------------------------------------
@@ -95,14 +86,6 @@ export const AGENT_STATUS_DOT_COLORS: Record<AgentStatus, string> = {
 /**
  * Classify a heartbeat timestamp as alive (< 30 s), stale (≥ 30 s), or none.
  */
-export function getHeartbeatState(
-  lastHeartbeatAt?: string,
-): "alive" | "stale" | "none" {
-  if (!lastHeartbeatAt) return "none";
-  const diff = Date.now() - new Date(lastHeartbeatAt).getTime();
-  if (diff < 30_000) return "alive";
-  return "stale";
-}
 
 // ---------------------------------------------------------------------------
 // Role helpers

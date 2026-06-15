@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import * as d3 from "d3";
 import type { RunGraphResponse, RunGraphNode } from "@/api/hooks";
 import { nodeExecutionSemantics, nodeLabel } from "@/lib/utils";
+import { statusLabel } from "@/lib/status-system";
 import { RUN_DETAIL_NEUTRAL_HEX, RUN_ROLE_ACCENT_HEX, RUN_STATUS_HEX } from "./run-detail-tones";
 
 type NodeState = RunGraphNode["state"];
@@ -40,21 +41,8 @@ const STATUS_LEGEND_ORDER: NodeState[] = [
 ];
 
 /** Human-readable labels for the status legend. */
-const STATUS_LABELS: Record<string, string> = {
-  succeeded: "Succeeded",
-	failed: "Failed",
-	starting: "Launching",
-	running: "Running",
-  pending: "Pending",
-  cancelled: "Cancelled",
-  ready: "Ready",
-  blocked: "Blocked",
-  skipped: "Skipped",
-  rework: "Rework",
-};
-
 function nodeStateLabel(state: NodeState): string {
-  return STATUS_LABELS[state] ?? state.charAt(0).toUpperCase() + state.slice(1);
+  return statusLabel(state);
 }
 
 function nodeAriaLabel(node: NodeLayout): string {
@@ -1007,7 +995,7 @@ function DAGLegend({ statuses }: { statuses: NodeState[] }) {
               style={{ backgroundColor: RUN_STATUS_HEX[status] }}
               aria-hidden
             />
-            <span>{STATUS_LABELS[status]}</span>
+            <span>{statusLabel(status)}</span>
           </div>
         ))}
       </div>

@@ -3915,9 +3915,6 @@ components:
         created_at:
           type: string
           format: date-time
-        last_heartbeat_at:
-          type: string
-          format: date-time
 
     RunParticipant:
       type: object
@@ -3943,9 +3940,6 @@ components:
           type: integer
           minimum: 0
         first_seen_at:
-          type: string
-          format: date-time
-        last_heartbeat_at:
           type: string
           format: date-time
 
@@ -3984,9 +3978,6 @@ components:
         provider_session_id:
           type: string
           minLength: 1
-        last_heartbeat_at:
-          type: string
-          format: date-time
         queued_at:
           type: string
           format: date-time

@@ -16,7 +16,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { useState, type Ref } from "react";
-import { capitalize, nodeExecutionSemantics } from "@/lib/utils";
+import { nodeExecutionSemantics } from "@/lib/utils";
+import { statusLabel } from "@/lib/status-system";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { ApprovalDecisionForm } from "./approval-decision-form";
 import { describeManualGovernanceState } from "./manual-governance-state";
@@ -192,7 +193,7 @@ export function NodeActionsCard({
 	                <p className="text-wrap-anywhere text-sm font-medium">{node.node_id}</p>
                 <div className="flex items-center gap-2 text-xs text-foreground-subtle">
                   <Badge variant="status" status={node.state} className="text-[10px]">
-                    {capitalize(node.state)}
+                    {statusLabel(node.state)}
                   </Badge>
                   <span className="text-foreground-subtle">{executionModeLabel}</span>
                   <span className="text-foreground-subtle">{roleLabel}</span>

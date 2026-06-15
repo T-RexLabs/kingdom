@@ -49,6 +49,10 @@ vi.mock("./run-activity-lanes", () => ({
 	RunActivityLanes: () => <div data-testid="run-activity-lanes" />,
 }));
 
+vi.mock("./use-node-activity-recency", () => ({
+	useNodeActivityRecency: () => undefined,
+}));
+
 function makeRun(overrides: Partial<RunDetailSummary> = {}): RunDetailSummary {
 	return {
 		run_id: "run-1",
@@ -146,7 +150,7 @@ describe("run execution surface", () => {
 		expect(screen.getByText("Latest Completed Step")).toBeInTheDocument();
 		expect(screen.getByText("Succeeded")).toBeInTheDocument();
 		expect(screen.queryByText("Current Activity")).not.toBeInTheDocument();
-		expect(screen.queryByText("Running")).not.toBeInTheDocument();
+		expect(screen.queryByText("Active")).not.toBeInTheDocument();
 	});
 
 	it("shows Current Activity for in-flight selected work", () => {
@@ -155,7 +159,7 @@ describe("run execution surface", () => {
 		});
 
 		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Running")).toBeInTheDocument();
+		expect(screen.getByText("Active")).toBeInTheDocument();
 		expect(screen.queryByText("Latest Completed Step")).not.toBeInTheDocument();
 	});
 

@@ -136,7 +136,6 @@ type RunParticipant struct {
 	ParentAgentID   sql.NullString
 	SpawnDepth      int
 	FirstSeenAt     string
-	LastHeartbeatAt sql.NullString
 }
 
 type AgentRecord struct {
@@ -147,7 +146,6 @@ type AgentRecord struct {
 	ParentAgentID   sql.NullString
 	SpawnDepth      int
 	CreatedAt       string
-	LastHeartbeatAt sql.NullString
 }
 
 type AgentRegistry struct {
@@ -271,7 +269,7 @@ SELECT CASE
 		WHERE agent_id = ?
 		  AND (? = '' OR node_run_id <> ?)
 		  AND COALESCE(TRIM(superseded_at), '') = ''
-		  AND node_status IN ('pending', 'ready', 'starting', 'running')
+		  AND node_status IN ('starting', 'running')
 	) THEN 'busy'
 	WHEN EXISTS (
 		SELECT 1
@@ -462,35 +460,6 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 			FROM latest_run_agent_nodes
 			WHERE node_rank = 1
 			GROUP BY agent_id
-		), run_participant_sessions AS (
-			SELECT nr.agent_id,
-			       sl.last_heartbeat_at,
-			       ROW_NUMBER() OVER (
-			         PARTITION BY nr.agent_id
-			         ORDER BY
-			           CASE
-			             WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
-			             ELSE 1
-			           END,
-			           CASE
-			             WHEN nr.node_status IN ('starting', 'running') THEN 0
-			             WHEN nr.node_status = 'blocked' THEN 1
-			             ELSE 2
-			           END,
-			           COALESCE(ae.updated_at, nr.finished_at, nr.started_at, rp.first_seen_at) DESC,
-			           nr.attempt DESC,
-			           nr.node_run_id DESC
-			       ) AS session_rank
-			FROM node_runs nr
-			JOIN run_participants rp
-			  ON rp.run_id = nr.run_id
-			 AND rp.agent_id = nr.agent_id
-			LEFT JOIN attempt_executions ae
-			  ON ae.run_id = nr.run_id
-			 AND ae.node_run_id = nr.node_run_id
-			LEFT JOIN session_leases sl
-			  ON sl.session_id = ae.session_ref
-			WHERE nr.run_id = ?
 		)
 		SELECT
 			rp.agent_id,
@@ -503,18 +472,13 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 			END AS status,
 			rp.parent_agent_id,
 			rp.spawn_depth,
-			rp.first_seen_at,
-			rpsess.last_heartbeat_at
+			rp.first_seen_at
 		FROM run_participants rp
 		JOIN agents a ON a.agent_id = rp.agent_id
 		LEFT JOIN run_participant_status rps ON rps.agent_id = rp.agent_id
-		LEFT JOIN run_participant_sessions rpsess
-		  ON rpsess.agent_id = rp.agent_id
-		 AND rpsess.session_rank = 1
 		WHERE rp.run_id = ?
 		  AND rp.role_id != 'allfather'
 		ORDER BY rp.spawn_depth ASC, rp.first_seen_at ASC, rp.agent_id ASC`,
-		runID,
 		runID,
 		runID,
 	)
@@ -534,7 +498,6 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 			&item.ParentAgentID,
 			&item.SpawnDepth,
 			&item.FirstSeenAt,
-			&item.LastHeartbeatAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan run agent row for %q: %w", runID, err)
 		}
@@ -593,17 +556,7 @@ func (r *AgentRegistry) ListAllAgents(ctx context.Context) ([]AgentRecord, error
 			a.status,
 			a.parent_agent_id,
 			a.spawn_depth,
-			a.created_at,
-			COALESCE(
-				a.last_heartbeat_at,
-				(
-					SELECT sl.last_heartbeat_at
-					FROM session_leases sl
-					WHERE sl.agent_id = a.agent_id
-					ORDER BY sl.updated_at DESC
-					LIMIT 1
-				)
-			) AS last_heartbeat_at
+			a.created_at
 		FROM agents a
 		JOIN roles role ON role.role_id = a.role_id
 		WHERE a.role_id != 'allfather'
@@ -625,7 +578,6 @@ func (r *AgentRegistry) ListAllAgents(ctx context.Context) ([]AgentRecord, error
 			&item.ParentAgentID,
 			&item.SpawnDepth,
 			&item.CreatedAt,
-			&item.LastHeartbeatAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent row: %w", err)
 		}
