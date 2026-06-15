@@ -567,7 +567,13 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		return err
 	}
 	flags.Visit(func(f *flag.Flag) {
-		if f != nil && f.Name == "ready-timeout" {
+		if f == nil {
+			return
+		}
+		switch f.Name {
+		case "port":
+			opts.portExplicit = true
+		case "ready-timeout":
 			readyTimeoutExplicit = true
 		}
 	})
@@ -581,7 +587,7 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 	if err != nil {
 		return err
 	}
-	effectiveListen, err := resolveSummonListenAddress(cfg.Server.Listen, opts.listen, opts.host, opts.port)
+	effectiveListen, err := resolveSummonListenAddress(cfg.Server.Listen, opts.listen, opts.host, opts.port, opts.portExplicit)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -1061,16 +1067,16 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opt
 	return err
 }
 
-func resolveSummonListenAddress(configListen, overrideListen, overrideHost string, overridePort int) (string, error) {
+func resolveSummonListenAddress(configListen, overrideListen, overrideHost string, overridePort int, portExplicit bool) (string, error) {
 	trimmedListen := strings.TrimSpace(overrideListen)
 	trimmedHost := strings.TrimSpace(overrideHost)
-	if trimmedListen != "" && (trimmedHost != "" || overridePort != 0) {
+	if trimmedListen != "" && (trimmedHost != "" || portExplicit) {
 		return "", fmt.Errorf("--listen cannot be combined with --host or --port")
 	}
-	if overridePort < 0 || overridePort > 65535 {
+	if portExplicit && (overridePort < 1 || overridePort > 65535) {
 		return "", fmt.Errorf("--port must be between 1 and 65535")
 	}
-	if overridePort == 0 && trimmedListen == "" && trimmedHost == "" {
+	if !portExplicit && trimmedListen == "" && trimmedHost == "" {
 		return normalizeSummonListenAddress(configListen)
 	}
 	if trimmedListen != "" {
@@ -1083,7 +1089,7 @@ func resolveSummonListenAddress(configListen, overrideListen, overrideHost strin
 	if trimmedHost != "" {
 		host = trimmedHost
 	}
-	if overridePort > 0 {
+	if portExplicit {
 		port = strconv.Itoa(overridePort)
 	}
 	return normalizeSummonListenAddress(net.JoinHostPort(host, port))

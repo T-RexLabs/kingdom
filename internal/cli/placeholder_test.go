@@ -933,6 +933,36 @@ func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	}
 }
 
+func TestExecuteSummonRejectsExplicitZeroPort(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if code := Execute(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"init", "--path", root}); code != ExitSuccess {
+		t.Fatalf("init failed: %d", code)
+	}
+
+	configPath := filepath.Join(root, ".kingdom", "config.yaml")
+	configPort := reserveFreePort(t)
+	rewriteConfigListen(t, configPath, "127.0.0.1:"+configPort)
+	rewriteConfigProviderSettings(t, configPath, "opencode", false, "/bin/sh")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
+	defer cancel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "--config", configPath, "--port", "0"})
+	if exitCode != ExitUsage {
+		t.Fatalf("expected summon usage failure, got %d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected empty stdout, got %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--port must be between 1 and 65535") {
+		t.Fatalf("expected explicit zero-port error, got %q", stderr.String())
+	}
+}
+
 func TestExecuteSummonHelpDescribesForegroundDefault(t *testing.T) {
 	t.Parallel()
 

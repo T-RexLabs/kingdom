@@ -29,6 +29,7 @@ type summonOptions struct {
 	listen       string
 	host         string
 	port         int
+	portExplicit bool
 	readyTimeout time.Duration
 }
 

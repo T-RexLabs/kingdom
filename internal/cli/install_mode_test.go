@@ -368,26 +368,28 @@ func TestResolveSummonListenAddress(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name          string
+		name           string
 		configListen  string
 		overrideListen string
 		overrideHost  string
 		overridePort  int
+		portExplicit  bool
 		want          string
 		wantErr       string
 	}{
 		{name: "config only", configListen: "127.0.0.1:8080", want: "127.0.0.1:8080"},
 		{name: "listen override", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", want: "127.0.0.1:19090"},
-		{name: "port override", configListen: "127.0.0.1:8080", overridePort: 19090, want: "127.0.0.1:19090"},
+		{name: "port override", configListen: "127.0.0.1:8080", overridePort: 19090, portExplicit: true, want: "127.0.0.1:19090"},
 		{name: "host override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", want: "0.0.0.0:8080"},
-		{name: "host and port override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", overridePort: 19090, want: "0.0.0.0:19090"},
-		{name: "listen conflicts with port", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", overridePort: 19090, wantErr: "--listen cannot be combined"},
-		{name: "invalid port", configListen: "127.0.0.1:8080", overridePort: 70000, wantErr: "--port must be between 1 and 65535"},
+		{name: "host and port override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", overridePort: 19090, portExplicit: true, want: "0.0.0.0:19090"},
+		{name: "listen conflicts with port", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", overridePort: 19090, portExplicit: true, wantErr: "--listen cannot be combined"},
+		{name: "invalid port", configListen: "127.0.0.1:8080", overridePort: 70000, portExplicit: true, wantErr: "--port must be between 1 and 65535"},
+		{name: "explicit zero port", configListen: "127.0.0.1:8080", overridePort: 0, portExplicit: true, wantErr: "--port must be between 1 and 65535"},
 		{name: "invalid listen", configListen: "127.0.0.1:8080", overrideListen: "19090", wantErr: "summon listen address must be host:port"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := resolveSummonListenAddress(tc.configListen, tc.overrideListen, tc.overrideHost, tc.overridePort)
+			got, err := resolveSummonListenAddress(tc.configListen, tc.overrideListen, tc.overrideHost, tc.overridePort, tc.portExplicit)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
