@@ -156,7 +156,21 @@ type installConfig struct {
 // for a non-canonical config to break some sites and not others;
 // centralizing here closes that drift surface.
 func summonAPIURL(cfg installConfig) string {
-	return fmt.Sprintf("http://%s%s", cfg.Server.Listen, cfg.Server.BasePath)
+	return fmt.Sprintf("http://%s%s", summonConnectAddress(cfg.Server.Listen), cfg.Server.BasePath)
+}
+
+func summonConnectAddress(listen string) string {
+	host, port, err := splitSummonListenAddress(listen)
+	if err != nil {
+		return strings.TrimSpace(listen)
+	}
+	switch strings.TrimSpace(host) {
+	case "0.0.0.0":
+		host = "127.0.0.1"
+	case "::", "[::]":
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 type summonStartupTracker struct {
@@ -182,7 +196,7 @@ func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConf
 			Phase:       startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
 			ConfigPath:  strings.TrimSpace(configPath),
 			KingdomHome: strings.TrimSpace(cfg.KingdomHome),
-			Listen:      strings.TrimSpace(cfg.Server.Listen),
+			Listen:      summonConnectAddress(cfg.Server.Listen),
 			BasePath:    strings.TrimSpace(cfg.Server.BasePath),
 			LogPath:     summonLogPath(cfg.KingdomHome),
 			StartedAt:   strings.TrimSpace(startedAt),
@@ -413,8 +427,8 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	opts := initCommandOptions{}
 	flags := newFlagSet("init")
 	bindInitFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"init"}); err != nil {
+		return err
 	}
 
 	autonomousApprovals, err := strconv.ParseBool(strings.TrimSpace(opts.autonomousApprovalsRaw))
@@ -480,8 +494,8 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 	opts := cleanCommandOptions{}
 	flags := newFlagSet("clean")
 	bindCleanFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"clean"}); err != nil {
+		return err
 	}
 
 	absProjectPath, err := filepath.Abs(strings.TrimSpace(opts.projectPath))
@@ -502,6 +516,9 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 }
 
 func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) error {
+	if err := validateSummonRoute(args); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		return runSummon(ctx, stdout, stderr, nil)
 	}
@@ -518,13 +535,36 @@ func runSummonCommand(ctx context.Context, stdout io.Writer, stderr io.Writer, a
 	}
 }
 
+func validateSummonRoute(args []string) error {
+	trimmed := commandPathPrefix(args)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if len(trimmed) == 1 {
+		switch trimmed[0] {
+		case "status", "logs", "stop":
+			return nil
+		}
+		if strings.HasPrefix(trimmed[0], "-") {
+			return nil
+		}
+		return usageError{err: fmt.Errorf("invalid command %q", trimmed[0]), helpTopic: []string{"summon"}}
+	}
+	switch trimmed[0] {
+	case "status", "logs", "stop":
+		return usageError{err: fmt.Errorf("unexpected argument(s): %s", strings.Join(trimmed[1:], " ")), helpTopic: []string{"summon", trimmed[0]}}
+	default:
+		return nil
+	}
+}
+
 func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
 	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	readyTimeoutExplicit := false
 	bindSummonFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon"}); err != nil {
+		return err
 	}
 	flags.Visit(func(f *flag.Flag) {
 		if f != nil && f.Name == "ready-timeout" {
@@ -717,7 +757,7 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		PID:         os.Getpid(),
 		ConfigPath:  resolvedConfigPath,
 		KingdomHome: cfg.KingdomHome,
-		Listen:      cfg.Server.Listen,
+		Listen:      summonConnectAddress(cfg.Server.Listen),
 		BasePath:    cfg.Server.BasePath,
 		StartedAt:   startedAt,
 	}); err != nil {
@@ -729,7 +769,7 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		_ = unregisterSummonInstance(os.Getpid())
 	}()
 
-	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), cfg.Server.Listen); err != nil {
+	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen)); err != nil {
 		return err
 	}
 
@@ -1017,7 +1057,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opt
 		return fmt.Errorf("summon already running with pid=%d", runningPID)
 	}
 
-	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), cfg.Server.Listen, logPath, summonLogsFollowCommand(configPath))
+	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen), logPath, summonLogsFollowCommand(configPath))
 	return err
 }
 
@@ -1109,8 +1149,8 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 	opts := summonConfigOptions{}
 	flags := newFlagSet("summon status")
 	bindSummonConfigFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "status"}); err != nil {
+		return err
 	}
 
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
@@ -1146,7 +1186,7 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 		if record != nil {
 			return writeSummonStatus(stdout, *record, "config", "")
 		}
-		return writeSummonStatus(stdout, summonInstanceRecord{PID: pid, ConfigPath: resolvedConfigPath, KingdomHome: cfg.KingdomHome, Listen: cfg.Server.Listen, BasePath: cfg.Server.BasePath}, "config", "")
+		return writeSummonStatus(stdout, summonInstanceRecord{PID: pid, ConfigPath: resolvedConfigPath, KingdomHome: cfg.KingdomHome, Listen: summonConnectAddress(cfg.Server.Listen), BasePath: cfg.Server.BasePath}, "config", "")
 	}
 	record, discovered, recordErr := findSummonInstanceForConfig(resolvedConfigPath, cfg.KingdomHome)
 	if recordErr != nil {
@@ -1163,11 +1203,11 @@ func runSummonLogs(ctx context.Context, stdout io.Writer, args []string) error {
 	opts := summonLogsOptions{}
 	flags := newFlagSet("summon logs")
 	bindSummonLogsFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "logs"}); err != nil {
+		return err
 	}
 	if opts.lines < 0 {
-		return usageError{err: fmt.Errorf("--lines must be >= 0")}
+		return usageError{err: fmt.Errorf("--lines must be >= 0"), helpTopic: []string{"summon", "logs"}}
 	}
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
@@ -1197,8 +1237,8 @@ func runSummonStop(stdout io.Writer, args []string) error {
 	opts := summonConfigOptions{}
 	flags := newFlagSet("summon stop")
 	bindSummonConfigFlags(flags, &opts)
-	if err := flags.Parse(args); err != nil {
-		return usageError{err: err}
+	if err := parseLeafFlags(flags, args, []string{"summon", "stop"}); err != nil {
+		return err
 	}
 	resolvedConfigPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
@@ -2029,6 +2069,11 @@ func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
 	if strings.TrimSpace(cfg.Server.BasePath) == "" {
 		return installConfig{}, fmt.Errorf("config missing server.base_path")
 	}
+	normalizedListen, err := normalizeSummonListenAddress(cfg.Server.Listen)
+	if err != nil {
+		return installConfig{}, fmt.Errorf("config server.listen: %w", err)
+	}
+	cfg.Server.Listen = normalizedListen
 	// Single chokepoint: every downstream consumer (probe, seed,
 	// printed URL, NewHandler, NewSPAMux, the CLI's default
 	// ServerAddress builder) reads cfg.Server.BasePath, so they

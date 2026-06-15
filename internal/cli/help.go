@@ -387,6 +387,17 @@ func lookupHelpTopic(path []string) *helpTopic {
 	return nil
 }
 
+func nearestHelpTopic(path []string) []string {
+	normalized := normalizeHelpTopic(path)
+	for len(normalized) > 0 {
+		if lookupHelpTopic(normalized) != nil {
+			return normalized
+		}
+		normalized = normalized[:len(normalized)-1]
+	}
+	return nil
+}
+
 func sameHelpPath(left []string, right []string) bool {
 	if len(left) != len(right) {
 		return false

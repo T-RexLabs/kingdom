@@ -1012,6 +1012,24 @@ func TestSummonAPIURLBuildsCanonicalURLString(t *testing.T) {
 				}{Listen: "host:9000", BasePath: "/internal/api"}},
 				want: "http://host:9000/internal/api",
 			},
+			{
+				name: "wildcard ipv4 bind maps to loopback connect address",
+				cfg: installConfig{Server: struct {
+					Listen            string `yaml:"listen"`
+					BasePath          string `yaml:"base_path"`
+					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+				}{Listen: "0.0.0.0:8080", BasePath: "/api/v1"}},
+				want: "http://127.0.0.1:8080/api/v1",
+			},
+			{
+				name: "wildcard ipv6 bind maps to loopback connect address",
+				cfg: installConfig{Server: struct {
+					Listen            string `yaml:"listen"`
+					BasePath          string `yaml:"base_path"`
+					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+				}{Listen: "[::]:8080", BasePath: "/api/v1"}},
+				want: "http://[::1]:8080/api/v1",
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1870,6 +1888,31 @@ func TestReadInstallConfigRejectsManualGovernanceMode(t *testing.T) {
 	_, err := readInstallConfig(configPath)
 	if err == nil || !strings.Contains(err.Error(), "governance_mode=manual is not implemented yet") {
 		t.Fatalf("expected manual governance mode rejection, got %v", err)
+	}
+}
+
+func TestReadInstallConfigRejectsInvalidListenAddress(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".kingdom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+
+	raw := "version: v1\n" +
+		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
+		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
+		"server:\n  listen: invalid\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
+		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := readInstallConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "config server.listen") {
+		t.Fatalf("expected listen validation error, got %v", err)
 	}
 }
 

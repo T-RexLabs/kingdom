@@ -214,8 +214,126 @@ func TestExecuteRejectsLegacyDecreeCommand(t *testing.T) {
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
 	}
-	if !strings.Contains(stderr.String(), `unsupported command "decree"`) {
+	if !strings.Contains(stderr.String(), `invalid command "decree"`) {
 		t.Fatalf("expected unsupported command error, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRejectsInvalidSummonSubcommandWithSummonHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"summon", "serve"})
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertContainsAll(t, stderr.String(), `invalid command "serve"`, "kd summon [flags]", "kd summon status [flags]")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected summon help instead of root help, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRejectsInvalidRunSubcommandWithRunHelp(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"run", "bogus"})
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertContainsAll(t, stderr.String(), `invalid command "bogus"`, "kd run start --decree-id <id> [flags]", "kd run status --run-id <id>")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected run help instead of root help, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRejectsUnexpectedLeafArguments(t *testing.T) {
+	t.Parallel()
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "extra"})
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertContainsAll(t, stderr.String(), `unexpected argument(s): extra`, "kd create decree --title <title> --text <text> [flags]")
+	if strings.Contains(stderr.String(), "kd <command>") {
+		t.Fatalf("expected create decree help instead of root help, got %q", stderr.String())
+	}
+}
+
+func TestExecuteRejectsUnexpectedSummonStatusArguments(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if code := Execute(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"init", "--path", root}); code != ExitSuccess {
+		t.Fatalf("init failed: %d", code)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	configPath := filepath.Join(root, ".kingdom", "config.yaml")
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"summon", "status", "extra", "--config", configPath})
+	if exitCode != ExitUsage {
+		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
+	}
+	assertContainsAll(t, stderr.String(), `unexpected argument(s): extra`, "kd summon status [flags]")
+}
+
+func TestExecuteCreateDecreeUsesConnectAddressForWildcardActiveSummon(t *testing.T) {
+	originalLoader := loadInstallConfigForCLI
+	defer func() { loadInstallConfigForCLI = originalLoader }()
+	originalFindActive := findActiveSummonForCLI
+	defer func() { findActiveSummonForCLI = originalFindActive }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/custom/decrees":
+			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
+				"decree_id":  "decree-install-123",
+				"created_at": "2026-03-01T10:00:00Z",
+			})
+		case "/api/custom/runs":
+			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
+				"run_id":      "run-install-456",
+				"workflow_id": "royal-decree-v1",
+				"status":      "running",
+				"created_at":  "2026-03-01T10:00:01Z",
+				"updated_at":  "2026-03-01T10:00:01Z",
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	loadInstallConfigForCLI = func() (installConfig, bool) {
+		cfg := defaultInstallConfig("/tmp/test-kingdom")
+		cfg.Server.Listen = "127.0.0.1:8080"
+		cfg.Server.BasePath = "/api/custom"
+		cfg.Provider.Engine = "opencode"
+		return cfg, true
+	}
+	findActiveSummonForCLI = func() (summonInstanceRecord, bool) {
+		_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+		if err != nil {
+			t.Fatalf("split test server url: %v", err)
+		}
+		return summonInstanceRecord{
+			Listen:   net.JoinHostPort("0.0.0.0", port),
+			BasePath: "/api/custom",
+		}, true
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{
+		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
 }
 
