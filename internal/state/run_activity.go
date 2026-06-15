@@ -123,6 +123,13 @@ func ShouldTrackRunActivity(eventType, reasonCode, payloadJSON string) (bool, er
 		return mailboxVisibleToOperator(payloadJSON)
 	case trimmedType == "attempt.progress":
 		return shouldTrackAttemptProgressActivity(reasonCode), nil
+	case trimmedType == AttemptActivityEventType:
+		// Fine-grained agent activity (reasoning/tool calls) keeps the run's
+		// last_activity_at fresh while an agent works, so the Throne Room / Runs
+		// cards don't go stale during a long node execution. It still does not
+		// project run collection events (see ShouldProjectRunCollectionEvent) or
+		// drive state transitions.
+		return true, nil
 	default:
 		_, ok := runActivityAttemptEventTypes[trimmedType]
 		return ok, nil

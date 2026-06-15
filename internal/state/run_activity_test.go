@@ -2,16 +2,19 @@ package state
 
 import "testing"
 
-// Fine-grained provider activity is observability-only and must never advance the
-// run-activity projection (which drives operator-facing "last activity" and run
-// collection events).
-func TestShouldTrackRunActivityExcludesAttemptActivity(t *testing.T) {
+// Fine-grained agent activity advances the run's last_activity_at (so the Throne
+// Room / Runs cards stay fresh while an agent works) but must not project run
+// collection events.
+func TestShouldTrackRunActivityAdvancesOnAttemptActivity(t *testing.T) {
 	tracked, err := ShouldTrackRunActivity(AttemptActivityEventType, "provider_activity", `{"kind":"kingdom.reasoning","detail":"thinking"}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if tracked {
-		t.Fatalf("attempt.activity must not be tracked as run activity")
+	if !tracked {
+		t.Fatalf("attempt.activity must advance run last_activity_at")
+	}
+	if ShouldProjectRunCollectionEvent(AttemptActivityEventType) {
+		t.Fatalf("attempt.activity must not project run collection events")
 	}
 }
 

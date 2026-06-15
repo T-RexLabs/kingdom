@@ -16,11 +16,12 @@ const (
 	AttemptIngestGapEventType = "attempt.sequence_gap"
 
 	// AttemptActivityEventType carries fine-grained provider activity (agent
-	// reasoning + tool calls) for a node attempt. It is observability-only: it is
-	// excluded from run-activity tracking, attempt state transitions, and mailbox
-	// mirroring, and is distinguished from coarse lifecycle events by its payload
-	// "kind". The run Activity tab renders it live and durably, mirroring the
-	// planner's activity stream.
+	// reasoning + tool calls) for a node attempt. It advances the run's
+	// last_activity_at (so run cards stay fresh while an agent works) but is
+	// otherwise observability-only: excluded from attempt state transitions, run
+	// collection events, and mailbox mirroring, and distinguished from coarse
+	// lifecycle events by its payload "kind". The run Activity tab renders it live
+	// and durably, mirroring the planner's activity stream.
 	AttemptActivityEventType = "attempt.activity"
 )
 
