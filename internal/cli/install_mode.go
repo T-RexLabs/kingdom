@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -540,12 +541,17 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 	if err != nil {
 		return err
 	}
+	effectiveListen, err := resolveSummonListenAddress(cfg.Server.Listen, opts.listen, opts.host, opts.port)
+	if err != nil {
+		return usageError{err: err}
+	}
+	cfg.Server.Listen = effectiveListen
 	opts.readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), opts.readyTimeout, readyTimeoutExplicit)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	statePath := summonStatePath(cfg.KingdomHome)
 
 	if opts.detach {
-		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts.readyTimeout)
+		return runSummonDetach(stdout, cfg, resolvedConfigPath, opts)
 	}
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
@@ -948,7 +954,7 @@ func shutdownSummonServerWithFallback(stderr io.Writer, timeout time.Duration, s
 	return nil
 }
 
-func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, readyTimeout time.Duration) error {
+func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opts summonOptions) error {
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
 	}
@@ -960,6 +966,16 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 	}
 
 	commandArgs := []string{"summon", "--config", configPath}
+	if trimmed := strings.TrimSpace(opts.listen); trimmed != "" {
+		commandArgs = append(commandArgs, "--listen", trimmed)
+	} else {
+		if trimmed := strings.TrimSpace(opts.host); trimmed != "" {
+			commandArgs = append(commandArgs, "--host", trimmed)
+		}
+		if opts.port > 0 {
+			commandArgs = append(commandArgs, "--port", strconv.Itoa(opts.port))
+		}
+	}
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -981,7 +997,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 	}()
 
 	renderer := newSummonDetachedProgressRenderer(stdout)
-	if err := waitForSummonReadyWithProcess(cfg, readyTimeout, processDone, nil, logPath, summonStatePath(cfg.KingdomHome), renderer); err != nil {
+	if err := waitForSummonReadyWithProcess(cfg, opts.readyTimeout, processDone, nil, logPath, summonStatePath(cfg.KingdomHome), renderer); err != nil {
 		_ = cmd.Process.Kill()
 		return err
 	}
@@ -1003,6 +1019,61 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, rea
 
 	_, err = fmt.Fprintf(stdout, "kingdom summoned in background (pid=%d)\n  api: %s\n  ui: http://%s/\n  logs: %s\n  follow logs: %s\n", cmd.Process.Pid, summonAPIURL(cfg), cfg.Server.Listen, logPath, summonLogsFollowCommand(configPath))
 	return err
+}
+
+func resolveSummonListenAddress(configListen, overrideListen, overrideHost string, overridePort int) (string, error) {
+	trimmedListen := strings.TrimSpace(overrideListen)
+	trimmedHost := strings.TrimSpace(overrideHost)
+	if trimmedListen != "" && (trimmedHost != "" || overridePort != 0) {
+		return "", fmt.Errorf("--listen cannot be combined with --host or --port")
+	}
+	if overridePort < 0 || overridePort > 65535 {
+		return "", fmt.Errorf("--port must be between 1 and 65535")
+	}
+	if overridePort == 0 && trimmedListen == "" && trimmedHost == "" {
+		return normalizeSummonListenAddress(configListen)
+	}
+	if trimmedListen != "" {
+		return normalizeSummonListenAddress(trimmedListen)
+	}
+	host, port, err := splitSummonListenAddress(configListen)
+	if err != nil {
+		return "", err
+	}
+	if trimmedHost != "" {
+		host = trimmedHost
+	}
+	if overridePort > 0 {
+		port = strconv.Itoa(overridePort)
+	}
+	return normalizeSummonListenAddress(net.JoinHostPort(host, port))
+}
+
+func normalizeSummonListenAddress(listen string) (string, error) {
+	host, port, err := splitSummonListenAddress(listen)
+	if err != nil {
+		return "", err
+	}
+	portNum, err := strconv.Atoi(port)
+	if err != nil || portNum < 1 || portNum > 65535 {
+		return "", fmt.Errorf("summon listen port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(host) == "" {
+		return "", fmt.Errorf("summon listen host cannot be empty")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(portNum)), nil
+}
+
+func splitSummonListenAddress(listen string) (string, string, error) {
+	trimmed := strings.TrimSpace(listen)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("summon listen address cannot be empty")
+	}
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return "", "", fmt.Errorf("summon listen address must be host:port")
+	}
+	return host, port, nil
 }
 
 func resolveSummonReadyTimeout(cfg installConfig, paths kingdom.BootstrapPaths, requested time.Duration, explicit bool) time.Duration {
@@ -2326,4 +2397,21 @@ func findSummonInstanceForConfig(configPath, kingdomHome string) (*summonInstanc
 		}
 	}
 	return nil, false, nil
+}
+
+func findActiveInstallModeSummon() (summonInstanceRecord, bool) {
+	configPath := filepath.Join(defaultInstallDirName, defaultConfigFileName)
+	resolvedConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return summonInstanceRecord{}, false
+	}
+	installCfg, err := readInstallConfig(resolvedConfigPath)
+	if err != nil {
+		return summonInstanceRecord{}, false
+	}
+	record, found, err := findSummonInstanceForConfig(resolvedConfigPath, installCfg.KingdomHome)
+	if err != nil || !found || record == nil {
+		return summonInstanceRecord{}, false
+	}
+	return *record, true
 }

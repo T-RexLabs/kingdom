@@ -284,7 +284,7 @@ That scaffold includes:
 - logs
 - runtime control files
 
-`kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
+`kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. Use `kd summon --listen <host:port>` for a full runtime-only address override, or `kd summon --host <host>` and `kd summon --port <port>` for symmetric partial overrides. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
 
 Use `kd clean` to remove the local `.kingdom/` scaffold before re-initializing from a clean state.
 

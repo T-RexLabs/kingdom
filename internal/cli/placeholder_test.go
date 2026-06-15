@@ -348,6 +348,9 @@ func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
 func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
+	originalFindActive := findActiveSummonForCLI
+	defer func() { findActiveSummonForCLI = originalFindActive }()
+	findActiveSummonForCLI = func() (summonInstanceRecord, bool) { return summonInstanceRecord{}, false }
 	loadInstallConfigForCLI = func() (installConfig, bool) {
 		cfg := defaultInstallConfig("/tmp/test-kingdom")
 		cfg.Server.Listen = "127.0.0.1:19091"
@@ -398,6 +401,57 @@ func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.
 	}
 	if len(requestPaths) != 2 || requestPaths[0] != "/api/custom/decrees" || requestPaths[1] != "/api/custom/runs" {
 		t.Fatalf("expected install config base path requests, got %#v", requestPaths)
+	}
+}
+
+func TestExecuteCreateDecreePrefersActiveSummonAddressByDefault(t *testing.T) {
+	originalLoader := loadInstallConfigForCLI
+	defer func() { loadInstallConfigForCLI = originalLoader }()
+	originalFindActive := findActiveSummonForCLI
+	defer func() { findActiveSummonForCLI = originalFindActive }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/custom/decrees":
+			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
+				"decree_id":  "decree-install-123",
+				"created_at": "2026-03-01T10:00:00Z",
+			})
+		case "/api/custom/runs":
+			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
+				"run_id":      "run-install-456",
+				"workflow_id": "royal-decree-v1",
+				"status":      "running",
+				"created_at":  "2026-03-01T10:00:01Z",
+				"updated_at":  "2026-03-01T10:00:01Z",
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	loadInstallConfigForCLI = func() (installConfig, bool) {
+		cfg := defaultInstallConfig("/tmp/test-kingdom")
+		cfg.Server.Listen = "127.0.0.1:8080"
+		cfg.Server.BasePath = "/api/custom"
+		cfg.Provider.Engine = "opencode"
+		return cfg, true
+	}
+	findActiveSummonForCLI = func() (summonInstanceRecord, bool) {
+		return summonInstanceRecord{
+			Listen:   strings.TrimPrefix(server.URL, "http://"),
+			BasePath: "/api/custom",
+		}, true
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Execute(context.Background(), stdout, stderr, []string{
+		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
+	})
+	if exitCode != ExitSuccess {
+		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
 }
 
@@ -736,16 +790,17 @@ func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	}
 
 	configPath := filepath.Join(root, ".kingdom", "config.yaml")
-	freePort := reserveFreePort(t)
-	rewriteConfigListen(t, configPath, "127.0.0.1:"+freePort)
+	configPort := reserveFreePort(t)
+	rewriteConfigListen(t, configPath, "127.0.0.1:"+configPort)
 	rewriteConfigProviderSettings(t, configPath, "opencode", false, "/bin/sh")
+	overridePort := reserveFreePort(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
 	defer cancel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "--config", configPath, "--ready-timeout", "10s"})
+	exitCode := Execute(ctx, stdout, stderr, []string{"summon", "--config", configPath, "--port", overridePort, "--ready-timeout", "10s"})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected summon success, got %d stderr=%q", exitCode, stderr.String())
 	}
@@ -754,6 +809,9 @@ func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "ui: http://") {
 		t.Fatalf("expected summon output to include ui url, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "127.0.0.1:"+overridePort) {
+		t.Fatalf("expected summon output to use overridden port, got %q", stdout.String())
 	}
 }
 
@@ -771,6 +829,12 @@ func TestExecuteSummonHelpDescribesForegroundDefault(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "-d") || !strings.Contains(stdout.String(), "--detach") {
 		t.Fatalf("expected summon help to mention detached flags, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "--listen") || !strings.Contains(stdout.String(), "--host") || !strings.Contains(stdout.String(), "--port") {
+		t.Fatalf("expected summon help to mention listen overrides, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "`--listen` cannot be combined with `--host` or `--port`") {
+		t.Fatalf("expected summon help to explain listen conflict rule, got %q", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "kd summon serve [flags]") {
 		t.Fatalf("expected summon help to omit removed serve command, got %q", stdout.String())

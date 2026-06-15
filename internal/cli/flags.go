@@ -26,6 +26,9 @@ type cleanCommandOptions struct {
 type summonOptions struct {
 	configPath   string
 	detach       bool
+	listen       string
+	host         string
+	port         int
 	readyTimeout time.Duration
 }
 
@@ -130,6 +133,9 @@ func bindSummonFlags(flags *flag.FlagSet, opts *summonOptions) {
 	flags.StringVar(&opts.configPath, "config", filepath.Join(defaultInstallDirName, defaultConfigFileName), "summon config `path`")
 	flags.BoolVar(&opts.detach, "d", false, "run summon in the background")
 	flags.BoolVar(&opts.detach, "detach", false, "run summon in the background")
+	flags.StringVar(&opts.listen, "listen", "", "override summon listen `address` for this run only")
+	flags.StringVar(&opts.host, "host", "", "override summon listen `host` for this run only")
+	flags.IntVar(&opts.port, "port", 0, "override summon listen `port` for this run only")
 	flags.DurationVar(&opts.readyTimeout, "ready-timeout", defaultSummonReadyTimeout, "maximum readiness wait `duration`")
 }
 

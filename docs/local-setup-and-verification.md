@@ -106,6 +106,7 @@ Expected behavior:
 - validates managed OpenCode assets and agent resolution in strict mode when enabled
 - starts the API at `http://127.0.0.1:8080/api/v1`
 - serves the web UI from the same process
+- accepts runtime-only address overrides via `--listen <host:port>` or symmetric `--host <host>` and `--port <port>` flags
 
 ## Installed-Mode Notes
 

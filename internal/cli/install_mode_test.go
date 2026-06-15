@@ -364,6 +364,46 @@ func TestWaitForSummonReadyWithProcessReturnsStartupLogDetail(t *testing.T) {
 	}
 }
 
+func TestResolveSummonListenAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name          string
+		configListen  string
+		overrideListen string
+		overrideHost  string
+		overridePort  int
+		want          string
+		wantErr       string
+	}{
+		{name: "config only", configListen: "127.0.0.1:8080", want: "127.0.0.1:8080"},
+		{name: "listen override", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", want: "127.0.0.1:19090"},
+		{name: "port override", configListen: "127.0.0.1:8080", overridePort: 19090, want: "127.0.0.1:19090"},
+		{name: "host override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", want: "0.0.0.0:8080"},
+		{name: "host and port override", configListen: "127.0.0.1:8080", overrideHost: "0.0.0.0", overridePort: 19090, want: "0.0.0.0:19090"},
+		{name: "listen conflicts with port", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", overridePort: 19090, wantErr: "--listen cannot be combined"},
+		{name: "invalid port", configListen: "127.0.0.1:8080", overridePort: 70000, wantErr: "--port must be between 1 and 65535"},
+		{name: "invalid listen", configListen: "127.0.0.1:8080", overrideListen: "19090", wantErr: "summon listen address must be host:port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveSummonListenAddress(tc.configListen, tc.overrideListen, tc.overrideHost, tc.overridePort)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSummonListenAddress: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveSummonListenAddress = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunSummonLogsReadsLastRequestedLines(t *testing.T) {
 	projectRoot := t.TempDir()
 	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {

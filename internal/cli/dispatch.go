@@ -37,6 +37,7 @@ const (
 )
 
 var loadInstallConfigForCLI = installConfigForCLI
+var findActiveSummonForCLI = findActiveInstallModeSummon
 
 type Config struct {
 	ServerAddress  string
@@ -1141,6 +1142,14 @@ func defaultPublishModeForCLI() string {
 func applyInstallModeDefaults(cfg *Config) {
 	if cfg == nil || cfg.ServerExplicit || strings.TrimSpace(cfg.ServerAddress) != defaultServerAddress {
 		return
+	}
+	if record, ok := findActiveSummonForCLI(); ok {
+		listen := strings.TrimSpace(record.Listen)
+		basePath := strings.TrimSpace(record.BasePath)
+		if listen != "" && basePath != "" {
+			cfg.ServerAddress = fmt.Sprintf("http://%s%s", listen, basePath)
+			return
+		}
 	}
 	installCfg, ok := loadInstallConfigForCLI()
 	if !ok {

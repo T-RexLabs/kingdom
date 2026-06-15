@@ -88,6 +88,7 @@ provider:
 - `listen`
   - required
   - default scaffold value is `127.0.0.1:8080`
+  - `kd summon --listen`, `--host`, and `--port` can override this value for a single summon process without rewriting the config file
 
 - `base_path`
   - required
