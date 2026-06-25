@@ -12374,6 +12374,178 @@ func TestRuntimeAppliesNodeWallClockWarningAndTimeoutFailure(t *testing.T) {
 	})
 }
 
+func TestRuntimeDoesNotFailTimedOutAttemptWhileProviderActivityRemainsRecent(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
+
+	adapter := &timeoutCancelObserverAdapter{}
+	rt, err := NewRuntime(Config{
+		DB:               db,
+		Paths:            DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:          adapter,
+		DispatchInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["decree_intake"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 800 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	time.Sleep(250 * time.Millisecond)
+
+	if status := queryRunStatus(t, db, "run_timeout_diag"); status != "running" {
+		t.Fatalf("expected run to remain running while provider activity is recent, got %q", status)
+	}
+	if count := queryEventCount(t, db, "run_timeout_diag", "attempt.failed"); count != 0 {
+		t.Fatalf("expected no timeout failure while provider activity is recent, got %d failure events", count)
+	}
+	if adapter.cancelCalls() != 0 {
+		t.Fatalf("expected no cancel call while provider activity is recent, got %d", adapter.cancelCalls())
+	}
+}
+
+func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "stream_event", `{"text":"still working"}`, time.Now().UTC().Format(time.RFC3339Nano))
+
+	adapter := &timeoutCancelObserverAdapter{}
+	rt, err := NewRuntime(Config{
+		DB:               db,
+		Paths:            DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:          adapter,
+		DispatchInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["decree_intake"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 800 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	time.Sleep(250 * time.Millisecond)
+
+	if status := queryRunStatus(t, db, "run_timeout_diag"); status != "running" {
+		t.Fatalf("expected run to remain running while stream progress is recent, got %q", status)
+	}
+	if count := queryEventCount(t, db, "run_timeout_diag", "attempt.failed"); count != 0 {
+		t.Fatalf("expected no timeout failure while stream progress is recent, got %d failure events", count)
+	}
+	if adapter.cancelCalls() != 0 {
+		t.Fatalf("expected no cancel call while stream progress is recent, got %d", adapter.cancelCalls())
+	}
+}
+
+func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
+
+	adapter := &timeoutCancelObserverAdapter{}
+	rt, err := NewRuntime(Config{
+		DB:               db,
+		Paths:            DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:          adapter,
+		DispatchInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["decree_intake"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 150 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
+		if status != "failed" {
+			return fmt.Errorf("run_timeout_diag status=%s", status)
+		}
+		if adapter.cancelCalls() == 0 {
+			return fmt.Errorf("expected cancel call after recent activity went inactive")
+		}
+		return nil
+	})
+}
+
+func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "runtime_observation", `{"execution_diagnostics":{"event_count":3,"execution_path_diagnostics_snapshot":{"stdout_event_count":7,"step_finish_seen":true,"last_stdout_event_at":"2026-03-01T12:00:00Z"}}}`, time.Now().UTC().Format(time.RFC3339Nano))
+
+	adapter := &timeoutCancelObserverAdapter{}
+	rt, err := NewRuntime(Config{
+		DB:               db,
+		Paths:            DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:          adapter,
+		DispatchInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["decree_intake"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 150 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+
+	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
+		if status != "failed" {
+			return fmt.Errorf("run_timeout_diag status=%s", status)
+		}
+		if adapter.cancelCalls() == 0 {
+			return fmt.Errorf("expected timeout path to cancel even with runtime observation events present")
+		}
+		return nil
+	})
+}
+
 func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -14575,6 +14747,28 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_timeout_diag', NULL, 'decree_timeout_diag', 'wfdef_timeout_diag', 'running', 'approved', 1, '`+createdAt+`', '`+createdAt+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_timeout_diag_1', 'run_timeout_diag', 'decree_intake', 1,1, 'running', 'king', 'agent_king', 1, '`+startedAt+`', NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_timeout_diag', 'nr_timeout_diag_1', 'running', 'provider_backed', 'runtime_orchestrator', '`+now.Add(2*time.Minute).Format(time.RFC3339)+`', 1, '`+sessionID+`', '`+startedAt+`', NULL, NULL, '', '', '`+createdAt+`', '`+createdAt+`')`)
+}
+
+func seedTimeoutDiagnosticEvent(t *testing.T, db *sql.DB, eventType, reasonCode, payloadJSON, createdAt string) {
+	t.Helper()
+	if strings.TrimSpace(payloadJSON) == "" {
+		payloadJSON = `{}`
+	}
+	if strings.TrimSpace(createdAt) == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	eventID := fmt.Sprintf("evt_timeout_diag_%d", time.Now().UnixNano())
+	seq := 2 + queryEventCountForAttempt(t, db, "run_timeout_diag:decree_intake:1")
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('%s', 'run_timeout_diag', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_timeout_diag'), 0) + 1, 'nr_timeout_diag_1', 'run_timeout_diag:decree_intake:1', 'v1', '%s', %d, '%s', 'runtime_orchestrator', 'king', 'runtime.orchestrator', '%s', 'seed timeout diagnostic activity', 'corr_%s', 'caus_%s', 'prev_%s', 'entry_%s', '%s')`, eventID, eventType, seq, payloadJSON, reasonCode, eventID, eventID, eventID, eventID, createdAt))
+}
+
+func queryEventCountForAttempt(t *testing.T, db *sql.DB, attemptID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = ?`, attemptID).Scan(&count); err != nil {
+		t.Fatalf("query event count for attempt: %v", err)
+	}
+	return count
 }
 
 func queryLatestAttemptReasonCode(t *testing.T, db *sql.DB, attemptID, eventType string) string {

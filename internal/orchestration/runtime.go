@@ -317,7 +317,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		outputValidator: outputValidator,
 		adapter:         adapter,
 		providerEngine:  providerEngine,
-		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
+		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
 		fsStore:         fsStore,
 		closeMode:       closeMode,
 		completionWake:  make(chan struct{}, 1),

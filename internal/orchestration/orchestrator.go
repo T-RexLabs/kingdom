@@ -56,6 +56,7 @@ type orchestrationLoop struct {
 	planningOutputs       *state.RunPlanningOutputStore
 	executionStore        *executionstore.Store
 	nodeTimeouts          map[string]time.Duration
+	streamInactivity      time.Duration
 	cancelGrace           time.Duration
 	cancelForce           time.Duration
 	yoloRoot              string
@@ -224,7 +225,7 @@ func marshalAsyncExecutionAttemptEventPayload(result asyncExecutionResult, reaso
 	return marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 }
 
-func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
+func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
@@ -243,6 +244,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		planningOutputs:     state.NewRunPlanningOutputStore(db),
 		executionStore:      executionstore.New(db),
 		nodeTimeouts:        cloneDurationMap(nodeTimeouts),
+		streamInactivity:    streamInactivity,
 		cancelGrace:         defaultDuration(cancelGrace, 5*time.Second),
 		cancelForce:         defaultDuration(cancelForce, 10*time.Second),
 		yoloRoot:            strings.TrimSpace(yoloOutputRoot),

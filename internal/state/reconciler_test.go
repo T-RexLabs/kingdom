@@ -1982,7 +1982,7 @@ func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 	}
 }
 
-func TestReconcilerTreatsRuntimeObservationWithRecentExecutionActivityAsHeartbeat(t *testing.T) {
+func TestReconcilerTreatsRecentProviderActivityAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1994,24 +1994,24 @@ func TestReconcilerTreatsRuntimeObservationWithRecentExecutionActivityAsHeartbea
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_live', 'caus_builder_live', 'prev_builder_live', 'entry_builder_live', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_live', 'caus_builder_live_observe', 'prev_builder_live_2', 'entry_builder_live_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_activity_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:decree_intake:2', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.tool","label":"Processing"}', 'actor_1', 'king', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr_builder_live', 'caus_builder_live_activity', 'prev_builder_live_2', 'entry_builder_live_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
 
 	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
 	if err != nil {
-		t.Fatalf("reconcile with live runtime observation heartbeat: %v", err)
+		t.Fatalf("reconcile with live provider activity heartbeat: %v", err)
 	}
 	if result.StaleAttemptsFound != 0 {
-		t.Fatalf("expected no stale attempts when runtime observation shows recent execution activity, got %d", result.StaleAttemptsFound)
+		t.Fatalf("expected no stale attempts when provider activity is recent, got %d", result.StaleAttemptsFound)
 	}
 	if got := queryNodeStatus(t, db, "nr_builder_live"); got != "running" {
-		t.Fatalf("expected attempt to remain running when runtime observation shows recent execution activity, got %q", got)
+		t.Fatalf("expected attempt to remain running when provider activity is recent, got %q", got)
 	}
 }
 
-func TestReconcilerTreatsRuntimeObservationWithoutStreamErrorAsHeartbeat(t *testing.T) {
+func TestReconcilerTreatsRecentStreamProgressAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -2023,20 +2023,20 @@ func TestReconcilerTreatsRuntimeObservationWithoutStreamErrorAsHeartbeat(t *test
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_quiet', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_quiet', 'caus_builder_quiet', 'prev_builder_quiet', 'entry_builder_quiet', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":1,"event_types":{"attempt.started":1},"observed_at":"2026-03-01T12:12:50Z","terminal_event_seen":false}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_quiet', 'caus_builder_quiet_observe', 'prev_builder_quiet_2', 'entry_builder_quiet_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_progress_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"text":"still working"}', 'actor_1', 'king', 'runtime.event_bridge', 'stream_event', 'stream event ingested', 'corr_builder_quiet', 'caus_builder_quiet_progress', 'prev_builder_quiet_2', 'entry_builder_quiet_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
 
 	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
 	if err != nil {
-		t.Fatalf("reconcile with quiet runtime observation heartbeat: %v", err)
+		t.Fatalf("reconcile with recent stream progress heartbeat: %v", err)
 	}
 	if result.StaleAttemptsFound != 0 {
-		t.Fatalf("expected no stale attempts when runtime observation shows a live execution without stream error, got %d", result.StaleAttemptsFound)
+		t.Fatalf("expected no stale attempts when stream progress is recent, got %d", result.StaleAttemptsFound)
 	}
 	if got := queryNodeStatus(t, db, "nr_builder_quiet"); got != "running" {
-		t.Fatalf("expected attempt to remain running when runtime observation shows a live execution without stream error, got %q", got)
+		t.Fatalf("expected attempt to remain running when stream progress is recent, got %q", got)
 	}
 }
 

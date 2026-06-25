@@ -63,6 +63,17 @@ func (o *orchestrationLoop) enforceRunningAttemptTimeouts(ctx context.Context, r
 			if err := o.emitTimeoutWarningIfNeeded(ctx, run, attempt, attemptID, now, elapsed, timeout); err != nil {
 				return err
 			}
+			// Wall-clock budgets become terminal only after real provider-backed
+			// activity has gone quiet for the inactivity window.
+			if o.streamInactivity > 0 {
+				recentActivity, err := state.HasRecentExecutionActivity(ctx, o.db, attempt.NodeRunID, nowTime, o.streamInactivity)
+				if err != nil {
+					return err
+				}
+				if recentActivity {
+					continue
+				}
+			}
 			if err := o.failTimedOutAttempt(ctx, run, attempt, attemptID, now, elapsed, timeout); err != nil {
 				return err
 			}
