@@ -24,6 +24,10 @@ execution.
 - Edit `opencode_provider_policy.yaml` when strict startup validation, dispatch timeouts, stream inactivity windows, or canonical role-to-agent mappings change.
 - Edit `role_communication_policy.yaml` when the shipped role prompts or mailbox templates change.
 
+Timeout note:
+
+- `timeouts.node_wall_clock` is an activity-gated budget for provider-backed decree execution nodes, not an unconditional kill switch; terminal timeout still requires inactivity beyond `timeouts.stream_inactivity_timeout`.
+
 ## Typical changes
 
 ### Add a command/tool capability to a role

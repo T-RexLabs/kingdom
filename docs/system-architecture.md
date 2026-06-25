@@ -34,6 +34,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - `kd init` installs Kingdom-managed OpenCode role profiles and managed tools into project `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`; runtime/API startup validates those managed assets read-only and fails fast on drift, and Kingdom launches OpenCode with that overlay plus a Kingdom-owned OpenCode database under `.kingdom/opencode/` so agent resolution remains deterministic without leaking Kingdom-managed sessions or assets into normal user-run `opencode` sessions.
 - Runtime defaults to headless OpenCode execution with skip-permissions enabled so provider prompts do not block autonomous runs.
 - Kingdom launches OpenCode with session-scoped inline OpenCode config that disables conversation sharing (`share=disabled`) and mDNS discovery (`server.mdns=false`) for all Kingdom-managed planner and execution sessions, while permissions still deny `external_directory` access outside the active workdir for both session types and additionally deny the `question` tool for execution sessions.
+- Provider-backed decree execution node wall-clock budgets are activity-gated: exceeding `node_wall_clock` is terminal only after real execution activity has been absent for at least `stream_inactivity_timeout`, and active nodes may continue indefinitely.
 - `decree_intake` is a runtime-owned deterministic node that records ceremonial intake and opens advisory consultation without a provider call.
 - `king_plan_decision` is a runtime-owned deterministic governance node; it waits at the plan approval gate and completes only after approval or rework is recorded.
 - `execution_kickoff` is a runtime-owned deterministic execution-handoff node; it records the post-approval handoff into implementation without invoking OpenCode.
@@ -132,6 +133,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Runtime issues one invocation-scoped completion capability per provider-backed decree execution attempt and validates receipt usage server-side.
 - Strict startup validates managed OpenCode assets, binary availability, and agent resolution when `provider.strict=true`.
 - Runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown` until terminal success or failure.
+- Provider-backed decree execution wall-clock budgets gate silence recovery, not active work: real provider activity suppresses terminal timeout until the inactivity window is exceeded.
 - All provider-backed decree execution sessions must call `kingdom_complete_attempt` to request terminal success settlement.
 - Canonical provider settlement for a provider-backed decree execution attempt is runtime-owned and invocation-scoped; success requires one valid receipt accepted for the active invocation, and runtime must not merge multiple final assistant answers or competing receipts into one settled output.
 - Stream output, `step_finish.reason`, mailbox projections, artifact presence, and provider export reads can inform diagnostics and repair for provider-backed decree execution, but none of them can create canonical success without a valid runtime receipt.
@@ -191,6 +193,7 @@ Important clarifications:
 - Node `starting` means runtime setup is complete and provider launch is in progress but not yet observed.
 - Runtime-owned nodes do not use the provider launch phase; they transition directly from `ready` to `running`.
 - Node `running` means provider launch has been observed and execution is actively in flight.
+- Provider-backed node wall-clock timeout enforcement must ignore runtime-authored observation polling and may terminate only after the node is both over its wall-clock budget and inactive past the configured inactivity window.
 - Node `blocked` is the canonical stale-retry quarantine state for a live attempt that runtime has stopped treating as actively executing.
 - Operator-visible node surfaces keep a `starting`, `running`, or `blocked` lineage visible until a replacement attempt actually reaches `starting` or `running`; queued retries do not hide the older live lineage.
 - Setup failures terminate from setup states and must not emit fake execution-start telemetry.
