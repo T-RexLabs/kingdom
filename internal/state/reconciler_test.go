@@ -1982,6 +1982,35 @@ func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 	}
 }
 
+func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	now := "2026-03-01T12:13:00Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live_observe', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe', 'prev_builder_live_observe', 'entry_builder_live_observe', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe_recent', 'prev_builder_live_observe_2', 'entry_builder_live_observe_2', '2026-03-01T12:12:50Z')`)
+
+	engine := loadRetryEngine(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile with live runtime observation heartbeat: %v", err)
+	}
+	if result.StaleAttemptsFound != 0 {
+		t.Fatalf("expected no stale attempts when runtime observation shows a live execution, got %d", result.StaleAttemptsFound)
+	}
+	if got := queryNodeStatus(t, db, "nr_builder_live_observe"); got != "running" {
+		t.Fatalf("expected attempt to remain running when runtime observation shows a live execution, got %q", got)
+	}
+}
+
 func TestReconcilerTreatsRecentProviderActivityAsHeartbeat(t *testing.T) {
 	t.Parallel()
 

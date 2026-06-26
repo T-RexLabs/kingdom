@@ -1300,7 +1300,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		if grace < defaultProgressStaleGrace {
 			grace = defaultProgressStaleGrace
 		}
-		skip, err := HasRecentExecutionActivity(ctx, q, candidate.NodeRunID, nowTime, grace)
+		skip, err := HasRecentExecutionLiveness(ctx, q, candidate.NodeRunID, nowTime, grace)
 		if err != nil {
 			return nil, err
 		}
