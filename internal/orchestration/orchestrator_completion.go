@@ -535,7 +535,7 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 
 	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
 	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, opencode.ExecuteRequest{
+	recoveryReq, progressWriter := o.attachDurableProgressWriter(ctx, result, opencode.ExecuteRequest{
 		SessionID:                 result.sessionID,
 		ProviderSessionID:         result.providerSessionID,
 		AttemptID:                 result.attemptID,
@@ -556,7 +556,9 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 		CompletionReceiptDir:      result.completionReceiptDir,
 		OnActivity:                o.providerExecutionActivityObserver(ctx, result),
 		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
-	}, result.outputText)
+	})
+	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, recoveryReq, result.outputText)
+	recoveryErr = closeDurableProgressWriter(progressWriter, recoveryErr)
 	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
 
 	if guardErr := o.finishCompletionRecoveryGuard(ctx, result, decision, guard); guardErr != nil {
@@ -1543,7 +1545,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 		}
 
 		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-		retryResponse, retryErr := o.adapter.Execute(ctx, opencode.ExecuteRequest{
+		retryResponse, retryErr := o.executeWithDurableProgress(ctx, result, opencode.ExecuteRequest{
 			SessionID:                 result.sessionID,
 			ProviderSessionID:         result.providerSessionID,
 			AttemptID:                 result.attemptID,

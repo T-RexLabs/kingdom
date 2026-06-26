@@ -10605,6 +10605,90 @@ func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots
 	}
 }
 
+func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_builder_stream",
+		DecreeID:     "decree_dispatch_builder_stream",
+		WorkflowID:   "wfdef_dispatch_builder_stream",
+		NodeRunID:    "nr_dispatch_builder_stream_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_dispatch_builder_stream",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_dispatch_builder_stream",
+			RoleID:  "council-member",
+		}},
+	})
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write builder stream project seed file: %v", err)
+	}
+	adapter := &sequenceExecutionAdapter{
+		outputs:  []string{"Implemented builder changes"},
+		progress: [][]string{{"still ", "working"}},
+	}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	now := "2026-03-01T12:00:00Z"
+	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, RequiredRole: "builder-berserker", AgentID: "agent_dispatch_builder_stream", NodeStatus: "ready"}, now); err != nil {
+		t.Fatalf("dispatch builder stream node attempt: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return fmt.Errorf("drain builder stream completion outbox: %w", err)
+		}
+		var nodeStatus string
+		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_1'`).Scan(&nodeStatus); err != nil {
+			return fmt.Errorf("query builder stream node status: %w", err)
+		}
+		if nodeStatus != "succeeded" {
+			return fmt.Errorf("node_status=%s", nodeStatus)
+		}
+		return nil
+	})
+
+	requests := adapter.requestsSnapshot()
+	if len(requests) != 1 {
+		t.Fatalf("expected one provider request for builder stream dispatch, got %d", len(requests))
+	}
+	if requests[0].OnProgress == nil {
+		t.Fatal("expected decree execution request to wire durable progress callback")
+	}
+
+	var streamEventCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch_builder_stream:delegated_execution_berserker:1' AND reason_code = 'stream_event'`).Scan(&streamEventCount); err != nil {
+		t.Fatalf("count stream progress events: %v", err)
+	}
+	if streamEventCount != 1 {
+		t.Fatalf("expected one batched stream progress event, got %d", streamEventCount)
+	}
+
+	var payloadRaw string
+	if err := db.QueryRow(`SELECT payload_json FROM events WHERE attempt_id = 'run_dispatch_builder_stream:delegated_execution_berserker:1' AND reason_code = 'stream_event' ORDER BY seq DESC LIMIT 1`).Scan(&payloadRaw); err != nil {
+		t.Fatalf("query stream progress payload: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
+		t.Fatalf("decode stream progress payload: %v", err)
+	}
+	if got := payload["text"]; got != "still working" {
+		t.Fatalf("expected persisted stream progress text %q, got %#v", "still working", got)
+	}
+}
+
 func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWorkspaceTarget(t *testing.T) {
 	t.Parallel()
 
@@ -12421,6 +12505,88 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileProviderActivityRemainsRecent(t *
 func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_timeout_stream_live",
+		DecreeID:     "decree_timeout_stream_live",
+		WorkflowID:   "wfdef_timeout_stream_live",
+		NodeRunID:    "nr_timeout_stream_live_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_timeout_stream_live",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_timeout_stream_live",
+			RoleID:  "council-member",
+		}},
+	})
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write timeout stream project seed file: %v", err)
+	}
+	adapter := &streamingTimeoutExecutionAdapter{
+		progressTexts: []string{"still working"},
+		started:       make(chan struct{}),
+	}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:               db,
+		Adapter:          adapter,
+		Paths:            DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot:   projectRoot,
+		DispatchInterval: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["delegated_execution_berserker"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 500 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for provider execution to start")
+	}
+
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_timeout_stream_live:delegated_execution_berserker:1' AND reason_code = 'stream_event'`).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("waiting for durable stream progress")
+		}
+		return nil
+	})
+
+	time.Sleep(180 * time.Millisecond)
+	if status := queryRunStatus(t, db, "run_timeout_stream_live"); status != "running" {
+		t.Fatalf("expected run to remain running while real stream progress is recent, got %q", status)
+	}
+	if adapter.cancelCalls() != 0 {
+		t.Fatalf("expected no timeout cancellation while stream progress is recent, got %d", adapter.cancelCalls())
+	}
+
+	awaitRunStatus(t, db, "run_timeout_stream_live", 3*time.Second, 25*time.Millisecond, func(status string) error {
+		if status != "failed" {
+			return fmt.Errorf("run_timeout_stream_live status=%s", status)
+		}
+		if adapter.cancelCalls() == 0 {
+			return fmt.Errorf("expected timeout cancellation after stream progress went inactive")
+		}
+		return nil
+	})
+}
+
+func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
 	seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "stream_event", `{"text":"still working"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
@@ -13344,9 +13510,21 @@ type attemptNotFoundTimeoutAdapter struct {
 type sequenceExecutionAdapter struct {
 	mu         sync.Mutex
 	outputs    []string
+	progress   [][]string
 	activities [][]opencode.ExecuteActivityObservation
 	calls      int
 	requests   []opencode.ExecuteRequest
+}
+
+type streamingTimeoutExecutionAdapter struct {
+	timeoutCancelObserverAdapter
+	mu               sync.Mutex
+	progressTexts    []string
+	progressInterval time.Duration
+	cancelCh         chan struct{}
+	cancelOnce       sync.Once
+	requests         []opencode.ExecuteRequest
+	started          chan struct{}
 }
 
 type workspaceWritingExecutionAdapter struct {
@@ -13446,6 +13624,13 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	a.requests = append(a.requests, req)
 	idx := a.calls
 	a.calls++
+	if idx < len(a.progress) {
+		for _, text := range a.progress[idx] {
+			if req.OnProgress != nil {
+				req.OnProgress(text)
+			}
+		}
+	}
 	if idx < len(a.activities) {
 		for _, observation := range a.activities[idx] {
 			if req.OnActivity != nil {
@@ -13491,6 +13676,58 @@ func (a *sequenceExecutionAdapter) callsCount() int {
 }
 
 func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]opencode.ExecuteRequest, len(a.requests))
+	copy(out, a.requests)
+	return out
+}
+
+func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	callOnProcessStarted(req)
+	a.mu.Lock()
+	a.requests = append(a.requests, req)
+	progressTexts := append([]string(nil), a.progressTexts...)
+	progressInterval := a.progressInterval
+	started := a.started
+	a.mu.Unlock()
+	for idx, text := range progressTexts {
+		if req.OnProgress != nil {
+			req.OnProgress(text)
+		}
+		if progressInterval > 0 && idx < len(progressTexts)-1 {
+			time.Sleep(progressInterval)
+		}
+	}
+	if started != nil {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+	}
+	<-a.cancelSignal()
+	return opencode.ExecuteResponse{}, context.Canceled
+}
+
+func (a *streamingTimeoutExecutionAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
+	err := a.timeoutCancelObserverAdapter.Cancel(ctx, req)
+	a.cancelOnce.Do(func() {
+		close(a.cancelSignal())
+	})
+	return err
+}
+
+func (a *streamingTimeoutExecutionAdapter) cancelSignal() chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cancelCh == nil {
+		a.cancelCh = make(chan struct{})
+	}
+	return a.cancelCh
+}
+
+func (a *streamingTimeoutExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([]opencode.ExecuteRequest, len(a.requests))
