@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +64,8 @@ func closeDurableProgressWriter(writer *bufferedExecutionProgressWriter, err err
 	if writer == nil {
 		return err
 	}
-	if flushErr := writer.Close(); err == nil && flushErr != nil {
-		return flushErr
+	if flushErr := writer.Close(); flushErr != nil {
+		writer.reportError(flushErr)
 	}
 	return err
 }
@@ -143,6 +144,28 @@ func (w *bufferedExecutionProgressWriter) Close() error {
 	w.closed = true
 	w.mu.Unlock()
 	return w.Flush()
+}
+
+func (w *bufferedExecutionProgressWriter) reportError(err error) {
+	if w == nil || err == nil {
+		return
+	}
+	w.mu.Lock()
+	ctx := w.ctx
+	loop := w.loop
+	result := w.result
+	w.mu.Unlock()
+
+	attemptID := strings.TrimSpace(result.attemptID)
+	slog.Warn("failed to persist durable execution stream progress", "attempt_id", attemptID, "error", err)
+	if loop == nil {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if loop.now != nil {
+		now = loop.now().UTC().Format(time.RFC3339)
+	}
+	loop.emitCompletionLifecycleObservation(ctx, result, "durable_progress_flush_failed", now, map[string]any{"error": err.Error()})
 }
 
 func (o *orchestrationLoop) appendDurableStreamProgress(ctx context.Context, result asyncExecutionResult, text string) error {

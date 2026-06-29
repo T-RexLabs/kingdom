@@ -10689,6 +10689,82 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 	}
 }
 
+func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlushFails(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_builder_stream_flush_fail",
+		DecreeID:     "decree_dispatch_builder_stream_flush_fail",
+		WorkflowID:   "wfdef_dispatch_builder_stream_flush_fail",
+		NodeRunID:    "nr_dispatch_builder_stream_flush_fail_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_dispatch_builder_stream_flush_fail",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_dispatch_builder_stream_flush_fail",
+			RoleID:  "council-member",
+		}},
+	})
+	mustExec(t, db, `CREATE TRIGGER reject_stream_progress_events BEFORE INSERT ON events WHEN NEW.reason_code = 'stream_event' BEGIN SELECT RAISE(FAIL, 'stream progress persistence unavailable'); END`)
+
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write builder stream flush failure project seed file: %v", err)
+	}
+	adapter := &sequenceExecutionAdapter{
+		outputs:  []string{"Implemented builder changes"},
+		progress: [][]string{{"still working"}},
+	}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+
+	now := "2026-03-01T12:00:00Z"
+	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream_flush_fail", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_flush_fail_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, RequiredRole: "builder-berserker", AgentID: "agent_dispatch_builder_stream_flush_fail", NodeStatus: "ready"}, now); err != nil {
+		t.Fatalf("dispatch builder stream flush failure node attempt: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return fmt.Errorf("drain builder stream flush failure completion outbox: %w", err)
+		}
+		var nodeStatus string
+		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_flush_fail_1'`).Scan(&nodeStatus); err != nil {
+			return fmt.Errorf("query builder stream flush failure node status: %w", err)
+		}
+		if nodeStatus != "succeeded" {
+			return fmt.Errorf("node_status=%s", nodeStatus)
+		}
+		return nil
+	})
+
+	var attemptState, failureCode, failureText string
+	if err := db.QueryRow(`SELECT state, failure_code, failure_text FROM attempt_executions WHERE attempt_id = 'run_dispatch_builder_stream_flush_fail:delegated_execution_berserker:1'`).Scan(&attemptState, &failureCode, &failureText); err != nil {
+		t.Fatalf("query builder stream flush failure attempt execution: %v", err)
+	}
+	if attemptState != "committed_success" {
+		t.Fatalf("expected committed_success despite stream progress persistence failure, got %q", attemptState)
+	}
+	if failureCode != "" || failureText != "" {
+		t.Fatalf("expected no canonical failure from stream progress persistence, got code=%q text=%q", failureCode, failureText)
+	}
+
+	var diagnosticCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch_builder_stream_flush_fail:delegated_execution_berserker:1' AND reason_code = 'runtime_completion_observation' AND json_extract(payload_json, '$.phase') = 'durable_progress_flush_failed'`).Scan(&diagnosticCount); err != nil {
+		t.Fatalf("count durable progress flush failure diagnostics: %v", err)
+	}
+	if diagnosticCount != 1 {
+		t.Fatalf("expected one diagnostic event for durable progress flush failure, got %d", diagnosticCount)
+	}
+}
+
 func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWorkspaceTarget(t *testing.T) {
 	t.Parallel()
 
