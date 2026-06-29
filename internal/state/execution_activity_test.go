@@ -106,6 +106,52 @@ func TestHasRecentTimeoutActivityTracksCompletionObservation(t *testing.T) {
 	}
 }
 
+func TestHasRecentTimeoutActivityHandlesFractionalSecondCutoff(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	insertExecutionActivityEvent(t, db, executionActivitySeed{
+		EventID:    "evt_activity_fractional_second",
+		EventType:  "attempt.activity",
+		ReasonCode: "provider_activity",
+		Payload:    `{"kind":"kingdom.tool","label":"Processing"}`,
+		CreatedAt:  "2026-03-01T12:00:00.500Z",
+	})
+
+	active, err := HasRecentTimeoutActivity(context.Background(), db, "nr_1", mustParseRFC3339(t, "2026-03-01T12:00:01Z"), time.Second)
+	if err != nil {
+		t.Fatalf("has recent fractional-second timeout activity: %v", err)
+	}
+	if !active {
+		t.Fatal("expected fractional-second provider activity after the cutoff to count as recent execution activity")
+	}
+}
+
+func TestRecentExecutionActivityQueryUsesNodeRunIndex(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+
+	const indexName = "idx_events_node_run_type_created_activity"
+	if !indexExists(t, db, indexName) {
+		t.Fatalf("expected index %q to exist", indexName)
+	}
+	assertPlanUsesIndex(t, db,
+		`SELECT created_at, event_type, reason_code, payload_json
+		 FROM events
+		 WHERE node_run_id = ?
+		   AND event_type IN ('attempt.activity', 'attempt.progress')
+		   AND julianday(created_at) >= julianday(?)
+		 ORDER BY julianday(created_at) DESC, run_event_seq DESC, seq DESC, event_id DESC`,
+		[]any{"nr_1", "2026-03-01T12:00:00Z"},
+		indexName,
+	)
+}
+
 func TestHasRecentTimeoutActivityScansPastSyntheticObservationOverflow(t *testing.T) {
 	t.Parallel()
 
