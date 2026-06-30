@@ -26,7 +26,7 @@ execution.
 
 Timeout note:
 
-- `timeouts.node_wall_clock` is an activity-gated budget for provider-backed decree execution nodes, not an unconditional kill switch; terminal timeout still requires inactivity beyond `timeouts.stream_inactivity_timeout`.
+- `timeouts.node_wall_clock` is an activity-gated budget for provider-backed decree execution nodes, not an unconditional kill switch; terminal timeout still requires inactivity beyond `timeouts.stream_inactivity_timeout`, ignoring synthetic runtime polling while honoring real execution activity and active completion-settlement observation.
 
 ## Typical changes
 
