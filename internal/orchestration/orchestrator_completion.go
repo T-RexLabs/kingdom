@@ -1409,9 +1409,10 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	if o == nil || o.events == nil || strings.TrimSpace(result.attemptID) == "" {
 		return
 	}
+	receivedAt := o.now().UTC()
 	occurredAt := strings.TrimSpace(observation.OccurredAt)
 	if occurredAt == "" {
-		occurredAt = o.now().UTC().Format(time.RFC3339)
+		occurredAt = receivedAt.Format(time.RFC3339Nano)
 	}
 
 	o.eventSeqMu.Lock()
@@ -1463,7 +1464,7 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 		ReasonText:      "provider activity telemetry",
 		CorrelationID:   "corr_orch_" + result.run.RunID,
 		CausationID:     fmt.Sprintf("caus_orch_%s_%s_act_%s", result.run.RunID, result.attempt.NodeRunID, sanitizeFileToken(activityID)),
-		CreatedAt:       occurredAt,
+		CreatedAt:       receivedAt.Format(time.RFC3339Nano),
 	})
 }
 

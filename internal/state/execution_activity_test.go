@@ -32,6 +32,30 @@ func TestHasRecentTimeoutActivityTracksProviderActivity(t *testing.T) {
 	}
 }
 
+func TestHasRecentTimeoutActivityIgnoresFutureDatedActivity(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	insertExecutionActivityEvent(t, db, executionActivitySeed{
+		EventID:    "evt_activity_provider_future",
+		EventType:  "attempt.activity",
+		ReasonCode: "provider_activity",
+		Payload:    `{"kind":"kingdom.tool","label":"Processing"}`,
+		CreatedAt:  "2026-03-01T12:02:30Z",
+	})
+
+	active, err := HasRecentTimeoutActivity(context.Background(), db, "nr_1", mustParseRFC3339(t, "2026-03-01T12:00:30Z"), time.Hour)
+	if err != nil {
+		t.Fatalf("has recent timeout activity with future timestamp: %v", err)
+	}
+	if active {
+		t.Fatal("expected future-dated provider activity to be ignored")
+	}
+}
+
 func TestHasRecentTimeoutActivityTracksStreamProgress(t *testing.T) {
 	t.Parallel()
 

@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const executionActivityFutureTolerance = time.Second
+
 // ExecutionActivityQuerier is the narrow read contract needed to inspect
 // durable decree-execution activity.
 type ExecutionActivityQuerier interface {
@@ -71,7 +73,11 @@ func hasRecentExecutionMatch(ctx context.Context, q ExecutionActivityQuerier, no
 		if err != nil {
 			continue
 		}
-		if nowTime.Sub(parsed.UTC()) > threshold {
+		activityAt := parsed.UTC()
+		if activityAt.After(nowTime.UTC().Add(executionActivityFutureTolerance)) {
+			continue
+		}
+		if nowTime.Sub(activityAt) > threshold {
 			continue
 		}
 		if match(eventType.String, reasonCode.String, payloadRaw.String) {

@@ -31,6 +31,9 @@ func (o *orchestrationLoop) enforceRunningAttemptTimeouts(ctx context.Context, r
 		if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 			continue
 		}
+		if timeoutEnforcementSkipsDurableState(attempt.DurableState) {
+			continue
+		}
 		if err := o.emitRunningAttemptObservationIfNeeded(ctx, run, attempt, attemptID, now, nowTime); err != nil {
 			return err
 		}
@@ -119,6 +122,8 @@ func (o *orchestrationLoop) emitRunningAttemptObservationIfNeeded(ctx context.Co
 		return fmt.Errorf("marshal runtime observation payload: %w", err)
 	}
 
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
 	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_observe_%d", sanitizeFileToken(run.RunID), sanitizeFileToken(attempt.NodeID), attempt.Attempt, nowTime.Unix()),
 		RunID:           run.RunID,
@@ -150,7 +155,6 @@ func (o *orchestrationLoop) emitTimeoutWarningIfNeeded(ctx context.Context, run 
 	}
 
 	diagnostics := o.collectAttemptExecutionDiagnostics(ctx, attemptID, o.preferredAttemptSessionID(ctx, attemptID), now)
-	seq := o.nextEventSeq(ctx, attemptID)
 	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "timeout", map[string]any{
 		"elapsed_ms":            elapsed.Milliseconds(),
 		"timeout_ms":            timeout.Milliseconds(),
@@ -160,6 +164,9 @@ func (o *orchestrationLoop) emitTimeoutWarningIfNeeded(ctx context.Context, run 
 	if err != nil {
 		return fmt.Errorf("marshal timeout warning payload: %w", err)
 	}
+	o.eventSeqMu.Lock()
+	defer o.eventSeqMu.Unlock()
+	seq := o.nextEventSeq(ctx, attemptID)
 	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_warning", run.RunID, attempt.NodeID, attempt.Attempt),
 		RunID:           run.RunID,
@@ -211,28 +218,33 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		return fmt.Errorf("marshal timeout failure payload: %w", err)
 	}
 
-	if err := o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
-		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
-		RunID:           run.RunID,
-		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
-		Entity:          state.EntityTypeNode,
-		FromState:       "running",
-		ToState:         "failed",
-		ActorID:         "runtime_orchestrator",
-		RoleID:          attempt.RequiredRole,
-		AuthoritySource: "runtime.timeout",
-		ReasonCode:      reasonCode,
-		ReasonText:      reasonText,
-		CorrelationID:   "corr_orch_" + run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_timeout_failed", run.RunID, attempt.NodeRunID),
-		OccurredAt:      now,
-		AttemptID:       attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.failed",
-		EventSeq:        o.nextEventSeq(ctx, attemptID),
-		PayloadJSON:     string(payloadRaw),
-	}}); err != nil {
+	err = func() error {
+		o.eventSeqMu.Lock()
+		defer o.eventSeqMu.Unlock()
+		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
+			TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
+			EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
+			RunID:           run.RunID,
+			NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
+			Entity:          state.EntityTypeNode,
+			FromState:       "running",
+			ToState:         "failed",
+			ActorID:         "runtime_orchestrator",
+			RoleID:          attempt.RequiredRole,
+			AuthoritySource: "runtime.timeout",
+			ReasonCode:      reasonCode,
+			ReasonText:      reasonText,
+			CorrelationID:   "corr_orch_" + run.RunID,
+			CausationID:     fmt.Sprintf("caus_orch_%s_%s_timeout_failed", run.RunID, attempt.NodeRunID),
+			OccurredAt:      now,
+			AttemptID:       attemptID,
+			SchemaVersion:   "v1",
+			EventType:       "attempt.failed",
+			EventSeq:        o.nextEventSeq(ctx, attemptID),
+			PayloadJSON:     string(payloadRaw),
+		}})
+	}()
+	if err != nil {
 		return err
 	}
 	if o.registry != nil && attempt.AgentID != "" {
@@ -241,6 +253,15 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		}
 	}
 	return nil
+}
+
+func timeoutEnforcementSkipsDurableState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "terminal_observed", "committed_success", "committed_failure", "committed_cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func executionNeverStarted(executionDiagnostics, cancelDiagnostics map[string]any) bool {

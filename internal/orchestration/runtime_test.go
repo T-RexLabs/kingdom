@@ -12788,6 +12788,144 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	})
 }
 
+func TestRuntimeSkipsTimeoutForTerminalObservedDurableAttempt(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'terminal_observed', terminal_observed_at = '2026-03-01T12:00:00Z', updated_at = '2026-03-01T12:00:00Z' WHERE attempt_id = 'run_timeout_diag:decree_intake:1'`)
+
+	adapter := &timeoutCancelObserverAdapter{}
+	rt, err := NewRuntime(Config{
+		DB:      db,
+		Paths:   DefaultBootstrapPaths(repoRoot(t)),
+		Adapter: adapter,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.nodeTimeouts["decree_intake"] = 120 * time.Millisecond
+	rt.orchestrator.streamInactivity = 150 * time.Millisecond
+
+	latest, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_timeout_diag")
+	if err != nil {
+		t.Fatalf("load latest attempts: %v", err)
+	}
+	if err := rt.orchestrator.enforceRunningAttemptTimeouts(context.Background(), runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"}, latest, time.Now().UTC().Add(time.Second).Format(time.RFC3339)); err != nil {
+		t.Fatalf("enforce running attempt timeouts: %v", err)
+	}
+
+	if got := queryRunStatus(t, db, "run_timeout_diag"); got != "running" {
+		t.Fatalf("expected run to remain running while durable attempt is terminal_observed, got %q", got)
+	}
+	if got := queryNodeStatus(t, db, "nr_timeout_diag_1"); got != "running" {
+		t.Fatalf("expected node row to remain running pending completion projection, got %q", got)
+	}
+	if count := queryEventCount(t, db, "run_timeout_diag", "attempt.failed"); count != 0 {
+		t.Fatalf("expected no timeout failure event for terminal_observed attempt, got %d", count)
+	}
+	if adapter.cancelCalls() != 0 {
+		t.Fatalf("expected no cancel for terminal_observed durable attempt, got %d", adapter.cancelCalls())
+	}
+}
+
+func TestProviderActivityTimeoutRecencyUsesRuntimeReceiptTime(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+
+	rt, err := NewRuntime(Config{
+		DB:      db,
+		Paths:   DefaultBootstrapPaths(repoRoot(t)),
+		Adapter: &timeoutCancelObserverAdapter{},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	receivedAt, err := time.Parse(time.RFC3339, "2026-03-01T12:00:30Z")
+	if err != nil {
+		t.Fatalf("parse received timestamp: %v", err)
+	}
+	rt.orchestrator.now = func() time.Time { return receivedAt }
+
+	latest, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_timeout_diag")
+	if err != nil {
+		t.Fatalf("load latest attempts: %v", err)
+	}
+	attempt := latest["decree_intake"]
+	result := asyncExecutionResult{
+		run:       runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"},
+		node:      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+		attempt:   attempt,
+		attemptID: "run_timeout_diag:decree_intake:1",
+	}
+	rt.orchestrator.emitProviderActivityObservation(context.Background(), result, opencode.ExecuteActivityObservation{
+		ProviderPartID: "provider_part_old",
+		Kind:           opencode.ExecuteActivityKindProgress,
+		Label:          "Provider step started",
+		OccurredAt:     "2026-03-01T11:00:00Z",
+	})
+
+	active, err := state.HasRecentTimeoutActivity(context.Background(), db, "nr_timeout_diag_1", receivedAt.Add(time.Second), 5*time.Second)
+	if err != nil {
+		t.Fatalf("has recent timeout activity: %v", err)
+	}
+	if !active {
+		t.Fatal("expected stale provider occurrence to count when runtime received the activity recently")
+	}
+
+	var createdAt string
+	if err := db.QueryRow(`SELECT created_at FROM events WHERE attempt_id = 'run_timeout_diag:decree_intake:1' AND reason_code = 'provider_activity'`).Scan(&createdAt); err != nil {
+		t.Fatalf("query provider activity created_at: %v", err)
+	}
+	if createdAt != receivedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("expected provider activity event created_at to use runtime receipt time %q, got %q", receivedAt.Format(time.RFC3339Nano), createdAt)
+	}
+}
+
+func TestTimeoutWarningSequencesAfterDurableStreamProgress(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedRunForTimeoutDiagnostics(t, db)
+
+	rt, err := NewRuntime(Config{
+		DB:      db,
+		Paths:   DefaultBootstrapPaths(repoRoot(t)),
+		Adapter: &timeoutCancelObserverAdapter{},
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	latest, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_timeout_diag")
+	if err != nil {
+		t.Fatalf("load latest attempts: %v", err)
+	}
+	attempt := latest["decree_intake"]
+	result := asyncExecutionResult{
+		run:       runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"},
+		node:      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+		attempt:   attempt,
+		attemptID: "run_timeout_diag:decree_intake:1",
+	}
+
+	if err := rt.orchestrator.appendDurableStreamProgress(context.Background(), result, "still working"); err != nil {
+		t.Fatalf("append durable stream progress: %v", err)
+	}
+	if err := rt.orchestrator.emitTimeoutWarningIfNeeded(context.Background(), result.run, attempt, result.attemptID, time.Now().UTC().Format(time.RFC3339), 200*time.Millisecond, 120*time.Millisecond); err != nil {
+		t.Fatalf("emit timeout warning: %v", err)
+	}
+
+	var streamSeq, warningSeq int
+	if err := db.QueryRow(`SELECT seq FROM events WHERE attempt_id = 'run_timeout_diag:decree_intake:1' AND reason_code = 'stream_event'`).Scan(&streamSeq); err != nil {
+		t.Fatalf("query stream progress seq: %v", err)
+	}
+	if err := db.QueryRow(`SELECT seq FROM events WHERE attempt_id = 'run_timeout_diag:decree_intake:1' AND event_type = 'attempt.timeout_warning'`).Scan(&warningSeq); err != nil {
+		t.Fatalf("query timeout warning seq: %v", err)
+	}
+	if warningSeq != streamSeq+1 {
+		t.Fatalf("expected timeout warning seq to follow stream progress seq, got stream=%d warning=%d", streamSeq, warningSeq)
+	}
+}
+
 func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
