@@ -434,6 +434,7 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	receipts := make([]CompletionReceipt, 0, 1)
 	activities := make([]ExecuteActivityObservation, 0, 4)
+	progressTexts := make([]string, 0, 1)
 	t.Setenv("FAKE_OPENCODE_TEXT", "hello from fake")
 	t.Setenv("FAKE_OPENCODE_STDOUT_BANNER", `{"type":"tool_use","sessionID":"ses_receipt_recovery","part":{"type":"tool","tool":"webfetch","id":"prt_recovery_tool_1","state":{"status":"completed","title":"https://example.com","input":{"url":"https://example.com"}}}`)
 	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
@@ -452,6 +453,9 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 		CompletionReceiptDir:      receiptDir,
 		OnActivity: func(activity ExecuteActivityObservation) {
 			activities = append(activities, activity)
+		},
+		OnProgress: func(text string) {
+			progressTexts = append(progressTexts, text)
 		},
 		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
 			receipts = append(receipts, receipt)
@@ -482,6 +486,9 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 	}
 	if activities[0].Kind != ExecuteActivityKindProgress {
 		t.Fatalf("expected recovery to surface live activity callbacks, got %#v", activities)
+	}
+	if len(progressTexts) != 1 || progressTexts[0] != "hello from fake" {
+		t.Fatalf("expected completion recovery to emit streamed progress text, got %#v", progressTexts)
 	}
 
 	argsLogRaw, err := os.ReadFile(argsLogPath)
@@ -1083,6 +1090,7 @@ func TestSessionAdapterAcceptsCompletionReceiptAcrossToolCallContinuation(t *tes
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
 
 	receipts := make([]CompletionReceipt, 0, 1)
+	progressTexts := make([]string, 0, 2)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		SessionID:                 "session_receipt_tool_calls",
 		AttemptID:                 "attempt_receipt_tool_calls",
@@ -1096,6 +1104,9 @@ func TestSessionAdapterAcceptsCompletionReceiptAcrossToolCallContinuation(t *tes
 		CompletionProtocolVersion: CompletionProtocolVersion,
 		CompletionCapability:      "capability_receipt_tool_calls",
 		CompletionReceiptDir:      t.TempDir(),
+		OnProgress: func(text string) {
+			progressTexts = append(progressTexts, text)
+		},
 		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
 			receipts = append(receipts, receipt)
 			return CompletionReceiptAcceptance{
@@ -1131,6 +1142,9 @@ func TestSessionAdapterAcceptsCompletionReceiptAcrossToolCallContinuation(t *tes
 	}
 	if receipts[0].FinalText != "continued after tool calls" {
 		t.Fatalf("expected continuation receipt final text, got %#v", receipts[0])
+	}
+	if len(progressTexts) != 2 || progressTexts[0] != "starting tool work" || progressTexts[1] != "continued after tool calls" {
+		t.Fatalf("expected progress callback to include primary and continuation text, got %#v", progressTexts)
 	}
 
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
