@@ -535,7 +535,7 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 
 	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
 	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, opencode.ExecuteRequest{
+	recoveryReq, progressWriter := o.attachDurableProgressWriter(ctx, result, opencode.ExecuteRequest{
 		SessionID:                 result.sessionID,
 		ProviderSessionID:         result.providerSessionID,
 		AttemptID:                 result.attemptID,
@@ -556,7 +556,9 @@ func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Con
 		CompletionReceiptDir:      result.completionReceiptDir,
 		OnActivity:                o.providerExecutionActivityObserver(ctx, result),
 		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
-	}, result.outputText)
+	})
+	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, recoveryReq, result.outputText)
+	recoveryErr = closeDurableProgressWriter(progressWriter, recoveryErr)
 	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
 
 	if guardErr := o.finishCompletionRecoveryGuard(ctx, result, decision, guard); guardErr != nil {
@@ -1407,9 +1409,10 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	if o == nil || o.events == nil || strings.TrimSpace(result.attemptID) == "" {
 		return
 	}
+	receivedAt := o.now().UTC()
 	occurredAt := strings.TrimSpace(observation.OccurredAt)
 	if occurredAt == "" {
-		occurredAt = o.now().UTC().Format(time.RFC3339)
+		occurredAt = receivedAt.Format(time.RFC3339Nano)
 	}
 
 	o.eventSeqMu.Lock()
@@ -1461,7 +1464,7 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 		ReasonText:      "provider activity telemetry",
 		CorrelationID:   "corr_orch_" + result.run.RunID,
 		CausationID:     fmt.Sprintf("caus_orch_%s_%s_act_%s", result.run.RunID, result.attempt.NodeRunID, sanitizeFileToken(activityID)),
-		CreatedAt:       occurredAt,
+		CreatedAt:       receivedAt.Format(time.RFC3339Nano),
 	})
 }
 
@@ -1543,7 +1546,7 @@ func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, res
 		}
 
 		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-		retryResponse, retryErr := o.adapter.Execute(ctx, opencode.ExecuteRequest{
+		retryResponse, retryErr := o.executeWithDurableProgress(ctx, result, opencode.ExecuteRequest{
 			SessionID:                 result.sessionID,
 			ProviderSessionID:         result.providerSessionID,
 			AttemptID:                 result.attemptID,

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -1297,7 +1296,11 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 				}
 			}
 		}
-		skip, err := hasRecentProgressHeartbeatWithQuerier(ctx, q, candidate.NodeRunID, nowTime, threshold)
+		grace := threshold
+		if grace < defaultProgressStaleGrace {
+			grace = defaultProgressStaleGrace
+		}
+		skip, err := HasRecentExecutionLiveness(ctx, q, candidate.NodeRunID, nowTime, grace)
 		if err != nil {
 			return nil, err
 		}
@@ -1308,140 +1311,6 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 	}
 
 	return stale, nil
-}
-
-func (r *Reconciler) hasRecentProgressHeartbeat(ctx context.Context, nodeRunID string, nowTime time.Time, threshold time.Duration) (bool, error) {
-	return hasRecentProgressHeartbeatWithQuerier(ctx, r.db, nodeRunID, nowTime, threshold)
-}
-
-func hasRecentProgressHeartbeatWithQuerier(ctx context.Context, q staleAttemptQuerier, nodeRunID string, nowTime time.Time, threshold time.Duration) (bool, error) {
-	if q == nil {
-		return false, fmt.Errorf("stale attempt querier is required")
-	}
-	nodeRunID = strings.TrimSpace(nodeRunID)
-	if nodeRunID == "" {
-		return false, nil
-	}
-	grace := threshold
-	if grace < defaultProgressStaleGrace {
-		grace = defaultProgressStaleGrace
-	}
-
-	rows, err := q.QueryContext(ctx,
-		`SELECT created_at, reason_code, payload_json
-		 FROM events
-		 WHERE node_run_id = ?
-		   AND event_type = 'attempt.progress'
-		 ORDER BY created_at DESC, run_event_seq DESC, seq DESC, event_id DESC
-		 LIMIT 32`,
-		nodeRunID,
-	)
-	if err != nil {
-		return false, fmt.Errorf("query attempt progress heartbeats for node_run=%q: %w", nodeRunID, err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var progressAt sql.NullString
-		var reasonCode sql.NullString
-		var payloadRaw sql.NullString
-		if err := rows.Scan(&progressAt, &reasonCode, &payloadRaw); err != nil {
-			return false, fmt.Errorf("scan attempt progress heartbeat for node_run=%q: %w", nodeRunID, err)
-		}
-		if !progressAt.Valid || strings.TrimSpace(progressAt.String) == "" {
-			continue
-		}
-		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(progressAt.String))
-		if err != nil {
-			continue
-		}
-		if nowTime.Sub(parsed.UTC()) > grace {
-			break
-		}
-		if isSyntheticAttemptProgressReason(reasonCode.String) && !syntheticProgressShowsRecentExecutionActivity(reasonCode.String, payloadRaw.String) {
-			continue
-		}
-		return true, nil
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate attempt progress heartbeats for node_run=%q: %w", nodeRunID, err)
-	}
-	return false, nil
-}
-
-func syntheticProgressShowsRecentExecutionActivity(reasonCode, payloadRaw string) bool {
-	trimmed := strings.TrimSpace(payloadRaw)
-	if trimmed == "" {
-		return false
-	}
-	if strings.TrimSpace(reasonCode) == "runtime_completion_observation" {
-		return completionObservationShowsRecentExecutionActivity(trimmed)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return false
-	}
-
-	diagnostics, ok := payload["execution_diagnostics"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if strings.TrimSpace(stringValue(diagnostics["stream_error"])) == "" {
-		return true
-	}
-	if eventCount, ok := intValue(diagnostics["event_count"]); ok && eventCount > 1 {
-		return true
-	}
-
-	snapshot, ok := diagnostics["execution_path_diagnostics_snapshot"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if stdoutCount, ok := intValue(snapshot["stdout_event_count"]); ok && stdoutCount > 0 {
-		return true
-	}
-	if seen, ok := snapshot["step_finish_seen"].(bool); ok && seen {
-		return true
-	}
-	if strings.TrimSpace(stringValue(snapshot["last_stdout_event_at"])) != "" {
-		return true
-	}
-	return false
-}
-
-func completionObservationShowsRecentExecutionActivity(payloadRaw string) bool {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(payloadRaw), &payload); err != nil {
-		return false
-	}
-	return strings.TrimSpace(stringValue(payload["phase"])) != ""
-}
-
-func intValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
-	default:
-		return 0, false
-	}
-}
-
-func stringValue(value any) string {
-	if typed, ok := value.(string); ok {
-		return typed
-	}
-	return ""
 }
 
 func defaultPlanningStaleGraceWindow() time.Duration {

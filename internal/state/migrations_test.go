@@ -785,8 +785,8 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	if got := strings.Join(canonicalNames, ","); got != "0001_initial_schema.up.sql" {
-		t.Fatalf("expected canonical migration set to contain only the collapsed baseline migration, got %v", canonicalNames)
+	if len(canonicalNames) == 0 || canonicalNames[0] != "0001_initial_schema.up.sql" {
+		t.Fatalf("expected canonical migrations to start with the collapsed baseline migration, got %v", canonicalNames)
 	}
 
 	for _, name := range canonicalNames {

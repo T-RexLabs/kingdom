@@ -650,7 +650,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			slog.Warn("failed to marshal provider execution start payload", "attempt_id", job.attemptID, "error", startPayloadErr)
 			startPayloadRaw = "{}"
 		}
-		response, execErr := o.adapter.Execute(ctx, opencode.ExecuteRequest{
+		response, execErr := o.executeWithDurableProgress(ctx, job, opencode.ExecuteRequest{
 			SessionID:                 job.sessionID,
 			AttemptID:                 job.attemptID,
 			RunID:                     job.run.RunID,

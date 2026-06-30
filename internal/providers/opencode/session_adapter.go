@@ -1773,8 +1773,12 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 				result.Tokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
 			}
 		}
+		emitActivityObservation(req, event)
 		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
 			result.TextChunks = append(result.TextChunks, event.Part.Text)
+			if req.OnProgress != nil {
+				req.OnProgress(event.Part.Text)
+			}
 			sum := sha256.Sum256([]byte(event.Part.Text))
 			payload, _ := json.Marshal(map[string]any{
 				"text": event.Part.Text,
@@ -1925,6 +1929,9 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 		emitActivityObservation(wrappedReq, event)
 		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
 			result.TextChunks = append(result.TextChunks, event.Part.Text)
+			if wrappedReq.OnProgress != nil {
+				wrappedReq.OnProgress(event.Part.Text)
+			}
 			sum := sha256.Sum256([]byte(event.Part.Text))
 			payload, _ := json.Marshal(map[string]any{
 				"text": event.Part.Text,
