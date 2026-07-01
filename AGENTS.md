@@ -37,7 +37,7 @@
 - Prefer fixing problems in the canonical layer instead of patching around the edges.
 - Delete unsupported or dead surfaces instead of keeping them around.
 - Do not start god-file refactors until earlier invariant fixes are protected by tests.
-- For runtime and UX verification, run `make install`, create a fresh directory under `kd-sandbox/`, run `kd init` in that directory, run `kd summon`, and verify in the browser at `http://localhost:8080`.
+- For runtime and UX verification, run `make install`, create a fresh directory under `kd-sandbox/`, run `kd init` in that directory, run `kd summon` on an available port other than `8080`, and verify in the browser at the URL reported by Kingdom. Never use port `8080` for testing or evaluating changes because it may already be in use by Kingdom itself or another important service.
 - If model selection appears, always use `GitHub Copilot - GPT-5.4 Mini` with `Low` thinking.
 - When creating commits, use semantic naming, keep them frequent, and scope each commit to the current batch only.
 - Keep edits scoped to the current batch only.
