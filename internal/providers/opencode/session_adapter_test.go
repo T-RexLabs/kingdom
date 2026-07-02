@@ -88,6 +88,7 @@ func TestSessionAdapterExecuteAndStream(t *testing.T) {
 
 func TestFakeOpenCodeDoesNotEmitCompletionReceiptFromAmbientEnvironment(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -95,6 +96,8 @@ func TestFakeOpenCodeDoesNotEmitCompletionReceiptFromAmbientEnvironment(t *testi
 
 	receiptDir := t.TempDir()
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION", CompletionProtocolVersion)
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID", "ambient_attempt")
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID", "ambient_invocation")
@@ -121,6 +124,11 @@ func TestFakeOpenCodeDoesNotEmitCompletionReceiptFromAmbientEnvironment(t *testi
 	if len(entries) != 0 {
 		t.Fatalf("expected ambient completion env not to create receipts, got %d entries", len(entries))
 	}
+	rawEnv, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	assertNoCompletionAttemptEnv(t, parseFakeOpenCodeEnvLog(string(rawEnv)))
 }
 
 func TestSessionAdapterSetsConfiguredOpencodeConfigDir(t *testing.T) {
@@ -410,13 +418,16 @@ func TestSessionAdapterRequiresCompletionReceiptWhenReceiptModeEnabled(t *testin
 
 func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	enableFakeOpenCodeCompletionReceipt(t)
+	receiptDir := t.TempDir()
 	receipts := make([]CompletionReceipt, 0, 1)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		SessionID:                 "session_receipt_success",
@@ -430,7 +441,7 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
 		CompletionProtocolVersion: CompletionProtocolVersion,
 		CompletionCapability:      "capability_receipt_success",
-		CompletionReceiptDir:      t.TempDir(),
+		CompletionReceiptDir:      receiptDir,
 		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
 			receipts = append(receipts, receipt)
 			return CompletionReceiptAcceptance{
@@ -457,6 +468,23 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	}
 	if receipts[0].AttemptID != "attempt_receipt_success" {
 		t.Fatalf("expected receipt attempt id, got %#v", receipts[0])
+	}
+	rawEnv, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read env log: %v", err)
+	}
+	envLog := parseFakeOpenCodeEnvLog(string(rawEnv))
+	expectedCompletionEnv := map[string]string{
+		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION": CompletionProtocolVersion,
+		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID":       "attempt_receipt_success",
+		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID":    "invocation_receipt_success",
+		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY":       "capability_receipt_success",
+		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR":      receiptDir,
+	}
+	for key, expected := range expectedCompletionEnv {
+		if envLog[key] != expected {
+			t.Fatalf("expected %s=%q, got %q in env log %#v", key, expected, envLog[key], envLog)
+		}
 	}
 }
 
@@ -3824,6 +3852,21 @@ if [ -n "$FAKE_OPENCODE_ENV_LOG" ]; then
   printf 'OPENCODE_CONFIG_DIR=%s\n' "$OPENCODE_CONFIG_DIR" >> "$FAKE_OPENCODE_ENV_LOG"
   printf 'OPENCODE_CONFIG_CONTENT=%s\n' "$OPENCODE_CONFIG_CONTENT" >> "$FAKE_OPENCODE_ENV_LOG"
   printf 'OPENCODE_DB=%s\n' "$OPENCODE_DB" >> "$FAKE_OPENCODE_ENV_LOG"
+  if [ "${KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION+x}" = "x" ]; then
+    printf 'KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION" >> "$FAKE_OPENCODE_ENV_LOG"
+  fi
+  if [ "${KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID+x}" = "x" ]; then
+    printf 'KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID" >> "$FAKE_OPENCODE_ENV_LOG"
+  fi
+  if [ "${KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID+x}" = "x" ]; then
+    printf 'KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID" >> "$FAKE_OPENCODE_ENV_LOG"
+  fi
+  if [ "${KINGDOM_COMPLETE_ATTEMPT_CAPABILITY+x}" = "x" ]; then
+    printf 'KINGDOM_COMPLETE_ATTEMPT_CAPABILITY=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_CAPABILITY" >> "$FAKE_OPENCODE_ENV_LOG"
+  fi
+  if [ "${KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR+x}" = "x" ]; then
+    printf 'KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR" >> "$FAKE_OPENCODE_ENV_LOG"
+  fi
 fi
 
 if [ "$1" = "export" ]; then
@@ -4240,6 +4283,15 @@ func parseFakeOpenCodeEnvLog(raw string) map[string]string {
 		parsed[key] = value
 	}
 	return parsed
+}
+
+func assertNoCompletionAttemptEnv(t *testing.T, envLog map[string]string) {
+	t.Helper()
+	for key, value := range envLog {
+		if strings.HasPrefix(key, completionAttemptEnvPrefix) {
+			t.Fatalf("expected no inherited completion attempt env, got %s=%q in env log %#v", key, value, envLog)
+		}
+	}
 }
 
 func processExists(pid int) bool {

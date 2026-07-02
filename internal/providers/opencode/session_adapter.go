@@ -472,7 +472,7 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	} else if a.workDir != "" {
 		cmd.Dir = a.workDir
 	}
-	cmd.Env = append(os.Environ(), opencodeCommandEnvironment(req, a.configDir, a.databasePath, a.inlineConfigContent)...)
+	cmd.Env = opencodeProcessEnvironment(opencodeCommandEnvironment(req, a.configDir, a.databasePath, a.inlineConfigContent))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -543,6 +543,24 @@ const (
 
 func completionReceiptModeEnabled(req ExecuteRequest) bool {
 	return req.OnCompletionReceipt != nil || strings.TrimSpace(req.CompletionReceiptDir) != "" || strings.TrimSpace(req.CompletionCapability) != ""
+}
+
+const completionAttemptEnvPrefix = "KINGDOM_COMPLETE_ATTEMPT_"
+
+func opencodeProcessEnvironment(explicitEnv ...[]string) []string {
+	base := os.Environ()
+	env := make([]string, 0, len(base))
+	for _, entry := range base {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, completionAttemptEnvPrefix) {
+			continue
+		}
+		env = append(env, entry)
+	}
+	for _, entries := range explicitEnv {
+		env = append(env, entries...)
+	}
+	return env
 }
 
 func completionProtocolVersionForRequest(req ExecuteRequest) string {
