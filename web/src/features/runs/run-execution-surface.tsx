@@ -6,6 +6,7 @@ import { nodeLabel } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { statusLabel } from "@/lib/status-system";
+import { COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT, isCompletionReceiptConflictDetail } from "./completion-receipt-failures";
 import type { ActivityStepGroup } from "./run-activity-selection";
 import { useNodeActivityRecency } from "./use-node-activity-recency";
 import { RunActivityLanes } from "./run-activity-lanes";
@@ -324,7 +325,9 @@ function executionSummary(
 		return {
 			title,
 			body: detail?.failure_code === "provider_incomplete_turn"
-				? "Kingdom could not confirm a clean finish for this step."
+				? isCompletionReceiptConflictDetail(detail.failure_text)
+					? COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT
+					: "Kingdom could not confirm a clean finish for this step."
 				: detail?.failure_text?.trim() || "This step failed.",
 		};
 	}
@@ -352,4 +355,3 @@ function selectedExecutionDisplayStatus(
 	}
 	return executionDisplayStatus(execution);
 }
-

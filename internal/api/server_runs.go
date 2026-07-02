@@ -435,7 +435,7 @@ func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failure
 		if !candidate.Valid {
 			continue
 		}
-		if trimmed := operatorFailureReasonForCode(candidate.String); trimmed != "" {
+		if trimmed := operatorFailureReasonForCode(candidate.String, durableFailureReason, failureReason, failureReasonText); trimmed != "" {
 			return trimmed, true
 		}
 	}
@@ -460,13 +460,32 @@ func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failure
 	return "", false
 }
 
-func operatorFailureReasonForCode(code string) string {
+func operatorFailureReasonForCode(code string, details ...sql.NullString) string {
 	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "provider_incomplete_turn":
+		if failureDetailsContain(details, "completion_receipt_conflict") {
+			return "Kingdom detected conflicting completion receipts for this step and could not safely accept the result."
+		}
 		return "Provider completion could not be confirmed before the recovery window expired."
 	default:
 		return ""
 	}
+}
+
+func failureDetailsContain(details []sql.NullString, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return false
+	}
+	for _, detail := range details {
+		if !detail.Valid {
+			continue
+		}
+		if strings.Contains(strings.ToLower(detail.String), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func humanizeFailureCode(code string) string {

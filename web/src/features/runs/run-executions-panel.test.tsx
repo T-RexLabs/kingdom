@@ -196,6 +196,28 @@ describe("run executions panel", () => {
 		expect(screen.queryByText(/kingdom_complete_attempt/i)).not.toBeInTheDocument();
 	});
 
+	it("shows receipt conflict copy for provider incomplete turn conflicts", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "failed",
+			settlement_status: "failed",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "completion_receipt_conflict: conflicting receipt invalidated the invocation",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).toBeInTheDocument();
+	});
+
 	it("shows canonical settled verdicts without recovery-era labels", async () => {
 		const user = userEvent.setup();
 		const detail = makeExecutionDetail({

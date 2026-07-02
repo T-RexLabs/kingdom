@@ -4,6 +4,7 @@ import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT, isCompletionReceiptConflictDetail } from "./completion-receipt-failures";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { formatElapsedDuration } from "@/lib/utils";
@@ -266,6 +267,9 @@ function outcomeToneForDetail(detail: PresentedExecutionDetail): "neutral" | "ru
 
 function operatorFacingFailureText(detail: PresentedExecutionDetail): string | null {
 	if (detail.failure_code === "provider_incomplete_turn") {
+		if (isCompletionReceiptConflictDetail(detail.failure_text)) {
+			return COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT;
+		}
 		return "Kingdom could not confirm a clean finish for this step.";
 	}
 	if (detail.failure_code === "provider_cancelled") {

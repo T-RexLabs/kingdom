@@ -2,6 +2,7 @@ import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/
 import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
+import { COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT, isCompletionReceiptConflictDetail } from "./completion-receipt-failures";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
 
 const SPECIAL_REASON_LABELS: Record<string, string> = {
@@ -928,6 +929,9 @@ function shouldIncludeRunLevelMilestoneEvent(event: TimelineEvent): boolean {
 
 function failureDetailFromEvent(event: TimelineEvent): string | undefined {
 	const reasonCode = typeof event.reason_code === "string" ? event.reason_code.trim() : "";
+	if (reasonCode === "provider_incomplete_turn" && isCompletionReceiptConflictDetail(event.payload_json?.error)) {
+		return COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT;
+	}
 	const friendly = reasonCode ? FRIENDLY_FAILURE_DETAILS[reasonCode] : undefined;
 	if (friendly) {
 		return friendly;

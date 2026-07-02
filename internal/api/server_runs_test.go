@@ -16,6 +16,38 @@ import (
 	"kingdom/internal/state"
 )
 
+func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
+	t.Parallel()
+
+	reason, ok := canonicalFailedNodeReason(
+		sql.NullString{String: "completion_receipt_conflict: conflicting receipt invalidated invocation", Valid: true},
+		sql.NullString{String: "provider_incomplete_turn", Valid: true},
+		sql.NullString{},
+		sql.NullString{},
+		sql.NullString{},
+	)
+	if !ok {
+		t.Fatal("expected canonical failure reason")
+	}
+	if reason != "Kingdom detected conflicting completion receipts for this step and could not safely accept the result." {
+		t.Fatalf("expected receipt conflict copy, got %q", reason)
+	}
+
+	reason, ok = canonicalFailedNodeReason(
+		sql.NullString{String: "provider exited without an accepted kingdom_complete_attempt receipt", Valid: true},
+		sql.NullString{String: "provider_incomplete_turn", Valid: true},
+		sql.NullString{},
+		sql.NullString{},
+		sql.NullString{},
+	)
+	if !ok {
+		t.Fatal("expected canonical failure reason")
+	}
+	if reason != "Provider completion could not be confirmed before the recovery window expired." {
+		t.Fatalf("expected generic incomplete-turn copy, got %q", reason)
+	}
+}
+
 func TestServerTimelineUsesCursorPagination(t *testing.T) {
 	t.Parallel()
 

@@ -651,6 +651,31 @@ describe("timeline milestones", () => {
     });
   });
 
+  it("uses receipt conflict copy for provider incomplete turn conflict raw events", () => {
+    const nodes: RunGraphNode[] = [{
+      node_id: "delegated_execution_berserker",
+      required_role: "builder-berserker",
+      execution_ownership: "provider_backed",
+      state: "failed",
+    }];
+    const event: TimelineEvent = {
+      event_id: "evt-receipt-conflict",
+      run_event_seq: 1,
+      attempt_seq: 1,
+      event_type: "attempt.failed",
+      reason_code: "provider_incomplete_turn",
+      emitted_at: "2026-03-18T11:40:00Z",
+      payload_json: { node_id: "delegated_execution_berserker", error: "completion_receipt_conflict: conflicting receipt invalidated invocation" },
+    };
+
+    const lookups = buildTimelineLookups([event], nodes);
+
+    expect(buildRawEventLabel(event, lookups)).toEqual({
+      label: "Delegated Execution Berserker failed",
+      detail: "Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
+    });
+  });
+
 	it("orders milestones by displayed recency instead of earliest start", () => {
 		const nodes: RunGraphNode[] = [
 			{
