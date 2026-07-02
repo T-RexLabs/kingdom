@@ -316,6 +316,20 @@ describe("run execution surface", () => {
 		expect(screen.queryByText("Kingdom could not confirm a clean finish for this step.")).not.toBeInTheDocument();
 	});
 
+	it("shows receipt conflict copy from the selected execution while detail is unavailable", () => {
+		renderSurface({
+			executions: [makeExecution({
+				status: "failed",
+				failure_code: "provider_incomplete_turn",
+				failure_text: "completion_receipt_conflict: conflicting receipt invalidated the invocation",
+			})],
+			detail: null,
+		});
+
+		expect(screen.getByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).toBeInTheDocument();
+		expect(screen.queryByText("This step failed.")).not.toBeInTheDocument();
+	});
+
 	it("shows Selected Step when the operator manually picks a terminal step", () => {
 		renderSurface({ selectedAttemptSource: "manual" });
 

@@ -3,8 +3,8 @@ import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useId, useState, type ReactNode } from "react";
-import { COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT, isCompletionReceiptConflictDetail } from "./completion-receipt-failures";
+import { useId, useState, type ReactNode } from "react";
+import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { formatElapsedDuration } from "@/lib/utils";
@@ -24,14 +24,6 @@ export function RunExecutionsPanel({
 	detailPlaceholderMessage?: string | null;
 	onRetryDetail: () => void;
 }) {
-	const [outcomeOpen, setOutcomeOpen] = useState(false);
-	const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-
-	useEffect(() => {
-		setOutcomeOpen(false);
-		setDiagnosticsOpen(false);
-	}, [detail?.attempt_id]);
-
 	if (isDetailLoading) {
 		return <SectionPlaceholder label="Outcome" message="Loading the selected step..." />;
 	}
@@ -55,6 +47,13 @@ export function RunExecutionsPanel({
 	if (!detail) {
 		return <SectionPlaceholder label="Outcome" message={detailPlaceholderMessage ?? "Select a step to inspect the outcome."} />;
 	}
+
+	return <RunExecutionsPanelContent key={detail.attempt_id} detail={detail} />;
+}
+
+function RunExecutionsPanelContent({ detail }: { detail: PresentedExecutionDetail }) {
+	const [outcomeOpen, setOutcomeOpen] = useState(false);
+	const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
 	const outcomeBody = outcomeText(detail);
 	const outcomeTone = outcomeToneForDetail(detail);
@@ -266,17 +265,7 @@ function outcomeToneForDetail(detail: PresentedExecutionDetail): "neutral" | "ru
 }
 
 function operatorFacingFailureText(detail: PresentedExecutionDetail): string | null {
-	if (detail.failure_code === "provider_incomplete_turn") {
-		if (isCompletionReceiptConflictDetail(detail.failure_text)) {
-			return COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT;
-		}
-		return "Kingdom could not confirm a clean finish for this step.";
-	}
-	if (detail.failure_code === "provider_cancelled") {
-		return "This step was stopped before it could finish.";
-	}
-	const text = detail.failure_text?.trim();
-	return text ? text : null;
+	return operatorFacingExecutionFailureText(detail.failure_code, detail.failure_text);
 }
 
 function missingOutputNote(detail: PresentedExecutionDetail): string | undefined {

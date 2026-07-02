@@ -507,14 +507,14 @@ describe("timeline milestones", () => {
     const lookups = buildTimelineLookups(events, nodes);
     const milestones = synthesizeMilestones(events, nodes, [], lookups);
 
-    expect(milestones).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: "node-delegated_execution_berserker",
-        status: "failed",
-        kind: "node_failed",
-        detail: "Failed - Provider completion could not be confirmed before the recovery window expired.",
-      }),
-    ]));
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "failed",
+				kind: "node_failed",
+				detail: "Failed - Kingdom could not confirm a clean finish for this step.",
+			}),
+		]));
   });
 
   it("renders recovery-pending executions as running instead of failed", () => {
@@ -645,10 +645,10 @@ describe("timeline milestones", () => {
 
     const lookups = buildTimelineLookups([event], nodes);
 
-    expect(buildRawEventLabel(event, lookups)).toEqual({
-      label: "Validation Gates Nightraven failed",
-      detail: "Provider completion could not be confirmed before the recovery window expired.",
-    });
+		expect(buildRawEventLabel(event, lookups)).toEqual({
+		  label: "Validation Gates Nightraven failed",
+		  detail: "Kingdom could not confirm a clean finish for this step.",
+		});
   });
 
   it("uses receipt conflict copy for provider incomplete turn conflict raw events", () => {
@@ -675,6 +675,98 @@ describe("timeline milestones", () => {
       detail: "Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
     });
   });
+
+	it("uses durable execution failure text for recovered receipt conflict milestones", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-conflict",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "failed",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-conflict",
+			node_run_id: "nr-builder-conflict",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "failed",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			committed_at: "2026-03-18T11:41:00Z",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation",
+		}];
+		const event: TimelineEvent = {
+			event_id: "evt-recovered-receipt-conflict",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.failed",
+			reason_code: "provider_incomplete_turn",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-conflict",
+				provider_outcome: "failed",
+				reason: "provider_settlement_recovered",
+			},
+		};
+
+		const lookups = buildTimelineLookups([event], nodes, executions);
+		const milestones = synthesizeMilestones([event], nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "failed",
+				detail: "Failed - Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
+			}),
+		]));
+	});
+
+	it("does not apply unrelated durable receipt conflict text to raw failure events", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "failed",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-conflict",
+			node_run_id: "nr-builder-conflict",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "failed",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			committed_at: "2026-03-18T11:41:00Z",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "completion_receipt_conflict: unrelated execution failure text",
+		}];
+		const event: TimelineEvent = {
+			event_id: "evt-unmatched-incomplete-turn",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.failed",
+			reason_code: "provider_incomplete_turn",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: { node_id: "delegated_execution_berserker" },
+		};
+
+		const lookups = buildTimelineLookups([event], nodes, executions);
+
+		expect(buildRawEventLabel(event, lookups)).toEqual({
+			label: "Delegated Execution Berserker failed",
+			detail: "Kingdom could not confirm a clean finish for this step.",
+		});
+	});
 
 	it("orders milestones by displayed recency instead of earliest start", () => {
 		const nodes: RunGraphNode[] = [

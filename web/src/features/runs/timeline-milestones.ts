@@ -2,7 +2,7 @@ import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/
 import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
-import { COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT, isCompletionReceiptConflictDetail } from "./completion-receipt-failures";
+import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
 
 const SPECIAL_REASON_LABELS: Record<string, string> = {
@@ -12,10 +12,6 @@ const SPECIAL_REASON_LABELS: Record<string, string> = {
   provider_output_recovered: "Provider Output Recovered",
   royal_summary_fallback: "Royal Summary Fallback",
   run_cancelled_by_user: "Run Cancelled by User",
-};
-
-const FRIENDLY_FAILURE_DETAILS: Record<string, string> = {
-  provider_incomplete_turn: "Provider completion could not be confirmed before the recovery window expired.",
 };
 
 const REVIEW_CAP_AUTO_SUCCEEDED_BADGE = "Review Cap Auto-Succeeded";
@@ -171,7 +167,7 @@ export function buildRawEventLabel(
 				label: resolvedNodeId ? `${name} requested rework` : reworkRequestLabel(event.reason_code),
 			};
 		}
-		const detail = failureDetailFromEvent(event);
+		const detail = failureDetailFromEvent(event, executionForEvent(event, lookups));
 		if (resolvedNodeId) {
 		  return { label: `${name} failed`, detail: detail || undefined };
     }
@@ -343,7 +339,7 @@ export function synthesizeMilestones(
 	  status = "failed";
 	  kind = "node_failed";
 	  const failedEvent = latestFailedEvent;
-	  const reason = failedEvent ? failureDetailFromEvent(failedEvent) : undefined;
+	  const reason = failedEvent ? failureDetailFromEvent(failedEvent, execution) : undefined;
 	  detail = reason;
 	} else if (effectiveState === "rework") {
 	  status = "rework";
@@ -695,6 +691,11 @@ function eventNodeRunID(event: TimelineEvent): string {
   return typeof nodeRunID === "string" ? nodeRunID.trim() : "";
 }
 
+function executionForEvent(event: TimelineEvent, lookups: TimelineLookups): RunExecution | undefined {
+	const nodeRunID = eventNodeRunID(event);
+	return nodeRunID ? lookups.executionStateMap.get(nodeRunID) : undefined;
+}
+
 function milestoneStartTimestamp(
 	events: TimelineEvent[],
 	execution: RunExecution | undefined,
@@ -927,16 +928,17 @@ function shouldIncludeRunLevelMilestoneEvent(event: TimelineEvent): boolean {
 	return communicationType === "approval_request" || communicationType === "approval_response";
 }
 
-function failureDetailFromEvent(event: TimelineEvent): string | undefined {
+function failureDetailFromEvent(event: TimelineEvent, execution?: RunExecution): string | undefined {
 	const reasonCode = typeof event.reason_code === "string" ? event.reason_code.trim() : "";
-	if (reasonCode === "provider_incomplete_turn" && isCompletionReceiptConflictDetail(event.payload_json?.error)) {
-		return COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT;
-	}
-	const friendly = reasonCode ? FRIENDLY_FAILURE_DETAILS[reasonCode] : undefined;
-	if (friendly) {
-		return friendly;
-	}
 	const error = typeof event.payload_json?.error === "string" ? event.payload_json.error.trim() : "";
+	const operatorText = operatorFacingExecutionFailureText(
+		reasonCode || execution?.failure_code,
+		error,
+		execution?.failure_text,
+	);
+	if (operatorText) {
+		return operatorText;
+	}
 	if (error) {
 		return error;
 	}
