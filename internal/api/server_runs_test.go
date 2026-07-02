@@ -29,7 +29,7 @@ func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
 	if !ok {
 		t.Fatal("expected canonical failure reason")
 	}
-	if reason != "Kingdom detected conflicting completion receipts for this step and could not safely accept the result." {
+	if reason != completionReceiptConflictFailureText {
 		t.Fatalf("expected receipt conflict copy, got %q", reason)
 	}
 
@@ -43,7 +43,7 @@ func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
 	if !ok {
 		t.Fatal("expected canonical failure reason")
 	}
-	if reason != "Provider completion could not be confirmed before the recovery window expired." {
+	if reason != providerIncompleteTurnFailureText {
 		t.Fatalf("expected generic incomplete-turn copy, got %q", reason)
 	}
 }
@@ -1527,6 +1527,45 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 		return
 	}
 	t.Fatal("expected validation_gates_nightraven node in graph response")
+}
+
+func TestServerGetRunGraphUsesReceiptConflictReasonForRecoveredInvalidHandshake(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-06T10:01:00Z"
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-receipt-conflict', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-receipt-conflict', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-graph-receipt-conflict', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', ?, ?, ?, 'provider_incomplete_turn', 'completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation', ?, ?)`, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-receipt-conflict', ?, 1, 'nr-graph-receipt-conflict', 'attempt-graph-receipt-conflict', 'v1', 'attempt.failed', 1, '{"error":"completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-receipt-conflict', 'caus-graph-receipt-conflict', 'prev-graph-receipt-conflict', 'entry-graph-receipt-conflict', ?)`, runID, now)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:  http.MethodGet,
+		path:    "/api/v1/runs/" + runID + "/graph",
+		actorID: "actor-1",
+		roleID:  "chancellor",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload gen.RunGraphResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run graph response: %v", err)
+	}
+
+	for _, node := range payload.Nodes {
+		if node.NodeId != "delegated_execution_berserker" {
+			continue
+		}
+		if node.FailureReason == nil || *node.FailureReason != completionReceiptConflictFailureText {
+			t.Fatalf("expected graph receipt conflict reason, got %#v", node.FailureReason)
+		}
+		return
+	}
+	t.Fatal("expected delegated_execution_berserker node in graph response")
 }
 
 func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {

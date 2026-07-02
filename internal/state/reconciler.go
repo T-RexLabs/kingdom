@@ -1035,7 +1035,7 @@ func reconcileInvalidHandshakeProviderSettlement(ctx context.Context, store *exe
 func invalidHandshakeFailure(invalidReason string) (string, string) {
 	switch strings.TrimSpace(invalidReason) {
 	case "completion_receipt_conflict":
-		return "provider_incomplete_turn", "conflicting provider completion receipts invalidated the invocation"
+		return "provider_incomplete_turn", "completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation"
 	case "completion_capability_mismatch":
 		return "provider_incomplete_turn", "provider completion capability mismatch invalidated the invocation"
 	case "attempt_lineage_mismatch":
