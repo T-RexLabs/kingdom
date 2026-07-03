@@ -1521,7 +1521,7 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 		if node.NodeId != "validation_gates_nightraven" {
 			continue
 		}
-		if node.FailureReason == nil || *node.FailureReason != "Provider completion could not be confirmed before the recovery window expired." {
+		if node.FailureReason == nil || *node.FailureReason != providerIncompleteTurnFailureText {
 			t.Fatalf("expected friendly provider incomplete turn reason, got %#v", node.FailureReason)
 		}
 		return
@@ -1601,7 +1601,7 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 		if node.State != gen.RunGraphNodeStateFailed {
 			t.Fatalf("expected pending settlement node to stay failed, got %q", node.State)
 		}
-		if node.FailureReason == nil || *node.FailureReason != "Provider completion could not be confirmed before the recovery window expired." {
+		if node.FailureReason == nil || *node.FailureReason != providerIncompleteTurnFailureText {
 			t.Fatalf("expected provider incomplete turn copy, got %#v", node.FailureReason)
 		}
 		return
@@ -2760,7 +2760,7 @@ func TestServerRunDetailFailedNodeSummariesUseFriendlyProviderIncompleteTurnReas
 	if len(run.FailedNodes) != 1 {
 		t.Fatalf("expected one failed node summary, got %#v", run.FailedNodes)
 	}
-	if run.FailedNodes[0].FailureReason == nil || *run.FailedNodes[0].FailureReason != "Provider completion could not be confirmed before the recovery window expired." {
+	if run.FailedNodes[0].FailureReason == nil || *run.FailedNodes[0].FailureReason != providerIncompleteTurnFailureText {
 		t.Fatalf("expected friendly failed node reason, got %#v", run.FailedNodes[0].FailureReason)
 	}
 }

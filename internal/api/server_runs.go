@@ -462,7 +462,7 @@ func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failure
 
 const (
 	completionReceiptConflictFailureText = "Kingdom detected conflicting completion receipts for this step and could not safely accept the result."
-	providerIncompleteTurnFailureText    = "Provider completion could not be confirmed before the recovery window expired."
+	providerIncompleteTurnFailureText    = "Kingdom could not confirm a clean finish for this step."
 )
 
 func operatorFailureReasonForCode(code string, details ...sql.NullString) string {
