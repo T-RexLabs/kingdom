@@ -339,7 +339,7 @@ export function synthesizeMilestones(
 	  status = "failed";
 	  kind = "node_failed";
 	  const failedEvent = latestFailedEvent;
-	  const reason = failedEvent ? failureDetailFromEvent(failedEvent, execution) : undefined;
+	  const reason = failedEvent ? failureDetailFromEvent(failedEvent, execution) : failureDetailFromExecution(execution);
 	  detail = reason;
 	} else if (effectiveState === "rework") {
 	  status = "rework";
@@ -947,6 +947,17 @@ function failureDetailFromEvent(event: TimelineEvent, execution?: RunExecution):
 		return reasonCode.replace(/_/g, " ");
 	}
 	return undefined;
+}
+
+function failureDetailFromExecution(execution?: RunExecution): string | undefined {
+	if (!execution) {
+		return undefined;
+	}
+	return operatorFacingExecutionFailureText(
+		execution.failure_code,
+		execution.completion_invalid_reason,
+		execution.failure_text,
+	) ?? undefined;
 }
 
 function buildRunEventMilestone(

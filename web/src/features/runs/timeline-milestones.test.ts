@@ -728,6 +728,55 @@ describe("timeline milestones", () => {
 		]));
 	});
 
+	it("uses durable receipt conflict text when the failed attempt event is not loaded", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-conflict",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "failed",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-conflict",
+			node_run_id: "nr-builder-conflict",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "failed",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			committed_at: "2026-03-18T11:41:00Z",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "conflicting provider completion receipts invalidated the invocation",
+			completion_invalid_reason: "completion_receipt_conflict",
+		}];
+		const events: TimelineEvent[] = [{
+			event_id: "evt-builder-started",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.started",
+			emitted_at: "2026-03-18T11:39:45Z",
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-conflict",
+			},
+		}];
+
+		const lookups = buildTimelineLookups(events, nodes, executions);
+		const milestones = synthesizeMilestones(events, nodes, [], lookups);
+
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "failed",
+				detail: "Failed - Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
+			}),
+		]));
+	});
+
 	it("does not apply unrelated durable receipt conflict text to raw failure events", () => {
 		const nodes: RunGraphNode[] = [{
 			node_id: "delegated_execution_berserker",
