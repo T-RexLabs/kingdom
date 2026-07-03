@@ -156,8 +156,7 @@ func (e cliSessionExporter) Export(ctx context.Context, req sessionExportRequest
 	if strings.TrimSpace(req.WorkDir) != "" {
 		cmd.Dir = strings.TrimSpace(req.WorkDir)
 	}
-	cmd.Env = append(os.Environ(), ConfigDirEnvironment(req.ConfigDir)...)
-	cmd.Env = append(cmd.Env, DatabasePathEnvironment(req.DatabasePath)...)
+	cmd.Env = opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))
 	stdoutFile, err := os.CreateTemp("", "opencode-export-*.json")
 	if err != nil {
 		return sessionExportResult{}, fmt.Errorf("create temp export file: %w", err)

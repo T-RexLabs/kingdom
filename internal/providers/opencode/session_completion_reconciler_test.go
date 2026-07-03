@@ -177,6 +177,11 @@ func TestCLISessionExporterSetsManagedOpenCodeEnvironment(t *testing.T) {
 	envLogPath := filepath.Join(t.TempDir(), "env.log")
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", successExportFixture("Recovered from export"))
+	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION", CompletionProtocolVersion)
+	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID", "ambient_export_attempt")
+	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID", "ambient_export_invocation")
+	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_CAPABILITY", "ambient_export_capability")
+	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", t.TempDir())
 
 	exporter := cliSessionExporter{binaryPath: binaryPath}
 	workDir := t.TempDir()
@@ -202,6 +207,7 @@ func TestCLISessionExporterSetsManagedOpenCodeEnvironment(t *testing.T) {
 	if envLog["OPENCODE_DB"] != databasePath {
 		t.Fatalf("expected OPENCODE_DB %q, got %q", databasePath, envLog["OPENCODE_DB"])
 	}
+	assertNoCompletionAttemptEnv(t, envLog)
 }
 
 func TestSessionCompletionReconcilerParsesStdoutWhenExportWritesBannerToStderr(t *testing.T) {

@@ -4014,6 +4014,9 @@ components:
         failure_text:
           type: string
           minLength: 1
+        completion_invalid_reason:
+          type: string
+          minLength: 1
 
     RunExecutionDetail:
       allOf:

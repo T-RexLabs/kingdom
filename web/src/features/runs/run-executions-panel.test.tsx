@@ -28,6 +28,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		committed_at: overrides.committed_at,
 		failure_code: overrides.failure_code,
 		failure_text: overrides.failure_text,
+		completion_invalid_reason: overrides.completion_invalid_reason,
 	};
 }
 
@@ -194,6 +195,52 @@ describe("run executions panel", () => {
 		await user.click(screen.getByRole("button", { name: /Outcome/i }));
 		expect(screen.getByText("Kingdom could not confirm a clean finish for this step.")).toBeInTheDocument();
 		expect(screen.queryByText(/kingdom_complete_attempt/i)).not.toBeInTheDocument();
+	});
+
+	it("shows receipt conflict copy for provider incomplete turn conflicts", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "failed",
+			settlement_status: "failed",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "conflicting receipt invalidated the invocation",
+			completion_invalid_reason: "completion_receipt_conflict",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).toBeInTheDocument();
+	});
+
+	it("does not treat raw failure text markers as receipt conflict state", async () => {
+		const user = userEvent.setup();
+		const detail = makeExecutionDetail({
+			status: "failed",
+			settlement_status: "failed",
+			failure_code: "provider_incomplete_turn",
+			failure_text: "completion_receipt_conflict should not be a control channel",
+		});
+
+		render(
+			<RunExecutionsPanel
+				detail={detail}
+				isDetailLoading={false}
+				detailErrorMessage={null}
+				onRetryDetail={() => {}}
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		expect(screen.getByText("Kingdom could not confirm a clean finish for this step.")).toBeInTheDocument();
+		expect(screen.queryByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).not.toBeInTheDocument();
 	});
 
 	it("shows canonical settled verdicts without recovery-era labels", async () => {

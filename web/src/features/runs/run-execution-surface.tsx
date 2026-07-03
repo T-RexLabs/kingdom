@@ -6,6 +6,7 @@ import { nodeLabel } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { statusLabel } from "@/lib/status-system";
+import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
 import type { ActivityStepGroup } from "./run-activity-selection";
 import { useNodeActivityRecency } from "./use-node-activity-recency";
 import { RunActivityLanes } from "./run-activity-lanes";
@@ -88,12 +89,10 @@ export function RunExecutionSurface({
 			label: nodeLabel(item.nodeId),
 		}));
 	}, [stepGroups]);
-	const attemptOptions = useMemo(() => {
-		return (currentStepGroup?.attempts ?? []).map((item) => ({
-			id: item.attempt_id,
-			label: `Attempt ${item.attempt}`,
-		}));
-	}, [currentStepGroup?.attempts]);
+	const attemptOptions = (currentStepGroup?.attempts ?? []).map((item) => ({
+		id: item.attempt_id,
+		label: `Attempt ${item.attempt}`,
+	}));
 	const stepSelectorFooter = executionsErrorMessage && !primaryExecutionErrorVisible ? (
 		<div className="space-y-2 text-xs text-status-blocked">
 			<div>{executionsErrorMessage}</div>
@@ -321,11 +320,15 @@ function executionSummary(
 		};
 	}
 	if (state === "failed") {
+		const matchingDetail = detail?.attempt_id === execution.attempt_id ? detail : null;
 		return {
 			title,
-			body: detail?.failure_code === "provider_incomplete_turn"
-				? "Kingdom could not confirm a clean finish for this step."
-				: detail?.failure_text?.trim() || "This step failed.",
+			body: operatorFacingExecutionFailureText(
+				matchingDetail?.failure_code ?? execution.failure_code,
+				matchingDetail?.completion_invalid_reason ?? execution.completion_invalid_reason,
+				matchingDetail?.failure_text,
+				execution.failure_text,
+			) ?? "This step failed.",
 		};
 	}
 	if (state === "cancelled") {
@@ -352,4 +355,3 @@ function selectedExecutionDisplayStatus(
 	}
 	return executionDisplayStatus(execution);
 }
-

@@ -90,30 +90,31 @@ type AttemptExecution struct {
 }
 
 type RunExecutionRecord struct {
-	AttemptID          string
-	RunID              string
-	NodeRunID          string
-	NodeID             string
-	Attempt            int
-	NodeStatus         string
-	RequiredRole       string
-	AgentID            string
-	State              string
-	ExecutionMode      ExecutionMode
-	LogicalSessionID   sql.NullString
-	ProviderSessionID  sql.NullString
-	QueuedAt           string
-	ActivityAt         string
-	ProgressEventType  sql.NullString
-	ProgressReasonCode sql.NullString
-	ProgressAt         sql.NullString
-	LaunchStartedAt    sql.NullString
-	StartedAt          sql.NullString
-	UpdatedAt          string
-	TerminalObservedAt sql.NullString
-	CommittedAt        sql.NullString
-	FailureCode        sql.NullString
-	FailureText        sql.NullString
+	AttemptID               string
+	RunID                   string
+	NodeRunID               string
+	NodeID                  string
+	Attempt                 int
+	NodeStatus              string
+	RequiredRole            string
+	AgentID                 string
+	State                   string
+	ExecutionMode           ExecutionMode
+	LogicalSessionID        sql.NullString
+	ProviderSessionID       sql.NullString
+	QueuedAt                string
+	ActivityAt              string
+	ProgressEventType       sql.NullString
+	ProgressReasonCode      sql.NullString
+	ProgressAt              sql.NullString
+	LaunchStartedAt         sql.NullString
+	StartedAt               sql.NullString
+	UpdatedAt               string
+	TerminalObservedAt      sql.NullString
+	CommittedAt             sql.NullString
+	FailureCode             sql.NullString
+	FailureText             sql.NullString
+	CompletionInvalidReason sql.NullString
 }
 
 type RunExecutionDetailRecord struct {
@@ -426,9 +427,13 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        ae.terminal_observed_at,
 		        ae.committed_at,
 		        NULLIF(TRIM(ae.failure_code), '') AS failure_code,
-		        NULLIF(TRIM(ae.failure_text), '') AS failure_text
+		        NULLIF(TRIM(ae.failure_text), '') AS failure_text,
+		        COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason
 		 FROM attempt_executions ae
 		 JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		 LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
+		 LEFT JOIN provider_invocations api ON api.provider_invocation_id = ae.active_provider_invocation_id
+		 LEFT JOIN provider_invocations cpi ON cpi.provider_invocation_id = pcs.provider_invocation_id
 		 WHERE ae.run_id = ?
 		 ORDER BY activity_at DESC,
 		          nr.node_id ASC,
@@ -470,6 +475,7 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.CommittedAt,
 			&rec.FailureCode,
 			&rec.FailureText,
+			&rec.CompletionInvalidReason,
 		); err != nil {
 			return nil, fmt.Errorf("scan run execution row for %q: %w", runID, err)
 		}
@@ -546,6 +552,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       ae.committed_at,
 	       NULLIF(TRIM(ae.failure_code), '') AS failure_code,
 	       NULLIF(TRIM(ae.failure_text), '') AS failure_text,
+	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 	       COALESCE(lao.payload_json, '') AS payload_json,
 	       NULLIF(TRIM(ae.active_provider_invocation_id), '') AS active_provider_invocation_id,
 	       NULLIF(TRIM(api.completion_capability_issued_at), '') AS active_provider_invocation_at,
@@ -589,6 +596,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.CommittedAt,
 		&rec.FailureCode,
 		&rec.FailureText,
+		&rec.CompletionInvalidReason,
 		&payloadJSON,
 		&activeProviderInvocationID,
 		&activeProviderInvocationAt,
