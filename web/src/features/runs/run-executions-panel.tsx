@@ -265,7 +265,7 @@ function outcomeToneForDetail(detail: PresentedExecutionDetail): "neutral" | "ru
 }
 
 function operatorFacingFailureText(detail: PresentedExecutionDetail): string | null {
-	return operatorFacingExecutionFailureText(detail.failure_code, detail.failure_text);
+	return operatorFacingExecutionFailureText(detail.failure_code, detail.completion_invalid_reason, detail.failure_text);
 }
 
 function missingOutputNote(detail: PresentedExecutionDetail): string | undefined {

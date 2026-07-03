@@ -383,6 +383,7 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 	       COALESCE(wn.node_class, ''),
 	       NULLIF(TRIM(ae.failure_text), '') AS durable_failure_reason,
 	       NULLIF(TRIM(ae.failure_code), '') AS durable_failure_code,
+	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 	       lfe.failure_reason,
 	       lfe.failure_reason_text,
 	       lfe.failure_reason_code
@@ -395,6 +396,12 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 	LEFT JOIN attempt_executions ae
 	  ON ae.run_id = wr.run_id
 	 AND ae.node_run_id = lnr.node_run_id
+	LEFT JOIN provider_completion_settlements pcs
+	  ON pcs.settlement_id = ae.canonical_settlement_id
+	LEFT JOIN provider_invocations api
+	  ON api.provider_invocation_id = ae.active_provider_invocation_id
+	LEFT JOIN provider_invocations cpi
+	  ON cpi.provider_invocation_id = pcs.provider_invocation_id
 	LEFT JOIN latest_failure_events lfe
 	  ON lfe.node_run_id = lnr.node_run_id
 	 AND lfe.failure_rank = 1
@@ -411,15 +418,16 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 		var nodeClass string
 		var durableFailureReason sql.NullString
 		var durableFailureCode sql.NullString
+		var completionInvalidReason sql.NullString
 		var failureReason sql.NullString
 		var failureReasonText sql.NullString
 		var failureReasonCode sql.NullString
 		item.State = gen.RunGraphNodeStateFailed
-		if err := rows.Scan(&item.NodeId, &item.RequiredRole, &nodeClass, &durableFailureReason, &durableFailureCode, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
+		if err := rows.Scan(&item.NodeId, &item.RequiredRole, &nodeClass, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
 			return nil, fmt.Errorf("scan failed run node for %q: %w", runID, err)
 		}
 		item.ExecutionOwnership = runGraphNodeExecutionOwnership(item.NodeId, nodeClass)
-		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failureReason, failureReasonText, failureReasonCode); ok {
+		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode); ok {
 			item.FailureReason = &trimmed
 		}
 		items = append(items, item)
@@ -430,12 +438,12 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 	return items, nil
 }
 
-func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failureReason, failureReasonText, failureReasonCode sql.NullString) (string, bool) {
+func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode sql.NullString) (string, bool) {
 	for _, candidate := range []sql.NullString{durableFailureCode, failureReasonCode} {
 		if !candidate.Valid {
 			continue
 		}
-		if trimmed := operatorFailureReasonForCode(candidate.String, durableFailureReason, failureReason, failureReasonText); trimmed != "" {
+		if trimmed := operatorFailureReasonForCode(candidate.String, completionInvalidReason); trimmed != "" {
 			return trimmed, true
 		}
 	}
@@ -465,32 +473,16 @@ const (
 	providerIncompleteTurnFailureText    = "Kingdom could not confirm a clean finish for this step."
 )
 
-func operatorFailureReasonForCode(code string, details ...sql.NullString) string {
+func operatorFailureReasonForCode(code string, completionInvalidReason sql.NullString) string {
 	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "provider_incomplete_turn":
-		if failureDetailsContain(details, "completion_receipt_conflict") {
+		if completionInvalidReason.Valid && strings.ToLower(strings.TrimSpace(completionInvalidReason.String)) == "completion_receipt_conflict" {
 			return completionReceiptConflictFailureText
 		}
 		return providerIncompleteTurnFailureText
 	default:
 		return ""
 	}
-}
-
-func failureDetailsContain(details []sql.NullString, needle string) bool {
-	needle = strings.ToLower(strings.TrimSpace(needle))
-	if needle == "" {
-		return false
-	}
-	for _, detail := range details {
-		if !detail.Valid {
-			continue
-		}
-		if strings.Contains(strings.ToLower(detail.String), needle) {
-			return true
-		}
-	}
-	return false
 }
 
 func humanizeFailureCode(code string) string {
@@ -1210,6 +1202,9 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.FailureText.Valid {
 		item.FailureText = &record.FailureText.String
 	}
+	if record.CompletionInvalidReason.Valid {
+		item.CompletionInvalidReason = &record.CompletionInvalidReason.String
+	}
 	return item
 }
 
@@ -1539,6 +1534,10 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		         ELSE NULL
 		       END AS failure_code
 		     , CASE
+		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), ''))
+		         ELSE NULL
+		       END AS completion_invalid_reason
+		     , CASE
 		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN lfe.failure_reason
 		         ELSE NULL
 		       END AS event_failure_reason
@@ -1557,6 +1556,12 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		LEFT JOIN attempt_executions ae
 		  ON ae.run_id = ?
 		 AND ae.node_run_id = lnr.node_run_id
+		LEFT JOIN provider_completion_settlements pcs
+		  ON pcs.settlement_id = ae.canonical_settlement_id
+		LEFT JOIN provider_invocations api
+		  ON api.provider_invocation_id = ae.active_provider_invocation_id
+		LEFT JOIN provider_invocations cpi
+		  ON cpi.provider_invocation_id = pcs.provider_invocation_id
 		LEFT JOIN latest_failure_events lfe
 		  ON lfe.node_run_id = lnr.node_run_id
 		 AND lfe.failure_rank = 1
@@ -1584,10 +1589,11 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		var attempt sql.NullInt64
 		var durableFailureReason sql.NullString
 		var durableFailureCode sql.NullString
+		var completionInvalidReason sql.NullString
 		var failureReason sql.NullString
 		var failureReasonText sql.NullString
 		var failureReasonCode sql.NullString
-		if err := rows.Scan(&node.NodeId, &node.RequiredRole, &nodeClass, &nodeRunID, &attempt, &node.State, &durableFailureReason, &durableFailureCode, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
+		if err := rows.Scan(&node.NodeId, &node.RequiredRole, &nodeClass, &nodeRunID, &attempt, &node.State, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
 			return nil, err
 		}
 		node.ExecutionOwnership = runGraphNodeExecutionOwnership(node.NodeId, nodeClass)
@@ -1598,7 +1604,7 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 			parsedAttempt := int(attempt.Int64)
 			node.Attempt = &parsedAttempt
 		}
-		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, failureReason, failureReasonText, failureReasonCode); ok {
+		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode); ok {
 			node.FailureReason = &trimmed
 		}
 		nodes = append(nodes, node)

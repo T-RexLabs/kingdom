@@ -308,7 +308,8 @@ describe("run execution surface", () => {
 				provider_invocation_id: "inv-1",
 				settlement_status: "failed",
 				output_status: "none",
-				failure_text: "completion_receipt_conflict: conflicting receipt invalidated the invocation",
+				failure_text: "conflicting receipt invalidated the invocation",
+				completion_invalid_reason: "completion_receipt_conflict",
 			} as PresentedExecutionDetail,
 		});
 
@@ -321,7 +322,8 @@ describe("run execution surface", () => {
 			executions: [makeExecution({
 				status: "failed",
 				failure_code: "provider_incomplete_turn",
-				failure_text: "completion_receipt_conflict: conflicting receipt invalidated the invocation",
+				failure_text: "conflicting receipt invalidated the invocation",
+				completion_invalid_reason: "completion_receipt_conflict",
 			})],
 			detail: null,
 		});

@@ -651,7 +651,7 @@ describe("timeline milestones", () => {
 		});
   });
 
-  it("uses receipt conflict copy for provider incomplete turn conflict raw events", () => {
+  it("does not treat raw event text markers as receipt conflict state", () => {
     const nodes: RunGraphNode[] = [{
       node_id: "delegated_execution_berserker",
       required_role: "builder-berserker",
@@ -665,14 +665,14 @@ describe("timeline milestones", () => {
       event_type: "attempt.failed",
       reason_code: "provider_incomplete_turn",
       emitted_at: "2026-03-18T11:40:00Z",
-      payload_json: { node_id: "delegated_execution_berserker", error: "completion_receipt_conflict: conflicting receipt invalidated invocation" },
+      payload_json: { node_id: "delegated_execution_berserker", error: "completion_receipt_conflict should not be a control channel" },
     };
 
     const lookups = buildTimelineLookups([event], nodes);
 
     expect(buildRawEventLabel(event, lookups)).toEqual({
       label: "Delegated Execution Berserker failed",
-      detail: "Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
+      detail: "Kingdom could not confirm a clean finish for this step.",
     });
   });
 
@@ -698,7 +698,8 @@ describe("timeline milestones", () => {
 			updated_at: "2026-03-18T11:41:00Z",
 			committed_at: "2026-03-18T11:41:00Z",
 			failure_code: "provider_incomplete_turn",
-			failure_text: "completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation",
+			failure_text: "conflicting provider completion receipts invalidated the invocation",
+			completion_invalid_reason: "completion_receipt_conflict",
 		}];
 		const event: TimelineEvent = {
 			event_id: "evt-recovered-receipt-conflict",

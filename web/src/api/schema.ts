@@ -1919,6 +1919,7 @@ export interface components {
             committed_at?: string;
             failure_code?: string;
             failure_text?: string;
+            completion_invalid_reason?: string;
         };
         RunExecutionDetail: components["schemas"]["RunExecution"] & {
             provider_invocation_id?: string;

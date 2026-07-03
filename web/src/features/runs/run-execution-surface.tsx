@@ -325,6 +325,7 @@ function executionSummary(
 			title,
 			body: operatorFacingExecutionFailureText(
 				matchingDetail?.failure_code ?? execution.failure_code,
+				matchingDetail?.completion_invalid_reason ?? execution.completion_invalid_reason,
 				matchingDetail?.failure_text,
 				execution.failure_text,
 			) ?? "This step failed.",

@@ -1,14 +1,11 @@
 export const COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT = "Kingdom detected conflicting completion receipts for this step and could not safely accept the result.";
 export const PROVIDER_INCOMPLETE_TURN_FAILURE_TEXT = "Kingdom could not confirm a clean finish for this step.";
 
-export function isCompletionReceiptConflictDetail(value: unknown): boolean {
-	return typeof value === "string" && value.toLowerCase().includes("completion_receipt_conflict");
-}
-
-export function operatorFacingExecutionFailureText(failureCode: unknown, ...details: unknown[]): string | null {
+export function operatorFacingExecutionFailureText(failureCode: unknown, completionInvalidReason: unknown, ...details: unknown[]): string | null {
 	const code = typeof failureCode === "string" ? failureCode.trim().toLowerCase() : "";
+	const invalidReason = typeof completionInvalidReason === "string" ? completionInvalidReason.trim().toLowerCase() : "";
 	if (code === "provider_incomplete_turn") {
-		return details.some(isCompletionReceiptConflictDetail)
+		return invalidReason === "completion_receipt_conflict"
 			? COMPLETION_RECEIPT_CONFLICT_FAILURE_TEXT
 			: PROVIDER_INCOMPLETE_TURN_FAILURE_TEXT;
 	}

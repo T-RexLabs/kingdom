@@ -20,8 +20,9 @@ func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
 	t.Parallel()
 
 	reason, ok := canonicalFailedNodeReason(
-		sql.NullString{String: "completion_receipt_conflict: conflicting receipt invalidated invocation", Valid: true},
+		sql.NullString{String: "conflicting receipt invalidated invocation", Valid: true},
 		sql.NullString{String: "provider_incomplete_turn", Valid: true},
+		sql.NullString{String: "completion_receipt_conflict", Valid: true},
 		sql.NullString{},
 		sql.NullString{},
 		sql.NullString{},
@@ -39,12 +40,28 @@ func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
 		sql.NullString{},
 		sql.NullString{},
 		sql.NullString{},
+		sql.NullString{},
 	)
 	if !ok {
 		t.Fatal("expected canonical failure reason")
 	}
 	if reason != providerIncompleteTurnFailureText {
 		t.Fatalf("expected generic incomplete-turn copy, got %q", reason)
+	}
+
+	reason, ok = canonicalFailedNodeReason(
+		sql.NullString{String: "completion_receipt_conflict should not be a control channel", Valid: true},
+		sql.NullString{String: "provider_incomplete_turn", Valid: true},
+		sql.NullString{},
+		sql.NullString{},
+		sql.NullString{},
+		sql.NullString{},
+	)
+	if !ok {
+		t.Fatal("expected canonical failure reason")
+	}
+	if reason != providerIncompleteTurnFailureText {
+		t.Fatalf("expected raw text marker to be ignored without structured invalid reason, got %q", reason)
 	}
 }
 
@@ -1538,8 +1555,10 @@ func TestServerGetRunGraphUsesReceiptConflictReasonForRecoveredInvalidHandshake(
 
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-receipt-conflict', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-receipt-conflict', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-graph-receipt-conflict', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', ?, ?, ?, 'provider_incomplete_turn', 'completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-receipt-conflict', ?, 1, 'nr-graph-receipt-conflict', 'attempt-graph-receipt-conflict', 'v1', 'attempt.failed', 1, '{"error":"completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-receipt-conflict', 'caus-graph-receipt-conflict', 'prev-graph-receipt-conflict', 'entry-graph-receipt-conflict', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', ?, ?, ?, 'provider_incomplete_turn', 'conflicting provider completion receipts invalidated the invocation', ?, ?)`, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_capability_issued_at, opened_at, receipt_seen_count, last_receipt_disposition, invalid_reason, created_at, updated_at) VALUES ('inv-graph-receipt-conflict', 'attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', 'invalid_handshake', ?, ?, 2, 'invalidated', 'completion_receipt_conflict', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-graph-receipt-conflict' WHERE attempt_id = 'attempt-graph-receipt-conflict'`)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-receipt-conflict', ?, 1, 'nr-graph-receipt-conflict', 'attempt-graph-receipt-conflict', 'v1', 'attempt.failed', 1, '{"error":"conflicting provider completion receipts invalidated the invocation"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-receipt-conflict', 'caus-graph-receipt-conflict', 'prev-graph-receipt-conflict', 'entry-graph-receipt-conflict', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
@@ -2856,20 +2875,21 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	var payload struct {
 		RunID string `json:"run_id"`
 		Items []struct {
-			AttemptID         string  `json:"attempt_id"`
-			NodeRunID         string  `json:"node_run_id"`
-			NodeID            string  `json:"node_id"`
-			Attempt           int     `json:"attempt"`
-			AgentID           string  `json:"agent_id"`
-			RequiredRole      string  `json:"required_role"`
-			ExecutionMode     string  `json:"execution_mode"`
-			Status            string  `json:"status"`
-			LogicalSessionID  *string `json:"logical_session_id"`
-			ProviderSessionID *string `json:"provider_session_id"`
-			QueuedAt          string  `json:"queued_at"`
-			ActivityAt        string  `json:"activity_at"`
-			FailureCode       *string `json:"failure_code"`
-			FailureText       *string `json:"failure_text"`
+			AttemptID               string  `json:"attempt_id"`
+			NodeRunID               string  `json:"node_run_id"`
+			NodeID                  string  `json:"node_id"`
+			Attempt                 int     `json:"attempt"`
+			AgentID                 string  `json:"agent_id"`
+			RequiredRole            string  `json:"required_role"`
+			ExecutionMode           string  `json:"execution_mode"`
+			Status                  string  `json:"status"`
+			LogicalSessionID        *string `json:"logical_session_id"`
+			ProviderSessionID       *string `json:"provider_session_id"`
+			QueuedAt                string  `json:"queued_at"`
+			ActivityAt              string  `json:"activity_at"`
+			FailureCode             *string `json:"failure_code"`
+			FailureText             *string `json:"failure_text"`
+			CompletionInvalidReason *string `json:"completion_invalid_reason"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
@@ -2942,6 +2962,55 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	}
 	if executions != 2 {
 		t.Fatalf("expected tab_counts.executions=2, got %#v", executions)
+	}
+}
+
+func TestServerRunExecutionsExposeCompletionInvalidReason(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+	attemptID := runID + ":delegated_execution_berserker:1"
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-invalid-reason', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-invalid-reason', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-builder-invalid-reason', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-invalid-reason', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-builder-invalid-reason', 'ses-builder-invalid-reason', ?, ?, ?, 'provider_incomplete_turn', 'conflicting provider completion receipts invalidated the invocation', ?, ?)`, attemptID, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_capability_issued_at, opened_at, receipt_seen_count, last_receipt_disposition, invalid_reason, created_at, updated_at) VALUES ('inv-builder-invalid-reason', ?, ?, 'nr-builder-invalid-reason', 'session-builder-invalid-reason', 'ses-builder-invalid-reason', 'invalid_handshake', ?, ?, 2, 'invalidated', 'completion_receipt_conflict', ?, ?)`, attemptID, runID, now, now, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-invalid-reason' WHERE attempt_id = ?`, attemptID)
+
+	listRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("expected list executions 200, got %d (%s)", listRes.Code, listRes.Body.String())
+	}
+	var listPayload struct {
+		Items []struct {
+			AttemptID               string  `json:"attempt_id"`
+			CompletionInvalidReason *string `json:"completion_invalid_reason"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(listRes.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list executions payload: %v", err)
+	}
+	if len(listPayload.Items) != 1 || listPayload.Items[0].AttemptID != attemptID {
+		t.Fatalf("expected one execution item for %q, got %#v", attemptID, listPayload.Items)
+	}
+	if listPayload.Items[0].CompletionInvalidReason == nil || *listPayload.Items[0].CompletionInvalidReason != "completion_receipt_conflict" {
+		t.Fatalf("expected structured completion invalid reason, got %#v", listPayload.Items[0].CompletionInvalidReason)
+	}
+
+	detailRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+	if detailRes.Code != http.StatusOK {
+		t.Fatalf("expected get execution 200, got %d (%s)", detailRes.Code, detailRes.Body.String())
+	}
+	var detailPayload struct {
+		CompletionInvalidReason *string `json:"completion_invalid_reason"`
+	}
+	if err := json.Unmarshal(detailRes.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatalf("decode execution detail payload: %v", err)
+	}
+	if detailPayload.CompletionInvalidReason == nil || *detailPayload.CompletionInvalidReason != "completion_receipt_conflict" {
+		t.Fatalf("expected detail structured completion invalid reason, got %#v", detailPayload.CompletionInvalidReason)
 	}
 }
 

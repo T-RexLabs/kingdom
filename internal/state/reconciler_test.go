@@ -1242,8 +1242,8 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	if attempt.State != "committed_failure" || attempt.FailureCode != "provider_incomplete_turn" {
 		t.Fatalf("expected committed_failure with provider_incomplete_turn, got %#v", attempt)
 	}
-	if attempt.FailureText != "completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation" {
-		t.Fatalf("expected durable attempt failure text to preserve receipt conflict marker, got %q", attempt.FailureText)
+	if attempt.FailureText != "conflicting provider completion receipts invalidated the invocation" {
+		t.Fatalf("expected durable attempt failure text to describe receipt conflict, got %q", attempt.FailureText)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_invalid_handshake_conflict")
 	if err != nil {
@@ -1258,7 +1258,7 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	if settlement.PrimaryEvidenceID == accepted.Evidence.EvidenceID {
 		t.Fatalf("expected invalid-handshake settlement to use runtime terminal evidence instead of accepted receipt evidence, got %#v", settlement)
 	}
-	if settlement.FailureReasonText != "completion_receipt_conflict: conflicting provider completion receipts invalidated the invocation" {
+	if settlement.FailureReasonText != "conflicting provider completion receipts invalidated the invocation" {
 		t.Fatalf("expected invalid-handshake conflict failure text, got %#v", settlement)
 	}
 }

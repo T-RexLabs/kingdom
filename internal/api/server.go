@@ -419,48 +419,49 @@ type agentsResponse struct {
 }
 
 type runParticipantItem struct {
-	AgentID         string     `json:"agent_id"`
-	RoleID          string     `json:"role_id"`
-	DisplayName     string     `json:"display_name"`
-	Status          string     `json:"status"`
-	ParentAgentID   *string    `json:"parent_agent_id,omitempty"`
-	SpawnDepth      int        `json:"spawn_depth"`
-	FirstSeenAt     time.Time  `json:"first_seen_at"`
+	AgentID       string    `json:"agent_id"`
+	RoleID        string    `json:"role_id"`
+	DisplayName   string    `json:"display_name"`
+	Status        string    `json:"status"`
+	ParentAgentID *string   `json:"parent_agent_id,omitempty"`
+	SpawnDepth    int       `json:"spawn_depth"`
+	FirstSeenAt   time.Time `json:"first_seen_at"`
 }
 
 type agentItem struct {
-	AgentID         string     `json:"agent_id"`
-	RoleID          string     `json:"role_id"`
-	DisplayName     string     `json:"display_name"`
-	Status          string     `json:"status"`
-	ParentAgentID   *string    `json:"parent_agent_id,omitempty"`
-	SpawnDepth      int        `json:"spawn_depth"`
-	CreatedAt       time.Time  `json:"created_at"`
+	AgentID       string    `json:"agent_id"`
+	RoleID        string    `json:"role_id"`
+	DisplayName   string    `json:"display_name"`
+	Status        string    `json:"status"`
+	ParentAgentID *string   `json:"parent_agent_id,omitempty"`
+	SpawnDepth    int       `json:"spawn_depth"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type runExecutionItem struct {
-	AttemptID          string     `json:"attempt_id"`
-	NodeRunID          string     `json:"node_run_id"`
-	NodeID             string     `json:"node_id"`
-	Attempt            int        `json:"attempt"`
-	AgentID            string     `json:"agent_id"`
-	RequiredRole       string     `json:"required_role"`
-	ExecutionMode      string     `json:"execution_mode"`
-	Status             string     `json:"status"`
-	LogicalSessionID   *string    `json:"logical_session_id,omitempty"`
-	ProviderSessionID  *string    `json:"provider_session_id,omitempty"`
-	QueuedAt           time.Time  `json:"queued_at"`
-	ActivityAt         time.Time  `json:"activity_at"`
-	ProgressEventType  *string    `json:"progress_event_type,omitempty"`
-	ProgressReasonCode *string    `json:"progress_reason_code,omitempty"`
-	ProgressAt         *time.Time `json:"progress_at,omitempty"`
-	LaunchStartedAt    *time.Time `json:"launch_started_at,omitempty"`
-	StartedAt          *time.Time `json:"started_at,omitempty"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	TerminalObservedAt *time.Time `json:"terminal_observed_at,omitempty"`
-	CommittedAt        *time.Time `json:"committed_at,omitempty"`
-	FailureCode        *string    `json:"failure_code,omitempty"`
-	FailureText        *string    `json:"failure_text,omitempty"`
+	AttemptID               string     `json:"attempt_id"`
+	NodeRunID               string     `json:"node_run_id"`
+	NodeID                  string     `json:"node_id"`
+	Attempt                 int        `json:"attempt"`
+	AgentID                 string     `json:"agent_id"`
+	RequiredRole            string     `json:"required_role"`
+	ExecutionMode           string     `json:"execution_mode"`
+	Status                  string     `json:"status"`
+	LogicalSessionID        *string    `json:"logical_session_id,omitempty"`
+	ProviderSessionID       *string    `json:"provider_session_id,omitempty"`
+	QueuedAt                time.Time  `json:"queued_at"`
+	ActivityAt              time.Time  `json:"activity_at"`
+	ProgressEventType       *string    `json:"progress_event_type,omitempty"`
+	ProgressReasonCode      *string    `json:"progress_reason_code,omitempty"`
+	ProgressAt              *time.Time `json:"progress_at,omitempty"`
+	LaunchStartedAt         *time.Time `json:"launch_started_at,omitempty"`
+	StartedAt               *time.Time `json:"started_at,omitempty"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+	TerminalObservedAt      *time.Time `json:"terminal_observed_at,omitempty"`
+	CommittedAt             *time.Time `json:"committed_at,omitempty"`
+	FailureCode             *string    `json:"failure_code,omitempty"`
+	FailureText             *string    `json:"failure_text,omitempty"`
+	CompletionInvalidReason *string    `json:"completion_invalid_reason,omitempty"`
 }
 
 type runExecutionSettlementDetailItem struct {

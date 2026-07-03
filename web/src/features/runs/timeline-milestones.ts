@@ -933,6 +933,7 @@ function failureDetailFromEvent(event: TimelineEvent, execution?: RunExecution):
 	const error = typeof event.payload_json?.error === "string" ? event.payload_json.error.trim() : "";
 	const operatorText = operatorFacingExecutionFailureText(
 		reasonCode || execution?.failure_code,
+		execution?.completion_invalid_reason,
 		error,
 		execution?.failure_text,
 	);
