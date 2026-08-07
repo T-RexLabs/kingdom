@@ -58,6 +58,9 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 			"- Return planning output only: plan deltas, acceptance criteria, dependency notes, and verification scope.",
 			"- Do not claim completed implementation work.",
 			"- Do not present code changes, delivered files, or test execution as finished work.",
+			"- Resolve unspecified implementation details using repository evidence and, when correctness depends on current external facts, authoritative external sources. State material assumptions.",
+			"- Treat investigation, design, security hardening, implementation, and verification as executable plan work rather than approval gates.",
+			"- Preserve gates required by the decree, runtime policy, or accepted architecture, but do not invent internal ratification. If an unavailable external dependency affects one slice, isolate it and plan all independent work.",
 		}, "\n")
 	}
 	responseOnlyConstraints := ""
@@ -900,8 +903,11 @@ func (o *orchestrationLoop) advisorSynthesisInstructionForRun(ctx context.Contex
 	var builder strings.Builder
 	builder.WriteString("Synthesize all advisor counsel into a single decision-ready brief for council deliberation.\n\n")
 	builder.WriteString("Synthesis requirements:\n")
+	builder.WriteString("- Treat advisor responses as counsel and evidence, not decisions or approval authority.\n")
+	builder.WriteString("- Preserve explicit decree requirements and accepted architecture while using counsel to fill unspecified details and state material assumptions.\n")
 	builder.WriteString("- Merge aligned advice into one coherent direction.\n")
 	builder.WriteString("- Call out major tradeoffs and conflicts among advisors.\n")
+	builder.WriteString("- Separate executable investigation, safeguards, and verification from genuinely unavailable external dependencies; do not invent approval gates.\n")
 	builder.WriteString("- Keep output strategic, concrete, and ready for council planning.\n\n")
 	builder.WriteString("Advisor Responses:\n")
 	for idx, input := range inputs {

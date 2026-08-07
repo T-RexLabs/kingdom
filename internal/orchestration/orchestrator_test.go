@@ -125,6 +125,16 @@ func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 	if !strings.Contains(prompt, "Do not claim completed implementation work.") {
 		t.Fatalf("expected planning guardrail instruction text, got:\n%s", prompt)
 	}
+	for _, expected := range []string{
+		"Resolve unspecified implementation details using repository evidence",
+		"authoritative external sources",
+		"as executable plan work rather than approval gates",
+		"do not invent internal ratification",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected planning prompt to include %q, got:\n%s", expected, prompt)
+		}
+	}
 	if !strings.Contains(prompt, "Response-Only Constraints:") {
 		t.Fatalf("expected response-first workspace guardrail section in planning prompt, got:\n%s", prompt)
 	}
@@ -359,6 +369,8 @@ func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.
 	for _, expected := range []string{
 		"marshal of coordination",
 		"advisory counsel into a coherent direction of travel",
+		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
+		"Distinguish implementation work from genuine external dependencies.",
 		"Keep every handoff explicit in scope, owner, expected outcome, and major constraint.",
 		"Stay in coordination and synthesis.",
 	} {
@@ -385,6 +397,9 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 		"Turn decree intent and chancellor guidance into a clear, execution-ready plan",
 		"Decompose work into execution-ready implementation slices.",
 		"scoped delta plan that preserves what remains valid and changes only what is necessary.",
+		"Produce an execution-ready plan, not an approval memo.",
+		"authoritative external sources",
+		"Do not block the whole plan while feasible implementation or verification work exists.",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected council-member prompt to include %q, got:\n%s", expected, prompt)

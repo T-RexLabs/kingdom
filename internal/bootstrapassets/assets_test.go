@@ -365,6 +365,13 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"grep: true",
 		"webfetch: true",
 		"todowrite: true",
+		"Produce an execution-ready plan, not an approval memo.",
+		"authoritative external sources",
+	)
+	assertContains(
+		filepath.Join("opencode", "agents", "chancellor.md"),
+		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
+		"Distinguish implementation work from genuine external dependencies.",
 	)
 	assertContains(
 		filepath.Join("opencode", "agents", "reviewer.md"),

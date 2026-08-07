@@ -9476,6 +9476,15 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorRespon
 	if !strings.Contains(instruction, "Synthesize all advisor counsel") {
 		t.Fatalf("expected synthesis directive in advisory instruction, got %q", instruction)
 	}
+	for _, expected := range []string{
+		"advisor responses as counsel and evidence",
+		"using counsel to fill unspecified details",
+		"do not invent approval gates",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("expected advisory synthesis instruction to include %q, got %q", expected, instruction)
+		}
+	}
 	if !strings.Contains(instruction, "Advisor Responses:") {
 		t.Fatalf("expected advisor input packet heading, got %q", instruction)
 	}
