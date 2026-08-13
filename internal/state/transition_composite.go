@@ -37,7 +37,7 @@ type nodeAttemptBudgetMode int
 
 const (
 	nodeAttemptBudgetDefault nodeAttemptBudgetMode = iota
-	nodeAttemptBudgetGovernanceRework
+	nodeAttemptBudgetUnbounded
 )
 
 type ReplayRunFromFailureRequest struct {
@@ -398,7 +398,7 @@ func (s *TransitionService) queuePlanReworkWaveTx(ctx context.Context, tx *sql.T
 	if err != nil {
 		return nil, err
 	}
-	queued, err := s.queuePendingNodeWaveTx(ctx, tx, runID, nodeIDs, nil, occurredAt, generate, nodeAttemptBudgetGovernanceRework)
+	queued, err := s.queuePendingNodeWaveTx(ctx, tx, runID, nodeIDs, nil, occurredAt, generate, nodeAttemptBudgetUnbounded)
 	if err != nil {
 		return nil, err
 	}
@@ -603,7 +603,7 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 		return nil, err
 	}
 	for idx, nodeID := range req.TargetNodeIDs {
-		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, req.RunID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, req.GenerateID, nodeAttemptBudgetDefault)
+		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, req.RunID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, req.GenerateID, nodeAttemptBudgetUnbounded)
 		if err != nil {
 			return nil, err
 		}
@@ -727,7 +727,7 @@ func (s *TransitionService) RecordFinalRework(ctx context.Context, req FinalRewo
 		return err
 	}
 
-	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunTransition.RunID, req.TargetNodeIDs, nil, req.RunTransition.OccurredAt, req.GenerateID, nodeAttemptBudgetGovernanceRework)
+	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunTransition.RunID, req.TargetNodeIDs, nil, req.RunTransition.OccurredAt, req.GenerateID, nodeAttemptBudgetUnbounded)
 	if err != nil {
 		return err
 	}
@@ -2765,12 +2765,14 @@ func (s *TransitionService) insertPendingNodeAttemptWithAgentTx(ctx context.Cont
 	if wave <= 0 {
 		return QueuedNodeAttempt{}, fmt.Errorf("wave is required for queued node attempt run=%q node=%q", runID, nodeID)
 	}
-	attemptLimit, err := nodeAttemptLimitForQueueTx(ctx, tx, runID, nodeID, budgetMode)
-	if err != nil {
-		return QueuedNodeAttempt{}, err
-	}
-	if maxAttempt > attemptLimit {
-		return QueuedNodeAttempt{}, &NodeAttemptLimitExceededError{RunID: runID, NodeID: nodeID, MaxLimit: attemptLimit}
+	if budgetMode != nodeAttemptBudgetUnbounded {
+		attemptLimit, err := nodeAttemptLimitForRunTx(ctx, tx, runID, nodeID)
+		if err != nil {
+			return QueuedNodeAttempt{}, err
+		}
+		if maxAttempt > attemptLimit {
+			return QueuedNodeAttempt{}, &NodeAttemptLimitExceededError{RunID: runID, NodeID: nodeID, MaxLimit: attemptLimit}
+		}
 	}
 	nodeRunID := generateID(generate, "node_run")
 	if err := insertNodeAttemptTx(ctx, tx, CreateNodeAttemptRequest{
@@ -2911,13 +2913,6 @@ ORDER BY from_node_id ASC, to_node_id ASC, on_condition ASC`, strings.TrimSpace(
 		return nil, fmt.Errorf("build workflow graph for run %q: %w", strings.TrimSpace(runID), err)
 	}
 	return graph, nil
-}
-
-func nodeAttemptLimitForQueueTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, budgetMode nodeAttemptBudgetMode) (int, error) {
-	if budgetMode == nodeAttemptBudgetGovernanceRework {
-		return unboundedLoopAttemptLimit, nil
-	}
-	return nodeAttemptLimitForRunTx(ctx, tx, runID, nodeID)
 }
 
 func loadRunLoopSettingsTx(ctx context.Context, tx *sql.Tx, runID string) (workflow.LoopSettings, error) {

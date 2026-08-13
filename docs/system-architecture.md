@@ -53,6 +53,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - `governance.autonomous_approvals=false` pauses for explicit allfather plan and final decisions.
 - Allfather plan rework is uncapped and reopens the planning wave from `advisory_synthesis` through `plan_drafting`.
 - Final allfather rework is uncapped and reopens the decree from `plan_drafting`; the revised plan must return to allfather plan approval before execution resumes.
+- Explicit operator Retry and Rerun actions are uncapped; automatic stale-attempt recovery and review/validation rework remain governed by their configured retry policies and loop limits.
 - Execution review and validation rework are governed separately by `max_execution_review_cycles` and `max_validation_rework_cycles`.
 - `run_until_all_approve=true` disables the practical cap on review and validation loops for that run.
 - Delegation policy is fixed:

@@ -1222,7 +1222,7 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	}
 }
 
-func TestServerRetryNodeCreatesAttemptAndEnforcesMaxAttemptsPerNode(t *testing.T) {
+func TestServerRetryNodeAllowsOperatorAttemptsBeyondAutomaticLimit(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1252,33 +1252,24 @@ func TestServerRetryNodeCreatesAttemptAndEnforcesMaxAttemptsPerNode(t *testing.T
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	blocked := performJSONRequest(t, handler, requestSpec{
+	accepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
-		body:           map[string]any{"reason": "must exceed cap"},
+		body:           map[string]any{"reason": "operator requested another retry"},
 		actorID:        "actor-1",
 		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-over-cap",
 	})
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when exceeding max attempts per node, got %d (%s)", blocked.Code, blocked.Body.String())
-	}
-	assertErrorCode(t, blocked.Body.Bytes(), "budget_exceeded")
-
-	var runStatusAfterBlocked string
-	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatusAfterBlocked); err != nil {
-		t.Fatalf("query run status after blocked retry: %v", err)
-	}
-	if runStatusAfterBlocked != "failed" {
-		t.Fatalf("expected run to remain failed when retry queue is rejected, got %q", runStatusAfterBlocked)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for operator retry beyond automatic limit, got %d (%s)", accepted.Code, accepted.Body.String())
 	}
 
 	var maxAttempt int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(attempt), 0) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&maxAttempt); err != nil {
 		t.Fatalf("query max attempt: %v", err)
 	}
-	if maxAttempt != state.DefaultMaxAttemptsPerNode {
-		t.Fatalf("expected max attempt %d, got %d", state.DefaultMaxAttemptsPerNode, maxAttempt)
+	if maxAttempt != state.DefaultMaxAttemptsPerNode+1 {
+		t.Fatalf("expected max attempt %d, got %d", state.DefaultMaxAttemptsPerNode+1, maxAttempt)
 	}
 }
 
@@ -1357,7 +1348,7 @@ func TestServerRetryQueueFailureDoesNotLeaveStrayPendingAttempt(t *testing.T) {
 	}
 }
 
-func TestServerRerunFromNodeRollsBackRunWhenBudgetPrecheckFails(t *testing.T) {
+func TestServerRerunFromNodeAllowsTargetsBeyondAutomaticLimitAtomically(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1399,25 +1390,26 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	blocked := performJSONRequest(t, handler, requestSpec{
+	accepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/" + kickoffNodeID,
-		body:           map[string]any{"reason": "trigger rerun budget precheck failure"},
+		body:           map[string]any{"reason": "operator requested another downstream rerun"},
 		actorID:        "actor-1",
 		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-precheck-over-cap",
 	})
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when rerun precheck exceeds cap, got %d (%s)", blocked.Code, blocked.Body.String())
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for downstream rerun beyond automatic limit, got %d (%s)", accepted.Code, accepted.Body.String())
 	}
-	assertErrorCode(t, blocked.Body.Bytes(), "budget_exceeded")
 
-	var runStatusAfterBlocked string
-	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatusAfterBlocked); err != nil {
-		t.Fatalf("query run status after blocked rerun: %v", err)
+	assertLatestAttempt(t, db, runID, reviewNodeID, state.DefaultMaxAttemptsPerNode+1, "pending")
+
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatalf("query run status after rerun: %v", err)
 	}
-	if runStatusAfterBlocked != "failed" {
-		t.Fatalf("expected run to remain failed when rerun precheck is rejected, got %q", runStatusAfterBlocked)
+	if runStatus != "running" {
+		t.Fatalf("expected accepted rerun to reopen run, got %q", runStatus)
 	}
 }
 
@@ -1616,6 +1608,12 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := time.Now().UTC().Format(time.RFC3339)
+	kingAgentID := "agent_royal_closure_retry_" + runID
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, kingAgentID, now, now)
+	for attempt := 1; attempt <= state.DefaultMaxAttemptsPerNode; attempt++ {
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'royal_closure', ?, ?, 'succeeded', 'king', ?, 1, ?, ?)`, fmt.Sprintf("nr_royal_closure_%d_%s", attempt, runID), runID, attempt, attempt, kingAgentID, now, now)
+	}
 	setRunStatus(t, db, runID, "failed")
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1643,7 +1641,7 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
 	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
 	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
+	assertLatestAttempt(t, db, runID, "royal_closure", state.DefaultMaxAttemptsPerNode+1, "pending")
 
 	var runStatus string
 	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {

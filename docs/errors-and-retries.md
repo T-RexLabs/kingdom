@@ -61,3 +61,5 @@ Provider completion note:
 - `non_retryable` (fail-fast): `invalid_output_schema`, `policy_violation`, `idempotency_conflict`, `dependency_blocked`, `llm_invalid_response`, `llm_context_overflow`, `provider_incomplete_turn`, `provider_cancelled`, `budget_exceeded`, `event_sequence_gap`
 
 Retry exhaustion escalates to `chancellor` via dead-letter flow.
+
+These limits govern runtime-initiated recovery and workflow rework. Explicit operator Retry and Rerun actions on a failed run are uncapped.
