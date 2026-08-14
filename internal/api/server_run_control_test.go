@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,38 +103,6 @@ func TestServerFinalApprovalConfirmAllowsEmptyReason(t *testing.T) {
 	})
 	if res.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (%s)", res.Code, res.Body.String())
-	}
-}
-
-func TestWriteRunTransitionApplyErrorMapsAttemptCapToBudgetExceeded(t *testing.T) {
-	t.Parallel()
-
-	recorder := httptest.NewRecorder()
-	server := &Server{}
-	server.writeRunTransitionApplyError(
-		recorder,
-		&state.NodeAttemptLimitExceededError{RunID: "run-1", NodeID: "plan_drafting", MaxLimit: 5},
-		"api.create_plan_approval",
-		"plan transition is not allowed",
-		"apply plan approval transition failed",
-		map[string]any{"run_id": "run-1", "action": "rework"},
-	)
-
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", recorder.Code)
-	}
-	assertErrorCode(t, recorder.Body.Bytes(), "budget_exceeded")
-
-	var payload struct {
-		Error struct {
-			Details map[string]any `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode canonical budget error: %v", err)
-	}
-	if got := payload.Error.Details["node_key"]; got != "plan_drafting" {
-		t.Fatalf("expected node_key detail, got %#v", got)
 	}
 }
 
@@ -1222,13 +1189,14 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	}
 }
 
-func TestServerRetryNodeAllowsOperatorAttemptsBeyondAutomaticLimit(t *testing.T) {
+func TestServerRetryNodeAllowsRepeatedOperatorAttempts(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 
-	for i := 1; i <= state.DefaultMaxAttemptsPerNode; i++ {
+	const expectedAttempts = 25
+	for i := 1; i < expectedAttempts; i++ {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
@@ -1268,8 +1236,8 @@ func TestServerRetryNodeAllowsOperatorAttemptsBeyondAutomaticLimit(t *testing.T)
 	if err := db.QueryRow(`SELECT COALESCE(MAX(attempt), 0) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&maxAttempt); err != nil {
 		t.Fatalf("query max attempt: %v", err)
 	}
-	if maxAttempt != state.DefaultMaxAttemptsPerNode+1 {
-		t.Fatalf("expected max attempt %d, got %d", state.DefaultMaxAttemptsPerNode+1, maxAttempt)
+	if maxAttempt != expectedAttempts {
+		t.Fatalf("expected max attempt %d, got %d", expectedAttempts, maxAttempt)
 	}
 }
 
@@ -1374,7 +1342,8 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 		t.Fatalf("lookup execution_kickoff node for run: %v", err)
 	}
 
-	for i := 1; i <= state.DefaultMaxAttemptsPerNode; i++ {
+	const priorAttempts = 25
+	for i := 1; i <= priorAttempts; i++ {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
@@ -1402,7 +1371,7 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 		t.Fatalf("expected 202 for downstream rerun beyond automatic limit, got %d (%s)", accepted.Code, accepted.Body.String())
 	}
 
-	assertLatestAttempt(t, db, runID, reviewNodeID, state.DefaultMaxAttemptsPerNode+1, "pending")
+	assertLatestAttempt(t, db, runID, reviewNodeID, priorAttempts+1, "pending")
 
 	var runStatus string
 	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
@@ -1611,7 +1580,8 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 	now := time.Now().UTC().Format(time.RFC3339)
 	kingAgentID := "agent_royal_closure_retry_" + runID
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, kingAgentID, now, now)
-	for attempt := 1; attempt <= state.DefaultMaxAttemptsPerNode; attempt++ {
+	const priorAttempts = 25
+	for attempt := 1; attempt <= priorAttempts; attempt++ {
 		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'royal_closure', ?, ?, 'succeeded', 'king', ?, 1, ?, ?)`, fmt.Sprintf("nr_royal_closure_%d_%s", attempt, runID), runID, attempt, attempt, kingAgentID, now, now)
 	}
 	setRunStatus(t, db, runID, "failed")
@@ -1641,7 +1611,7 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
 	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
 	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", state.DefaultMaxAttemptsPerNode+1, "pending")
+	assertLatestAttempt(t, db, runID, "royal_closure", priorAttempts+1, "pending")
 
 	var runStatus string
 	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
