@@ -23,7 +23,7 @@ type QueuedNodeAttempt struct {
 	AgentID      string
 }
 
-type ReplayRunFromFailureRequest struct {
+type ReplayTerminalRunRequest struct {
 	RunID           string
 	AnchorNodeID    string
 	TargetNodeIDs   []string
@@ -193,10 +193,10 @@ const (
 	SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt SupersedeQueuedAttemptsOutcome = "blocked_by_newer_terminal_attempt"
 )
 
-func (s *TransitionService) ReplayRunFromFailure(ctx context.Context, req ReplayRunFromFailureRequest) ([]QueuedNodeAttempt, error) {
+func (s *TransitionService) ReplayTerminalRun(ctx context.Context, req ReplayTerminalRunRequest) ([]QueuedNodeAttempt, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		queued, err := s.replayRunFromFailureOnce(ctx, req)
+		queued, err := s.replayTerminalRunOnce(ctx, req)
 		if err == nil {
 			return queued, nil
 		}
@@ -505,7 +505,7 @@ ORDER BY wn.node_id ASC`, placeholders)
 	return &attempt, nil
 }
 
-func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req ReplayRunFromFailureRequest) ([]QueuedNodeAttempt, error) {
+func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req ReplayTerminalRunRequest) ([]QueuedNodeAttempt, error) {
 	if strings.TrimSpace(req.RunID) == "" {
 		return nil, fmt.Errorf("run id is required")
 	}
@@ -539,6 +539,25 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 			_ = tx.Rollback()
 		}
 	}()
+	runStatus, err := runStatusForQueuePendingWaveTx(ctx, tx, req.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if runStatus != "failed" && runStatus != "cancelled" {
+		return nil, &StateConflictError{EntityType: EntityTypeRun, ExpectedState: "failed or cancelled", ActualState: runStatus}
+	}
+	if err := validateTransition(EntityTypeRun, runStatus, "running"); err != nil {
+		return nil, err
+	}
+	if runStatus == "cancelled" {
+		blockers, err := cancelledRunReplayBlockersTx(ctx, tx, req.RunID)
+		if err != nil {
+			return nil, err
+		}
+		if len(blockers) > 0 {
+			return nil, &ReplayNotQuiescentError{RunID: req.RunID, Blockers: blockers}
+		}
+	}
 
 	reasonText := strings.TrimSpace(req.Reason)
 	if reasonText == "" {
@@ -550,10 +569,11 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 	if err != nil {
 		return nil, err
 	}
-	runPayload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"reason":%q,"recorded_at":%q}`,
+	runPayload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"reason":%q,"source_status":%q,"recorded_at":%q}`,
 		req.RunID,
 		req.AnchorNodeID,
 		strings.TrimSpace(req.Reason),
+		runStatus,
 		occurredAt,
 	)
 	if err := s.applyTx(ctx, tx, TransitionRequest{
@@ -561,7 +581,7 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 		EventID:         generateID(req.GenerateID, "evt"),
 		RunID:           req.RunID,
 		Entity:          EntityTypeRun,
-		FromState:       "failed",
+		FromState:       runStatus,
 		ToState:         "running",
 		ActorID:         req.ActorID,
 		RoleID:          req.RoleID,
@@ -631,6 +651,40 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 	}
 	committed = true
 	return queued, nil
+}
+
+func cancelledRunReplayBlockersTx(ctx context.Context, tx *sql.Tx, runID string) ([]string, error) {
+	var pendingCancellation int
+	var pendingCompletion int
+	var nonterminalExecution int
+	var activeLease int
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM attempt_cancel_outbox WHERE run_id = ? AND status = 'pending'),
+       EXISTS(SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending'),
+       EXISTS(SELECT 1 FROM attempt_executions WHERE run_id = ? AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')),
+       EXISTS(
+         SELECT 1
+         FROM session_leases sl
+         JOIN attempt_executions ae ON ae.session_ref = sl.session_id
+         WHERE ae.run_id = ? AND sl.status = 'active'
+       )`, runID, runID, runID, runID).Scan(&pendingCancellation, &pendingCompletion, &nonterminalExecution, &activeLease)
+	if err != nil {
+		return nil, fmt.Errorf("inspect cancelled run replay quiescence: %w", err)
+	}
+	blockers := make([]string, 0, 4)
+	if pendingCancellation != 0 {
+		blockers = append(blockers, "provider cancellation")
+	}
+	if pendingCompletion != 0 {
+		blockers = append(blockers, "completion projection")
+	}
+	if nonterminalExecution != 0 {
+		blockers = append(blockers, "attempt settlement")
+	}
+	if activeLease != 0 {
+		blockers = append(blockers, "session lease")
+	}
+	return blockers, nil
 }
 
 func (s *TransitionService) RecordFinalApproval(ctx context.Context, req FinalApprovalRecordRequest) error {

@@ -440,7 +440,7 @@ describe("run detail page", () => {
 		expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: true });
 	});
 
-	it("uses failed-node summaries while still fetching graph context for activity", () => {
+  it("uses failed-node summaries while still fetching graph context for activity", () => {
 		mockRun.status = "failed";
 		mockRun.display_state = "failed";
 		mockSearch.tab = "execution";
@@ -460,6 +460,35 @@ describe("run detail page", () => {
 		expect(governanceActionsPropsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				failedNodes: mockRun.failed_nodes,
+        showFinalApproval: false,
+      }),
+    );
+  });
+
+  it("loads graph nodes for cancelled-run replay controls", () => {
+    const cancelledNode = {
+      node_id: "delegated_execution_berserker",
+      required_role: "builder-berserker",
+      execution_ownership: "provider_backed",
+      state: "cancelled",
+    };
+    mockRun.status = "cancelled";
+    mockRun.display_state = "cancelled";
+    mockSearch.tab = "agents";
+    useRunGraphMock.mockImplementation(() => ({
+      data: { run_id: "run-1", nodes: [cancelledNode], edges: [] },
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: graphRefetchMock,
+    }));
+
+    render(<RunDetailPage />);
+
+    expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
+    expect(governanceActionsPropsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancelledNodes: [cancelledNode],
         showFinalApproval: false,
       }),
     );

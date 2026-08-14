@@ -697,7 +697,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Queue a retry for one node. */
+        /**
+         * Queue a retry for one node.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
+         */
         post: operations["retryNode"];
         delete?: never;
         options?: never;
@@ -714,7 +717,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Queue rerun from a node. */
+        /**
+         * Queue rerun from a node.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
+         */
         post: operations["rerunFromNode"];
         delete?: never;
         options?: never;
@@ -3581,6 +3587,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -3615,6 +3622,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

@@ -1161,6 +1161,7 @@ paths:
       tags: [runs]
       operationId: retryNode
       summary: Queue a retry for one node.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - $ref: "#/components/parameters/RoleId"
@@ -1184,6 +1185,8 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1192,6 +1195,7 @@ paths:
       tags: [runs]
       operationId: rerunFromNode
       summary: Queue rerun from a node.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
       parameters:
         - $ref: "#/components/parameters/ActorId"
         - $ref: "#/components/parameters/RoleId"
@@ -1215,6 +1219,8 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 

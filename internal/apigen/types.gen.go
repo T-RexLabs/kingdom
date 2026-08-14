@@ -8881,6 +8881,7 @@ type RetryNodeResponse struct {
 	JSON202      *RetryNodeResult
 	JSON400      *BadRequestError
 	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
 	JSONDefault  *ErrorResponse
 }
 
@@ -8984,6 +8985,7 @@ type RerunFromNodeResponse struct {
 	JSON202      *RerunFromNodeResult
 	JSON400      *BadRequestError
 	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
 	JSONDefault  *ErrorResponse
 }
 
@@ -12216,6 +12218,13 @@ func ParseRetryNodeResponse(rsp *http.Response) (*RetryNodeResponse, error) {
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -12424,6 +12433,13 @@ func ParseRerunFromNodeResponse(rsp *http.Response) (*RerunFromNodeResponse, err
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
@@ -12789,15 +12805,17 @@ var swaggerSpec = []string{
 	"sXtO9dyMJrv+IKFW8ITxSEQbTGO2WpVJVM53KGJpmlN7+kyE7F8+Eiokz7V3xDImQifJg/jjHH105Lbk",
 	"EAHZmh+dULa04mrjN9Pj41+7oiNqS1jq3TyQSIkWLffxGdu0hK4LMNas/ZEb+FLf5sJurSb7qCb3GLjM",
 	"6tB/ZIzkXZHM426JtFvP16DQ+01weJOqiDxJmhRaehRdgzz3FcPtVjm8w/yiBf5T0BUjvxhK9WRLtu11",
-	"YmqUYn4B3OWjf8zEpNDZIiMs9DYHyYiyWNGO+ucfsFOUI/muL7Gl5Lv3LIZHrqMabvjeQOTW1FkFJEcp",
-	"sZ7dxvzdqTQl36E/csgf9wH5p9qBuvX1fpwiV5H84PEYSkF0mj+gtEN383BV++0LO7QJJCu1N6NK+qH7",
-	"fszecPRhErbZEWKn6hdsNlC4+Go1CKvc8SCMBvWF9NUP+WoyeDAmg6yGjslmAn2yDacY1EUpCji1TZ/Y",
-	"3WK3Peg/r5Bic+/cr9r+NhXwnl2OuEs48JwuVpylpYTfJ9vznL7hLP0q39+IfF2B5r3J+LU1dMv5PKdf",
-	"jJyviR4pokc4TMiXJIWE0CH//V9cs6922uvweAfGPgbv2tik6E/T7FVmiVcE7Yi0g5qd07XY15kL+4qT",
-	"nJgGv9keTyr2vrH3e3oLtFbRxZldC7QFbhL2mp6Pm0/b7SNMEUnTXGqZ57Kx1SqdF8RdIXaR4QgWEc7w",
-	"OUmIJD323R9B/uZ6vKx2eOTJffyb6iAj3RBV4aUFSesIRYTItZuHzleZ0yLodO+xF4+2J2ahs+C1tq/T",
-	"QDO6IuucG3/Q/4VI6rS9/gLT9bSgn2eWJP4OOAZuEoUa1Je/KBoQwLeOyHKezI5mGykzcbS/jzOyd0Ho",
-	"OmbpXsIinKhf9reHs6sPV/8vAAD//4ZSFkzLhwEA",
+	"YmqUYn4B3OWjf8zEpNDZIiMs9DYHyYiyWNGO+ucfsFOUI/muSjrNmCKWARUIoxUmCcRaNtMstawMr366",
+	"3DBRUUZWK8XP1d2dJaAv7oyz/zXujHOnWUMCpEwgBSqNh7lLVpIAFiDQBm9BH52dbRm3U1+cql28ZzE8",
+	"clXacMP3BnG3pnUrIDlK1/bsNubvzvgp+Q79kUN+j9q0e1Nw/VPtW4k0GgpOS63O8+DZH8qvdJo/oJxK",
+	"d/MqV/vti6m02TErhUWjSm6l+36p33BoZRK22REyteoXbBNRuPhqEgkrS/IgLCL1hfQVR/lqD3kw9pCs",
+	"ho7JNhB9sg2nGFS0KQo4tU2f2N1itz0YHKCQYhML3a9N4jatC55djrhLOPCcLlacpeXz5ZE9XObqmlUg",
+	"yBK8s2kzbXKN0otS53TxPXF4Tt9wln595tzIM6MCzXt76tTW0P3cUXT6tJ87+uwjdfYRDnvrSJJCQuhQ",
+	"jMYvrtlXW/x1rjoHxr57zrWxie+fpmmzrASgCNoRaQc1uytB7OvslH0FaE5Mg99sjyeVX6Gx93t6ErVW",
+	"0cXPXQu0BW6SMpuej1spbbePMEUkTXOpRb/LxlardF4Qd4XYRYYjWEQ4w+ckIZL02PB/BPmb6/Gy2uGR",
+	"J3Dyb6qDjHRDVIWXlqetsxsRIteuPDonaU6LwOK9x14g3J6Yhc502Nq+TvXN6Iqsc258fpXkrlMz+4uI",
+	"11O/fp5Zkvg74Bi4SQZrUF/+omhAAN86Ist5MjuabaTMxNH+Ps7I3gWh65ilewmLcKJ+2d8ezq4+XP2/",
+	"AAAA//+i5UBdr4kBAA==",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

@@ -52,6 +52,15 @@ type ReplayWaveActiveError struct {
 	Scope string
 }
 
+type ReplayNotQuiescentError struct {
+	RunID    string
+	Blockers []string
+}
+
+func (e *ReplayNotQuiescentError) Error() string {
+	return fmt.Sprintf("cancelled run %q is still settling: %s", e.RunID, strings.Join(e.Blockers, ", "))
+}
+
 func (e *ReplayWaveActiveError) Error() string {
 	scope := strings.TrimSpace(e.Scope)
 	if scope == "" {
@@ -151,6 +160,9 @@ var legalRunTransitions = map[string]map[string]struct{}{
 		"cancelled": {},
 	},
 	"failed": {
+		"running": {},
+	},
+	"cancelled": {
 		"running": {},
 	},
 }

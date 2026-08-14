@@ -59,6 +59,7 @@ type SessionAdapter struct {
 	attempts        map[string]*sessionAttemptRecord
 	inFlight        map[string]*exec.Cmd
 	attemptCancels  map[string]context.CancelFunc
+	attemptDone     map[string]chan struct{}
 }
 
 type sessionAttemptRecord struct {
@@ -775,6 +776,7 @@ func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
 		attempts:                make(map[string]*sessionAttemptRecord),
 		inFlight:                make(map[string]*exec.Cmd),
 		attemptCancels:          make(map[string]context.CancelFunc),
+		attemptDone:             make(map[string]chan struct{}),
 	}, nil
 }
 
@@ -794,6 +796,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	}
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
+	attemptDone := a.beginAttemptOperation(req.AttemptID)
+	defer a.endAttemptOperation(req.AttemptID, attemptDone)
 	a.setAttemptCancel(req.AttemptID, cancelAttempt)
 	defer a.clearAttemptCancel(req.AttemptID)
 
@@ -1701,7 +1705,7 @@ func formatToolActivityInput(raw json.RawMessage) string {
 	}
 }
 
-func (a *SessionAdapter) Cancel(_ context.Context, req CancelRequest) error {
+func (a *SessionAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 	if strings.TrimSpace(req.AttemptID) == "" {
 		return fmt.Errorf("attempt id is required")
 	}
@@ -1713,6 +1717,7 @@ func (a *SessionAdapter) Cancel(_ context.Context, req CancelRequest) error {
 	_, knownAttempt := a.attempts[req.AttemptID]
 	cmd := a.inFlight[req.AttemptID]
 	cancel := a.attemptCancels[req.AttemptID]
+	done := a.attemptDone[req.AttemptID]
 	a.mu.Unlock()
 
 	if !knownAttempt {
@@ -1736,6 +1741,16 @@ func (a *SessionAdapter) Cancel(_ context.Context, req CancelRequest) error {
 		PayloadJSON: string(payload),
 		OccurredAt:  req.OccurredAt,
 	})
+	if done != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for cancelled opencode attempt %q to stop: %w", req.AttemptID, ctx.Err())
+		}
+	}
 
 	return nil
 }
@@ -1887,6 +1902,8 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
+	attemptDone := a.beginAttemptOperation(req.AttemptID)
+	defer a.endAttemptOperation(req.AttemptID, attemptDone)
 	a.setAttemptCancel(req.AttemptID, cancelAttempt)
 	defer a.clearAttemptCancel(req.AttemptID)
 
@@ -2145,6 +2162,24 @@ func (a *SessionAdapter) clearAttemptCancel(attemptID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.attemptCancels, attemptID)
+}
+
+func (a *SessionAdapter) beginAttemptOperation(attemptID string) chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	done := make(chan struct{})
+	a.attemptDone[attemptID] = done
+	return done
+}
+
+func (a *SessionAdapter) endAttemptOperation(attemptID string, done chan struct{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.attemptDone[attemptID] != done {
+		return
+	}
+	delete(a.attemptDone, attemptID)
+	close(done)
 }
 
 func (a *SessionAdapter) appendEvent(attemptID string, event AttemptStreamEvent) {

@@ -62,4 +62,4 @@ Provider completion note:
 
 Retry exhaustion escalates to `chancellor` via dead-letter flow.
 
-These limits govern runtime-initiated recovery and workflow rework. Node attempt ordinals have no separate generic cap, and explicit operator Retry and Rerun actions on a failed run are uncapped.
+These limits govern runtime-initiated recovery and workflow rework. Node attempt ordinals have no separate generic cap, and explicit operator Retry and Rerun actions on failed or fully settled cancelled runs are uncapped.

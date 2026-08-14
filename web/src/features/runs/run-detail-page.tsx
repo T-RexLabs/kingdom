@@ -95,7 +95,7 @@ export function RunDetailPage() {
 	const run = runQuery.data;
 	const runReady = runQuery.isSuccess;
 	const executionVisible = activeTab === "execution";
-	const graphVisible = activeTab === "graph" || executionVisible;
+	const graphVisible = activeTab === "graph" || executionVisible || run?.status === "cancelled";
 	const timelineVisible = executionVisible;
 	const executionsQueryActive = executionVisible;
 	const agentsVisible = activeTab === "agents";
@@ -641,6 +641,7 @@ export function RunDetailPage() {
 
 	const governanceState = describeManualGovernanceState(run);
 	const failedNodeCount = run.failed_nodes.length;
+	const cancelledNodes = run.status === "cancelled" ? (graph?.nodes ?? []) : [];
   const untilAllApprove = !!run.run_until_all_approve;
   const skipReviewAndValidation = isSkipReviewValidationWorkflowId(run.workflow_id);
   const governanceJumpLabel = governanceState.isAwaitingPlanApproval
@@ -779,9 +780,9 @@ export function RunDetailPage() {
       <div className="flex-1 min-h-0 overflow-hidden px-page py-3">
         <div data-testid="run-detail-layout" className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
           <section className="order-2 flex min-h-0 flex-col rounded-md border border-border bg-background lg:order-1">
-            {failedNodeCount > 0 && (
-              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
-                 <GovernanceActions run={run} failedNodes={run.failed_nodes} showFinalApproval={false} />
+	            {(failedNodeCount > 0 || cancelledNodes.length > 0) && (
+	              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
+	                 <GovernanceActions run={run} failedNodes={run.failed_nodes} cancelledNodes={cancelledNodes} showFinalApproval={false} />
               </div>
             )}
 

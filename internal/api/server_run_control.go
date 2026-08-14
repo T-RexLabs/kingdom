@@ -145,12 +145,12 @@ func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "fetch run status failed")
 		return
 	}
-	if runStatus != "failed" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed before retry", "api.retry_node", map[string]any{"run_id": runID, "run_status": runStatus})
+	if runStatus != "failed" && runStatus != "cancelled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed or cancelled before retry", "api.retry_node", map[string]any{"run_id": runID, "run_status": runStatus})
 		return
 	}
 
-	if _, err := s.transitionService.ReplayRunFromFailure(r.Context(), state.ReplayRunFromFailureRequest{
+	if _, err := s.transitionService.ReplayTerminalRun(r.Context(), state.ReplayTerminalRunRequest{
 		RunID:           runID,
 		AnchorNodeID:    nodeKey,
 		TargetNodeIDs:   []string{nodeKey},
@@ -205,8 +205,8 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "fetch run status failed")
 		return
 	}
-	if runStatus != "failed" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed before rerun", "api.rerun_from_node", map[string]any{"run_id": runID, "run_status": runStatus})
+	if runStatus != "failed" && runStatus != "cancelled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed or cancelled before rerun", "api.rerun_from_node", map[string]any{"run_id": runID, "run_status": runStatus})
 		return
 	}
 	replayPlan, err := s.manualRerunPlan(r.Context(), runID, nodeKey)
@@ -219,7 +219,7 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.transitionService.ReplayRunFromFailure(r.Context(), state.ReplayRunFromFailureRequest{
+	if _, err := s.transitionService.ReplayTerminalRun(r.Context(), state.ReplayTerminalRunRequest{
 		RunID:           runID,
 		AnchorNodeID:    replayPlan.DisplayAnchorNodeID,
 		TargetNodeIDs:   replayPlan.TargetNodeIDs,
@@ -645,12 +645,26 @@ func (s *Server) writeRunTransitionApplyError(w http.ResponseWriter, err error, 
 	var illegalTransitionErr *state.IllegalTransitionError
 	var stateConflictErr *state.StateConflictError
 	var replayWaveActiveErr *state.ReplayWaveActiveError
+	var replayNotQuiescentErr *state.ReplayNotQuiescentError
 	switch {
+	case errors.As(err, &replayNotQuiescentErr):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, replayNotQuiescentErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"settling": replayNotQuiescentErr.Blockers}))
 	case errors.As(err, &illegalTransitionErr), errors.As(err, &stateConflictErr), errors.As(err, &replayWaveActiveErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, blockedMessage, operation, details)
 	default:
 		s.writeInternalError(w, internalMessage)
 	}
+}
+
+func mergeCanonicalErrorDetails(base map[string]any, extra map[string]any) map[string]any {
+	merged := make(map[string]any, len(base)+len(extra))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range extra {
+		merged[key] = value
+	}
+	return merged
 }
 
 func (s *Server) runStatusForRun(ctx context.Context, runID string) (string, error) {

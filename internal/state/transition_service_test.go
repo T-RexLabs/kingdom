@@ -888,28 +888,32 @@ func TestTransitionServiceClearsPlanPendingApprovalKeyWhenRunTerminalizes(t *tes
 	}
 }
 
-func TestTransitionServiceAllowsFailedToRunningReplayTransition(t *testing.T) {
+func TestTransitionServiceAllowsTerminalToRunningReplayTransition(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+	for _, terminalStatus := range []string{"failed", "cancelled"} {
+		t.Run(terminalStatus, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `UPDATE workflow_runs SET run_status = '`+terminalStatus+`' WHERE run_id = 'run_1'`)
 
-	svc := NewTransitionService(db, nil)
-	req := baseTransitionRequest(EntityTypeRun, "failed", "running")
-	req.TransitionID = "tr_run_reopen_failed"
-	req.EventID = "evt_run_reopen_failed"
-	req.AttemptID = "att_run_reopen_failed"
-	req.EventSeq = 1
-	req.ReasonCode = "manual_retry_requested"
-	req.ReasonText = "manual retry requested"
+			svc := NewTransitionService(db, nil)
+			req := baseTransitionRequest(EntityTypeRun, terminalStatus, "running")
+			req.TransitionID = "tr_run_reopen_" + terminalStatus
+			req.EventID = "evt_run_reopen_" + terminalStatus
+			req.AttemptID = "att_run_reopen_" + terminalStatus
+			req.EventSeq = 1
+			req.ReasonCode = "manual_retry_requested"
+			req.ReasonText = "manual retry requested"
 
-	if err := svc.Apply(context.Background(), req); err != nil {
-		t.Fatalf("apply failed->running transition: %v", err)
-	}
-	if got := queryRunStatus(t, db, "run_1"); got != "running" {
-		t.Fatalf("expected run status running, got %q", got)
+			if err := svc.Apply(context.Background(), req); err != nil {
+				t.Fatalf("apply %s->running transition: %v", terminalStatus, err)
+			}
+			if got := queryRunStatus(t, db, "run_1"); got != "running" {
+				t.Fatalf("expected run status running, got %q", got)
+			}
+		})
 	}
 }
 

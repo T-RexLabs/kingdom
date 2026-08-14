@@ -1444,7 +1444,7 @@ func TestServerRerunReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	}
 }
 
-func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
+func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1459,7 +1459,7 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		idempotencyKey: "idem-retry-conflict",
 	})
 	if retryConflict.Code != http.StatusConflict {
-		t.Fatalf("expected 409 retry conflict for non-failed run, got %d (%s)", retryConflict.Code, retryConflict.Body.String())
+		t.Fatalf("expected 409 retry conflict for non-terminal run, got %d (%s)", retryConflict.Code, retryConflict.Body.String())
 	}
 	assertErrorCode(t, retryConflict.Body.Bytes(), "dependency_blocked")
 
@@ -1472,7 +1472,7 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		idempotencyKey: "idem-rerun-conflict",
 	})
 	if rerunConflict.Code != http.StatusConflict {
-		t.Fatalf("expected 409 rerun conflict for non-failed run, got %d (%s)", rerunConflict.Code, rerunConflict.Body.String())
+		t.Fatalf("expected 409 rerun conflict for non-terminal run, got %d (%s)", rerunConflict.Code, rerunConflict.Body.String())
 	}
 	assertErrorCode(t, rerunConflict.Body.Bytes(), "dependency_blocked")
 
@@ -1501,6 +1501,106 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 	if rerunAccepted.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 rerun accepted for failed run, got %d (%s)", rerunAccepted.Code, rerunAccepted.Body.String())
 	}
+}
+
+func TestServerRetryNodeReopensSettledCancelledRun(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	setRunStatus(t, db, runID, "cancelled")
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		body:           map[string]any{"reason": "resume cancelled work"},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-retry-cancelled",
+	})
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 retry accepted for settled cancelled run, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	assertLatestAttempt(t, db, runID, "kickoff", 1, "ready")
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatalf("query reopened run status: %v", err)
+	}
+	if runStatus != "running" {
+		t.Fatalf("expected cancelled run to reopen as running, got %q", runStatus)
+	}
+}
+
+func TestServerRerunFromCancelledWaitsForCancellationOutbox(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	now := time.Now().UTC().Format(time.RFC3339)
+	agentID := "agent_cancelled_replay_" + runID
+	nodeRunID := "node_run_cancelled_replay_" + runID
+	attemptID := runID + ":kickoff:1"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES (?, ?, 'kickoff', 1, 1, 'cancelled', 'council-member', ?, 1, ?)`, nodeRunID, runID, agentID, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, session_ref, committed_at, created_at, updated_at) VALUES (?, ?, ?, 'committed_cancelled', 'provider_backed', ?, ?, ?, ?)`, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'run_cancelled_by_user', 'cancel settling', ?, 'pending', ?, ?)`, "cancel_outbox_"+runID, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
+	setRunStatus(t, db, runID, "cancelled")
+
+	blocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume after cancellation"},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-rerun-cancelled-settling",
+	})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while cancellation is settling, got %d (%s)", blocked.Code, blocked.Body.String())
+	}
+	assertErrorCode(t, blocked.Body.Bytes(), "dependency_blocked")
+
+	mustExecSQL(t, db, `UPDATE attempt_cancel_outbox SET status = 'published', published_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, attemptID)
+	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'committed_cancelled', '{}', 'pending', ?, ?)`, "completion_outbox_"+runID, attemptID, runID, nodeRunID, now, now)
+	completionBlocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume while completion settles"},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-rerun-cancelled-completion-settling",
+	})
+	if completionBlocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while completion is settling, got %d (%s)", completionBlocked.Code, completionBlocked.Body.String())
+	}
+
+	mustExecSQL(t, db, `UPDATE attempt_outbox SET status = 'published', published_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, attemptID)
+	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?)`, "session_cancelled_replay_"+runID, agentID, now, now, now, now)
+	leaseBlocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume while lease is active"},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-rerun-cancelled-lease-active",
+	})
+	if leaseBlocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while session lease is active, got %d (%s)", leaseBlocked.Code, leaseBlocked.Body.String())
+	}
+
+	mustExecSQL(t, db, `UPDATE session_leases SET status = 'closed', updated_at = ? WHERE session_id = ?`, now, "session_cancelled_replay_"+runID)
+	accepted := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume after cancellation settled"},
+		actorID:        "actor-1",
+		roleID:         "chancellor",
+		idempotencyKey: "idem-rerun-cancelled-settled",
+	})
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 after cancellation settled, got %d (%s)", accepted.Code, accepted.Body.String())
+	}
+	assertLatestAttempt(t, db, runID, "kickoff", 2, "ready")
 }
 
 func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {

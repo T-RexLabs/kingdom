@@ -25,27 +25,30 @@ import { describeManualGovernanceState } from "./manual-governance-state";
 interface GovernanceActionsProps {
   run: RunSummary;
   failedNodes?: RunGraphNode[];
+  cancelledNodes?: RunGraphNode[];
   showFinalApproval?: boolean;
   showNodeActions?: boolean;
   finalApprovalCardRef?: Ref<HTMLDivElement>;
 }
 
-export function GovernanceActions({ run, failedNodes = [], showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
+export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
   const governanceState = describeManualGovernanceState(run);
   const isAwaitingApproval = governanceState.isAwaitingFinalApproval;
   const isFailedRun = run.status === "failed";
+  const isCancelledRun = run.status === "cancelled";
+  const actionNodes = isCancelledRun ? cancelledNodes : failedNodes;
 
   // Only show governance panel if there are actionable items
   const hasActions =
-    (showFinalApproval && isAwaitingApproval) || (showNodeActions && isFailedRun && failedNodes.length > 0);
+    (showFinalApproval && isAwaitingApproval) || (showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0);
 
   if (!hasActions) return null;
 
   return (
     <div className="space-y-3">
       {showFinalApproval && isAwaitingApproval && <FinalApprovalCard run={run} cardRef={finalApprovalCardRef} />}
-      {showNodeActions && isFailedRun && failedNodes.length > 0 && (
-        <NodeActionsCard runId={run.run_id} failedNodes={failedNodes} />
+      {showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0 && (
+        <NodeActionsCard runId={run.run_id} nodes={actionNodes} cancelled={isCancelledRun} />
       )}
     </div>
   );
@@ -109,10 +112,12 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
 
 export function NodeActionsCard({
   runId,
-  failedNodes,
+  nodes,
+  cancelled,
 }: {
   runId: string;
-  failedNodes: RunGraphNode[];
+  nodes: RunGraphNode[];
+  cancelled: boolean;
 }) {
   const retry = useRetryNode(runId);
   const rerun = useRerunFromNode(runId);
@@ -161,7 +166,7 @@ export function NodeActionsCard({
         <CardTitle className="flex items-center gap-2 text-sm">
           <AlertTriangle className="h-4 w-4 text-status-failed" />
           <span className="text-status-failed">
-            Failed Nodes ({failedNodes.length})
+            {cancelled ? "Cancelled Run Nodes" : "Failed Nodes"} ({nodes.length})
           </span>
         </CardTitle>
         <p className="text-xs text-foreground-subtle">
@@ -181,8 +186,9 @@ export function NodeActionsCard({
             }
           />
         )}
-        {failedNodes.map((node) => {
+        {nodes.map((node) => {
           const { executionModeLabel, roleLabel } = nodeExecutionSemantics(node.execution_ownership, node.required_role);
+          const reason = node.failure_reason ?? (cancelled ? "" : "Failure reason unavailable.");
 
           return (
             <div
@@ -198,9 +204,7 @@ export function NodeActionsCard({
                   <span className="text-foreground-subtle">{executionModeLabel}</span>
                   <span className="text-foreground-subtle">{roleLabel}</span>
                 </div>
-	                <p className="mt-1 text-wrap-anywhere text-xs text-foreground-subtle">
-                  {node.failure_reason ?? "Failure reason unavailable."}
-                </p>
+	                {reason ? <p className="mt-1 text-wrap-anywhere text-xs text-foreground-subtle">{reason}</p> : null}
               </div>
               <div className="flex items-center gap-1.5">
                 <Button

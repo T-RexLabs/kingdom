@@ -1499,6 +1499,12 @@ func TestSessionAdapterCancelInFlightAttempt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
+	adapter.mu.Lock()
+	_, operationStillActive := adapter.attemptDone["attempt_cancel"]
+	adapter.mu.Unlock()
+	if operationStillActive {
+		t.Fatal("cancel returned before the provider operation stopped")
+	}
 
 	select {
 	case execErr := <-errCh:

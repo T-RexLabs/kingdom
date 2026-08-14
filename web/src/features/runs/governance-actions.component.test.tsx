@@ -48,6 +48,12 @@ describe("governance actions visibility", () => {
     display_state: "failed",
   };
 
+  const cancelledRun: RunSummary = {
+    ...runningRun,
+    status: "cancelled",
+    display_state: "cancelled",
+  };
+
   const awaitingFinalApprovalRun: RunSummary = {
     ...runningRun,
     status: "awaiting_human_confirmation",
@@ -86,6 +92,21 @@ describe("governance actions visibility", () => {
     expect(screen.getByText("Reviewer Shieldmaiden")).toBeInTheDocument();
     expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
     expect(screen.getByText("Reviewer rejected missing evidence.")).toHaveClass("text-wrap-anywhere");
+  });
+
+  it("shows every supplied workflow node when a run is cancelled", () => {
+    render(
+      <GovernanceActions
+        run={cancelledRun}
+        cancelledNodes={[{ ...failedNode, state: "cancelled", failure_reason: undefined }]}
+      />,
+    );
+
+    expect(screen.getByText("Cancelled Run Nodes (1)")).toBeInTheDocument();
+    expect(screen.getByText("execution_review_shieldmaiden")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
+    expect(screen.queryByText("Failure reason unavailable.")).not.toBeInTheDocument();
   });
 
   it("does not leave final approval stuck in success state when the run is actionable again", () => {

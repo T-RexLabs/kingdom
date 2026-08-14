@@ -290,6 +290,7 @@ The important run outcomes are:
 Key rule:
 
 - `succeeded` requires legal workflow progression and final authority acceptance
+- `cancelled` runs retain their attempt history and can be reopened by explicit Retry or Rerun only after cancellation and completion work has fully settled
 
 Artifact existence does not decide whether the run succeeds.
 
