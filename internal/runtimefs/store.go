@@ -16,24 +16,25 @@ import (
 )
 
 type Store struct {
-	db       *sql.DB
-	root     string
-	blobRoot string
-	tempRoot string
+	db                *sql.DB
+	root              string
+	blobRoot          string
+	blobFallbackRoots []string
+	tempRoot          string
 }
 
 type RunExecutionTarget struct {
-	RunID              string
-	TargetMode         string
-	SourceRoot         string
-	ExecutionRoot      string
-	PublishRoot        string
-	SourceSnapshotID   string
-	TrustedSnapshotID  string
+	RunID               string
+	TargetMode          string
+	SourceRoot          string
+	ExecutionRoot       string
+	PublishRoot         string
+	SourceSnapshotID    string
+	TrustedSnapshotID   string
 	PublishedSnapshotID string
-	State              string
-	CreatedAt          string
-	UpdatedAt          string
+	State               string
+	CreatedAt           string
+	UpdatedAt           string
 }
 
 type SnapshotRecord struct {
@@ -63,17 +64,17 @@ type SnapshotDiffEntry struct {
 }
 
 type EnsureExecutionTargetRequest struct {
-	RunID              string
-	TargetMode         string
-	SourceRoot         string
-	ExecutionRoot      string
-	PublishRoot        string
-	SourceSnapshotID   string
-	TrustedSnapshotID  string
+	RunID               string
+	TargetMode          string
+	SourceRoot          string
+	ExecutionRoot       string
+	PublishRoot         string
+	SourceSnapshotID    string
+	TrustedSnapshotID   string
 	PublishedSnapshotID string
-	State              string
-	CreatedAt          string
-	UpdatedAt          string
+	State               string
+	CreatedAt           string
+	UpdatedAt           string
 }
 
 type CaptureSnapshotRequest struct {
@@ -102,6 +103,21 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 		}
 	}
 	return &Store{db: db, root: cleanRoot, blobRoot: blobRoot, tempRoot: tempRoot}, nil
+}
+
+func (s *Store) AddBlobFallbackRoot(root string) error {
+	if s == nil {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	cleanRoot, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil {
+		return fmt.Errorf("resolve blob fallback root: %w", err)
+	}
+	if strings.TrimSpace(root) == "" || cleanRoot == s.root {
+		return nil
+	}
+	s.blobFallbackRoots = append(s.blobFallbackRoots, filepath.Join(cleanRoot, "snapshot-blobs"))
+	return nil
 }
 
 func (s *Store) RunTargetRoot(runID string) string {
@@ -320,6 +336,10 @@ func (s *Store) ResolveSnapshotManifest(ctx context.Context, snapshotID string) 
 		if err := rows.Scan(&entry.Path, &entry.EntryType, &entry.BlobID, &entry.SizeBytes, &entry.ModeBits, &entry.ModifiedNS); err != nil {
 			return nil, fmt.Errorf("scan snapshot entry %q: %w", trimmedSnapshotID, err)
 		}
+		if trackedfs.IsProtectedRelativePath(entry.Path) {
+			delete(manifest, entry.Path)
+			continue
+		}
 		if entry.EntryType == "delete" {
 			delete(manifest, entry.Path)
 			continue
@@ -455,10 +475,23 @@ func (s *Store) ReadBlob(blobID string) ([]byte, error) {
 		return nil, err
 	}
 	raw, err := os.ReadFile(blobPath)
-	if err != nil {
+	if err == nil {
+		return raw, nil
+	}
+	if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read blob %q: %w", trimmedBlobID, err)
 	}
-	return raw, nil
+	for _, fallbackRoot := range s.blobFallbackRoots {
+		fallbackPath := filepath.Join(fallbackRoot, trimmedBlobID[:2], trimmedBlobID[2:4], trimmedBlobID)
+		raw, fallbackErr := os.ReadFile(fallbackPath)
+		if fallbackErr == nil {
+			return raw, nil
+		}
+		if !os.IsNotExist(fallbackErr) {
+			return nil, fmt.Errorf("read fallback blob %q: %w", trimmedBlobID, fallbackErr)
+		}
+	}
+	return nil, fmt.Errorf("read blob %q: %w", trimmedBlobID, err)
 }
 
 func (s *Store) blobPath(blobID string) (string, error) {

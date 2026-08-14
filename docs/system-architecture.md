@@ -66,7 +66,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Workspace execution is runtime-resolved before dispatch from the run's selected publish mode:
   - `publish_mode=direct` captures the configured project root into one runtime-owned run-scoped execution target and publishes changes back to the configured project root as a projection step
   - `publish_mode=git_worktree` requires a valid non-bare git working tree, creates a per-run sibling worktree named from the decree title slug plus `run_id` next to the repository's main worktree root, and uses that scoped worktree project root as the shared execution/publication target for the run
-- Runtime-owned filesystem snapshots ignore `.git`, `.hg`, `.svn`, `.jj`, `.kingdom`, `kingdom-artifacts`, symlinks, and other non-regular files.
+- Runtime-owned filesystem snapshots live under `.kingdom/runtime`, fall back read-only to the legacy host temp store for existing runs, and ignore `.git`, `.hg`, `.svn`, `.jj`, `.kingdom`, `.playwright-cli`, `.playwright-mcp`, `kingdom-artifacts`, symlinks, and other non-regular files.
 - Builder deliverables are delta-based: only files created, changed, or deleted relative to the trusted runtime-owned snapshot are persisted as canonical builder artifacts.
 - Non-builder roles are response-first; runtime materializes markdown response snapshots for them.
 - Durable decree execution completion flows through `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_event_log`, `attempt_executions`, and `attempt_outbox`.

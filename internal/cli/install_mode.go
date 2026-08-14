@@ -657,6 +657,8 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		GovernanceMode:      cfg.Provider.GovernanceMode,
 		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
 		PublishMode:         cfg.Publish.Mode,
+		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
+		WorkspaceFallbacks:  []string{filepath.Join(os.TempDir(), "kingdom-workspaces")},
 		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
 		WorktreeRetention:   worktreeRetention,
 		ProviderSession: opencode.SessionAdapterConfig{

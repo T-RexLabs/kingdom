@@ -120,6 +120,8 @@ func run() (exitCode int) {
 		ProviderStrict:      providerStrict,
 		GovernanceMode:      governanceMode,
 		AutonomousApprovals: &autonomousApprovals,
+		WorkspaceRoot:       filepath.Join(filepath.Dir(dbPath), "runtime"),
+		WorkspaceFallbacks:  []string{filepath.Join(os.TempDir(), "kingdom-workspaces")},
 		ProviderSession: opencode.SessionAdapterConfig{
 			BinaryPath: providerBinary,
 			WorkDir:    repoRoot,

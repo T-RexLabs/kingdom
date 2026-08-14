@@ -15,6 +15,8 @@ var protectedRootSegments = map[string]struct{}{
 	".svn":              {},
 	".jj":               {},
 	".kingdom":          {},
+	".playwright-cli":   {},
+	".playwright-mcp":   {},
 	"kingdom-artifacts": {},
 }
 

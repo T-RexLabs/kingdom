@@ -89,6 +89,75 @@ func TestCaptureRestoreAndDiffSnapshots(t *testing.T) {
 	}
 }
 
+func TestResolveSnapshotManifestDropsNewlyProtectedHistoricalPaths(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_protected_history")
+	mustRuntimeFSExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, snapshot_kind, created_at) VALUES ('snap_protected_history', 'run_protected_history', 'baseline', '2026-03-01T12:00:00Z')`)
+	mustRuntimeFSExec(t, db, `INSERT INTO filesystem_blobs (blob_id, size_bytes, created_at) VALUES ('missing_protected_blob', 10, '2026-03-01T12:00:00Z')`)
+	mustRuntimeFSExec(t, db, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES ('snap_protected_history', '.playwright-mcp/page.yml', 'file', 'missing_protected_blob', 10, 420, 0)`)
+
+	manifest, err := store.ResolveSnapshotManifest(context.Background(), "snap_protected_history")
+	if err != nil {
+		t.Fatalf("resolve protected historical manifest: %v", err)
+	}
+	if len(manifest) != 0 {
+		t.Fatalf("expected protected historical path to be removed, got %#v", manifest)
+	}
+	if err := store.RestoreSnapshot(context.Background(), "snap_protected_history", t.TempDir()); err != nil {
+		t.Fatalf("restore should not read a protected historical blob: %v", err)
+	}
+}
+
+func TestReadBlobFallsBackToLegacyStore(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	legacyRoot := t.TempDir()
+	legacyStore, err := NewStore(db, legacyRoot)
+	if err != nil {
+		t.Fatalf("new legacy runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_legacy_blob")
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "src/app.txt", "legacy snapshot content")
+	if _, err := legacyStore.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID:   "snap_legacy_blob",
+		RunID:        "run_legacy_blob",
+		SnapshotKind: "baseline",
+		RootPath:     sourceRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("capture legacy snapshot: %v", err)
+	}
+
+	durableStore, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new durable runtime fs store: %v", err)
+	}
+	if err := durableStore.AddBlobFallbackRoot(legacyRoot); err != nil {
+		t.Fatalf("add legacy blob fallback: %v", err)
+	}
+	restoreRoot := t.TempDir()
+	if err := durableStore.RestoreSnapshot(context.Background(), "snap_legacy_blob", restoreRoot); err != nil {
+		t.Fatalf("restore snapshot through legacy blob fallback: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(restoreRoot, "src", "app.txt"))
+	if err != nil {
+		t.Fatalf("read restored legacy file: %v", err)
+	}
+	if string(raw) != "legacy snapshot content" {
+		t.Fatalf("unexpected restored legacy content %q", string(raw))
+	}
+}
+
 func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
 	t.Parallel()
 
@@ -155,6 +224,13 @@ func applyRuntimeFSMigrations(t *testing.T, db *sql.DB) {
 	}
 	if err := state.ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("apply migrations: %v", err)
+	}
+}
+
+func mustRuntimeFSExec(t *testing.T, db *sql.DB, statement string) {
+	t.Helper()
+	if _, err := db.Exec(statement); err != nil {
+		t.Fatalf("execute runtime fs test statement: %v", err)
 	}
 }
 

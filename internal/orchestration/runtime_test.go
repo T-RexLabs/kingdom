@@ -6497,12 +6497,12 @@ func TestDiscoverWorkspaceArtifactsUsesTrackedFilesystemPolicy(t *testing.T) {
 	for _, artifact := range artifacts {
 		paths = append(paths, artifact.Path)
 	}
-	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "docs/merge-gate-checklist.md", ".playwright-mcp/console.log"} {
+	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "docs/merge-gate-checklist.md"} {
 		if !slices.Contains(paths, relativePath) {
 			t.Fatalf("expected artifact list to include %s, got %v", relativePath, paths)
 		}
 	}
-	for _, relativePath := range []string{".kingdom/ignored.txt", "kingdom-artifacts/ignored.txt"} {
+	for _, relativePath := range []string{".kingdom/ignored.txt", ".playwright-mcp/console.log", "kingdom-artifacts/ignored.txt"} {
 		if slices.Contains(paths, relativePath) {
 			t.Fatalf("expected artifact list to exclude %s, got %v", relativePath, paths)
 		}
