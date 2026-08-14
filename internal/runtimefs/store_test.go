@@ -158,6 +158,52 @@ func TestReadBlobFallsBackToLegacyStore(t *testing.T) {
 	}
 }
 
+func TestRecoverMissingSnapshotBlobsRequiresMatchingSourceDigest(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	legacyRoot := t.TempDir()
+	legacyStore, err := NewStore(db, legacyRoot)
+	if err != nil {
+		t.Fatalf("new legacy runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_source_recovery")
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "src/app.txt", "recoverable source")
+	if _, err := legacyStore.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID:   "snap_source_recovery",
+		RunID:        "run_source_recovery",
+		SnapshotKind: "baseline",
+		RootPath:     sourceRoot,
+		CreatedAt:    "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("capture source recovery snapshot: %v", err)
+	}
+
+	durableStore, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new durable runtime fs store: %v", err)
+	}
+	if err := durableStore.RecoverMissingSnapshotBlobs(context.Background(), "snap_source_recovery", sourceRoot); err != nil {
+		t.Fatalf("recover snapshot blob from matching source: %v", err)
+	}
+	restoreRoot := t.TempDir()
+	if err := durableStore.RestoreSnapshot(context.Background(), "snap_source_recovery", restoreRoot); err != nil {
+		t.Fatalf("restore source-recovered snapshot: %v", err)
+	}
+	assertTestFile(t, restoreRoot, "src/app.txt", "recoverable source")
+
+	writeTestFile(t, sourceRoot, "src/app.txt", "different source")
+	secondDurableStore, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new second durable runtime fs store: %v", err)
+	}
+	if err := secondDurableStore.RecoverMissingSnapshotBlobs(context.Background(), "snap_source_recovery", sourceRoot); err == nil {
+		t.Fatal("expected digest-mismatched source recovery to fail")
+	}
+}
+
 func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
 	t.Parallel()
 

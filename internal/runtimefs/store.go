@@ -465,6 +465,74 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 	return nil
 }
 
+func (s *Store) RecoverMissingSnapshotBlobs(ctx context.Context, snapshotID string, sourceRoots ...string) error {
+	manifest, err := s.ResolveSnapshotManifest(ctx, snapshotID)
+	if err != nil {
+		return err
+	}
+	for path, entry := range manifest {
+		hasBlob, err := s.hasBlob(entry.BlobID)
+		if err != nil {
+			return err
+		}
+		if hasBlob {
+			continue
+		}
+		recovered := false
+		for _, sourceRoot := range sourceRoots {
+			if strings.TrimSpace(sourceRoot) == "" {
+				continue
+			}
+			resolved, resolveErr := trackedfs.ResolveWithinRoot(sourceRoot, path)
+			if resolveErr != nil {
+				continue
+			}
+			raw, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				continue
+			}
+			sum := sha256.Sum256(raw)
+			if hex.EncodeToString(sum[:]) != entry.BlobID {
+				continue
+			}
+			blobID, writeErr := s.writeBlob(raw)
+			if writeErr != nil {
+				return fmt.Errorf("recover snapshot blob for %q: %w", path, writeErr)
+			}
+			if blobID != entry.BlobID {
+				return fmt.Errorf("recovered snapshot blob mismatch for %q", path)
+			}
+			recovered = true
+			break
+		}
+		if !recovered {
+			return fmt.Errorf("recover missing snapshot blob %q for %q: no source matched its digest", entry.BlobID, path)
+		}
+	}
+	return nil
+}
+
+func (s *Store) hasBlob(blobID string) (bool, error) {
+	trimmedBlobID := strings.TrimSpace(blobID)
+	blobPath, err := s.blobPath(trimmedBlobID)
+	if err != nil {
+		return false, err
+	}
+	paths := make([]string, 0, len(s.blobFallbackRoots)+1)
+	paths = append(paths, blobPath)
+	for _, fallbackRoot := range s.blobFallbackRoots {
+		paths = append(paths, filepath.Join(fallbackRoot, trimmedBlobID[:2], trimmedBlobID[2:4], trimmedBlobID))
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("stat blob %q: %w", trimmedBlobID, err)
+		}
+	}
+	return false, nil
+}
+
 func (s *Store) ReadBlob(blobID string) ([]byte, error) {
 	trimmedBlobID := strings.TrimSpace(blobID)
 	if trimmedBlobID == "" {

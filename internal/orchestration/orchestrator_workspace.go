@@ -188,6 +188,9 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 		if o == nil || o.fsStore == nil {
 			return fmt.Errorf("runtime filesystem store is required")
 		}
+		if err := o.fsStore.RecoverMissingSnapshotBlobs(context.Background(), trustedSnapshotID, workspaceCtx.PublishRoot, workspaceCtx.SeedRoot); err != nil {
+			return fmt.Errorf("recover execution workspace snapshot blobs: %w", err)
+		}
 		if err := o.fsStore.RestoreSnapshot(context.Background(), trustedSnapshotID, resolvedWorkspace); err != nil {
 			return fmt.Errorf("restore execution workspace from trusted snapshot: %w", err)
 		}
