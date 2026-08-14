@@ -17,8 +17,12 @@ func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
 		"ai-hub/.git/index":             "ignore nested git",
 		".kingdom/state.json":           "ignore",
 		"services/api/.kingdom/state":   "ignore nested kingdom",
+		".opencode/cache/state":         "ignore tool cache",
 		".playwright-mcp/page.yml":      "ignore browser artifact",
 		".playwright-cli/page.yml":      "ignore browser artifact",
+		"web/node_modules/pkg/index.js": "ignore dependencies",
+		"kd-sandbox/run/output.txt":     "ignore sandbox",
+		"build/.tmp/cache":              "ignore temp state",
 		"kingdom-artifacts/run/out.txt": "ignore",
 	}
 	for relativePath, body := range files {
@@ -60,6 +64,10 @@ func TestIsProtectedRelativePath(t *testing.T) {
 		{path: "kingdom-artifacts/run/file.txt", want: true},
 		{path: ".playwright-mcp/page.yml", want: true},
 		{path: ".playwright-cli/page.yml", want: true},
+		{path: ".opencode/cache/state", want: true},
+		{path: "web/node_modules/pkg/index.js", want: true},
+		{path: "kd-sandbox/run/output.txt", want: true},
+		{path: "build/.tmp/cache", want: true},
 		{path: "src/app.js", want: false},
 		{path: "docs/.gitignore", want: false},
 	}

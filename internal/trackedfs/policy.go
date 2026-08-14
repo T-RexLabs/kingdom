@@ -15,9 +15,13 @@ var protectedRootSegments = map[string]struct{}{
 	".svn":              {},
 	".jj":               {},
 	".kingdom":          {},
+	".opencode":         {},
 	".playwright-cli":   {},
 	".playwright-mcp":   {},
+	".tmp":              {},
+	"kd-sandbox":        {},
 	"kingdom-artifacts": {},
+	"node_modules":      {},
 }
 
 type Metadata struct {
