@@ -309,7 +309,6 @@ export function ConnectionsPage() {
   useEffect(() => {
     let active = true;
     void (async () => {
-      let sharedSetupEnabled = false;
       try {
         const connections = await apiFetch<{ items: Connection[] }>(
           "/connections",
@@ -323,7 +322,6 @@ export function ConnectionsPage() {
         const options = await apiFetch<SetupOptions>(
           "/connections/github/setup-options",
         );
-        sharedSetupEnabled = options.shared_enabled;
         if (active) setSetupOptions(options);
       } catch {
         if (active) setSetupOptions({ shared_enabled: false });
@@ -332,6 +330,10 @@ export function ConnectionsPage() {
         const currentFlow = await apiFetch<FlowStatus>(
           "/connections/github/manifest-flows",
         );
+        // Server flow state is memory-only and lives for an hour, so it
+        // outlives an abandoned setup. Adopt it as resumable state, but never
+        // open a modal on the operator's behalf: returning to this page is not
+        // a request to resume.
         if (
           active &&
           currentFlow &&
@@ -339,8 +341,6 @@ export function ConnectionsPage() {
           currentFlow.stage in flowCopy
         ) {
           setFlow(currentFlow);
-          if (sharedSetupEnabled && currentFlow.stage !== "completed")
-            setManifestOpen(true);
         }
       } catch (cause) {
         if (active && cause instanceof ApiError && cause.status !== 404)
@@ -623,6 +623,16 @@ export function ConnectionsPage() {
     }
   };
 
+  // One source of truth for "a private-App setup is live and unfinished" so the
+  // inline and modal surfaces cannot disagree about what is startable.
+  const manifestFlowLive = !!flow && flow.stage !== "completed" && flow.stage !== "failed";
+  const startManifestDisabled =
+    !!operation ||
+    !!manifestError ||
+    manifestFlowLive ||
+    flow?.stage === "failed" ||
+    (ownerType === "organization" && !organization.trim());
+
   const startManifest = async () => {
     const requestID = `manifest-start:${ownerType}:${organization.trim()}`;
     setOperation("flow-start");
@@ -657,6 +667,42 @@ export function ConnectionsPage() {
     } finally {
       setOperation("");
     }
+  };
+
+  const abandonManifest = async () => {
+    if (!flow) {
+      setManifestOpen(false);
+      return;
+    }
+    const requestID = `manifest-discard:${flow.flow_id}`;
+    setOperation("flow-discard");
+    try {
+      await apiFetch(`/connections/github/manifest-flows/${flow.flow_id}`, {
+        method: "DELETE",
+        headers: {
+          "Idempotency-Key": setupRequestKey(requestID, "manifest-discard"),
+        },
+      });
+      settleSetupRequest(requestID);
+    } catch (cause) {
+      settleSetupRequest(requestID, cause);
+      // A flow the server no longer knows about is already abandoned; anything
+      // else is surfaced so the operator is not left with invisible state.
+      if (!(cause instanceof ApiError && cause.status === 404)) {
+        setManifestError(requestError(cause));
+        setManifestFailureStage(flow.stage);
+        setManifestRecovery("restart");
+        setOperation("");
+        return;
+      }
+    }
+    advancing.current = "";
+    setFlow(undefined);
+    setManifestError(undefined);
+    setManifestFailureStage(undefined);
+    setManifestRecovery(undefined);
+    setManifestOpen(false);
+    setOperation("");
   };
 
   const recoverManifest = () => {
@@ -769,8 +815,8 @@ export function ConnectionsPage() {
                     ? "Authorize Kingdom's public GitHub App, then choose one installation. Access remains the intersection of the App installation and your GitHub account."
                     : "GitHub creates an App owned by your personal account or organization. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
                 </p>
-                {!setupOptions.shared_enabled && (flow || manifestError) ? (
-                  <div className="mt-4">
+                {flow || manifestError ? (
+                  <div className="mt-4 space-y-3">
                     <ManifestSetupStatus
                       flow={flow}
                       error={manifestError}
@@ -779,6 +825,29 @@ export function ConnectionsPage() {
                       busy={operation.startsWith("flow-")}
                       onRecover={recoverManifest}
                     />
+                    {setupOptions.shared_enabled && manifestFlowLive ? (
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => setManifestOpen(true)}
+                        >
+                          Resume setup
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={!!operation}
+                          onClick={() => void abandonManifest()}
+                        >
+                          {operation === "flow-discard" ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : null}
+                          Abandon setup
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -849,12 +918,7 @@ export function ConnectionsPage() {
                   )}
                   <Button
                     className="w-full"
-                    disabled={
-                      !!operation ||
-                      !!manifestError ||
-                      flow?.stage === "failed" ||
-                      (ownerType === "organization" && !organization.trim())
-                    }
+                    disabled={startManifestDisabled}
                     onClick={() => void startManifest()}
                   >
                     {operation === "flow-start" ? (
@@ -1317,9 +1381,23 @@ export function ConnectionsPage() {
               description="Create and own a dedicated App for this Kingdom workspace."
               onClose={() => setManifestOpen(false)}
               footer={
-                <Button variant="ghost" onClick={() => setManifestOpen(false)}>
-                  Cancel
-                </Button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  {manifestFlowLive ? (
+                    <Button
+                      variant="outline"
+                      disabled={!!operation}
+                      onClick={() => void abandonManifest()}
+                    >
+                      {operation === "flow-discard" ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : null}
+                      Abandon setup
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" onClick={() => setManifestOpen(false)}>
+                    Close
+                  </Button>
+                </div>
               }
             >
               <div className="space-y-4">
@@ -1355,12 +1433,7 @@ export function ConnectionsPage() {
                 )}
                 <Button
                   className="w-full"
-                  disabled={
-                    !!operation ||
-                    !!manifestError ||
-                    (!!flow && flow.stage !== "completed") ||
-                    (ownerType === "organization" && !organization.trim())
-                  }
+                  disabled={startManifestDisabled}
                   onClick={() => void startManifest()}
                 >
                   Create private App on GitHub

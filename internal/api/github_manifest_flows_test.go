@@ -287,3 +287,106 @@ func TestManifestFlowRetentionEvictsOldestTerminalAndPreservesActive(t *testing.
 		t.Fatalf("manifest state map retained %d entries", len(manager.states))
 	}
 }
+
+func TestManifestFlowDiscardIsSessionBoundAndZeroesSecrets(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	manager := newManifestFlowManager(func() time.Time { return now })
+	flow, err := manager.Create("session-a", "https://kingdom.example", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RecordManifestCode(flow.ManifestState, "manifest-code"); err != nil {
+		t.Fatal(err)
+	}
+	secret := manager.flows[flow.ID].ManifestCode
+
+	if err := manager.Discard(flow.ID, "session-b", flow.Origin); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("cross-session discard error=%v", err)
+	}
+	if err := manager.Discard(flow.ID, flow.SessionID, "https://other.example"); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("cross-origin discard error=%v", err)
+	}
+	if err := manager.Discard(flow.ID, flow.SessionID, flow.Origin); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, value := range secret {
+		if value != 0 {
+			t.Fatalf("discarded flow retained manifest code %q", secret)
+		}
+	}
+	if _, err := manager.Status(flow.ID, flow.SessionID, flow.Origin); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("status after discard error=%v", err)
+	}
+	if _, err := manager.Current(flow.SessionID, flow.Origin); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("current after discard error=%v", err)
+	}
+	if _, err := manager.RecordManifestCode(flow.ManifestState, "replay"); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("state replay after discard error=%v", err)
+	}
+	if err := manager.Discard(flow.ID, flow.SessionID, flow.Origin); !errors.Is(err, errManifestFlowNotFound) {
+		t.Fatalf("repeat discard error=%v", err)
+	}
+}
+
+func TestDiscardGitHubManifestFlowEndpointAbandonsResumableSetup(t *testing.T) {
+	handler, _ := newAPIServerForTest(t)
+	server := handler.(*Server)
+	cookie, session := seedBrowserSessionForTest(t, server, "http://127.0.0.1:9090", server.now().UTC().Add(time.Hour))
+
+	start := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9090/api/v1/connections/github/manifest-flows", bytes.NewBufferString(`{"owner_type":"personal"}`))
+	start.RemoteAddr = "127.0.0.1:49152"
+	start.Host = "127.0.0.1:9090"
+	start.Header.Set("Content-Type", "application/json")
+	start.Header.Set("Origin", "http://127.0.0.1:9090")
+	start.Header.Set("X-CSRF-Token", session.CSRFToken)
+	start.Header.Set("Idempotency-Key", testIdempotencyKey(t, "manifest-start", time.Now()))
+	start.AddCookie(cookie)
+	startResponse := httptest.NewRecorder()
+	handler.ServeHTTP(startResponse, start)
+	if startResponse.Code != http.StatusCreated {
+		t.Fatalf("start status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var started startManifestFlowResponse
+	if err := json.Unmarshal(startResponse.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+
+	// Distinct logical keys: an identical key is a replay the middleware serves
+	// from its store, which would hide the handler's own behaviour.
+	discard := func(logicalKey string, authenticated bool) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:9090/api/v1/connections/github/manifest-flows/"+started.FlowID, nil)
+		request.RemoteAddr = "127.0.0.1:49152"
+		request.Host = "127.0.0.1:9090"
+		request.Header.Set("Origin", "http://127.0.0.1:9090")
+		request.Header.Set("Idempotency-Key", testIdempotencyKey(t, logicalKey, time.Now()))
+		if authenticated {
+			request.Header.Set("X-CSRF-Token", session.CSRFToken)
+			request.AddCookie(cookie)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	if response := discard("manifest-discard-anonymous", false); response.Code == http.StatusNoContent {
+		t.Fatalf("discard without a browser session succeeded: %d", response.Code)
+	}
+	if response := discard("manifest-discard", true); response.Code != http.StatusNoContent {
+		t.Fatalf("discard status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// An abandoned flow must stop presenting itself as resumable setup state.
+	current := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:9090/api/v1/connections/github/manifest-flows", nil)
+	current.RemoteAddr = "127.0.0.1:49152"
+	current.Host = "127.0.0.1:9090"
+	current.AddCookie(cookie)
+	currentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(currentResponse, current)
+	if currentResponse.Code != http.StatusNoContent {
+		t.Fatalf("current flow after discard status=%d body=%s", currentResponse.Code, currentResponse.Body.String())
+	}
+	if response := discard("manifest-discard-repeat", true); response.Code != http.StatusNotFound {
+		t.Fatalf("repeat discard status=%d body=%s", response.Code, response.Body.String())
+	}
+}

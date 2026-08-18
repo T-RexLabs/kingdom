@@ -173,7 +173,11 @@ export interface paths {
         get: operations["getGitHubManifestFlow"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Abandon an unfinished flow bound to this browser session and exact origin.
+         * @description Discards memory-only flow state and zeroes its transient secrets so abandoned setup stops presenting itself as resumable.
+         */
+        delete: operations["discardGitHubManifestFlow"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3393,6 +3397,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GitHubManifestFlowStatus"];
                 };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    discardGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Flow discarded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];

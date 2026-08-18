@@ -321,6 +321,23 @@ func (m *manifestFlowManager) Finalize(flowID, connectionID, accountID, accountL
 	return nil
 }
 
+// Discard abandons a flow the operator no longer wants. Without it an
+// unfinished flow lingers for the full TTL and keeps presenting itself as
+// resumable setup state on every Connections visit.
+func (m *manifestFlowManager) Discard(flowID, sessionID, origin string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	flow, err := m.boundFlowLocked(flowID, sessionID, origin)
+	if err != nil {
+		return err
+	}
+	flow.zeroSecrets()
+	m.removeStatesLocked(flow)
+	delete(m.flows, flow.ID)
+	return nil
+}
+
 func (m *manifestFlowManager) Fail(flowID, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -629,13 +629,54 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    const dialog = await screen.findByRole("dialog", { name: "Create a private GitHub App" });
-    const alert = await within(dialog).findByRole("alert");
+    const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(guidance);
     expect(screen.queryAllByRole("alert")).toHaveLength(1);
+    // Resumable server flow state must never open a modal by itself.
+    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
     await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
     await waitFor(() => expect(keys).toHaveLength(2));
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("never auto-opens private setup and lets an unfinished flow be resumed or abandoned", async () => {
+    let discardMethod = "";
+    let discardKey = "";
+    let currentFlowRequests = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows") && (!init?.method || init.method === "GET")) {
+        currentFlowRequests++;
+        return json({ flow_id: "flow-1234567890123456", stage: "awaiting_app_creation", expires_at: "2099-08-15T13:00:00Z" });
+      }
+      if (url.endsWith("/connections/github/manifest-flows/flow-1234567890123456") && init?.method === "DELETE") {
+        discardMethod = init.method;
+        discardKey = new Headers(init.headers).get("Idempotency-Key") || "";
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    // The reported bug: navigating back to Connections re-opened the modal
+    // because unfinished flow state survives on the server for an hour.
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("Finish creating the private App on GitHub.");
+    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
+    expect(currentFlowRequests).toBe(1);
+
+    await user.click(screen.getByRole("button", { name: "Resume setup" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create a private GitHub App" });
+
+    await user.click(within(dialog).getByRole("button", { name: "Abandon setup" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument());
+    expect(discardMethod).toBe("DELETE");
+    expectIdempotencyScope(discardKey, "manifest-discard");
+    expect(screen.queryByText("Finish creating the private App on GitHub.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume setup" })).not.toBeInTheDocument();
   });
 
   it("retries failed automatic completion with the stable key and clears the private setup error", async () => {
@@ -661,9 +702,9 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    const dialog = await screen.findByRole("dialog", { name: "Create a private GitHub App" });
-    const alert = await within(dialog).findByRole("alert");
+    const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("validate and save the GitHub connection");
+    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
     await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
 
     expect(await screen.findByText("Recovered")).toBeInTheDocument();
@@ -698,8 +739,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    const dialog = await screen.findByRole("dialog", { name: "Create a private GitHub App" });
-    const alert = await within(dialog).findByRole("alert");
+    const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("GitHub rejected the one-time code");
     await user.click(within(alert).getByRole("button", { name: "Start again" }));
 

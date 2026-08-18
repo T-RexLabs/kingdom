@@ -214,6 +214,21 @@ paths:
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      tags: [connections]
+      operationId: discardGitHubManifestFlow
+      summary: Abandon an unfinished flow bound to this browser session and exact origin.
+      description: Discards memory-only flow state and zeroes its transient secrets so abandoned setup stops presenting itself as resumable.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: Flow discarded. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
 
   /connections/github/manifest-flows/{id}/conversion:
     post:

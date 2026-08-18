@@ -460,6 +460,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /connections/github/manifest-flows", s.handleCurrentGitHubManifestFlow)
 	mux.HandleFunc("POST /connections/github/manifest-flows", s.handleStartGitHubManifestFlow)
 	mux.HandleFunc("GET /connections/github/manifest-flows/{id}", s.handleGetGitHubManifestFlow)
+	mux.HandleFunc("DELETE /connections/github/manifest-flows/{id}", s.handleDiscardGitHubManifestFlow)
 	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/conversion", s.handleConvertGitHubManifestFlow)
 	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/installation", s.handleGetGitHubManifestInstallationURL)
 	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/authorization", s.handleAuthorizeGitHubManifestFlow)

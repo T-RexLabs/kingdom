@@ -126,6 +126,18 @@ func (s *Server) handleGetGitHubManifestFlow(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, status)
 }
 
+func (s *Server) handleDiscardGitHubManifestFlow(w http.ResponseWriter, r *http.Request) {
+	sessionID, origin, ok := s.manifestBrowserBinding(w, r, true)
+	if !ok {
+		return
+	}
+	if err := s.manifestFlows.Discard(r.PathValue("id"), sessionID, origin); err != nil {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "GitHub setup flow is unavailable", "api.github_manifest.discard", nil)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleConvertGitHubManifestFlow(w http.ResponseWriter, r *http.Request) {
 	sessionID, origin, ok := s.manifestBrowserBinding(w, r, false)
 	if !ok {
