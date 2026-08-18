@@ -76,7 +76,7 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	if err := json.Unmarshal(planningResponse.Body.Bytes(), &planningPayload); err != nil {
 		t.Fatal(err)
 	}
-	attachResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + planningPayload.Session.PlanningSessionID + "/external-sources", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comment_count": true, "include_comments": false}, idempotencyKey: "external-planning-attach"})
+	attachResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + planningPayload.Session.PlanningSessionID + "/external-sources", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comments": false}, idempotencyKey: "external-planning-attach"})
 	if attachResponse.Code != http.StatusCreated {
 		t.Fatalf("attach external source status=%d body=%s", attachResponse.Code, attachResponse.Body.String())
 	}
@@ -91,7 +91,7 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 		t.Fatal("external issue body was fabricated as transcript content")
 	}
 
-	captureResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-captures", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comment_count": true, "include_comments": false}, idempotencyKey: "external-capture"})
+	captureResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-captures", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comments": false}, idempotencyKey: "external-capture"})
 	if captureResponse.Code != http.StatusCreated {
 		t.Fatalf("capture status=%d body=%s", captureResponse.Code, captureResponse.Body.String())
 	}

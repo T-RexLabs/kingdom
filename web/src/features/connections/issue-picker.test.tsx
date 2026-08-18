@@ -76,7 +76,7 @@ describe("IssuePicker", () => {
       if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
       if (url.includes("/repositories?") && url.includes("cursor=")) return json({ items: [{ id: "repo-2", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
       if (url.endsWith("/repositories")) return json({ items: [{ id: "repo-1", locator: "owner/first", canonical_url: "https://github.com/owner/first" }], next_cursor: "repo-next" });
-      if (url.includes("/issues/2/preview")) return json({ native_id: "102", repository_id: "repo-2", issue: issue(2, "Second").issue, profile: { include_comment_count: true, include_comments: true }, comment_count: 2, comments: [], fetched_comment_count: 2, etag_present: true });
+      if (url.includes("/issues/2/preview")) return json({ native_id: "102", repository_id: "repo-2", issue: issue(2, "Second").issue, profile: { include_comments: true }, comment_count: 2, comments: [], fetched_comment_count: 2, etag_present: true });
       if (url.includes("/issues?") && url.includes("cursor=")) return json({ items: [issue(2, "Second")], incomplete_results: true, search_result_cap: 1000 });
       if (url.includes("/issues?")) return json({ items: [issue(1, "First")], next_cursor: "issue-next", incomplete_results: false, search_result_cap: 1000 });
       throw new Error(`unexpected request ${url}`);
@@ -93,8 +93,8 @@ describe("IssuePicker", () => {
     await screen.findByText("First");
     await user.click(screen.getByRole("button", { name: /load more issues/i }));
     await user.click(await screen.findByRole("button", { name: /second/i }));
-    await user.click(screen.getByRole("switch", { name: /comment bodies/i }));
-    await waitFor(() => expect(requests.some((url) => url.includes("/issues/2/preview") && url.includes("include_comments=true") && url.includes("include_comment_count=true"))).toBe(true));
+    await user.click(screen.getByRole("switch", { name: /include comments/i }));
+    await waitFor(() => expect(requests.some((url) => url.includes("/issues/2/preview") && url.includes("include_comments=true") )).toBe(true));
     expect(await screen.findByText(/partial search results/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Prefill Decree" }));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ intake: expect.objectContaining({ repository_id: "repo-2", issue_number: 2, include_comments: true }) }));
@@ -117,7 +117,7 @@ describe("IssuePicker", () => {
       const url = String(input);
       if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
       if (url.endsWith("/repositories")) return json({ items: [{ id: "repo", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
-      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "First").issue, profile: { include_comment_count: true, include_comments: url.includes("include_comments=true") }, comment_count: 9, comments: url.includes("include_comments=true") ? comments : [], fetched_comment_count: url.includes("include_comments=true") ? 6 : 0, fetched_comment_pages: 1, omitted_comment_count: 3, omitted_comment_pages: 1, etag_present: true });
+      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "First").issue, profile: { include_comments: url.includes("include_comments=true") }, comment_count: 9, comments: url.includes("include_comments=true") ? comments : [], fetched_comment_count: url.includes("include_comments=true") ? 6 : 0, fetched_comment_pages: 1, omitted_comment_count: 3, omitted_comment_pages: 1, etag_present: true });
       if (url.includes("/issues?")) return json({ items: [issue(1, "First")], incomplete_results: false, search_result_cap: 1000 });
       throw new Error(`unexpected request ${url}`);
     }));
@@ -129,7 +129,7 @@ describe("IssuePicker", () => {
     await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /first/i }));
     expect(screen.queryByRole("heading", { name: /comment preview/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("switch", { name: /comment bodies/i }));
+    await user.click(screen.getByRole("switch", { name: /include comments/i }));
 
     expect(await screen.findByRole("heading", { name: /comment preview/i })).toBeInTheDocument();
     expect(screen.getByText("author-1")).toBeInTheDocument();
@@ -435,12 +435,46 @@ describe("IssuePicker", () => {
     expect(requests.some((url) => url.includes("search=widget") && url.includes("cursor=next"))).toBe(true);
   });
 
+  it("exposes exactly one comment switch and always captures the count", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
+      if (url.endsWith("/repositories")) return json({ items: [{ id: "repo", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
+      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "First").issue, profile: { include_comments: url.includes("include_comments=true") }, comment_count: 4, comments: [], fetched_comment_count: 0, fetched_comment_pages: 0, omitted_comment_count: 0, omitted_comment_pages: 0, etag_present: true });
+      if (url.includes("/issues?")) return json({ items: [issue(1, "First")], incomplete_results: false, search_result_cap: 1000 });
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const onSelect = vi.fn();
+    const user = userEvent.setup();
+    render(<IssuePicker onSelect={onSelect} />);
+
+    await user.click(screen.getByRole("button", { name: /import from github issue/i }));
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
+    await user.click(await screen.findByRole("button", { name: /first/i }));
+
+    // One switch, defaulting to off: comment bodies are the only real choice.
+    await waitFor(() => expect(screen.getAllByRole("switch")).toHaveLength(1));
+    expect(screen.getByRole("switch", { name: /include comments/i })).not.toBeChecked();
+
+    // The count rides along on the issue payload, so it is never negotiated.
+    await waitFor(() => expect(requests.some((url) => url.includes("/issues/1/preview"))).toBe(true));
+    expect(requests.every((url) => !url.includes("include_comment_count"))).toBe(true);
+    expect(await screen.findByText(/4 comments reported/i)).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Use Issue" }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ intake: expect.objectContaining({ include_comments: false }) }));
+    expect(onSelect.mock.calls[0][0].intake).not.toHaveProperty("include_comment_count");
+  });
+
   it("keeps the modal selection and error open until onSelect succeeds", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
       if (url.endsWith("/repositories")) return json({ items: [{ id: "repo", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
-      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "Selected issue").issue, profile: { include_comment_count: true, include_comments: false }, comment_count: 2, comments: [], fetched_comment_count: 0, fetched_comment_pages: 0, omitted_comment_count: 0, omitted_comment_pages: 0, etag_present: true });
+      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "Selected issue").issue, profile: { include_comments: false }, comment_count: 2, comments: [], fetched_comment_count: 0, fetched_comment_pages: 0, omitted_comment_count: 0, omitted_comment_pages: 0, etag_present: true });
       if (url.includes("/issues?")) return json({ items: [issue(1, "Selected issue")], incomplete_results: false, search_result_cap: 1000 });
       throw new Error(`unexpected request ${url}`);
     }));

@@ -585,7 +585,7 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	response, err := c.doJSONResponse(ctx, req.Connection.ConnectionID, http.MethodGet, issuePath, token, nil, &issue, req.ETag)
 	if err != nil {
 		if pe, ok := err.(*external.ProviderError); ok && pe.Status == 304 {
-			profile := req.Profile.Normalize()
+			profile := req.Profile
 			if !profile.IncludeComments {
 				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
@@ -639,10 +639,7 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	if err := validateResponseValidators(response.Header.Get("ETag"), response.Header.Get("Last-Modified")); err != nil {
 		return external.IssueResult{}, err
 	}
-	out := external.IssueResult{RepositoryID: destination.ID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile.Normalize(), ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
-	if !out.Profile.IncludeCommentCount {
-		out.ProviderCommentCount = 0
-	}
+	out := external.IssueResult{RepositoryID: destination.ID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
 	if out.Profile.IncludeComments {
 		comments, fetched, fetchedPages, omitted, omittedPages, commentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, token, destination.Locator, issue.Number, req.CommentsETag, issue.Comments)
 		if e != nil {

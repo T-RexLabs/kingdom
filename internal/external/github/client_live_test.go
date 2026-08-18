@@ -106,7 +106,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 		Connection:   connection,
 		RepositoryID: required["KINGDOM_GITHUB_SMOKE_REPOSITORY_ID"],
 		IssueNumber:  issueNumber,
-		Profile:      state.ExternalImportProfile{IncludeCommentCount: true, IncludeComments: true},
+		Profile:      state.ExternalImportProfile{IncludeComments: true},
 	})
 	if err != nil {
 		t.Fatalf("fetch controlled issue and comments: %v", err)

@@ -23,7 +23,7 @@ function snapshot(snapshotId: string) {
       created_at: "2026-08-01T00:00:00Z",
       updated_at: "2026-08-12T00:00:00Z",
     },
-    profile: { include_comment_count: true, include_comments: true },
+    profile: { include_comments: true },
     provider_updated_at: "2026-08-12T00:00:00Z",
     fetched_at: "2026-08-13T00:00:00Z",
     comment_count: 2,

@@ -100,7 +100,6 @@ vi.mock("@/features/connections/issue-picker", () => ({
             connection_id: "connection-1",
             repository_id: "repository-1",
             issue_number: 23,
-            include_comment_count: true,
             include_comments: false,
           },
           issue: {},
@@ -269,7 +268,6 @@ describe("PlanningSessionPage", () => {
       connection_id: "connection-1",
       repository_id: "repository-1",
       issue_number: 23,
-      include_comment_count: true,
       include_comments: false,
     });
   });

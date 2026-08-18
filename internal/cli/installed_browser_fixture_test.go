@@ -42,7 +42,7 @@ func (a *installedBrowserExternalAdapter) FetchIssue(context.Context, external.I
 	if err := a.failure(); err != nil {
 		return external.IssueResult{}, err
 	}
-	return external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: a.issue(), Profile: state.ExternalImportProfile{IncludeCommentCount: true}}, nil
+	return external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: a.issue(), Profile: state.ExternalImportProfile{}}, nil
 }
 
 func (*installedBrowserExternalAdapter) Evict(string) {}

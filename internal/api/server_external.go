@@ -313,15 +313,11 @@ func (s *Server) handleListConnectionIssues(w http.ResponseWriter, r *http.Reque
 }
 
 func importProfileFromQuery(r *http.Request) state.ExternalImportProfile {
-	count := true
 	comments := false
-	if raw := r.URL.Query().Get("include_comment_count"); raw != "" {
-		count, _ = strconv.ParseBool(raw)
-	}
 	if raw := r.URL.Query().Get("include_comments"); raw != "" {
 		comments, _ = strconv.ParseBool(raw)
 	}
-	return state.ExternalImportProfile{IncludeCommentCount: count, IncludeComments: comments}.Normalize()
+	return state.ExternalImportProfile{IncludeComments: comments}
 }
 func (s *Server) handlePreviewConnectionIssue(w http.ResponseWriter, r *http.Request) {
 	conn, adapter, ok := s.connectionAdapter(w, r)
@@ -343,15 +339,11 @@ func (s *Server) handlePreviewConnectionIssue(w http.ResponseWriter, r *http.Req
 }
 
 func profileFromCapture(req gen.ExternalIntake) state.ExternalImportProfile {
-	count := true
-	if req.IncludeCommentCount != nil {
-		count = *req.IncludeCommentCount
-	}
 	comments := false
 	if req.IncludeComments != nil {
 		comments = *req.IncludeComments
 	}
-	return state.ExternalImportProfile{IncludeCommentCount: count, IncludeComments: comments}.Normalize()
+	return state.ExternalImportProfile{IncludeComments: comments}
 }
 func (s *Server) fetchCapture(r *http.Request, req gen.ExternalIntake) (state.CaptureExternalIssueRequest, error) {
 	conn, err := s.externalStore.GetConnection(r.Context(), req.ConnectionId)
@@ -594,8 +586,8 @@ func compareExternalResult(old state.ExternalSourceSnapshot, oldComments []state
 func sameExternalResult(old state.ExternalSourceSnapshot, oldComments []state.ExternalComment, v external.IssueResult) bool {
 	a, _ := json.Marshal(old.Issue)
 	b, _ := json.Marshal(v.Issue)
-	pa, _ := json.Marshal(old.Profile.Normalize())
-	pb, _ := json.Marshal(v.Profile.Normalize())
+	pa, _ := json.Marshal(old.Profile)
+	pb, _ := json.Marshal(v.Profile)
 	if string(a) != string(b) || string(pa) != string(pb) || old.ProviderCommentCount != v.ProviderCommentCount || old.FetchedCommentCount != v.FetchedCommentCount || old.FetchedCommentPages != v.FetchedCommentPages || old.OmittedCommentCount != v.OmittedCommentCount || old.OmittedCommentPages != v.OmittedCommentPages {
 		return false
 	}

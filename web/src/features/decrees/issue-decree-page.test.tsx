@@ -69,7 +69,7 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("@/features/connections/issue-picker", () => ({
-  IssuePicker: ({ onSelect }: { onSelect: (selection: unknown) => Promise<void> }) => <button type="button" onClick={() => void onSelect({ intake: { connection_id: "conn-1", repository_id: "repo-1", issue_number: 7, include_comment_count: true, include_comments: false }, issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" } })}>Mock prefill issue</button>,
+  IssuePicker: ({ onSelect }: { onSelect: (selection: unknown) => Promise<void> }) => <button type="button" onClick={() => void onSelect({ intake: { connection_id: "conn-1", repository_id: "repo-1", issue_number: 7, include_comments: false }, issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" } })}>Mock prefill issue</button>,
 }));
 
 vi.mock("@/features/connections/external-source-comparison", () => ({
@@ -1120,7 +1120,7 @@ describe("issue decree page", () => {
         return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: captureCount === 1 ? "snapshot-a" : "snapshot-b" }), { status: 201, headers: { "Content-Type": "application/json" } });
       }
       const refreshed = url.endsWith("snapshot-b");
-      return new Response(JSON.stringify({ snapshot_id: refreshed ? "snapshot-b" : "snapshot-a", source_id: "source-1", issue: { title: refreshed ? "Issue B" : "Issue A", body: refreshed ? "Body B" : "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: refreshed ? "2026-08-03T00:00:00Z" : "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-03T00:00:00Z", fetched_at: "2026-08-03T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: refreshed ? "snapshot-b" : "snapshot-a", source_id: "source-1", issue: { title: refreshed ? "Issue B" : "Issue A", body: refreshed ? "Body B" : "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: refreshed ? "2026-08-03T00:00:00Z" : "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-03T00:00:00Z", fetched_at: "2026-08-03T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
     render(<IssueDecreePage />);
@@ -1167,7 +1167,7 @@ describe("issue decree page", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/external-source-captures")) return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: "snapshot-direct" }), { status: 201, headers: { "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
     render(<IssueDecreePage />);
@@ -1187,7 +1187,7 @@ describe("issue decree page", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/external-source-captures")) return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: "snapshot-direct" }), { status: 201, headers: { "Content-Type": "application/json" } });
-      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
     render(<IssueDecreePage />);

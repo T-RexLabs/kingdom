@@ -434,7 +434,6 @@ paths:
         - $ref: "#/components/parameters/ConnectionId"
         - $ref: "#/components/parameters/RepositoryId"
         - { name: number, in: path, required: true, schema: { type: integer, minimum: 1 } }
-        - { name: include_comment_count, in: query, required: false, schema: { type: boolean, default: true } }
         - { name: include_comments, in: query, required: false, schema: { type: boolean, default: false } }
       responses:
         "200": { description: Issue preview, content: { application/json: { schema: { $ref: "#/components/schemas/IssuePreview" } } } }
@@ -3136,10 +3135,9 @@ components:
     ExternalImportProfile:
       type: object
       additionalProperties: false
-      required: [include_comment_count, include_comments]
+      required: [include_comments]
       properties:
-        include_comment_count: { type: boolean, default: true }
-        include_comments: { type: boolean, default: false, description: "Comment bodies imply comment count. At most 100 bodies, 32 KiB each and 128 KiB aggregate are retained." }
+        include_comments: { type: boolean, default: false, description: "The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained." }
     ExternalComment:
       type: object
       additionalProperties: false
@@ -3179,7 +3177,6 @@ components:
         connection_id: { type: string, minLength: 1 }
         repository_id: { type: string, minLength: 1 }
         issue_number: { type: integer, minimum: 1 }
-        include_comment_count: { type: boolean, default: true }
         include_comments: { type: boolean, default: false }
     CaptureResult:
       type: object

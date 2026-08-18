@@ -295,7 +295,7 @@ func TestPlanningOperationExternalContextIsBoundAtEnqueue(t *testing.T) {
 	if _, err := external.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-bind", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-bind", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-bind"}); err != nil {
 		t.Fatal(err)
 	}
-	first, _, err := external.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-bind", SnapshotID: "snapshot-a", ConnectionID: "conn-bind", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	first, _, err := external.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-bind", SnapshotID: "snapshot-a", ConnectionID: "conn-bind", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestPlanningOperationExternalContextIsBoundAtEnqueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondAt := "2026-08-12T11:00:00Z"
-	second, _, err := external.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-ignored", SnapshotID: "snapshot-b", ConnectionID: "conn-bind", ProviderNativeID: "100", RepositoryNativeID: "200", PredecessorSnapshotID: first.SnapshotID, Issue: NormalizedExternalIssue{Title: "Version B", Body: "second", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: secondAt}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: secondAt, FetchedAt: secondAt})
+	second, _, err := external.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-ignored", SnapshotID: "snapshot-b", ConnectionID: "conn-bind", ProviderNativeID: "100", RepositoryNativeID: "200", PredecessorSnapshotID: first.SnapshotID, Issue: NormalizedExternalIssue{Title: "Version B", Body: "second", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: secondAt}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: secondAt, FetchedAt: secondAt})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestAttachPlanningExternalSourceIsAtomicAndSessionScoped(t *testing.T) {
 		mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,active_leaf_message_id,context_snapshot_id,project_root,model_selection_json,created_at,updated_at) VALUES (?,?,'custom','active','ready','message-stable','context-stable','/tmp','{}',?,?)`, sessionID, sessionID, at, at)
 	}
 
-	capture := CaptureExternalIssueRequest{SourceID: "source-attach", SnapshotID: "snapshot-attach", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+	capture := CaptureExternalIssueRequest{SourceID: "source-attach", SnapshotID: "snapshot-attach", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at}
 	first, err := store.AttachPlanningExternalSource(ctx, AttachPlanningExternalSourceRequest{PlanningSessionID: "session-attach-a", Capture: capture, LinkID: "link-attach-a", AdoptionID: "adoption-attach-a", AuditEventID: "audit-attach-a", ActorID: "local-operator", AttachedAt: at})
 	if err != nil {
 		t.Fatal(err)
@@ -941,7 +941,7 @@ func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
 	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-detached", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-detached", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-detached"}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-detached", SnapshotID: "snapshot-detached", ConnectionID: "conn-detached", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-detached", SnapshotID: "snapshot-detached", ConnectionID: "conn-detached", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1022,7 +1022,7 @@ func TestApplyRefreshPersistsTransferEvidence(t *testing.T) {
 	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-transfer", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-transfer", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-transfer-create"}); err != nil {
 		t.Fatal(err)
 	}
-	first, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-transfer", SnapshotID: "snapshot-transfer-old", ConnectionID: "conn-transfer", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	first, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-transfer", SnapshotID: "snapshot-transfer-old", ConnectionID: "conn-transfer", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1064,7 @@ func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *
 		t.Fatal(err)
 	}
 	oldIssue := NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: at, UpdatedAt: at}
-	oldSnapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-two-links", SnapshotID: "snapshot-two-links-old", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: oldIssue, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	oldSnapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-two-links", SnapshotID: "snapshot-two-links-old", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: oldIssue, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1187,7 +1187,7 @@ func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-failure", SnapshotID: "snapshot-failure", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-failure", SnapshotID: "snapshot-failure", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1237,7 +1237,7 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	mustExecArgs(t, db, `INSERT INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES ('context-detach','session-detach','context','[]','[]',?)`, at)
 	mustExec(t, db, `UPDATE planning_sessions SET context_snapshot_id='context-detach' WHERE planning_session_id='session-detach'`)
 
-	capture := CaptureExternalIssueRequest{SourceID: "source-detach", SnapshotID: "snapshot-detach-a", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+	capture := CaptureExternalIssueRequest{SourceID: "source-detach", SnapshotID: "snapshot-detach-a", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at}
 	link, err := store.AttachPlanningExternalSource(ctx, AttachPlanningExternalSourceRequest{PlanningSessionID: "session-detach", Capture: capture, LinkID: "link-detach", AdoptionID: "adoption-detach", AuditEventID: "audit-detach-attach", ActorID: "local-operator", AttachedAt: at})
 	if err != nil {
 		t.Fatal(err)
@@ -1333,7 +1333,7 @@ func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
 	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-detach-guard", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-detach-guard", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-detach-guard"}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-guard", SnapshotID: "snapshot-guard", ConnectionID: "conn-detach-guard", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-guard", SnapshotID: "snapshot-guard", ConnectionID: "conn-detach-guard", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}

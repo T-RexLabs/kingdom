@@ -1806,10 +1806,8 @@ export interface components {
             search_result_cap: 1000;
         };
         ExternalImportProfile: {
-            /** @default true */
-            include_comment_count: boolean;
             /**
-             * @description Comment bodies imply comment count. At most 100 bodies, 32 KiB each and 128 KiB aggregate are retained.
+             * @description The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained.
              * @default false
              */
             include_comments: boolean;
@@ -1847,8 +1845,6 @@ export interface components {
             connection_id: string;
             repository_id: string;
             issue_number: number;
-            /** @default true */
-            include_comment_count: boolean;
             /** @default false */
             include_comments: boolean;
         };
@@ -3831,7 +3827,6 @@ export interface operations {
     previewConnectionIssue: {
         parameters: {
             query?: {
-                include_comment_count?: boolean;
                 include_comments?: boolean;
             };
             header?: never;

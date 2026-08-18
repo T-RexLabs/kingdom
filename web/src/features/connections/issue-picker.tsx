@@ -60,7 +60,6 @@ export function IssuePicker({
   const [stateFilter, setStateFilter] = useState<"open" | "closed" | "all">("open");
   const [selected, setSelected] = useState<IssueSummary>();
   const [preview, setPreview] = useState<IssuePreview>();
-  const [includeCount, setIncludeCount] = useState(true);
   const [includeComments, setIncludeComments] = useState(false);
   const [commentPage, setCommentPage] = useState(0);
   const [loadingConnections, setLoadingConnections] = useState(false);
@@ -196,7 +195,7 @@ export function IssuePicker({
     setError(undefined);
     apiFetch<IssuePreview>(`/connections/${connectionId}/repositories/${repositoryId}/issues/${selected.issue.issue_number}/preview`, {
       signal: controller.signal,
-      params: { include_comment_count: includeCount, include_comments: includeComments },
+      params: { include_comments: includeComments },
     })
       .then(setPreview)
       .catch((cause) => {
@@ -206,7 +205,7 @@ export function IssuePicker({
         if (!controller.signal.aborted) setLoadingPreview(false);
       });
     return () => controller.abort();
-  }, [selected, connectionId, repositoryId, includeCount, includeComments, previewAttempt]);
+  }, [selected, connectionId, repositoryId, includeComments, previewAttempt]);
 
   async function loadMoreRepositories() {
     if (!repositoryCursor || loadingRepositories) return;
@@ -274,7 +273,6 @@ export function IssuePicker({
           connection_id: connectionId,
           repository_id: repositoryId,
           issue_number: preview.issue.issue_number,
-          include_comment_count: includeCount,
           include_comments: includeComments,
         },
       });
@@ -377,19 +375,12 @@ export function IssuePicker({
                   </div>
                   {loadingPreview ? <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading preview...</p> : null}
                   <div className="max-h-56 min-w-0 overflow-auto rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
-                  <div className="divide-y divide-border/60 rounded-lg border border-border bg-background/40 px-3">
+                  <div className="rounded-lg border border-border bg-background/40 px-3">
                     <ToggleRow
-                      label="Include Comment Count"
-                      checked={includeCount}
-                      disabled={includeComments}
-                      info="Imports how many comments the issue has. Required when comment bodies are imported."
-                      onChange={setIncludeCount}
-                    />
-                    <ToggleRow
-                      label="Include Comment Bodies"
+                      label="Include Comments"
                       checked={includeComments}
-                      info="Imports the newest 100 comments, capped at 32 KiB each and 128 KiB in total. Turning this on also imports the comment count."
-                      onChange={(next) => { setIncludeComments(next); if (next) setIncludeCount(true); }}
+                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total. The comment count is always imported."
+                      onChange={setIncludeComments}
                     />
                   </div>
                   {preview ? <p className="text-xs text-foreground-subtle">Previewed {preview.fetched_comment_count} comment bodies; {preview.comment_count} comments reported.</p> : null}

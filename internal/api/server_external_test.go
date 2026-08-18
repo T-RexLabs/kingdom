@@ -130,7 +130,7 @@ func TestPresentIssueResultBoundsTransientCommentBodies(t *testing.T) {
 }
 
 func TestCompareExternalResultReportsTransferredCoordinates(t *testing.T) {
-	old := state.ExternalSourceSnapshot{Issue: state.NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: "2026-08-12T10:00:00Z", UpdatedAt: "2026-08-12T10:00:00Z"}, Profile: state.ExternalImportProfile{IncludeCommentCount: true}}
+	old := state.ExternalSourceSnapshot{Issue: state.NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: "2026-08-12T10:00:00Z", UpdatedAt: "2026-08-12T10:00:00Z"}, Profile: state.ExternalImportProfile{}}
 	result := external.IssueResult{Transferred: true, RepositoryID: "300", Issue: old.Issue, Profile: old.Profile}
 	result.Issue.Repository = "owner/new"
 	result.Issue.IssueNumber = 9
@@ -236,7 +236,7 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 				Title: title, Body: "body", State: "open", Repository: "owner/repo", IssueNumber: number,
 				CanonicalURL: fmt.Sprintf("https://github.com/owner/repo/issues/%d", number), CreatedAt: at, UpdatedAt: updatedAt,
 			},
-			Profile: state.ExternalImportProfile{IncludeCommentCount: true},
+			Profile: state.ExternalImportProfile{},
 		}
 	}
 	adapter := &externalAPITestAdapter{results: map[int]external.IssueResult{
@@ -274,7 +274,7 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 	firstSession := createSession("attach-session-a")
 	secondSession := createSession("attach-session-b")
 	intake := func(number int) map[string]any {
-		return map[string]any{"connection_id": connection.ConnectionId, "repository_id": "200", "issue_number": number, "include_comment_count": true, "include_comments": false}
+		return map[string]any{"connection_id": connection.ConnectionId, "repository_id": "200", "issue_number": number, "include_comments": false}
 	}
 	attach := func(sessionID string, number int, key string) *httptest.ResponseRecorder {
 		return performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + sessionID + "/external-sources", idempotencyKey: key, body: intake(number)})
@@ -555,7 +555,7 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 		t.Fatal(err)
 	}
 	issue.Title, issue.UpdatedAt = "Changed", "2026-08-12T11:00:00Z"
-	adapter.result = external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}.Normalize(), ProviderCommentCount: 1, ETag: `"issue-v2"`, CommentsETag: `"comments-v1"`, CommentsNotModified: true}
+	adapter.result = external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderCommentCount: 1, ETag: `"issue-v2"`, CommentsETag: `"comments-v1"`, CommentsNotModified: true}
 
 	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh/refreshes", idempotencyKey: "refresh-comments-304"})
 	if response.Code != http.StatusOK {
@@ -594,7 +594,7 @@ func TestExternalRefreshPersistsRevokedStatusAndReturnsRecoveryMessage(t *testin
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
-	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-revoked", SnapshotID: "snapshot-revoked", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-revoked", SnapshotID: "snapshot-revoked", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
 	if err != nil {
 		t.Fatal(err)
 	}

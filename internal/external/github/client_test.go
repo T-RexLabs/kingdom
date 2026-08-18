@@ -226,6 +226,45 @@ func TestFetchIssueRechecksCommentsAfterIssueNotModified(t *testing.T) {
 	}
 }
 
+// The comment count rides along on the issue payload, so it is captured for
+// every profile and never costs an extra request. Only comment bodies are
+// negotiable, which is why the operator sees exactly one switch.
+func TestFetchIssueAlwaysCapturesCommentCountWithoutFetchingBodies(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/installation/repositories":
+			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"owner/repo","html_url":"https://github.com/owner/repo","owner":{"id":10}}]}`))
+		case "/repos/owner/repo/issues/7":
+			w.Header().Set("ETag", `"issue-v1"`)
+			_, _ = w.Write([]byte(`{"id":100,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/repo/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":12,"repository_url":"https://api.github.com/repos/owner/repo"}`))
+		case "/repos/owner/repo/issues/7/comments":
+			t.Errorf("comment bodies were fetched for a count-only profile")
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderCommentCount != 12 {
+		t.Fatalf("comment count was not captured for a bodies-off profile: %#v", result)
+	}
+	if len(result.Comments) != 0 || result.FetchedCommentCount != 0 {
+		t.Fatalf("comment bodies leaked into a bodies-off profile: %#v", result)
+	}
+}
+
 func TestFetchIssueAcceptsTransferOnlyWithStableIdentityAndAccessibleDestination(t *testing.T) {
 	keys, fingerprint := provisionTestKey(t)
 	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
@@ -255,14 +294,14 @@ func TestFetchIssueAcceptsTransferOnlyWithStableIdentityAndAccessibleDestination
 		t.Fatal(err)
 	}
 	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ETag: `"old-version"`})
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Transferred || result.RepositoryID != "300" || result.NativeID != "100" || result.Issue.IssueNumber != 9 {
 		t.Fatalf("transfer was not safely resolved: %#v", result)
 	}
-	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "different", Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ETag: `"old-version"`})
+	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "different", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
 	var providerErr *external.ProviderError
 	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureInaccessibleOrMissing {
 		t.Fatalf("identity-changing transfer was accepted: %v", err)

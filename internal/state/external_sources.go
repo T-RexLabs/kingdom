@@ -82,16 +82,11 @@ type NormalizedExternalIssue struct {
 	UpdatedAt    string `json:"updated_at"`
 }
 
+// ExternalImportProfile is the operator's bounded-import choice for one issue.
+// The comment count always rides along on the provider's issue payload, so the
+// only real decision is whether to also fetch the comment bodies.
 type ExternalImportProfile struct {
-	IncludeCommentCount bool `json:"include_comment_count"`
-	IncludeComments     bool `json:"include_comments"`
-}
-
-func (p ExternalImportProfile) Normalize() ExternalImportProfile {
-	if p.IncludeComments {
-		p.IncludeCommentCount = true
-	}
-	return p
+	IncludeComments bool `json:"include_comments"`
 }
 
 type ExternalComment struct {
@@ -714,7 +709,7 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 			return ExternalSourceSnapshot{}, false, ErrExternalConflict
 		}
 	}
-	profile := req.Profile.Normalize()
+	profile := req.Profile
 	profileJSON, _ := json.Marshal(profile)
 	profileDigest := digest(profileJSON)
 	issueJSON, _ := json.Marshal(req.Issue)
