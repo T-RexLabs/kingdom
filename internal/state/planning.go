@@ -276,14 +276,9 @@ type CancelQueuedPlanningOperationRequest struct {
 }
 
 type CreatePlanningSessionBundleRequest struct {
-	Session              CreatePlanningSessionRequest
-	OpeningMessage       AppendPlanningMessageRequest
-	BootstrapOperation   CreatePlanningOperationRequest
-	ExternalCapture      *CaptureExternalIssueRequest
-	ExternalLinkID       string
-	ExternalAdoptionID   string
-	ExternalAuditEventID string
-	ActorID              string
+	Session            CreatePlanningSessionRequest
+	OpeningMessage     AppendPlanningMessageRequest
+	BootstrapOperation CreatePlanningOperationRequest
 }
 
 type CreatePlanningReplyBundleRequest struct {

@@ -242,9 +242,21 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 	if decree.Code != http.StatusCreated {
 		t.Fatalf("decree: %d %s", decree.Code, decree.Body.String())
 	}
-	planning := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "e2e-external-planning", body: map[string]any{"external_intake": map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7}}})
+	planning := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "e2e-external-planning", body: map[string]any{"title": "External intake"}})
 	if planning.Code != http.StatusCreated {
-		t.Fatalf("planning intake: %d %s", planning.Code, planning.Body.String())
+		t.Fatalf("planning session: %d %s", planning.Code, planning.Body.String())
+	}
+	var planningSession struct {
+		Session struct {
+			PlanningSessionID string `json:"planning_session_id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(planning.Body.Bytes(), &planningSession); err != nil {
+		t.Fatal(err)
+	}
+	attach := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + planningSession.Session.PlanningSessionID + "/external-sources", idempotencyKey: "e2e-external-attach", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7}})
+	if attach.Code != http.StatusCreated {
+		t.Fatalf("planning intake: %d %s", attach.Code, attach.Body.String())
 	}
 	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_sources`); count != 1 {
 		t.Fatalf("canonical source count=%d", count)

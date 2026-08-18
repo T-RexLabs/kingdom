@@ -133,30 +133,35 @@ func TestIntegrationIdempotencyReserveFinalizeAndDuplicate(t *testing.T) {
 	}
 }
 
-func TestIntegrationExternalPlanningIntakeIsAtomic(t *testing.T) {
+func TestIntegrationExternalPlanningAttachIsAtomic(t *testing.T) {
 	db := openDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	ctx := context.Background()
 	at := "2026-03-01T12:00:00Z"
 	externalStore := state.NewExternalStore(db)
-	if _, err := externalStore.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-intake", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-intake", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-intake"}); err != nil {
+	connection, err := externalStore.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-intake", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-intake", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-intake"})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := externalStore.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+		t.Fatal(err)
+	}
+	if connection, err = externalStore.GetConnection(ctx, connection.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+
 	store := state.NewPlanningStore(db)
-	bundle := func(sessionID, messageID, operationID, linkID, adoptionID, snapshotID string) state.CreatePlanningSessionBundleRequest {
-		capture := state.CaptureExternalIssueRequest{SourceID: "source-intake", SnapshotID: snapshotID, ConnectionID: "conn-intake", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "untrusted provider body", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
-		return state.CreatePlanningSessionBundleRequest{
-			Session:            state.CreatePlanningSessionRequest{PlanningSessionID: sessionID, Title: "Private issue", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ActiveLeafMessageID: messageID, ProjectRoot: "/tmp/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
-			OpeningMessage:     state.AppendPlanningMessageRequest{PlanningMessageID: messageID, PlanningSessionID: sessionID, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "What outcome should this plan achieve?", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
-			BootstrapOperation: state.CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: sessionID, Type: state.PlanningOperationTypeBootstrapContext, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at},
-			ExternalCapture:    &capture, ExternalLinkID: linkID, ExternalAdoptionID: adoptionID, ActorID: "local-operator",
-		}
+	if _, _, err := store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
+		Session:            state.CreatePlanningSessionRequest{PlanningSessionID: "session-intake", Title: "Private issue", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ActiveLeafMessageID: "message-intake", ProjectRoot: "/tmp/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
+		OpeningMessage:     state.AppendPlanningMessageRequest{PlanningMessageID: "message-intake", PlanningSessionID: "session-intake", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "What outcome should this plan achieve?", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
+		BootstrapOperation: state.CreatePlanningOperationRequest{OperationID: "operation-intake", PlanningSessionID: "session-intake", Type: state.PlanningOperationTypeBootstrapContext, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at},
+	}); err != nil {
+		t.Fatalf("create planning session: %v", err)
 	}
-	if _, _, err := store.CreateSessionBundle(ctx, bundle("session-intake", "message-intake", "operation-intake", "link-intake", "adoption-intake", "snapshot-intake")); err != nil {
-		t.Fatalf("create external intake bundle: %v", err)
-	}
-	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_sessions WHERE planning_session_id='session-intake'`); got != 1 {
-		t.Fatalf("planning session count=%d", got)
+
+	capture := state.CaptureExternalIssueRequest{SourceID: "source-intake", SnapshotID: "snapshot-intake", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "untrusted provider body", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+	if _, err := externalStore.AttachPlanningExternalSource(ctx, state.AttachPlanningExternalSourceRequest{PlanningSessionID: "session-intake", Capture: capture, LinkID: "link-intake", AdoptionID: "adoption-intake", AuditEventID: "audit-attach-intake", ActorID: "local-operator", AttachedAt: at}); err != nil {
+		t.Fatalf("attach external source: %v", err)
 	}
 	if got := queryInt(t, db, `SELECT COUNT(*) FROM external_source_links WHERE target_id='session-intake'`); got != 1 {
 		t.Fatalf("external link count=%d", got)
@@ -168,15 +173,18 @@ func TestIntegrationExternalPlanningIntakeIsAtomic(t *testing.T) {
 		t.Fatal("external body entered transcript")
 	}
 
-	_, _, err := store.CreateSessionBundle(ctx, bundle("session-rollback", "message-rollback", "operation-rollback", "link-intake", "adoption-rollback", "snapshot-rollback"))
-	if err == nil {
-		t.Fatal("expected duplicate link failure")
+	// A rejected attach must leave no provenance behind at all.
+	archived := capture
+	archived.SourceID, archived.SnapshotID, archived.ProviderNativeID = "source-rollback", "snapshot-rollback", "101"
+	mustExec(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-archived','Archived','custom','archived','ready','/tmp/project','{}','`+at+`','`+at+`')`)
+	if _, err := externalStore.AttachPlanningExternalSource(ctx, state.AttachPlanningExternalSourceRequest{PlanningSessionID: "session-archived", Capture: archived, LinkID: "link-rollback", AdoptionID: "adoption-rollback", AuditEventID: "audit-rollback", ActorID: "local-operator", AttachedAt: at}); err == nil {
+		t.Fatal("expected inactive session attach failure")
 	}
-	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_sessions WHERE planning_session_id='session-rollback'`); got != 0 {
-		t.Fatalf("failed intake left partial planning session: %d", got)
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM external_source_snapshots WHERE snapshot_id='snapshot-rollback'`); got != 0 {
+		t.Fatalf("failed attach left a partial snapshot: %d", got)
 	}
-	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_operations WHERE planning_session_id='session-rollback'`); got != 0 {
-		t.Fatalf("failed intake left partial operation: %d", got)
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM external_source_links WHERE link_id='link-rollback'`); got != 0 {
+		t.Fatalf("failed attach left a partial link: %d", got)
 	}
 }
 

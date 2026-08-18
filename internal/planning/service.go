@@ -46,14 +46,6 @@ type Service struct {
 	forced       chan struct{}
 }
 
-func (s *Service) CreateSessionFromExternalIssue(ctx context.Context, title, modelSelectionJSON string, capture state.CaptureExternalIssueRequest, linkID, adoptionID, actorID string) (state.PlanningSession, error) {
-	if err := s.admitWrite(); err != nil {
-		return state.PlanningSession{}, err
-	}
-	defer s.releaseWrite()
-	return s.sessions.CreateSessionFromExternalIssue(ctx, title, modelSelectionJSON, capture, linkID, adoptionID, actorID)
-}
-
 func NewService(store *state.PlanningStore, planner Agent, projectRoot string, nowRFC3339 func() string, idGenerator func(prefix string) string) *Service {
 	clock := clockFunc(nowRFC3339)
 	ids := idFunc(idGenerator)

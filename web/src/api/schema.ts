@@ -2008,7 +2008,6 @@ export interface components {
         CreatePlanningSessionRequest: {
             title?: string;
             model_selection?: components["schemas"]["PlanningAgentModelSelection"];
-            external_intake?: components["schemas"]["ExternalIntake"];
         };
         CreatePlanningSessionResult: {
             session: components["schemas"]["PlanningSessionDetail"];

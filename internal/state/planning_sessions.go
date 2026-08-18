@@ -90,18 +90,6 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 	if err != nil {
 		return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", err)
 	}
-	if req.ExternalCapture != nil {
-		snapshot, _, captureErr := captureExternalIssueTx(ctx, tx, *req.ExternalCapture)
-		if captureErr != nil {
-			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", captureErr)
-		}
-		if linkErr := createExternalLinkTx(ctx, tx, req.ExternalLinkID, "planning_session", session.PlanningSessionID, snapshot.SourceID, snapshot.SnapshotID, req.ActorID, req.ExternalAdoptionID, session.CreatedAt); linkErr != nil {
-			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", linkErr)
-		}
-		if auditErr := appendExternalAudit(ctx, tx, req.ExternalAuditEventID, req.ExternalCapture.ConnectionID, snapshot.SourceID, "source.planning_intake", req.ActorID, map[string]any{"planning_session_id": session.PlanningSessionID, "link_id": req.ExternalLinkID, "snapshot_id": snapshot.SnapshotID}, session.CreatedAt); auditErr != nil {
-			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", auditErr)
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return PlanningSession{}, PlanningOperation{}, fmt.Errorf("commit create planning session bundle: %w", err)
 	}

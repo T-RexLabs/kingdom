@@ -46,21 +46,7 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 	if req.Title != nil {
 		title = *req.Title
 	}
-	var session state.PlanningSession
-	var err error
-	if req.ExternalIntake != nil {
-		capture, captureErr := s.fetchCapture(r, *req.ExternalIntake)
-		if captureErr != nil {
-			writeExternalError(w, captureErr, "api.create_planning_session")
-			return
-		}
-		if strings.TrimSpace(title) == "" {
-			title = capture.Issue.Title
-		}
-		session, err = s.planningService.CreateSessionFromExternalIssue(r.Context(), title, modelSelectionJSON, capture, s.idGenerator("external_link"), s.idGenerator("external_adoption"), authenticatedActorID(r.Context()))
-	} else {
-		session, err = s.planningService.CreateSession(r.Context(), title, modelSelectionJSON)
-	}
+	session, err := s.planningService.CreateSession(r.Context(), title, modelSelectionJSON)
 	if err != nil {
 		handlePlanningError(w, err, "api.create_planning_session")
 		return

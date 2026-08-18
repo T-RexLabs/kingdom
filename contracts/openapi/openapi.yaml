@@ -3399,8 +3399,6 @@ components:
           minLength: 1
         model_selection:
           $ref: "#/components/schemas/PlanningAgentModelSelection"
-        external_intake:
-          $ref: "#/components/schemas/ExternalIntake"
 
     CreatePlanningSessionResult:
       type: object

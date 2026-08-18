@@ -64,9 +64,9 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 		t.Fatalf("health check status=%d body=%s", healthResponse.Code, healthResponse.Body.String())
 	}
 
-	planningResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", body: map[string]any{"external_intake": map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comment_count": true, "include_comments": false}}, idempotencyKey: "external-planning"})
+	planningResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", body: map[string]any{"title": "External intake"}, idempotencyKey: "external-planning"})
 	if planningResponse.Code != http.StatusCreated {
-		t.Fatalf("create external planning status=%d body=%s", planningResponse.Code, planningResponse.Body.String())
+		t.Fatalf("create planning status=%d body=%s", planningResponse.Code, planningResponse.Body.String())
 	}
 	var planningPayload struct {
 		Session struct {
@@ -75,6 +75,10 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	}
 	if err := json.Unmarshal(planningResponse.Body.Bytes(), &planningPayload); err != nil {
 		t.Fatal(err)
+	}
+	attachResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + planningPayload.Session.PlanningSessionID + "/external-sources", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7, "include_comment_count": true, "include_comments": false}, idempotencyKey: "external-planning-attach"})
+	if attachResponse.Code != http.StatusCreated {
+		t.Fatalf("attach external source status=%d body=%s", attachResponse.Code, attachResponse.Body.String())
 	}
 	var planningLink, usedSnapshot string
 	if err := env.db.QueryRow(`SELECT link_id,used_snapshot_id FROM external_source_links WHERE target_kind='planning_session' AND target_id=?`, planningPayload.Session.PlanningSessionID).Scan(&planningLink, &usedSnapshot); err != nil {
