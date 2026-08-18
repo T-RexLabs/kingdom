@@ -1,4 +1,5 @@
 import { ApiError, apiFetch } from "@/api/client";
+import { CopyButton } from "@/components/ui/copy-button";
 import { fieldClass } from "@/components/ui/field-styles";
 import { cn } from "@/lib/utils";
 import {
@@ -21,7 +22,6 @@ import {
 import {
   CheckCircle2,
   ChevronDown,
-  Copy,
   ExternalLink,
   Github,
   KeyRound,
@@ -1341,18 +1341,10 @@ export function ConnectionsPage() {
                         <code className="font-display text-3xl font-semibold tracking-[0.18em] text-gold">
                           {sharedFlow.user_code}
                         </code>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          aria-label="Copy GitHub code"
-                          onClick={() =>
-                            void navigator.clipboard.writeText(
-                              sharedFlow.user_code || "",
-                            )
-                          }
-                        >
-                          <Copy className="h-4 w-4" />
-                        </Button>
+                        <CopyButton
+                          value={sharedFlow.user_code || ""}
+                          label="Copy GitHub code"
+                        />
                       </div>
                     </div>
                     <a
