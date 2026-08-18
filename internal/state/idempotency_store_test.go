@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -14,6 +15,9 @@ func TestIdempotencyStoreReserveFinalizeAndLookup(t *testing.T) {
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
+	// The retention clock is seeded from real time and only moves forward, so a
+	// fixed test clock must start from zero or the test expires with age.
+	resetIdempotencyRetentionClock(t, db)
 
 	store := NewIdempotencyStore(db)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
@@ -69,6 +73,9 @@ func TestIdempotencyStoreDuplicateScopeDoesNotTakeOwnership(t *testing.T) {
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
+	// The retention clock is seeded from real time and only moves forward, so a
+	// fixed test clock must start from zero or the test expires with age.
+	resetIdempotencyRetentionClock(t, db)
 
 	store := NewIdempotencyStore(db)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
@@ -183,5 +190,12 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T
 		if found != wantFound {
 			t.Fatalf("%s found=%v want %v", id, found, wantFound)
 		}
+	}
+}
+
+func resetIdempotencyRetentionClock(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
+		t.Fatalf("reset idempotency retention clock: %v", err)
 	}
 }

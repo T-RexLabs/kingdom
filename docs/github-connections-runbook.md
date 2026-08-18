@@ -10,14 +10,18 @@ Finalization re-fetches candidates and atomically stores one healthy connection 
 
 ## Private Manifest Setup
 
-Open **Connections**, select **Create a private GitHub App**, and choose a personal or organization owner. Kingdom submits a browser POST directly to GitHub with a manifest that creates a private user-owned App with:
+Open **Connections**, select **Create a private GitHub App**, and choose a personal or organization owner. Kingdom opens a dedicated GitHub setup tab and submits a browser POST to GitHub there with a manifest that creates a private user-owned App with:
 
 - Metadata: read-only
 - Issues: read-only
 
 The manifest declares no events and no webhook at all (GitHub validates a manifest hook URL for public reachability even when the hook is inactive, which would reject every localhost origin), plus `request_oauth_on_install=false`, and dynamic callback URLs derived from the exact initiating browser origin. GitHub allows the App name to be edited before creation. Install the App only on repositories Kingdom should discover.
 
-GitHub returns through public one-time-state callbacks, so the `SameSite=Strict` browser cookie is not required on callback GETs. Each callback redirects with `303` to the stored exact-origin `/connections` page without code, state, or installation query data. The page resumes from memory-only server flow status. A restart or one-hour expiry requires a new flow.
+Every later hop — installing the App, then authorizing it — is another button that reuses the same setup tab. The Kingdom tab never navigates away: it keeps driving the flow and polls for the stage change GitHub produces, so an interrupted or closed setup tab costs nothing.
+
+GitHub returns through public one-time-state callbacks, so the `SameSite=Strict` browser cookie is not required on callback GETs. Each callback redirects with `303` to the stored exact-origin `/connections/github/return` handoff page without code, state, or installation query data; that page closes the setup tab and performs no requests of its own. A restart or one-hour expiry requires a new flow.
+
+An unfinished flow is never re-opened as a modal. Returning to **Connections** shows it inline with **Resume setup** and **Abandon setup**; abandoning discards the memory-only flow and zeroes its transient secrets rather than waiting out the hour.
 
 If automatic conversion, installation, authorization, completion, or initial start fails, the private-App setup surface shows stage-specific guidance. **Retry this step** is reserved for an ambiguous transport failure and reuses the stable idempotency key. **Start again** is shown for a known terminal failure and creates a new flow with a new key, preventing stale auto-advance loops.
 
@@ -42,7 +46,7 @@ Only the saved display name can be edited. App ID, client ID, installation ID, a
 
 ## Intake and Refresh
 
-The picker enumerates installation-granted repository IDs, then browses or searches issue-only results. Pull requests returned by GitHub's Issues API are removed. Comment count defaults on; bodies default off. Selected bodies are shown in an accessible paginated preview with raw HTML, remote images, embeds, and unsafe links blocked. Retention is 100 bodies, 32 KiB each, 128 KiB aggregate. A planning session can attach multiple unique issues through **Add GitHub issue** / **Add source**; duplicate attachment to the same session is rejected atomically. Planner context uses no more than 64 KiB comments and 128 KiB total external text.
+The picker enumerates installation-granted repository IDs, then browses or searches issue-only results. Pull requests returned by GitHub's Issues API are removed. Comment count defaults on; bodies default off. Selected bodies are shown in an accessible paginated preview with raw HTML, remote images, embeds, and unsafe links blocked. Retention is 100 bodies, 32 KiB each, 128 KiB aggregate. A planning session can attach multiple unique issues through **Add GitHub issue** / **Add source** inside the session itself; duplicate attachment to the same session is rejected atomically. **Remove** detaches a source from future planner operations after an inline confirmation. Provenance, refresh history, and operations already bound to that source are unchanged, and the same issue can be added again — which reuses its link and adopts freshly captured content. Planner context uses no more than 64 KiB comments and 128 KiB total external text.
 
 Refresh is manual. Issue and comment ETags are checked independently, and an unchanged normalized digest creates no snapshot. A changed response appends an immutable snapshot and field status. Provider fetches follow the source's current locator after a transfer, but decree summaries retain used-snapshot coordinates and planning summaries show active-adoption coordinates until the operator adopts latest. Before decree issuance, refreshed title/body and the issuance snapshot are applied explicitly. Planning adoption is explicit and affects future operations only. Issued decrees always retain their exact used snapshot and immutable text: **“The GitHub source changed; this decree was not changed.”**
 

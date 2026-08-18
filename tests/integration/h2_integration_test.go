@@ -79,6 +79,9 @@ func TestIntegrationIdempotencyReserveFinalizeAndDuplicate(t *testing.T) {
 
 	db := openDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
+	// The retention clock is seeded from real time and only moves forward, so a
+	// fixed test clock must start from zero or the test expires with age.
+	mustExec(t, db, `UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`)
 
 	store := state.NewIdempotencyStore(db)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
