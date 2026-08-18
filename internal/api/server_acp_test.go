@@ -24,7 +24,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
 	}
-	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
 
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -41,7 +41,6 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode create session result: %v", err)
 	}
-	awaitAPIPlanningContext(t, db, created.Session.PlanningSessionId)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,

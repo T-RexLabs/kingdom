@@ -1457,9 +1457,6 @@ func (s *ExternalStore) AdoptLatest(ctx context.Context, linkID, adoptionID, act
 // transaction that enqueues provider-backed work. Runtime execution must only
 // read this binding: a later adoption cannot change queued or recovered work.
 func bindPlanningOperationExternalContext(ctx context.Context, tx *sql.Tx, operation PlanningOperation) error {
-	if operation.Type == PlanningOperationTypeBootstrapContext {
-		return nil
-	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT adoption.snapshot_id,link.source_id,snapshot.source_id
 		FROM planning_external_source_adoptions adoption

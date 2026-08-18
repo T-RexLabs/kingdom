@@ -33,7 +33,7 @@ func (a *deterministicExternalAdapter) ListIssues(context.Context, state.Externa
 func (a *deterministicExternalAdapter) FetchIssue(_ context.Context, req external.IssueRequest) (external.IssueResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: a.issue, Profile: req.Profile.Normalize(), ETag: `"issue-version"`}, nil
+	return external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: a.issue, Profile: req.Profile, ETag: `"issue-version"`}, nil
 }
 func (a *deterministicExternalAdapter) Evict(string) {}
 

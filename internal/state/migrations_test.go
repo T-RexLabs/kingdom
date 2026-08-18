@@ -621,7 +621,7 @@ func TestMigrationConstraints(t *testing.T) {
 		}
 	})
 
-	t.Run("planning_operations_allow_bootstrap_context_alongside_interactive_operation", func(t *testing.T) {
+	t.Run("planning_operations_scope_active_slots_by_operation_type", func(t *testing.T) {
 		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bootstrap', 'session', 'custom', 'active', 'processing', NULL, 'po_reply_active', NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z')`)
 		if err != nil {
 			t.Fatalf("insert planning session seed row: %v", err)
@@ -632,9 +632,9 @@ func TestMigrationConstraints(t *testing.T) {
 			t.Fatalf("insert interactive operation seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_bootstrap_active', 'po_bootstrap_active', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
-		if err != nil {
-			t.Fatalf("expected bootstrap_context operation to coexist with the active interactive slot, got %v", err)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_unknown_type', 'po_unknown_type', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
+		if err == nil {
+			t.Fatal("expected an operation type outside the supported set to be rejected")
 		}
 
 		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_formalize_blocked', 'po_formalize_blocked', 'ps_bootstrap', 'formalize', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:03Z', NULL, NULL)`)

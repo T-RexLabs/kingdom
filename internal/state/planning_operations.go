@@ -54,27 +54,31 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		FinishedAt:                 nullableString(req.FinishedAt),
 	}
 	row.AcpRunID = acp.PlannerRunID(row.OperationID)
-	if row.Type != PlanningOperationTypeBootstrapContext {
-		queryer, ok := exec.(sqlQueryRower)
-		if !ok {
-			return PlanningOperation{}, fmt.Errorf("planning operation context binding requires QueryRow")
-		}
-		var snapshotID sql.NullString
-		if err := queryer.QueryRowContext(ctx, `
-			SELECT session.context_snapshot_id
-			FROM planning_sessions session
-			LEFT JOIN planning_context_snapshots snapshot
-			  ON snapshot.planning_context_snapshot_id=session.context_snapshot_id
-			 AND snapshot.planning_session_id=session.planning_session_id
-			WHERE session.planning_session_id=?
-			  AND snapshot.planning_context_snapshot_id IS NOT NULL`, row.PlanningSessionID).Scan(&snapshotID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return PlanningOperation{}, fmt.Errorf("planning session %q has no active context snapshot", row.PlanningSessionID)
-			}
-			return PlanningOperation{}, fmt.Errorf("bind planning operation context snapshot: %w", err)
-		}
-		row.PlanningContextSnapshotID = nullableString(snapshotID.String)
+	queryer, ok := exec.(sqlQueryRower)
+	if !ok {
+		return PlanningOperation{}, fmt.Errorf("planning operation context binding requires QueryRow")
 	}
+	// The outer join is deliberate: no row at all means the session does not
+	// exist, while a row with a NULL snapshot means the session's adopted
+	// pointer is dangling. Those are different failures and must not share
+	// one message.
+	var snapshotID sql.NullString
+	if err := queryer.QueryRowContext(ctx, `
+		SELECT snapshot.planning_context_snapshot_id
+		FROM planning_sessions session
+		LEFT JOIN planning_context_snapshots snapshot
+		  ON snapshot.planning_context_snapshot_id=session.context_snapshot_id
+		 AND snapshot.planning_session_id=session.planning_session_id
+		WHERE session.planning_session_id=?`, row.PlanningSessionID).Scan(&snapshotID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PlanningOperation{}, fmt.Errorf("%w: %q", ErrPlanningSessionNotFound, row.PlanningSessionID)
+		}
+		return PlanningOperation{}, fmt.Errorf("bind planning operation context snapshot: %w", err)
+	}
+	if !snapshotID.Valid || strings.TrimSpace(snapshotID.String) == "" {
+		return PlanningOperation{}, fmt.Errorf("%w: %q", ErrPlanningContextSnapshotUnavailable, row.PlanningSessionID)
+	}
+	row.PlanningContextSnapshotID = nullableString(snapshotID.String)
 	_, err := exec.ExecContext(ctx,
 		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -732,8 +736,6 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 	case PlanningOperationTypeGenerateTitle:
 		sessionUpdate.Set("current_title_operation_id", nil)
 		sessionUpdate.Where("current_title_operation_id = ?", operation.OperationID)
-	default:
-		// bootstrap_context does not own an interactive session slot.
 	}
 	if _, err := sessionUpdate.Exec(ctx, tx); err != nil {
 		return rollbackPlanningTx(tx, "cancel queued planning operation", fmt.Errorf("cancel queued planning session: %w", err))

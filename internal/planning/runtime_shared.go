@@ -90,22 +90,33 @@ func (d runtimeDeps) refreshContextSnapshot(ctx context.Context, planningSession
 	if err != nil {
 		return state.PlanningContextSnapshot{}, err
 	}
+	req, err := contextSnapshotRequest(d, planningSessionID, summary, d.nowString())
+	if err != nil {
+		return state.PlanningContextSnapshot{}, err
+	}
+	return d.store.CreateContextSnapshot(ctx, req)
+}
+
+// contextSnapshotRequest renders a scan into a storable snapshot row. Session
+// creation needs the request without writing it, so it can go into the same
+// transaction as the session.
+func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary SnapshotSummary, createdAt string) (state.CreatePlanningContextSnapshotRequest, error) {
 	includedJSON, err := json.Marshal(summary.IncludedFiles)
 	if err != nil {
-		return state.PlanningContextSnapshot{}, fmt.Errorf("marshal included files: %w", err)
+		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("marshal included files: %w", err)
 	}
 	excludedJSON, err := json.Marshal(summary.ExcludedFiles)
 	if err != nil {
-		return state.PlanningContextSnapshot{}, fmt.Errorf("marshal excluded files: %w", err)
+		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("marshal excluded files: %w", err)
 	}
-	return d.store.CreateContextSnapshot(ctx, state.CreatePlanningContextSnapshotRequest{
+	return state.CreatePlanningContextSnapshotRequest{
 		PlanningContextSnapshotID: d.nextID("planning_context"),
 		PlanningSessionID:         planningSessionID,
 		SummaryMarkdown:           summary.SummaryMarkdown,
 		IncludedFilesJSON:         string(includedJSON),
 		ExcludedFilesJSON:         string(excludedJSON),
-		CreatedAt:                 d.nowString(),
-	})
+		CreatedAt:                 createdAt,
+	}, nil
 }
 
 // scanProjectRoot walks `root` collecting a deterministic snapshot of the
@@ -118,7 +129,18 @@ func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) 
 	totalBytes := 0
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			// One unreadable directory must not cost the whole snapshot: a
+			// session that cannot be created is far worse than a session whose
+			// context is missing a subtree it could never have read anyway.
+			// Record it the same way stat/read failures are already recorded
+			// and keep walking. `entry` is nil for a failed root read.
+			if rel, relErr := filepath.Rel(root, path); relErr == nil && rel != "." {
+				excluded = append(excluded, SnapshotFileEntry{Path: filepath.ToSlash(rel), Reason: "walk_failed"})
+			}
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			// Cancellation propagates as the WalkDir error so the partial
@@ -222,12 +244,39 @@ func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) 
 	return SnapshotSummary{SummaryMarkdown: strings.Join(lines, "\n"), IncludedFiles: included, ExcludedFiles: excluded}, nil
 }
 
+// skippedDirectoryNames are directories whose contents are never useful
+// planning context: they hold VCS internals, Kingdom's own state, or build and
+// dependency output. Walking them is pure cost — on a normal repository they
+// dwarf the source tree, so they would exhaust the snapshot's file budget
+// before the walk ever reached real source, and every skipped file would add
+// its own row to the excluded list persisted with the snapshot.
+var skippedDirectoryNames = map[string]struct{}{
+	".git":         {},
+	".kingdom":     {},
+	"node_modules": {},
+	"vendor":       {},
+	"dist":         {},
+	"build":        {},
+	"target":       {},
+	".venv":        {},
+}
+
 func shouldSkipDirectory(rel string, entry os.DirEntry) bool {
 	if !entry.IsDir() {
 		return false
 	}
 	trimmed := strings.TrimSpace(rel)
-	return trimmed == ".git" || strings.HasPrefix(trimmed, ".git/") || trimmed == ".kingdom" || strings.HasPrefix(trimmed, ".kingdom/")
+	if trimmed == "" {
+		return false
+	}
+	// Match on any path segment: these directories nest (web/node_modules,
+	// crate/target) rather than only appearing at the project root.
+	for _, segment := range strings.Split(trimmed, "/") {
+		if _, skip := skippedDirectoryNames[segment]; skip {
+			return true
+		}
+	}
+	return false
 }
 
 func excludedFileReason(rel string, size int64) string {

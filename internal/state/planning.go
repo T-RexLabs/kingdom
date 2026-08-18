@@ -27,7 +27,6 @@ const (
 type PlanningOperationType string
 
 const (
-	PlanningOperationTypeBootstrapContext PlanningOperationType = "bootstrap_context"
 	PlanningOperationTypeReply            PlanningOperationType = "reply"
 	PlanningOperationTypeFormalize        PlanningOperationType = "formalize"
 	PlanningOperationTypeRegenerate       PlanningOperationType = "regenerate"
@@ -276,9 +275,12 @@ type CancelQueuedPlanningOperationRequest struct {
 }
 
 type CreatePlanningSessionBundleRequest struct {
-	Session            CreatePlanningSessionRequest
-	OpeningMessage     AppendPlanningMessageRequest
-	BootstrapOperation CreatePlanningOperationRequest
+	Session        CreatePlanningSessionRequest
+	OpeningMessage AppendPlanningMessageRequest
+	// ContextSnapshot is captured with the session, not after it. Every
+	// provider-backed planner operation binds the session's active context
+	// snapshot at enqueue, so a session that exists without one cannot chat.
+	ContextSnapshot CreatePlanningContextSnapshotRequest
 }
 
 type CreatePlanningReplyBundleRequest struct {
@@ -406,47 +408,6 @@ type FinalizeGenerateTitleAbortRequest struct {
 	TerminalEvent      *AppendPlanningOperationEventRequest
 }
 
-// FinalizeBootstrapRequest is the input to FinalizeBootstrap. The caller
-// reserves the next event sequence on its cursor and supplies the terminal
-// event metadata; the store builds the payload internally so it can name
-// the snapshot id that the session actually adopted (which may differ from
-// the candidate when /context/refresh raced ahead).
-type FinalizeBootstrapRequest struct {
-	SessionID                  string
-	OperationID                string
-	LeaseOwner                 string
-	LeaseVersion               int
-	UpdatedAt                  string
-	FinishedAt                 string
-	CandidateContextSnapshotID string
-
-	TerminalEventID        string
-	TerminalEventSeq       int
-	TerminalEventCreatedAt string
-}
-
-// FinalizeBootstrapAbortRequest is the input to FinalizeBootstrapAbort.
-// Mirrors FinalizeBootstrapRequest but for non-success termination
-// (failed or cancelled): the caller picks the terminal status, supplies
-// the cancellation/failure reason in ErrorMessage, and provides a
-// pre-built terminal event the store inserts atomically with the
-// op-row update.
-type FinalizeBootstrapAbortRequest struct {
-	SessionID    string
-	OperationID  string
-	LeaseOwner   string
-	LeaseVersion int
-	// Status must be PlanningOperationStatusFailed or
-	// PlanningOperationStatusCancelled. Reply/Regenerate/Formalize
-	// terminalisation goes through FinalizeOperation; bootstrap takes
-	// this dedicated path because it never claims the session's
-	// interactive current_operation_id slot.
-	Status        PlanningOperationStatus
-	UpdatedAt     string
-	FinishedAt    string
-	ErrorMessage  string
-	TerminalEvent *AppendPlanningOperationEventRequest
-}
 
 type PlanningStore struct {
 	db *sql.DB
@@ -718,7 +679,7 @@ func validatePlanningOperationEventAppend(req AppendPlanningOperationEventReques
 
 func isValidPlanningOperationType(operationType PlanningOperationType) bool {
 	switch operationType {
-	case PlanningOperationTypeBootstrapContext, PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate, PlanningOperationTypeGenerateTitle:
+	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate, PlanningOperationTypeGenerateTitle:
 		return true
 	default:
 		return false

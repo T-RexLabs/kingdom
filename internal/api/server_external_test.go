@@ -268,7 +268,6 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		awaitAPIPlanningContext(t, db, result.Session.PlanningSessionId)
 		return result
 	}
 	firstSession := createSession("attach-session-a")

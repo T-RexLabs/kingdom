@@ -1088,7 +1088,7 @@ CREATE TABLE planning_operations (
   acp_run_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
   planning_context_snapshot_id TEXT,
-  type TEXT NOT NULL CHECK (type IN ('bootstrap_context', 'reply', 'formalize', 'regenerate', 'generate_title')),
+  type TEXT NOT NULL CHECK (type IN ('reply', 'formalize', 'regenerate', 'generate_title')),
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   request_payload_json TEXT NOT NULL,
   lease_owner TEXT NOT NULL DEFAULT '',

@@ -1338,15 +1338,3 @@ func bindAPIPlanningContext(t *testing.T, store *state.PlanningStore, sessionID 
 	}
 }
 
-func awaitAPIPlanningContext(t *testing.T, db *sql.DB, sessionID string) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var snapshotID sql.NullString
-		if err := db.QueryRow(`SELECT context_snapshot_id FROM planning_sessions WHERE planning_session_id=?`, sessionID).Scan(&snapshotID); err == nil && snapshotID.Valid && strings.TrimSpace(snapshotID.String) != "" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("planning session %q did not publish context", sessionID)
-}

@@ -154,15 +154,15 @@ func TestIntegrationExternalPlanningAttachIsAtomic(t *testing.T) {
 	}
 
 	store := state.NewPlanningStore(db)
-	if _, _, err := store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
-		Session:            state.CreatePlanningSessionRequest{PlanningSessionID: "session-intake", Title: "Private issue", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ActiveLeafMessageID: "message-intake", ProjectRoot: "/tmp/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
-		OpeningMessage:     state.AppendPlanningMessageRequest{PlanningMessageID: "message-intake", PlanningSessionID: "session-intake", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "What outcome should this plan achieve?", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
-		BootstrapOperation: state.CreatePlanningOperationRequest{OperationID: "operation-intake", PlanningSessionID: "session-intake", Type: state.PlanningOperationTypeBootstrapContext, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at},
+	if _, err := store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
+		Session:         state.CreatePlanningSessionRequest{PlanningSessionID: "session-intake", Title: "Private issue", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ActiveLeafMessageID: "message-intake", ProjectRoot: "/tmp/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
+		OpeningMessage:  state.AppendPlanningMessageRequest{PlanningMessageID: "message-intake", PlanningSessionID: "session-intake", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "What outcome should this plan achieve?", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
+		ContextSnapshot: state.CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "context-intake", PlanningSessionID: "session-intake", SummaryMarkdown: "- Included files: 0", IncludedFilesJSON: "[]", ExcludedFilesJSON: "[]", CreatedAt: at},
 	}); err != nil {
 		t.Fatalf("create planning session: %v", err)
 	}
 
-	capture := state.CaptureExternalIssueRequest{SourceID: "source-intake", SnapshotID: "snapshot-intake", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "untrusted provider body", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+	capture := state.CaptureExternalIssueRequest{SourceID: "source-intake", SnapshotID: "snapshot-intake", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "untrusted provider body", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at}
 	if _, err := externalStore.AttachPlanningExternalSource(ctx, state.AttachPlanningExternalSourceRequest{PlanningSessionID: "session-intake", Capture: capture, LinkID: "link-intake", AdoptionID: "adoption-intake", AuditEventID: "audit-attach-intake", ActorID: "local-operator", AttachedAt: at}); err != nil {
 		t.Fatalf("attach external source: %v", err)
 	}

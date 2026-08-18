@@ -100,7 +100,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Clients identify planned decree lineage with `planning_session_id` and `planning_draft_id`; decree issuance derives and persists `planning_context_snapshot_id` from the draft's unique successful formalize operation.
 - ACP is the single canonical protocol for planner execution and activity semantics: planner runs, statuses, event streams, cancellation, message parts, and provider activity all flow through `/api/v1/acp`.
 - Kingdom REST remains the single canonical API for planner domain resources: planning sessions, planning messages, drafts, context snapshots, and decree issuance remain under the Kingdom resource model.
-- Provider-backed planner ACP runs cover `reply`, `regenerate`, `formalize`, and `generate_title`; internal `bootstrap_context` remains runtime-owned and is not ACP-modeled.
+- Provider-backed planner ACP runs cover `reply`, `regenerate`, `formalize`, and `generate_title`. These are the only planner operation types; context capture is not an operation.
 - Planner activity must not expose a second public lifecycle protocol beside ACP, and the planner must not fabricate tool, reasoning, or progress activity that the provider did not actually emit.
 
 ## Non-Goals
@@ -138,7 +138,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Planner ACP events stream over SSE with replay/resume.
 - Regenerate and user-message edits are non-destructive: they append a new sibling branch under the relevant parent and move the active leaf onto it; the prior branch and its entire downstream are preserved and re-selectable. Nothing is deleted or truncated.
 - Branches at any message are operator-navigable; an `activate` sets the active leaf to a chosen branch's most recent leaf.
-- Context snapshots are durable and refreshable through the API.
+- A planning session and its first context snapshot are created in one transaction, so a session always has an active context snapshot from birth. Snapshots are durable and refreshable through the API.
 - Planner canonical state persists through the planning message tree, the session active-leaf pointer, drafts, and session fields.
 - Provider-backed planner canonicalization is runtime-settled through planner-specific invocation, evidence, and settlement records before the canonical planning tables are updated.
 - Linked GitHub issues are a separate external-context domain. They are attached, refreshed, adopted, and removed inside an existing planning session; sessions are never created from an issue. They do not create messages and do not move `planning_context_snapshots`; explicit adoption and removal affect future operations only.
@@ -258,6 +258,7 @@ Important clarifications:
   - explicit allfather confirmation when `governance.autonomous_approvals=false`
 - Artifact presence supports auditability and observability but does not determine terminal success.
 - Run and planning SSE streams must preserve replay semantics through stable event ids and `Last-Event-ID`.
+- Every planning session has a resolvable active context snapshot; creation is one transaction, so a session that cannot bind a snapshot cannot exist.
 - Planning transcript truth comes from the persisted message tree resolved through the session active-leaf pointer, not transient client state; planner operations are append-only and never delete or truncate prior branches.
 - Planning operations must be durable enough to recover after refresh, disconnect, or restart.
 - ACP run state is the canonical planner activity lifecycle visible to operators; Kingdom planner session fields may point to the active ACP run, but they do not define an alternate public lifecycle protocol.
