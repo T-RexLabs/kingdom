@@ -275,6 +275,12 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusCreated, presentConnection(connection, s.githubKeys, s.githubUserTokens))
 }
 
+// githubSetupReturnPath is a chromeless page in the dedicated GitHub setup tab.
+// Every callback lands there rather than on /connections so the setup tab can
+// close itself instead of booting a second copy of the app that would race the
+// driving tab's flow advancement.
+const githubSetupReturnPath = "/connections/github/return"
+
 func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Request) {
 	s.callbackHeaders(w)
 	flow, err := s.manifestFlows.RecordManifestCode(r.URL.Query().Get("state"), r.URL.Query().Get("code"))
@@ -282,7 +288,7 @@ func (s *Server) handleGitHubManifestCallback(w http.ResponseWriter, r *http.Req
 		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "GitHub setup callback is invalid, expired, or already used", "api.github_manifest.callback", nil)
 		return
 	}
-	http.Redirect(w, r, flow.Origin+"/connections", http.StatusSeeOther)
+	http.Redirect(w, r, flow.Origin+githubSetupReturnPath, http.StatusSeeOther)
 }
 
 func (s *Server) handleGitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
@@ -292,7 +298,7 @@ func (s *Server) handleGitHubSetupCallback(w http.ResponseWriter, r *http.Reques
 		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "GitHub installation callback is invalid, expired, or already used", "api.github_manifest.setup_callback", nil)
 		return
 	}
-	http.Redirect(w, r, flow.Origin+"/connections", http.StatusSeeOther)
+	http.Redirect(w, r, flow.Origin+githubSetupReturnPath, http.StatusSeeOther)
 }
 
 func (s *Server) handleGitHubOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +308,7 @@ func (s *Server) handleGitHubOAuthCallback(w http.ResponseWriter, r *http.Reques
 		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "GitHub authorization callback is invalid, expired, or already used", "api.github_manifest.oauth_callback", nil)
 		return
 	}
-	http.Redirect(w, r, flow.Origin+"/connections", http.StatusSeeOther)
+	http.Redirect(w, r, flow.Origin+githubSetupReturnPath, http.StatusSeeOther)
 }
 
 func (s *Server) callbackHeaders(w http.ResponseWriter) {

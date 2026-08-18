@@ -2,25 +2,28 @@ import {
   createRouter,
   createRootRoute,
   createRoute,
-  Outlet,
   lazyRouteComponent,
   redirect,
 } from "@tanstack/react-router";
-import { AppShell } from "@/components/app-shell";
 import { NotFoundPage } from "@/components/error-boundary";
-import { GovernanceNotifierMount } from "@/features/runs/governance-notifier";
+import { RootLayout } from "@/components/root-layout";
 import { isRunDetailTab, type RunDetailTab } from "@/features/runs/run-detail-tabs";
 import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
 import { validateDecreeNewSearch } from "@/features/decrees/decree-route-search";
+import { GITHUB_SETUP_RETURN_PATH } from "@/features/connections/github-setup-return-path";
 
 const rootRoute = createRootRoute({
-  component: () => (
-    <AppShell>
-      <GovernanceNotifierMount />
-      <Outlet />
-    </AppShell>
-  ),
+  component: RootLayout,
   notFoundComponent: NotFoundPage,
+});
+
+const githubSetupReturnRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: GITHUB_SETUP_RETURN_PATH,
+  component: lazyRouteComponent(
+    () => import("@/features/connections/github-setup-return-page"),
+    "GitHubSetupReturnPage"
+  ),
 });
 
 // Dashboard stays eagerly loaded (landing page — must be instant)
@@ -183,6 +186,7 @@ const routeTree = rootRoute.addChildren([
   agentsRoute,
   connectionsRoute,
   realmAnalyticsRoute,
+  githubSetupReturnRoute,
 ]);
 
 export const router = createRouter({

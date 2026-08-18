@@ -131,7 +131,9 @@ func TestGitHubManifestCallbackUsesOneTimeStateWithoutCookie(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, path, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://kingdom.example/connections" {
+	// The setup tab must land on the chromeless return page, not on the app, so
+	// it cannot become a second driver of the same flow.
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://kingdom.example/connections/github/return" {
 		t.Fatalf("callback status=%d location=%q body=%s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
 	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Referrer-Policy") != "no-referrer" {

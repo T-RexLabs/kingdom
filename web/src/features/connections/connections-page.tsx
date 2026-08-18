@@ -1,4 +1,9 @@
 import { ApiError, apiFetch } from "@/api/client";
+import {
+  openSetupWindow,
+  postManifestToSetupWindow,
+  setupWindowBlockedMessage,
+} from "./github-setup-window";
 import type { components } from "@/api/schema";
 import { PageContent, PageHeader } from "@/components/page-layout";
 import { newIdempotencyKey as idem } from "@/lib/idempotency";
@@ -58,6 +63,14 @@ const devicePollRetry =
 const inputClass =
   "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition focus:border-gold/70 focus:ring-2 focus:ring-gold/15";
 
+// Stages where GitHub, not Kingdom, is holding the flow.
+const manifestWaitingStages = new Set<FlowStatus["stage"]>([
+  "awaiting_app_creation",
+  "awaiting_installation",
+  "awaiting_authorization",
+]);
+const manifestPollIntervalMs = 2000;
+
 const flowCopy: Record<FlowStatus["stage"], string> = {
   awaiting_app_creation: "Finish creating the private App on GitHub.",
   app_created: "Securing the App credentials returned by GitHub.",
@@ -93,20 +106,6 @@ function requestError(cause: unknown): RequestError {
   return {
     message: cause instanceof Error ? cause.message : "GitHub request failed",
   };
-}
-
-function submitManifest(action: string, manifest: string) {
-  const form = document.createElement("form");
-  form.method = "post";
-  form.action = action;
-  form.hidden = true;
-  const input = document.createElement("input");
-  input.type = "hidden";
-  input.name = "manifest";
-  input.value = manifest;
-  form.append(input);
-  document.body.append(form);
-  form.submit();
 }
 
 function MetadataFields({
@@ -208,6 +207,53 @@ function ManifestSetupStatus({
   );
 }
 
+const manifestHandoffCopy: Partial<Record<FlowStatus["stage"], string>> = {
+  awaiting_installation: "Choose repositories on GitHub",
+  awaiting_authorization: "Authorize on GitHub",
+};
+
+/**
+ * Opens the next GitHub hop in the dedicated setup tab. The operator clicks it,
+ * because a tab opened from an effect is blocked as an unsolicited pop-up and
+ * because nothing should navigate this tab away mid-flow.
+ */
+function ManifestHandoffAction({
+  flow,
+  url,
+  busy,
+  onBlocked,
+}: {
+  flow?: FlowStatus;
+  url: string;
+  busy: boolean;
+  onBlocked: () => void;
+}) {
+  const label = flow ? manifestHandoffCopy[flow.stage] : undefined;
+  if (!flow || !label || !url) return null;
+  return (
+    <div className="space-y-2">
+      <Button
+        type="button"
+        className="w-full"
+        disabled={busy}
+        onClick={() => {
+          if (!openSetupWindow(url)) onBlocked();
+        }}
+      >
+        <ExternalLink className="h-4 w-4" />
+        {label}
+      </Button>
+      <p
+        className="flex items-center justify-center gap-2 text-xs text-foreground-muted"
+        aria-live="polite"
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-gold" />
+        Kingdom continues as soon as GitHub returns
+      </p>
+    </div>
+  );
+}
+
 export function ConnectionsPage() {
   const [items, setItems] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -216,6 +262,7 @@ export function ConnectionsPage() {
   const [manifestFailureStage, setManifestFailureStage] = useState<ManifestFailureStage>();
   const [manifestRecovery, setManifestRecovery] = useState<ManifestRecovery>();
   const [manifestRetryAttempt, setManifestRetryAttempt] = useState(0);
+  const [manifestPollAttempt, setManifestPollAttempt] = useState(0);
   const [sharedError, setSharedError] = useState<RequestError>();
   const [operation, setOperation] = useState("");
   const [flow, setFlow] = useState<FlowStatus>();
@@ -227,6 +274,8 @@ export function ConnectionsPage() {
   const [selectedInstallation, setSelectedInstallation] = useState("");
   const [sharedReconnectID, setSharedReconnectID] = useState("");
   const [manifestOpen, setManifestOpen] = useState(false);
+  // The GitHub URL for the current stage, opened only when the operator asks.
+  const [manifestHandoffURL, setManifestHandoffURL] = useState("");
   const [ownerType, setOwnerType] = useState<"personal" | "organization">(
     "personal",
   );
@@ -362,10 +411,17 @@ export function ConnectionsPage() {
       setManifestError(undefined);
       setManifestFailureStage(undefined);
       setManifestRecovery(undefined);
+      // Server work happens here; opening GitHub does not. A tab opened from an
+      // effect is blocked as an unsolicited pop-up, and silently navigating the
+      // operator away is what this flow is being fixed to stop doing.
+      setManifestHandoffURL("");
       try {
         if (flow.stage === "app_created") {
           setOperation("flow-conversion");
-          const result = await apiFetch<{ installation_url: string }>(
+          // Conversion's installation URL is not used: the awaiting_installation
+          // step below fetches it, so resuming a flow and completing one take
+          // exactly the same path.
+          await apiFetch(
             `/connections/github/manifest-flows/${flow.flow_id}/conversion`,
             {
               method: "POST",
@@ -378,7 +434,9 @@ export function ConnectionsPage() {
             },
           );
           settleSetupRequest(requestID);
-          window.location.assign(result.installation_url);
+          // The server has already moved on; mirroring the stage here is what
+          // surfaces the next hop and starts watching for GitHub's return.
+          setFlow({ ...flow, stage: "awaiting_installation" });
         } else if (flow.stage === "awaiting_installation") {
           setOperation("flow-installation");
           const result = await apiFetch<{ installation_url: string }>(
@@ -394,7 +452,7 @@ export function ConnectionsPage() {
             },
           );
           settleSetupRequest(requestID);
-          window.location.assign(result.installation_url);
+          setManifestHandoffURL(result.installation_url);
         } else if (flow.stage === "installation_received") {
           setOperation("flow-authorization");
           const result = await apiFetch<{ authorization_url: string }>(
@@ -410,7 +468,8 @@ export function ConnectionsPage() {
             },
           );
           settleSetupRequest(requestID);
-          window.location.assign(result.authorization_url);
+          setManifestHandoffURL(result.authorization_url);
+          setFlow({ ...flow, stage: "awaiting_authorization" });
         } else if (flow.stage === "authorization_received") {
           setOperation("flow-completion");
           await apiFetch<Connection>(
@@ -448,6 +507,36 @@ export function ConnectionsPage() {
     )
       void advance();
   }, [flow, manifestRetryAttempt]);
+
+  // While GitHub holds the setup tab, this tab watches for the stage change the
+  // callback produces. Without it the operator would have to reload the page to
+  // see their own progress.
+  useEffect(() => {
+    if (!flow || !manifestWaitingStages.has(flow.stage) || manifestError) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const next = await apiFetch<FlowStatus>(
+            `/connections/github/manifest-flows/${flow.flow_id}`,
+          );
+          if (!active || !next || next.stage === flow.stage) {
+            if (active) setManifestPollAttempt((attempt) => attempt + 1);
+            return;
+          }
+          setFlow(next);
+        } catch {
+          // A transient status read must not fail the flow; the operator's own
+          // GitHub tab is still the authority on progress.
+          if (active) setManifestPollAttempt((attempt) => attempt + 1);
+        }
+      })();
+    }, manifestPollIntervalMs);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [flow, manifestError, manifestPollAttempt]);
 
   useEffect(() => {
     if (!sharedOpen || sharedFlow?.stage !== "awaiting_authorization") return;
@@ -633,8 +722,20 @@ export function ConnectionsPage() {
     flow?.stage === "failed" ||
     (ownerType === "organization" && !organization.trim());
 
+  const reportSetupWindowBlocked = () => {
+    setManifestError({ message: setupWindowBlockedMessage });
+    setManifestFailureStage(flow?.stage ?? "start");
+    setManifestRecovery("retry");
+  };
+
   const startManifest = async () => {
     const requestID = `manifest-start:${ownerType}:${organization.trim()}`;
+    // The tab must be opened by the click itself; a tab opened after the await
+    // below is blocked as an unsolicited pop-up.
+    if (!openSetupWindow()) {
+      reportSetupWindowBlocked();
+      return;
+    }
     setOperation("flow-start");
     setManifestError(undefined);
     setManifestFailureStage(undefined);
@@ -658,7 +759,7 @@ export function ConnectionsPage() {
         }),
       });
       settleSetupRequest(requestID);
-      submitManifest(response.form_action, response.manifest);
+      postManifestToSetupWindow(response.form_action, response.manifest);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
       setManifestError(requestError(cause));
@@ -824,6 +925,12 @@ export function ConnectionsPage() {
                       recovery={manifestRecovery}
                       busy={operation.startsWith("flow-")}
                       onRecover={recoverManifest}
+                    />
+                    <ManifestHandoffAction
+                      flow={flow}
+                      url={manifestHandoffURL}
+                      busy={!!operation}
+                      onBlocked={reportSetupWindowBlocked}
                     />
                     {setupOptions.shared_enabled && manifestFlowLive ? (
                       <div className="flex flex-wrap gap-2">
@@ -1408,6 +1515,12 @@ export function ConnectionsPage() {
                   recovery={manifestRecovery}
                   busy={operation.startsWith("flow-")}
                   onRecover={recoverManifest}
+                />
+                <ManifestHandoffAction
+                  flow={flow}
+                  url={manifestHandoffURL}
+                  busy={!!operation}
+                  onBlocked={reportSetupWindowBlocked}
                 />
                 <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-background/70 p-1">
                   {(["personal", "organization"] as const).map((owner) => (

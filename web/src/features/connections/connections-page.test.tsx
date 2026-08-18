@@ -28,6 +28,23 @@ const json = (value: unknown) =>
     headers: { "Content-Type": "application/json" },
   });
 
+/**
+ * The setup flow opens one named tab for GitHub and refuses to continue when
+ * the browser blocks it, so tests must provide one.
+ */
+const stubSetupWindow = () => {
+  const opened: Array<{ url: string; name: string }> = [];
+  const target = { focus: vi.fn(), location: { href: "" } } as unknown as Window;
+  vi.stubGlobal(
+    "open",
+    vi.fn((url?: string | URL, name?: string) => {
+      opened.push({ url: String(url ?? ""), name: String(name ?? "") });
+      return target;
+    }),
+  );
+  return opened;
+};
+
 const expectIdempotencyScope = (key: string, scope: string) => {
   expect(key).toMatch(/^kd1\.[0-9]+\.86400\.[a-z0-9-]+\.[A-Za-z0-9_-]{22}$/);
   expect(key.split(".")[3]).toBe(scope);
@@ -391,7 +408,8 @@ describe("ConnectionsPage", () => {
     expect(startKeys[1]).not.toBe(startKeys[0]);
   });
 
-  it("starts the primary personal manifest flow with a browser POST form", async () => {
+  it("starts the primary personal manifest flow with a browser POST form into the setup tab", async () => {
+    const opened = stubSetupWindow();
     let submittedForm: HTMLFormElement | undefined;
     const submit = vi
       .spyOn(HTMLFormElement.prototype, "submit")
@@ -458,7 +476,10 @@ describe("ConnectionsPage", () => {
         '{"name":"Kingdom Issues"}',
       ),
     ).toHaveAttribute("name", "manifest");
-    submittedForm?.remove();
+    // GitHub takes the dedicated tab; this tab keeps driving the flow.
+    expect(submittedForm).toHaveAttribute("target", "kingdom-github-setup");
+    expect(opened).toEqual([{ url: "", name: "kingdom-github-setup" }]);
+    expect(document.querySelector('form[action^="https://github.com/"]')).toBeNull();
   });
 
   it("keeps manual metadata in a secondary modal and shows post-save CLI guidance", async () => {
@@ -575,6 +596,7 @@ describe("ConnectionsPage", () => {
   });
 
   it("retries a non-canonical ambiguous HTTP failure with the same private-App key", async () => {
+    stubSetupWindow();
     let attempts = 0;
     const keys: string[] = [];
     let submittedForm: HTMLFormElement | undefined;
@@ -606,7 +628,6 @@ describe("ConnectionsPage", () => {
     await waitFor(() => expect(submittedForm).toBeDefined());
     expect(keys).toHaveLength(2);
     expect(keys[1]).toBe(keys[0]);
-    submittedForm?.remove();
   });
 
   it.each([
@@ -637,6 +658,53 @@ describe("ConnectionsPage", () => {
     await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
     await waitFor(() => expect(keys).toHaveLength(2));
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("hands each GitHub hop to the setup tab and advances by polling instead of navigating", async () => {
+    const opened = stubSetupWindow();
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign, href: window.location.href });
+    let stage = "installation_received";
+    let completed = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+        return json({ items: completed ? [connection("Ready")] : [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: false });
+      if (url.endsWith("/connections/github/manifest-flows") && (!init?.method || init.method === "GET"))
+        return json({ flow_id: "flow-1234567890123456", stage, expires_at: "2099-08-15T13:00:00Z" });
+      if (url.endsWith("/authorization") && init?.method === "POST") {
+        stage = "awaiting_authorization";
+        return json({ authorization_url: "https://github.com/login/oauth/authorize?client_id=Iv1" });
+      }
+      if (url.endsWith("/connections/github/manifest-flows/flow-1234567890123456") && (!init?.method || init.method === "GET")) {
+        // GitHub has returned through the callback while this tab waited.
+        stage = "authorization_received";
+        return json({ flow_id: "flow-1234567890123456", stage, expires_at: "2099-08-15T13:00:00Z" });
+      }
+      if (url.endsWith("/completion") && init?.method === "POST") {
+        completed = true;
+        return new Response(JSON.stringify(connection("Ready")), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    const handoff = await screen.findByRole("button", { name: /authorize on github/i });
+    // Preparing the hop must not move this tab.
+    expect(assign).not.toHaveBeenCalled();
+    expect(opened).toHaveLength(0);
+
+    await user.click(handoff);
+    expect(opened).toEqual([
+      { url: "https://github.com/login/oauth/authorize?client_id=Iv1", name: "kingdom-github-setup" },
+    ]);
+
+    // No reload: the driving tab notices the stage change on its own. The wait
+    // spans one 2s poll interval.
+    expect(await screen.findByText("Ready", {}, { timeout: 6000 })).toBeInTheDocument();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("never auto-opens private setup and lets an unfinished flow be resumed or abandoned", async () => {
@@ -715,6 +783,7 @@ describe("ConnectionsPage", () => {
   });
 
   it("restarts a known terminal conversion failure as a new flow with a new key", async () => {
+    stubSetupWindow();
     let submittedForm: HTMLFormElement | undefined;
     vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => {
       submittedForm = document.querySelector<HTMLFormElement>('form[action^="https://github.com/"]') ?? undefined;
@@ -747,7 +816,6 @@ describe("ConnectionsPage", () => {
     expectIdempotencyScope(failedKey, "manifest-conversion");
     expectIdempotencyScope(restartKey, "manifest-start");
     expect(restartKey).not.toBe(failedKey);
-    submittedForm?.remove();
   });
 
   it("edits only the display name and keeps installation identity immutable", async () => {
