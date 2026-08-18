@@ -71,10 +71,12 @@ func (s *Server) handleStartGitHubManifestFlow(w http.ResponseWriter, r *http.Re
 	manifestCallback := origin + s.basePath + "/connections/github/manifest-flows/manifest-callback"
 	setupCallback := origin + s.basePath + "/connections/github/manifest-flows/setup-callback?state=" + url.QueryEscape(flow.SetupState)
 	oauthCallback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
+	// hook_attributes is deliberately absent: Kingdom subscribes to no events and
+	// needs no webhook, and GitHub validates the hook URL for public reachability
+	// even when the hook is inactive, which rejects every localhost manifest.
 	manifest := map[string]any{
 		"name":                     "Kingdom Issues",
 		"url":                      origin,
-		"hook_attributes":          map[string]any{"url": origin + s.basePath + "/connections/github/manifest-flows/webhook-disabled", "active": false},
 		"redirect_url":             manifestCallback,
 		"callback_urls":            []string{oauthCallback},
 		"setup_url":                setupCallback,

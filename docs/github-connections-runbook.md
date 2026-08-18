@@ -15,7 +15,7 @@ Open **Connections**, select **Create a private GitHub App**, and choose a perso
 - Metadata: read-only
 - Issues: read-only
 
-The manifest has no events, an inactive webhook, `request_oauth_on_install=false`, and dynamic callback URLs derived from the exact initiating browser origin. GitHub allows the App name to be edited before creation. Install the App only on repositories Kingdom should discover.
+The manifest declares no events and no webhook at all (GitHub validates a manifest hook URL for public reachability even when the hook is inactive, which would reject every localhost origin), plus `request_oauth_on_install=false`, and dynamic callback URLs derived from the exact initiating browser origin. GitHub allows the App name to be edited before creation. Install the App only on repositories Kingdom should discover.
 
 GitHub returns through public one-time-state callbacks, so the `SameSite=Strict` browser cookie is not required on callback GETs. Each callback redirects with `303` to the stored exact-origin `/connections` page without code, state, or installation query data. The page resumes from memory-only server flow status. A restart or one-hour expiry requires a new flow.
 

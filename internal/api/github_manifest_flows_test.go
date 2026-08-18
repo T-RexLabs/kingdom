@@ -174,11 +174,16 @@ func TestStartGitHubManifestFlowBuildsExactPrivateAppManifestWithoutSensitiveIde
 		t.Fatal(err)
 	}
 	permissions, _ := manifest["default_permissions"].(map[string]any)
-	hook, _ := manifest["hook_attributes"].(map[string]any)
 	events, _ := manifest["default_events"].([]any)
 	callbacks, _ := manifest["callback_urls"].([]any)
-	if len(manifest) != 11 || manifest["public"] != false || manifest["request_oauth_on_install"] != false || manifest["setup_on_update"] != false || len(events) != 0 || len(permissions) != 2 || permissions["metadata"] != "read" || permissions["issues"] != "read" || hook["active"] != false || len(callbacks) != 1 {
+	if len(manifest) != 10 || manifest["public"] != false || manifest["request_oauth_on_install"] != false || manifest["setup_on_update"] != false || len(events) != 0 || len(permissions) != 2 || permissions["metadata"] != "read" || permissions["issues"] != "read" || len(callbacks) != 1 {
 		t.Fatalf("unexpected manifest: %#v", manifest)
+	}
+	// GitHub rejects a manifest whose hook URL is not publicly reachable, even
+	// when the hook is inactive, so a localhost install can only create an App
+	// when hook_attributes is omitted entirely.
+	if _, present := manifest["hook_attributes"]; present {
+		t.Fatalf("manifest declares hook_attributes: %#v", manifest["hook_attributes"])
 	}
 	for _, key := range []string{"url", "redirect_url", "setup_url"} {
 		if !strings.HasPrefix(manifest[key].(string), "http://127.0.0.1:9090") {

@@ -767,7 +767,7 @@ export function ConnectionsPage() {
                 <p className="mt-4 max-w-2xl text-sm leading-relaxed text-foreground-muted">
                   {setupOptions.shared_enabled
                     ? "Authorize Kingdom's public GitHub App, then choose one installation. Access remains the intersection of the App installation and your GitHub account."
-                    : "GitHub creates an App owned by your personal account or organization. Kingdom requests only repository metadata read and Issues read, with no events and an inactive webhook."}
+                    : "GitHub creates an App owned by your personal account or organization. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
                 </p>
                 {!setupOptions.shared_enabled && (flow || manifestError) ? (
                   <div className="mt-4">
