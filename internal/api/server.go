@@ -324,14 +324,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 	var plannerAgent planning.Agent
 	if githubKeys != nil || githubUserTokens != nil {
-		connections, listErr := s.externalStore.ListConnections(startupCtx)
+		connections, listErr := s.externalStore.ListConnectionsAwaitingRemovalReconciliation(startupCtx)
 		if listErr != nil {
 			return nil, fmt.Errorf("list connections for removal reconciliation: %w", listErr)
 		}
 		for _, connection := range connections {
-			if connection.Lifecycle != "removal_pending" && connection.Lifecycle != "removed" {
-				continue
-			}
 			reconcile := func() error {
 				var removeErr error
 				if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {

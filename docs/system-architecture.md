@@ -145,7 +145,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 ### External Intake Surface
 
-- Connections management stores non-secret App and installation metadata, reports redacted credential health, and supports validate, disable, and tombstone/remove operations.
+- Connections management stores non-secret App and installation metadata, reports redacted credential health, and supports validate, disable, and tombstone/remove operations. Removal tombstones are retained durably for provenance and installation re-use, but they are not listed on the operator connections surface; a connection whose removal did not finish stays listed until reconciliation completes it.
 - Repository and issue discovery always starts from installation-granted repository IDs. GitHub issue-list pull-request objects are filtered before presentation.
 - The normalized issue core has exactly title, body, state, repository, issue number, canonical URL, created timestamp, and updated timestamp. Null bodies normalize to empty text.
 - The comment count is always captured; it arrives on the provider's issue payload and costs no extra request. Comment bodies are the only import choice and default off. Storage retains at most 100 comments, 32 KiB each and 128 KiB aggregate. Planner assembly allows 64 KiB comments and 128 KiB total external text.

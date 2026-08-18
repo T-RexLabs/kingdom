@@ -981,6 +981,68 @@ func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
 	}
 }
 
+// A removed connection stays in SQLite so provenance links keep resolving and
+// the same installation can be added again, but it is not part of the
+// operator's connection surface. Removal reconciliation still needs to see it.
+func TestListConnectionsExcludesRemovedButReconciliationSeesThem(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+
+	for i, id := range []string{"conn-live", "conn-pending", "conn-gone"} {
+		if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{
+			ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: id, AppID: "1", ClientID: "Iv1",
+			AppSlug: "app", InstallationID: fmt.Sprintf("%d", 100+i), CredentialHandle: "github-app:" + id,
+			ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-create-" + id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpdateConnectionStateAudited(ctx, "conn-pending", "removal_pending", "removal_pending", "", at, false, "local-operator", "audit-pending", "connection.removal_pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionStateAudited(ctx, "conn-gone", "removed", "removed", "", at, false, "local-operator", "audit-removed", "connection.removed"); err != nil {
+		t.Fatal(err)
+	}
+
+	operatorView, err := store.ListConnections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := make(map[string]string, len(operatorView))
+	for _, item := range operatorView {
+		listed[item.ConnectionID] = item.Lifecycle
+	}
+	if _, present := listed["conn-gone"]; present {
+		t.Fatalf("removed connection was listed to the operator: %+v", listed)
+	}
+	if listed["conn-live"] != "enabled" || listed["conn-pending"] != "removal_pending" {
+		t.Fatalf("expected live and unfinished-removal connections to stay listed, got %+v", listed)
+	}
+
+	// The tombstone row itself survives for provenance.
+	if _, err := store.GetConnection(ctx, "conn-gone"); err != nil {
+		t.Fatalf("removed connection row was deleted: %v", err)
+	}
+
+	reconcilable, err := store.ListConnectionsAwaitingRemovalReconciliation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := make(map[string]bool, len(reconcilable))
+	for _, item := range reconcilable {
+		pending[item.ConnectionID] = true
+	}
+	if !pending["conn-pending"] || !pending["conn-gone"] {
+		t.Fatalf("startup reconciliation lost sight of removal work: %+v", pending)
+	}
+	if pending["conn-live"] {
+		t.Fatalf("reconciliation picked up a live connection: %+v", pending)
+	}
+}
+
 func TestCredentialMutationRejectsPendingAndRemovedConnections(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")

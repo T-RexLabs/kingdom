@@ -926,16 +926,16 @@ describe("ConnectionsPage", () => {
     expect(screen.queryByText("Discarded")).not.toBeInTheDocument();
   });
 
-  it("renders removed connections as read-only tombstones", async () => {
+  it("keeps a connection whose removal did not finish, with a way to finish it", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
         json({
           items: [
             {
-              ...connection("Removed"),
-              lifecycle: "removed",
-              health_class: "removed",
+              ...connection("Half removed"),
+              lifecycle: "removal_pending",
+              health_class: "removal_pending",
               credential_state: "missing",
             },
           ],
@@ -943,8 +943,13 @@ describe("ConnectionsPage", () => {
       ),
     );
     render(<ConnectionsPage />);
-    await screen.findByText("Removed");
-    expect(screen.getByText(/read-only tombstone/i)).toBeInTheDocument();
+    await screen.findByText("Half removed");
+    // Removal genuinely did not complete, so hiding the connection would lie.
+    expect(screen.getByText(/removal did not finish/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /retry removal/i }),
+    ).toBeInTheDocument();
+    // It is on its way out, so nothing else is offered.
     expect(
       screen.queryByRole("button", { name: /edit/i }),
     ).not.toBeInTheDocument();
@@ -952,15 +957,12 @@ describe("ConnectionsPage", () => {
       screen.queryByRole("button", { name: /enable/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /remove/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/kd connections github key provision/i),
+      screen.queryByRole("button", { name: /check/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("reloads a removed connection into a read-only tombstone", async () => {
-    let current: Record<string, unknown> = connection("Remove me");
+  it("drops a removed connection out of the view", async () => {
+    let removed = false;
     let deletes = 0;
     vi.stubGlobal(
       "fetch",
@@ -968,15 +970,13 @@ describe("ConnectionsPage", () => {
         const url = String(input);
         if (url.endsWith("/connections/conn-1") && init?.method === "DELETE") {
           deletes++;
-          current = {
-            ...current,
-            lifecycle: "removed" as const,
-            health_class: "removed" as const,
-            credential_state: "missing" as const,
-          };
+          removed = true;
           return new Response(null, { status: 204 });
         }
-        if (url.endsWith("/connections")) return json({ items: [current] });
+        // The tombstone stays in SQLite for provenance, but the operator
+        // listing does not return it.
+        if (url.endsWith("/connections"))
+          return json({ items: removed ? [] : [connection("Remove me")] });
         throw new Error(`unexpected request ${url}`);
       }),
     );
@@ -998,13 +998,13 @@ describe("ConnectionsPage", () => {
         screen.getByRole("dialog", { name: /remove github connection/i }),
       ).getByRole("button", { name: /remove connection/i }),
     );
-    await screen.findByText(/read-only tombstone/i);
+    await waitFor(() =>
+      expect(screen.queryByText("Remove me")).not.toBeInTheDocument(),
+    );
     expect(deletes).toBe(1);
+    // No reload required: the list refetches after the delete settles.
     expect(
-      screen.queryByRole("button", { name: /enable/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/kd connections github key provision/i),
+      screen.queryByRole("button", { name: /remove/i }),
     ).not.toBeInTheDocument();
   });
 

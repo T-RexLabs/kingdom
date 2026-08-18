@@ -429,8 +429,23 @@ func (s *ExternalStore) FinalizeConnection(ctx context.Context, req FinalizeExte
 	return row, nil
 }
 
+// ListConnections returns the connections an operator can act on. Removed
+// connections are retained as tombstones so provenance links keep resolving
+// and the same installation can be added again, but they are not part of the
+// operator's connection surface.
 func (s *ExternalStore) ListConnections(ctx context.Context) ([]ExternalConnection, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,installation_account_id,installation_account_login,credential_handle,lifecycle,health_class,failure_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at FROM external_connections ORDER BY created_at,connection_id`)
+	return s.listConnections(ctx, `WHERE lifecycle <> 'removed'`)
+}
+
+// ListConnectionsAwaitingRemovalReconciliation returns connections whose
+// removal may not have finished, so startup can retire any credential left
+// behind by an interrupted delete.
+func (s *ExternalStore) ListConnectionsAwaitingRemovalReconciliation(ctx context.Context) ([]ExternalConnection, error) {
+	return s.listConnections(ctx, `WHERE lifecycle IN ('removal_pending','removed')`)
+}
+
+func (s *ExternalStore) listConnections(ctx context.Context, predicate string) ([]ExternalConnection, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,installation_account_id,installation_account_login,credential_handle,lifecycle,health_class,failure_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at FROM external_connections `+predicate+` ORDER BY created_at,connection_id`)
 	if err != nil {
 		return nil, err
 	}

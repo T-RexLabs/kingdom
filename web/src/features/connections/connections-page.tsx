@@ -1091,6 +1091,11 @@ export function ConnectionsPage() {
               const mutable =
                 connection.lifecycle === "enabled" ||
                 connection.lifecycle === "disabled";
+              // A connection whose removal did not finish is still on its way
+              // out, so it keeps only the action that finishes the job.
+              // Tombstones never reach the list at all.
+              const removable =
+                mutable || connection.lifecycle === "removal_pending";
               const account =
                 connection.installation_account_login ||
                 "Account pending validation";
@@ -1167,8 +1172,10 @@ export function ConnectionsPage() {
                               </p>
                             )}
                           </div>
-                          {mutable && (
+                          {removable && (
                             <div className="flex flex-wrap gap-2">
+                              {mutable && (
+                                <>
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1219,6 +1226,8 @@ export function ConnectionsPage() {
                                   ? `Retry ${toggleConnection.pendingRequest.enabled ? "enable" : "disable"}`
                                   : connection.lifecycle === "enabled" ? "Disable" : "Enable"}
                               </Button>
+                                </>
+                              )}
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1228,7 +1237,7 @@ export function ConnectionsPage() {
                                   setRemovalError(undefined);
                                 }}
                               >
-                                Remove
+                                {connection.lifecycle === "removal_pending" ? "Retry Removal" : "Remove"}
                               </Button>
                             </div>
                           )}
@@ -1288,11 +1297,10 @@ export function ConnectionsPage() {
                               )}
                           </div>
                         </details>
-                        {!mutable && (
+                        {connection.lifecycle === "removal_pending" && (
                           <p className="mt-4 text-xs text-foreground-muted">
-                            {connection.lifecycle === "removed"
-                              ? "Read-only tombstone retained for historical provenance."
-                              : "Credential removal is pending."}
+                            Removal did not finish, so this connection is still
+                            listed. Retry removal to retire its credential.
                           </p>
                         )}
                       </>

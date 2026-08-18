@@ -52,7 +52,7 @@ Refresh is manual. Issue and comment ETags are checked independently, and an unc
 
 ## Disable, Remove, and Revoke
 
-Disable blocks provider access but keeps the strategy-specific local credential and history. Remove tombstones SQLite, evicts caches, and removes the local key or user-token file; provenance remains. Local removal does not uninstall/revoke the App or authorization. GitHub remains the external kill switch.
+Disable blocks provider access but keeps the strategy-specific local credential and history. Remove tombstones SQLite, evicts caches, and removes the local key or user-token file; provenance remains. The tombstone leaves the Connections view — it is retained for provenance, not as an operator surface — and the same installation can be added again. A connection whose removal did not finish stays listed as removal-pending with a retry, and startup reconciles it. Local removal does not uninstall/revoke the App or authorization. GitHub remains the external kill switch.
 
 ## Backup, Restore, and Clean
 
