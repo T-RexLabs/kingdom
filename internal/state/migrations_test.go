@@ -785,7 +785,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources.up.sql", "0004_bound_idempotency_retention.up.sql"}
+	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql"}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected only consolidated canonical migrations, got %v", canonicalNames)
 	}
@@ -805,7 +805,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 		if string(canonicalMigration) != string(scaffoldMigration) {
 			t.Fatalf("scaffold migration %s must match canonical migration", name)
 		}
-		if name == "0003_external_sources.up.sql" {
+		if name == "0003_external_sources_and_idempotency_retention.up.sql" {
 			upper := strings.ToUpper(string(canonicalMigration))
 			if strings.Contains(upper, "ALTER TABLE") || strings.Contains(upper, "_LEGACY") {
 				t.Fatal("consolidated external migration must be create-only without legacy rebuilds")

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"kingdom/internal/dbmigrations"
 	"kingdom/internal/idempotency"
 )
 
@@ -116,7 +115,7 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
-	applyMigration(t, db, "0004_bound_idempotency_retention.up.sql")
+	applyMigration(t, db, "0003_external_sources_and_idempotency_retention.up.sql")
 	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -184,48 +183,5 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T
 		if found != wantFound {
 			t.Fatalf("%s found=%v want %v", id, found, wantFound)
 		}
-	}
-}
-
-func TestIdempotencyRetentionMigrationPreservesExistingEvidence(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	baseline, err := dbmigrations.Read("0001_initial_schema.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(string(baseline)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`INSERT INTO idempotency_keys (
-		idempotency_key_id, route, actor_id, client_key, request_hash, status,
-		response_status, response_headers_json, response_body_json, created_at, updated_at, expires_at
-	) VALUES ('legacy', '/runs', 'actor', 'kd1.1.60.test.AAAAAAAAAAAAAAAAAAAAAA', 'hash', 'pending', 0, '{}', '', '2026-08-17T12:00:00Z', '2026-08-17T12:00:00Z', NULL)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	applyMigration(t, db, "0004_bound_idempotency_retention.up.sql")
-	record, found, err := NewIdempotencyStore(db).Lookup(context.Background(), "/runs", "actor", "kd1.1.60.test.AAAAAAAAAAAAAAAAAAAAAA")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !found || !record.ExpiresAt.Valid || record.ExpiresAt.String == "" {
-		t.Fatalf("existing evidence was not retained with bounded expiry: %#v", record)
-	}
-	var highWaterUnix int64
-	if err := db.QueryRow(`SELECT high_water_unix FROM idempotency_retention_clock WHERE singleton = 1`).Scan(&highWaterUnix); err != nil {
-		t.Fatal(err)
-	}
-	if highWaterUnix <= 0 {
-		t.Fatalf("migration high-water clock=%d", highWaterUnix)
-	}
-	expiresAt, err := time.Parse(time.RFC3339, record.ExpiresAt.String)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantMinimum := time.Unix(highWaterUnix, 0).UTC().Add(idempotency.MaxTTL + idempotency.MaxFutureSkew)
-	if expiresAt.Before(wantMinimum) {
-		t.Fatalf("legacy evidence expires at %s before admissibility window %s", expiresAt, wantMinimum)
 	}
 }

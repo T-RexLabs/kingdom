@@ -481,6 +481,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /external-source-links/{id}/history", s.handleGetExternalSourceLinkHistory)
 	mux.HandleFunc("POST /external-source-links/{id}/refreshes", s.handleRefreshExternalSourceLink)
 	mux.HandleFunc("POST /external-source-links/{id}/adoptions", s.handleAdoptExternalSourceLink)
+	mux.HandleFunc("POST /external-source-links/{id}/detachments", s.handleDetachExternalSourceLink)
 	mux.HandleFunc("POST /decrees", s.handleCreateDecree)
 	mux.HandleFunc("GET /decrees/{id}", s.handleGetDecree)
 	mux.HandleFunc("POST /planning-sessions", s.handleCreatePlanningSession)

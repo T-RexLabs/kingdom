@@ -482,6 +482,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/external-source-links/{id}/detachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a linked planning source from future planner operations.
+         * @description Appends a detachment so the source stops feeding future planner operations. Provenance, history, and already-enqueued operation bindings are unchanged, and the same issue can be added again.
+         */
+        post: operations["detachExternalSourceLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/external-source-links/{id}/adoptions": {
         parameters: {
             query?: never;
@@ -1919,6 +1939,10 @@ export interface components {
         ExternalAdoptionResult: {
             /** @enum {string} */
             status: "adopted";
+        };
+        ExternalDetachmentResult: {
+            /** @enum {string} */
+            status: "detached";
         };
         ExternalProvenanceSummary: {
             link_id: string;
@@ -3974,6 +3998,38 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    detachExternalSourceLink: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ExternalLinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source detached. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalDetachmentResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

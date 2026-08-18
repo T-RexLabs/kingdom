@@ -156,6 +156,22 @@ CREATE TABLE external_source_link_heads (
   FOREIGN KEY (latest_snapshot_id) REFERENCES external_source_snapshots(snapshot_id)
 );
 
+-- A link row is immutable provenance of a first attachment, so removing a
+-- source from its target is recorded as an append-only participation change:
+-- no change means attached, and the newest change wins. Re-adding a removed
+-- source reuses the same link.
+CREATE TABLE external_source_link_attachment_changes (
+  change_id TEXT PRIMARY KEY,
+  link_id TEXT NOT NULL,
+  attached INTEGER NOT NULL CHECK (attached IN (0, 1)),
+  actor_id TEXT NOT NULL,
+  changed_at TEXT NOT NULL,
+  FOREIGN KEY (link_id) REFERENCES external_source_links(link_id)
+);
+
+CREATE INDEX idx_external_link_attachment_latest
+ON external_source_link_attachment_changes (link_id, changed_at DESC, change_id DESC);
+
 CREATE TABLE external_source_observations (
   observation_id TEXT PRIMARY KEY,
   link_id TEXT NOT NULL,
@@ -229,9 +245,9 @@ CREATE TABLE external_integration_audit_head (
 INSERT INTO external_integration_audit_head (head_id, last_sequence, last_hash)
 VALUES (1, 0, '0000000000000000000000000000000000000000000000000000000000000000');
 
--- Source versions, aliases, links, observations, adoptions, operation bindings,
--- and audit events are immutable. Link heads and the fenced audit head are the
--- only mutable external provenance projections.
+-- Source versions, aliases, links, attachment changes, observations, adoptions,
+-- operation bindings, and audit events are immutable. Link heads and the fenced
+-- audit head are the only mutable external provenance projections.
 CREATE TRIGGER external_aliases_no_update BEFORE UPDATE ON external_source_aliases BEGIN SELECT RAISE(ABORT, 'external source aliases are immutable'); END;
 CREATE TRIGGER external_aliases_no_delete BEFORE DELETE ON external_source_aliases BEGIN SELECT RAISE(ABORT, 'external source aliases are immutable'); END;
 CREATE TRIGGER external_snapshots_no_update BEFORE UPDATE ON external_source_snapshots BEGIN SELECT RAISE(ABORT, 'external snapshots are immutable'); END;
@@ -240,6 +256,8 @@ CREATE TRIGGER external_snapshot_comments_no_update BEFORE UPDATE ON external_so
 CREATE TRIGGER external_snapshot_comments_no_delete BEFORE DELETE ON external_source_snapshot_comments BEGIN SELECT RAISE(ABORT, 'external snapshot comments are immutable'); END;
 CREATE TRIGGER external_links_no_update BEFORE UPDATE ON external_source_links BEGIN SELECT RAISE(ABORT, 'external source links are immutable'); END;
 CREATE TRIGGER external_links_no_delete BEFORE DELETE ON external_source_links BEGIN SELECT RAISE(ABORT, 'external source links are immutable'); END;
+CREATE TRIGGER external_link_attachment_no_update BEFORE UPDATE ON external_source_link_attachment_changes BEGIN SELECT RAISE(ABORT, 'external source attachment changes are immutable'); END;
+CREATE TRIGGER external_link_attachment_no_delete BEFORE DELETE ON external_source_link_attachment_changes BEGIN SELECT RAISE(ABORT, 'external source attachment changes are immutable'); END;
 CREATE TRIGGER external_observations_no_update BEFORE UPDATE ON external_source_observations BEGIN SELECT RAISE(ABORT, 'external observations are immutable'); END;
 CREATE TRIGGER external_observations_no_delete BEFORE DELETE ON external_source_observations BEGIN SELECT RAISE(ABORT, 'external observations are immutable'); END;
 CREATE TRIGGER planning_external_adoptions_no_update BEFORE UPDATE ON planning_external_source_adoptions BEGIN SELECT RAISE(ABORT, 'external source adoptions are immutable'); END;
@@ -265,3 +283,17 @@ WHEN NEW.head_id <> 1
     WHERE event_sequence = NEW.last_sequence AND event_hash = NEW.last_hash
   )
 BEGIN SELECT RAISE(ABORT, 'external integration audit head update is invalid'); END;
+
+
+-- Bounded idempotency retention. Squashed in from a separate migration: no
+-- database exists that applied them in sequence.
+CREATE INDEX idx_idempotency_keys_expires_at
+ON idempotency_keys(expires_at);
+
+CREATE TABLE idempotency_retention_clock (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  high_water_unix INTEGER NOT NULL CHECK (high_water_unix >= 0)
+);
+
+INSERT INTO idempotency_retention_clock (singleton, high_water_unix)
+VALUES (1, CAST(strftime('%s', 'now') AS INTEGER));

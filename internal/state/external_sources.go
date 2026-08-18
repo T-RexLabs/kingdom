@@ -28,6 +28,8 @@ var (
 	ErrExternalValidationNeeded        = errors.New("external connection requires a current successful health check")
 	ErrExternalConnectionUnavailable   = errors.New("external connection is disabled")
 	ErrExternalSourceAlreadyAttached   = errors.New("external source is already attached to this planning session")
+	ErrExternalSourceNotAttached       = errors.New("external source is not attached to this planning session")
+	ErrExternalDetachUnsupported       = errors.New("only planning session sources can be removed")
 	ErrExternalPlanningSessionNotFound = errors.New("planning session not found for external source attachment")
 	ErrExternalPlanningSessionInactive = errors.New("external sources can only be attached to an active planning session")
 	ErrDecreeLineageInvalid            = errors.New("decree planning lineage is invalid")
@@ -194,50 +196,82 @@ func (s *ExternalStore) AttachPlanningExternalSource(ctx context.Context, req At
 		return ExternalLinkSummary{}, ErrExternalPlanningSessionInactive
 	}
 
-	var duplicate int
+	// A removed source keeps its link row, because link identity per target is
+	// unique and immutable. Re-adding it therefore reuses that link rather than
+	// creating a second one.
+	var existingLinkID string
 	err = tx.QueryRowContext(ctx, `
-		SELECT 1
+		SELECT link.link_id
 		FROM external_source_links link
 		JOIN external_sources source ON source.source_id=link.source_id
 		WHERE link.target_kind='planning_session'
 		  AND link.target_id=?
 		  AND source.connection_id=?
 		  AND source.source_kind='issue'
-		  AND source.provider_native_id=?`, req.PlanningSessionID, req.Capture.ConnectionID, req.Capture.ProviderNativeID).Scan(&duplicate)
-	if err == nil {
-		return ExternalLinkSummary{}, ErrExternalSourceAlreadyAttached
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+		  AND source.provider_native_id=?`, req.PlanningSessionID, req.Capture.ConnectionID, req.Capture.ProviderNativeID).Scan(&existingLinkID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ExternalLinkSummary{}, err
+	}
+	reattaching := false
+	if err == nil {
+		detached, detachedErr := linkIsDetachedTx(ctx, tx, existingLinkID)
+		if detachedErr != nil {
+			return ExternalLinkSummary{}, detachedErr
+		}
+		if !detached {
+			return ExternalLinkSummary{}, ErrExternalSourceAlreadyAttached
+		}
+		reattaching = true
 	}
 
 	snapshot, _, err := captureExternalIssueTx(ctx, tx, req.Capture)
 	if err != nil {
 		return ExternalLinkSummary{}, err
 	}
-	if err := createExternalLinkTx(ctx, tx, req.LinkID, "planning_session", req.PlanningSessionID, snapshot.SourceID, snapshot.SnapshotID, req.ActorID, req.AdoptionID, req.AttachedAt); err != nil {
+	linkID := req.LinkID
+	if reattaching {
+		linkID = existingLinkID
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_source_link_attachment_changes (change_id,link_id,attached,actor_id,changed_at) VALUES (?,?,1,?,?)`, req.LinkID, linkID, req.ActorID, req.AttachedAt); err != nil {
+			return ExternalLinkSummary{}, err
+		}
+		// Adopt what was just captured so the source resumes from current
+		// content rather than from whatever was active before removal.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO planning_external_source_adoptions (adoption_id,link_id,planning_session_id,snapshot_id,actor_id,adopted_at) VALUES (?,?,?,?,?,?)`, req.AdoptionID, linkID, req.PlanningSessionID, snapshot.SnapshotID, req.ActorID, req.AttachedAt); err != nil {
+			return ExternalLinkSummary{}, err
+		}
+	} else if err := createExternalLinkTx(ctx, tx, linkID, "planning_session", req.PlanningSessionID, snapshot.SourceID, snapshot.SnapshotID, req.ActorID, req.AdoptionID, req.AttachedAt); err != nil {
 		if IsUniqueViolation(err) {
 			return ExternalLinkSummary{}, errors.Join(ErrExternalSourceAlreadyAttached, err)
 		}
 		return ExternalLinkSummary{}, err
 	}
-	if err := appendExternalAudit(ctx, tx, req.AuditEventID, req.Capture.ConnectionID, snapshot.SourceID, "source.planning_attached", req.ActorID, map[string]any{"planning_session_id": req.PlanningSessionID, "link_id": req.LinkID, "snapshot_id": snapshot.SnapshotID}, req.AttachedAt); err != nil {
+	if err := appendExternalAudit(ctx, tx, req.AuditEventID, req.Capture.ConnectionID, snapshot.SourceID, "source.planning_attached", req.ActorID, map[string]any{"planning_session_id": req.PlanningSessionID, "link_id": linkID, "snapshot_id": snapshot.SnapshotID}, req.AttachedAt); err != nil {
 		return ExternalLinkSummary{}, err
+	}
+	usedSnapshotID := snapshot.SnapshotID
+	createdAt := req.AttachedAt
+	latestSnapshotID := snapshot.SnapshotID
+	status := "never_checked"
+	rowVersion := 1
+	if reattaching {
+		if err := tx.QueryRowContext(ctx, `SELECT link.used_snapshot_id,link.created_at,head.latest_snapshot_id,head.status,head.row_version FROM external_source_links link JOIN external_source_link_heads head ON head.link_id=link.link_id WHERE link.link_id=?`, linkID).Scan(&usedSnapshotID, &createdAt, &latestSnapshotID, &status, &rowVersion); err != nil {
+			return ExternalLinkSummary{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ExternalLinkSummary{}, err
 	}
 	return ExternalLinkSummary{
-		LinkID:           req.LinkID,
+		LinkID:           linkID,
 		TargetKind:       "planning_session",
 		TargetID:         req.PlanningSessionID,
 		SourceID:         snapshot.SourceID,
-		UsedSnapshotID:   snapshot.SnapshotID,
-		LatestSnapshotID: snapshot.SnapshotID,
+		UsedSnapshotID:   usedSnapshotID,
+		LatestSnapshotID: latestSnapshotID,
 		ActiveSnapshotID: snapshot.SnapshotID,
-		Status:           "never_checked",
-		CreatedAt:        req.AttachedAt,
-		RowVersion:       1,
+		Status:           status,
+		CreatedAt:        createdAt,
+		RowVersion:       rowVersion,
 		Provider:         "github",
 		Repository:       snapshot.Issue.Repository,
 		CanonicalURL:     snapshot.Issue.CanonicalURL,
@@ -1065,6 +1099,26 @@ func resolveDecreePlanningBindingsTx(ctx context.Context, tx *sql.Tx, lineage De
 	return bindings, strings.TrimSpace(operations[0].contextSnapshotID.String), rows.Err()
 }
 
+// linkDetachedPredicate matches links whose newest participation change removed
+// them from their target. Absence of any change means attached, so a link
+// created before any detachment is unaffected.
+const linkDetachedPredicate = `EXISTS (
+	SELECT 1
+	FROM external_source_link_attachment_changes change
+	WHERE change.link_id=%s
+	  AND change.attached=0
+	  AND NOT EXISTS (
+		SELECT 1
+		FROM external_source_link_attachment_changes newer
+		WHERE newer.link_id=change.link_id
+		  AND (newer.changed_at>change.changed_at OR (newer.changed_at=change.changed_at AND newer.change_id>change.change_id))
+	  )
+)`
+
+func linkDetached(linkColumn string) string {
+	return fmt.Sprintf(linkDetachedPredicate, linkColumn)
+}
+
 func (s *ExternalStore) GetLinksForTarget(ctx context.Context, targetKind, targetID string) ([]ExternalLinkSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		WITH link_view AS (
@@ -1081,7 +1135,7 @@ func (s *ExternalStore) GetLinksForTarget(ctx context.Context, targetKind, targe
 			),'') AS active_snapshot_id
 			FROM external_source_links l
 			JOIN external_source_link_heads h ON h.link_id=l.link_id
-			WHERE l.target_kind=? AND l.target_id=?
+			WHERE l.target_kind=? AND l.target_id=? AND NOT `+linkDetached("l.link_id")+`
 		)
 		SELECT l.link_id,l.target_kind,l.target_id,l.source_id,l.used_snapshot_id,
 			l.latest_snapshot_id,l.status,l.checked_at,l.row_version,l.created_at,
@@ -1293,6 +1347,81 @@ func externalTransferJSON(req ApplyExternalRefreshRequest) string {
 	return string(raw)
 }
 
+type DetachPlanningExternalSourceRequest struct {
+	LinkID, ChangeID, ActorID, DetachedAt, AuditEventID string
+}
+
+// DetachPlanningExternalSource removes a source from future planner operations
+// without touching provenance. Links are immutable and operations bind their
+// snapshots at enqueue, so history and queued work are unaffected.
+func (s *ExternalStore) DetachPlanningExternalSource(ctx context.Context, req DetachPlanningExternalSourceRequest) error {
+	for field, value := range map[string]string{
+		"link id":        req.LinkID,
+		"change id":      req.ChangeID,
+		"actor id":       req.ActorID,
+		"detached at":    req.DetachedAt,
+		"audit event id": req.AuditEventID,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", field)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var targetKind, targetID, sourceID, connectionID string
+	err = tx.QueryRowContext(ctx, `SELECT link.target_kind,link.target_id,link.source_id,src.connection_id FROM external_source_links link JOIN external_sources src ON src.source_id=link.source_id WHERE link.link_id=?`, req.LinkID).Scan(&targetKind, &targetID, &sourceID, &connectionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrExternalNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if targetKind != "planning_session" {
+		return ErrExternalDetachUnsupported
+	}
+
+	var lifecycle PlanningSessionLifecycleState
+	err = tx.QueryRowContext(ctx, `SELECT lifecycle_state FROM planning_sessions WHERE planning_session_id=?`, targetID).Scan(&lifecycle)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrExternalPlanningSessionNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if lifecycle != PlanningSessionLifecycleStateActive {
+		return ErrExternalPlanningSessionInactive
+	}
+
+	detached, err := linkIsDetachedTx(ctx, tx, req.LinkID)
+	if err != nil {
+		return err
+	}
+	if detached {
+		return ErrExternalSourceNotAttached
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO external_source_link_attachment_changes (change_id,link_id,attached,actor_id,changed_at) VALUES (?,?,0,?,?)`, req.ChangeID, req.LinkID, req.ActorID, req.DetachedAt); err != nil {
+		return err
+	}
+	if err := appendExternalAudit(ctx, tx, req.AuditEventID, connectionID, sourceID, "source.planning_detached", req.ActorID, map[string]any{"planning_session_id": targetID, "link_id": req.LinkID}, req.DetachedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func linkIsDetachedTx(ctx context.Context, tx *sql.Tx, linkID string) (bool, error) {
+	var detached int
+	if err := tx.QueryRowContext(ctx, `SELECT `+linkDetached("?")+` AS detached`, linkID).Scan(&detached); err != nil {
+		return false, err
+	}
+	return detached == 1, nil
+}
+
 func (s *ExternalStore) AdoptLatest(ctx context.Context, linkID, adoptionID, actorID, at string, auditEventID ...string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1344,6 +1473,7 @@ func bindPlanningOperationExternalContext(ctx context.Context, tx *sql.Tx, opera
 		WHERE adoption.planning_session_id=?
 		  AND link.target_kind='planning_session'
 		  AND link.target_id=adoption.planning_session_id
+		  AND NOT `+linkDetached("link.link_id")+`
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM planning_external_source_adoptions newer

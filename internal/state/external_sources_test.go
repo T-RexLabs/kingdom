@@ -1214,3 +1214,161 @@ func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
 		t.Fatalf("reloaded failure links=%#v, want one revoked link", reloaded)
 	}
 }
+
+func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	planning := NewPlanningStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+
+	connection, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-detach", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-detach", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-detach-connection"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+		t.Fatal(err)
+	}
+	if connection, err = store.GetConnection(ctx, connection.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
+	mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-detach','Detach','custom','active','ready','/tmp','{}',?,?)`, at, at)
+	mustExecArgs(t, db, `INSERT INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES ('context-detach','session-detach','context','[]','[]',?)`, at)
+	mustExec(t, db, `UPDATE planning_sessions SET context_snapshot_id='context-detach' WHERE planning_session_id='session-detach'`)
+
+	capture := CaptureExternalIssueRequest{SourceID: "source-detach", SnapshotID: "snapshot-detach-a", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+	link, err := store.AttachPlanningExternalSource(ctx, AttachPlanningExternalSourceRequest{PlanningSessionID: "session-detach", Capture: capture, LinkID: "link-detach", AdoptionID: "adoption-detach", AuditEventID: "audit-detach-attach", ActorID: "local-operator", AttachedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An operation enqueued while the source is attached keeps its binding
+	// forever: detaching must not rewrite queued or historical work.
+	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-before-detach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+
+	mustExec(t, db, `UPDATE planning_operations SET status='succeeded' WHERE operation_id='operation-before-detach'`)
+
+	detachedAt := "2026-08-12T11:00:00Z"
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: link.LinkID, ChangeID: "change-detach", ActorID: "local-operator", DetachedAt: detachedAt, AuditEventID: "audit-detach"}); err != nil {
+		t.Fatal(err)
+	}
+
+	links, err := store.GetLinksForTarget(ctx, "planning_session", "session-detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("detached source is still presented: %#v", links)
+	}
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: link.LinkID, ChangeID: "change-detach-repeat", ActorID: "local-operator", DetachedAt: detachedAt, AuditEventID: "audit-detach-repeat"}); !errors.Is(err, ErrExternalSourceNotAttached) {
+		t.Fatalf("repeat detach error=%v", err)
+	}
+
+	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-after-detach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: detachedAt}); err != nil {
+		t.Fatal(err)
+	}
+	_, afterIDs, err := planning.LoadPlanningOperationExternalContext(ctx, "operation-after-detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterIDs) != 0 {
+		t.Fatalf("detached source still fed a later operation: %#v", afterIDs)
+	}
+	beforeText, beforeIDs, err := planning.LoadPlanningOperationExternalContext(ctx, "operation-before-detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeIDs) != 1 || beforeIDs[0] != capture.SnapshotID || !strings.Contains(beforeText, "Version A") {
+		t.Fatalf("detach changed an already-bound operation: ids=%#v text=%s", beforeIDs, beforeText)
+	}
+
+	mustExec(t, db, `UPDATE planning_operations SET status='succeeded' WHERE operation_id='operation-after-detach'`)
+
+	// Re-adding the same issue reuses the immutable link and resumes from what
+	// was just captured.
+	reattachAt := "2026-08-12T12:00:00Z"
+	fresh := capture
+	fresh.SourceID, fresh.SnapshotID, fresh.PredecessorSnapshotID = "source-ignored", "snapshot-detach-b", capture.SnapshotID
+	fresh.Issue.Title, fresh.Issue.Body, fresh.Issue.UpdatedAt = "Version B", "second", reattachAt
+	fresh.ProviderUpdatedAt, fresh.FetchedAt = reattachAt, reattachAt
+	reattached, err := store.AttachPlanningExternalSource(ctx, AttachPlanningExternalSourceRequest{PlanningSessionID: "session-detach", Capture: fresh, LinkID: "change-reattach", AdoptionID: "adoption-reattach", AuditEventID: "audit-reattach", ActorID: "local-operator", AttachedAt: reattachAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reattached.LinkID != link.LinkID {
+		t.Fatalf("re-adding a removed source created a second link: %q want %q", reattached.LinkID, link.LinkID)
+	}
+	if reattached.UsedSnapshotID != capture.SnapshotID || reattached.ActiveSnapshotID != fresh.SnapshotID {
+		t.Fatalf("re-attach provenance: used=%q active=%q", reattached.UsedSnapshotID, reattached.ActiveSnapshotID)
+	}
+	links, err = store.GetLinksForTarget(ctx, "planning_session", "session-detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].LinkID != link.LinkID || links[0].ActiveSnapshotID != fresh.SnapshotID {
+		t.Fatalf("re-added source not presented from current content: %#v", links)
+	}
+	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-after-reattach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: reattachAt}); err != nil {
+		t.Fatal(err)
+	}
+	afterText, afterReattachIDs, err := planning.LoadPlanningOperationExternalContext(ctx, "operation-after-reattach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterReattachIDs) != 1 || afterReattachIDs[0] != fresh.SnapshotID || !strings.Contains(afterText, "Version B") {
+		t.Fatalf("re-added source did not feed later operations: ids=%#v text=%s", afterReattachIDs, afterText)
+	}
+}
+
+func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+
+	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-detach-guard", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-detach-guard", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-detach-guard"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-guard", SnapshotID: "snapshot-guard", ConnectionID: "conn-detach-guard", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-archived-detach','Archived','custom','archived','ready','/tmp','{}',?,?)`, at, at)
+	mustExecArgs(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-1', 'Decree', 'text', '{}', ?)`, at)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "link-decree", "decree", "decree-1", snapshot.SourceID, snapshot.SnapshotID, "local-operator", "", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "link-archived", "planning_session", "session-archived-detach", snapshot.SourceID, snapshot.SnapshotID, "local-operator", "adopt-archived", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Issued decrees keep their exact source; only planning sources are removable.
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-decree", ChangeID: "change-decree", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-decree-detach"}); !errors.Is(err, ErrExternalDetachUnsupported) {
+		t.Fatalf("decree detach error=%v", err)
+	}
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-archived", ChangeID: "change-archived", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-archived-detach"}); !errors.Is(err, ErrExternalPlanningSessionInactive) {
+		t.Fatalf("archived session detach error=%v", err)
+	}
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-missing", ChangeID: "change-missing", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-missing-detach"}); !errors.Is(err, ErrExternalNotFound) {
+		t.Fatalf("unknown link detach error=%v", err)
+	}
+	var changes int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_link_attachment_changes`).Scan(&changes); err != nil {
+		t.Fatal(err)
+	}
+	if changes != 0 {
+		t.Fatalf("rejected detach wrote %d attachment changes", changes)
+	}
+}

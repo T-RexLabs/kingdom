@@ -517,6 +517,28 @@ func (s *Server) handleAdoptExternalSourceLink(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusCreated, gen.ExternalAdoptionResult{Status: gen.ExternalAdoptionResultStatus("adopted")})
 }
 
+func (s *Server) handleDetachExternalSourceLink(w http.ResponseWriter, r *http.Request) {
+	err := s.externalStore.DetachPlanningExternalSource(r.Context(), state.DetachPlanningExternalSourceRequest{
+		LinkID:       r.PathValue("id"),
+		ChangeID:     s.idGenerator("external_attachment_change"),
+		ActorID:      authenticatedActorID(r.Context()),
+		DetachedAt:   s.now().UTC().Format(time.RFC3339Nano),
+		AuditEventID: s.idGenerator("external_audit"),
+	})
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusCreated, gen.ExternalDetachmentResult{Status: gen.ExternalDetachmentResultStatus("detached")})
+	case errors.Is(err, state.ErrExternalDetachUnsupported):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, err.Error(), "api.detach_external_link", map[string]any{"link_id": r.PathValue("id")})
+	case errors.Is(err, state.ErrExternalSourceNotAttached):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), "api.detach_external_link", map[string]any{"link_id": r.PathValue("id")})
+	case errors.Is(err, state.ErrExternalPlanningSessionInactive):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, err.Error(), "api.detach_external_link", map[string]any{"link_id": r.PathValue("id")})
+	default:
+		writeExternalError(w, err, "api.detach_external_link")
+	}
+}
+
 func presentIssueResult(v external.IssueResult) map[string]any {
 	comments, _, _ := state.NormalizeExternalComments(v.Comments)
 	if comments == nil {

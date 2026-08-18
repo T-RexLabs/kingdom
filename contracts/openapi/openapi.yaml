@@ -515,6 +515,24 @@ paths:
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
+  /external-source-links/{id}/detachments:
+    post:
+      tags: [external-sources]
+      operationId: detachExternalSourceLink
+      summary: Remove a linked planning source from future planner operations.
+      description: Appends a detachment so the source stops feeding future planner operations. Provenance, history, and already-enqueued operation bindings are unchanged, and the same issue can be added again.
+      parameters:
+        - $ref: "#/components/parameters/ExternalLinkId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "201": { description: Source detached., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalDetachmentResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
   /external-source-links/{id}/adoptions:
     post:
       tags: [external-sources]
@@ -3266,6 +3284,12 @@ components:
       required: [status]
       properties:
         status: { type: string, enum: [adopted] }
+    ExternalDetachmentResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [detached] }
     ExternalProvenanceSummary:
       type: object
       additionalProperties: false

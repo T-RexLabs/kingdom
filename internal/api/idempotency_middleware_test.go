@@ -706,7 +706,7 @@ func newIdempotencyStoreForAPITest(t *testing.T) *state.IdempotencyStore {
 	if _, err := db.Exec(string(raw)); err != nil {
 		t.Fatalf("apply migration: %v", err)
 	}
-	raw, err = dbmigrations.Read("0004_bound_idempotency_retention.up.sql")
+	raw, err = dbmigrations.Read("0003_external_sources_and_idempotency_retention.up.sql")
 	if err != nil {
 		t.Fatalf("read idempotency retention migration: %v", err)
 	}
