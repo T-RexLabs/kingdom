@@ -40,7 +40,7 @@ export function PlanningSourcesPanel({
 
   return (
     <aside
-      aria-label="Planning sources"
+      aria-label="Planning Sources"
       className="mx-4 mt-3 shrink-0 rounded-lg border border-gold/20 bg-gold/[0.03] px-2.5 py-2"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -54,7 +54,7 @@ export function PlanningSourcesPanel({
             className={cn("h-3.5 w-3.5 shrink-0 text-foreground-subtle transition-transform", expanded && "rotate-90")}
           />
           <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">
-            Planning sources
+            Planning Sources
           </span>
           <span className="rounded-full border border-gold/20 bg-gold/5 px-2 py-0.5 text-[10px] text-gold">
             {sources.length}
@@ -67,8 +67,8 @@ export function PlanningSourcesPanel({
         </button>
         <IssuePicker
           onSelect={onAttach}
-          actionLabel="Add source"
-          triggerLabel={sources.length > 0 ? "Add source" : "Add GitHub issue"}
+          actionLabel="Add Source"
+          triggerLabel={sources.length > 0 ? "Add Source" : "Add GitHub Issue"}
           compact
         />
       </div>
@@ -161,8 +161,10 @@ function PlanningSourceRow({
     }
   };
 
-  const statusText = refreshResult?.message
-    ?? `${externalSourceStatusLabel(sourceStatus, updateAvailable)}${updateAvailable ? ". Adopt it to use it in future planner operations." : "."}`;
+  // The status is a label from Kingdom's status vocabulary, so it is rendered as
+  // one rather than folded into a sentence. A live refresh result speaks for
+  // itself and replaces it.
+  const statusText = refreshResult?.message ?? externalSourceStatusLabel(sourceStatus, updateAvailable);
 
   return (
     <section aria-label={`Linked GitHub source ${label}`} className="py-1.5">
@@ -278,7 +280,12 @@ function PlanningSourceRow({
             <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p>
           ) : null}
           {updateAvailable ? (
-            <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} />
+            <>
+              <p className="text-foreground-muted">
+                Adopt the update to use it in future planner operations.
+              </p>
+              <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} />
+            </>
           ) : (
             <p className="text-foreground-muted">
               Future planner operations use this issue exactly as it reads now.

@@ -15,26 +15,28 @@ export function externalSourceFailureGuidance(status: string): string | undefine
   return failureGuidance[status];
 }
 
+// Status values are Title Case like the rest of Kingdom's status vocabulary
+// (see status-system.ts); the guidance above is prose and stays sentence case.
 const statusLabels: Record<string, string> = {
-  never_checked: "Not checked",
-  unchanged: "Up to date",
-  changed: "Update available",
-  inaccessible_or_missing: "Issue unavailable",
-  deleted: "Issue deleted",
-  rate_limited: "Check delayed",
-  connection_disabled: "Connection disabled",
-  service_unavailable: "GitHub unavailable",
-  revoked: "Access revoked",
-  permission_mismatch: "Permissions changed",
-  timeout: "Check timed out",
-  malformed_response: "Check failed",
-  oversized_response: "Source too large",
-  superseded: "Checked elsewhere",
+  never_checked: "Not Checked",
+  unchanged: "Up to Date",
+  changed: "Update Available",
+  inaccessible_or_missing: "Issue Unavailable",
+  deleted: "Issue Deleted",
+  rate_limited: "Check Delayed",
+  connection_disabled: "Connection Disabled",
+  service_unavailable: "GitHub Unavailable",
+  revoked: "Access Revoked",
+  permission_mismatch: "Permissions Changed",
+  timeout: "Check Timed Out",
+  malformed_response: "Check Failed",
+  oversized_response: "Source Too Large",
+  superseded: "Checked Elsewhere",
 };
 
 export function externalSourceStatusLabel(status: string, updateAvailable = false): string {
   if (updateAvailable) {
-    return "Update available";
+    return "Update Available";
   }
-  return statusLabels[status] ?? "Check failed";
+  return statusLabels[status] ?? "Check Failed";
 }

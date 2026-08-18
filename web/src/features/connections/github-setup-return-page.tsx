@@ -28,7 +28,7 @@ export function GitHubSetupReturnPage() {
           <Github className="h-6 w-6 text-gold" />
         </div>
         <h1 className="font-display text-lg font-semibold text-foreground">
-          Step captured
+          Step Captured
         </h1>
         <p className="text-sm leading-relaxed text-foreground-muted" aria-live="polite">
           {closeBlocked

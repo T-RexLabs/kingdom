@@ -1132,7 +1132,7 @@ describe("issue decree page", () => {
     expect(await screen.findByText(/an update is available/i)).toBeInTheDocument();
     expect(screen.getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-a");
     expect(screen.getByLabelText("Decree Text")).toHaveValue("Operator edit");
-    await user.click(screen.getByRole("button", { name: "Use refreshed body" }));
+    await user.click(screen.getByRole("button", { name: "Use Refreshed Body" }));
     expect(screen.getByLabelText("Decree Text")).toHaveValue("Body B");
     expect(screen.queryByText(/an update is available/i)).not.toBeInTheDocument();
 

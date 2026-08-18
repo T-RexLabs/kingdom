@@ -83,7 +83,7 @@ describe("IssuePicker", () => {
     }));
     const onSelect = vi.fn();
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={onSelect} actionLabel="Prefill decree" />);
+    render(<IssuePicker onSelect={onSelect} actionLabel="Prefill Decree" />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -96,7 +96,7 @@ describe("IssuePicker", () => {
     await user.click(screen.getByRole("switch", { name: /comment bodies/i }));
     await waitFor(() => expect(requests.some((url) => url.includes("/issues/2/preview") && url.includes("include_comments=true") && url.includes("include_comment_count=true"))).toBe(true));
     expect(await screen.findByText(/partial search results/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Prefill decree" }));
+    await user.click(screen.getByRole("button", { name: "Prefill Decree" }));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ intake: expect.objectContaining({ repository_id: "repo-2", issue_number: 2, include_comments: true }) }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from GitHub Issues" })).not.toBeInTheDocument());
   });
@@ -323,7 +323,7 @@ describe("IssuePicker", () => {
       if (scopeChange === "search")
         await user.type(screen.getByLabelText("Search issues"), "fresh");
       else if (scopeChange === "state")
-        await chooseOption(user, "Issue state", /^Closed$/);
+        await chooseOption(user, "Issue State", /^Closed$/);
       else
         await chooseOption(user, "GitHub repository", "owner/b");
       await waitFor(() => expect(staleSignal?.aborted).toBe(true));
@@ -452,13 +452,13 @@ describe("IssuePicker", () => {
     await chooseOption(user, "Connection", "App");
     await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /selected issue/i }));
-    await user.click(await screen.findByRole("button", { name: "Use issue" }));
+    await user.click(await screen.findByRole("button", { name: "Use Issue" }));
 
     expect(await screen.findByText(/capture failed/i)).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Import from GitHub Issues" })).toBeInTheDocument();
     expect(screen.getAllByText("Selected issue").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Try selection again" }));
+    await user.click(screen.getByRole("button", { name: "Try Selection Again" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from GitHub Issues" })).not.toBeInTheDocument());
   });
 
@@ -475,7 +475,7 @@ describe("IssuePicker", () => {
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     expect(await screen.findByText(/could not load GitHub connections/i)).toBeInTheDocument();
     expect(screen.queryByText(/no GitHub connection is configured/i)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Retry connections" }));
+    await user.click(screen.getByRole("button", { name: "Retry Connections" }));
     expect(await screen.findByText(/no GitHub connection is configured/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /open connections/i })).toHaveAttribute("target", "_blank");
   });

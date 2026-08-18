@@ -110,7 +110,7 @@ describe("ConnectionsPage", () => {
       within(dialog).getByRole("link", { name: /open github/i }),
     ).toHaveAttribute("href", "https://github.com/login/device");
     expect(
-      screen.getByRole("button", { name: "Create a private GitHub App" }),
+      screen.getByRole("button", { name: "Create a Private GitHub App" }),
     ).toBeInTheDocument();
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
@@ -221,7 +221,7 @@ describe("ConnectionsPage", () => {
     expect(screen.queryByText("FAIL-CODE")).not.toBeInTheDocument();
     expect(screen.queryByText(/waiting safely/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/provider diagnostic/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Start again" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Again" })).toBeInTheDocument();
   });
 
   it("retries an ambiguous poll with the same key and clears retry guidance on success", async () => {
@@ -400,7 +400,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
 
     await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
-    await user.click(await screen.findByRole("button", { name: "Start again" }));
+    await user.click(await screen.findByRole("button", { name: "Start Again" }));
 
     expect(await screen.findByText("NEW2-CODE")).toBeInTheDocument();
     expect(screen.queryByText("OLD1-CODE")).not.toBeInTheDocument();
@@ -460,7 +460,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await user.click(
       await screen.findByRole("button", {
-        name: "Create a private GitHub App",
+        name: "Create a Private GitHub App",
       }),
     );
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
@@ -516,7 +516,7 @@ describe("ConnectionsPage", () => {
       name: /manual github app setup/i,
     });
     for (const [label, value] of [
-      ["Display name", "Manual"],
+      ["Display Name", "Manual"],
       ["App ID", "1"],
       ["Client ID", "Iv1"],
       ["Installation ID", "2"],
@@ -621,11 +621,11 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Create a private GitHub App" }));
+    await user.click(await screen.findByRole("button", { name: "Create a Private GitHub App" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Private App setup could not start");
     expect(alert).toHaveTextContent("Bad Gateway");
-    await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry This Step" }));
 
     await waitFor(() => expect(submittedForm).toBeDefined());
     expect(keys).toHaveLength(2);
@@ -656,8 +656,8 @@ describe("ConnectionsPage", () => {
     expect(alert).toHaveTextContent(guidance);
     expect(screen.queryAllByRole("alert")).toHaveLength(1);
     // Resumable server flow state must never open a modal by itself.
-    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
-    await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
+    expect(screen.queryByRole("dialog", { name: "Create a Private GitHub App" })).not.toBeInTheDocument();
+    await user.click(within(alert).getByRole("button", { name: "Retry This Step" }));
     await waitFor(() => expect(keys).toHaveLength(2));
     expect(keys[1]).toBe(keys[0]);
   });
@@ -735,18 +735,18 @@ describe("ConnectionsPage", () => {
     // because unfinished flow state survives on the server for an hour.
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("Finish creating the private App on GitHub.");
-    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Create a Private GitHub App" })).not.toBeInTheDocument();
     expect(currentFlowRequests).toBe(1);
 
-    await user.click(screen.getByRole("button", { name: "Resume setup" }));
-    const dialog = await screen.findByRole("dialog", { name: "Create a private GitHub App" });
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    const dialog = await screen.findByRole("dialog", { name: "Create a Private GitHub App" });
 
-    await user.click(within(dialog).getByRole("button", { name: "Abandon setup" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument());
+    await user.click(within(dialog).getByRole("button", { name: "Abandon Setup" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Create a Private GitHub App" })).not.toBeInTheDocument());
     expect(discardMethod).toBe("DELETE");
     expectIdempotencyScope(discardKey, "manifest-discard");
     expect(screen.queryByText("Finish creating the private App on GitHub.")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Resume setup" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume Setup" })).not.toBeInTheDocument();
   });
 
   it("retries failed automatic completion with the stable key and clears the private setup error", async () => {
@@ -774,8 +774,8 @@ describe("ConnectionsPage", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("validate and save the GitHub connection");
-    expect(screen.queryByRole("dialog", { name: "Create a private GitHub App" })).not.toBeInTheDocument();
-    await user.click(within(alert).getByRole("button", { name: "Retry this step" }));
+    expect(screen.queryByRole("dialog", { name: "Create a Private GitHub App" })).not.toBeInTheDocument();
+    await user.click(within(alert).getByRole("button", { name: "Retry This Step" }));
 
     expect(await screen.findByText("Recovered")).toBeInTheDocument();
     expect(keys).toHaveLength(2);
@@ -812,7 +812,7 @@ describe("ConnectionsPage", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("GitHub rejected the one-time code");
-    await user.click(within(alert).getByRole("button", { name: "Start again" }));
+    await user.click(within(alert).getByRole("button", { name: "Start Again" }));
 
     await waitFor(() => expect(submittedForm).toBeDefined());
     expectIdempotencyScope(failedKey, "manifest-conversion");
@@ -853,8 +853,8 @@ describe("ConnectionsPage", () => {
     if (!editForm) throw new Error("missing edit form");
     const fields = within(editForm);
     expect(fields.queryByLabelText("App ID")).not.toBeInTheDocument();
-    await user.clear(fields.getByLabelText("Display name"));
-    await user.type(fields.getByLabelText("Display name"), "Edited");
+    await user.clear(fields.getByLabelText("Display Name"));
+    await user.type(fields.getByLabelText("Display Name"), "Edited");
     await user.click(
       fields.getByRole("button", { name: /save display name/i }),
     );
@@ -891,8 +891,8 @@ describe("ConnectionsPage", () => {
     await user.click(await screen.findByRole("button", { name: /edit/i }));
     const editForm = screen.getByRole("heading", { name: /edit connection/i }).closest("form");
     if (!editForm) throw new Error("missing edit form");
-    await user.clear(within(editForm).getByLabelText("Display name"));
-    await user.type(within(editForm).getByLabelText("Display name"), "Edited");
+    await user.clear(within(editForm).getByLabelText("Display Name"));
+    await user.type(within(editForm).getByLabelText("Display Name"), "Edited");
     await user.click(within(editForm).getByRole("button", { name: "Save display name" }));
 
     expect(await within(editForm).findByRole("button", { name: "Retry save display name" })).toBeEnabled();
@@ -916,9 +916,9 @@ describe("ConnectionsPage", () => {
       .getByRole("heading", { name: /edit connection/i })
       .closest("form");
     if (!editForm) throw new Error("missing edit form");
-    await user.clear(within(editForm).getByLabelText("Display name"));
+    await user.clear(within(editForm).getByLabelText("Display Name"));
     await user.type(
-      within(editForm).getByLabelText("Display name"),
+      within(editForm).getByLabelText("Display Name"),
       "Discarded",
     );
     await user.click(within(editForm).getByRole("button", { name: /cancel/i }));

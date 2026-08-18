@@ -35,7 +35,7 @@ function requestError(error: unknown): Omit<RequestError, "scope"> {
 
 export function IssuePicker({
   onSelect,
-  actionLabel = "Use issue",
+  actionLabel = "Use Issue",
   triggerLabel = "Import from GitHub Issue",
   compact = false,
 }: {
@@ -341,7 +341,7 @@ export function IssuePicker({
                     search={{ value: repositoryQuery, onChange: setRepositoryQuery, placeholder: "Filter owner/name" }}
                     minWidth={280}
                     emptyState={<p className="px-3 py-2 text-xs text-foreground-subtle">{loadingRepositories ? "Loading repositories..." : "No repositories match."}</p>}
-                    footer={repositoryCursor ? <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => void loadMoreRepositories()} disabled={loadingRepositories}>{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load more repositories</Button> : undefined}
+                    footer={repositoryCursor ? <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => void loadMoreRepositories()} disabled={loadingRepositories}>{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Repositories</Button> : undefined}
                   />
                 </div>
               ) : null}
@@ -351,7 +351,7 @@ export function IssuePicker({
                     <label className="relative min-w-0 flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" /><input aria-label="Search issues" className={cn(fieldClass, "py-2 pl-9 pr-3")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search this repository" /></label>
                     <SelectField
                       id="github-issue-state"
-                      label="Issue state"
+                      label="Issue State"
                       labelClassName="sr-only"
                       className="sm:w-32"
                       value={stateFilter}
@@ -363,7 +363,7 @@ export function IssuePicker({
                   <div className="max-h-64 min-w-0 divide-y divide-border overflow-auto rounded-md border border-border">
                     {loadingIssues && issues.length === 0 ? <p className="flex items-center gap-2 p-3 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading issues...</p> : issues.length === 0 ? <p className="p-3 text-xs text-foreground-muted">No issues found. Pull requests are excluded.</p> : issues.map((item) => <button type="button" key={`${item.native_id}-${item.issue.issue_number}`} onClick={() => setSelected(item)} className={cn("w-full min-w-0 p-3 text-left hover:bg-surface-raised", selected?.native_id === item.native_id && "bg-gold/10")}><span className="text-xs text-foreground-subtle">#{item.issue.issue_number} / {item.issue.state}</span><p className="break-words text-sm font-medium">{item.issue.title}</p></button>)}
                   </div>
-                  {issueCursor ? <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreIssues()} disabled={loadingIssues}>{loadingIssues ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load more issues</Button> : null}
+                  {issueCursor ? <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreIssues()} disabled={loadingIssues}>{loadingIssues ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Issues</Button> : null}
                 </>
               ) : null}
               {error && (error.scope === "repositories" || error.scope === "issues") ? <PickerError error={error} onRetry={() => error.scope === "repositories" ? setRepositoryAttempt((value) => value + 1) : setIssueAttempt((value) => value + 1)} /> : null}
@@ -379,14 +379,14 @@ export function IssuePicker({
                   <div className="max-h-56 min-w-0 overflow-auto rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
                   <div className="divide-y divide-border/60 rounded-lg border border-border bg-background/40 px-3">
                     <ToggleRow
-                      label="Include comment count"
+                      label="Include Comment Count"
                       checked={includeCount}
                       disabled={includeComments}
                       info="Imports how many comments the issue has. Required when comment bodies are imported."
                       onChange={setIncludeCount}
                     />
                     <ToggleRow
-                      label="Include comment bodies"
+                      label="Include Comment Bodies"
                       checked={includeComments}
                       info="Imports the newest 100 comments, capped at 32 KiB each and 128 KiB in total. Turning this on also imports the comment count."
                       onChange={(next) => { setIncludeComments(next); if (next) setIncludeCount(true); }}
@@ -407,7 +407,7 @@ export function IssuePicker({
 
 function ConnectionControls({ loading, loaded, loadError, allConnections, connections, connectionId, onConnectionChange, onRetry }: { loading: boolean; loaded: boolean; loadError?: Omit<RequestError, "scope">; allConnections: Connection[]; connections: Connection[]; connectionId: string; onConnectionChange: (value: string) => void; onRetry: () => void }) {
   if (loading) return <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading connections...</p>;
-  if (loadError) return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>Could not load GitHub connections: {loadError.message}</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>Retry connections</Button></div>;
+  if (loadError) return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>Could not load GitHub connections: {loadError.message}</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>Retry Connections</Button></div>;
   if (loaded && allConnections.length === 0) return <ConnectionEmptyState message="No GitHub connection is configured." />;
   if (loaded && connections.length === 0) return <ConnectionEmptyState message="No configured GitHub connection is ready to use. Validate or enable one in Connections." />;
   return (
@@ -427,9 +427,9 @@ function ConnectionEmptyState({ message }: { message: string }) {
 }
 
 function PickerError({ error, onRetry }: { error: RequestError; onRetry: () => void }) {
-  return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>{error.message}{error.retryAt ? <> Retry after <time dateTime={error.retryAt}>{new Date(error.retryAt).toLocaleString()}</time>.</> : null} Your current selection and form input were preserved.</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>{error.scope === "select" ? "Try selection again" : "Retry"}</Button></div>;
+  return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>{error.message}{error.retryAt ? <> Retry after <time dateTime={error.retryAt}>{new Date(error.retryAt).toLocaleString()}</time>.</> : null} Your current selection and form input were preserved.</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>{error.scope === "select" ? "Try Selection Again" : "Retry"}</Button></div>;
 }
 
 function CommentPreview({ comments, allComments, page, pageCount, preview, onPageChange }: { comments: ExternalComment[]; allComments: ExternalComment[]; page: number; pageCount: number; preview: IssuePreview; onPageChange: (page: number) => void }) {
-  return <section aria-labelledby="github-comment-preview-heading" className="border-t border-gold/20 pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 id="github-comment-preview-heading" className="text-sm font-semibold">Comment preview</h4>{allComments.length > 0 ? <p aria-live="polite" className="text-xs text-foreground-subtle">Page {page + 1} of {pageCount}</p> : null}</div>{allComments.length === 0 ? <p role="status" className="mt-2 text-xs text-foreground-muted">No comment bodies are available for this issue.</p> : <ol className="mt-2 space-y-3">{comments.map((comment) => <li key={comment.provider_comment_id}><article className="min-w-0 rounded-md border border-border/80 bg-background/60 p-3"><header className="flex flex-wrap items-center justify-between gap-2 text-xs text-foreground-muted"><span>{comment.author || "Unknown GitHub author"}</span><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleString()}</time></header><div className="mt-2 max-h-40 min-w-0 overflow-auto text-sm">{comment.body.trim() ? <MarkdownBlock content={comment.body} /> : <p className="italic text-foreground-muted">Empty comment.</p>}</div>{comment.truncation_reason ? <p className="mt-2 text-xs text-status-warning">This comment was truncated to Kingdom's {comment.truncation_reason === "comment_byte_limit" ? "per-comment" : "aggregate"} preview limit.</p> : null}</article></li>)}</ol>}{preview.omitted_comment_count > 0 ? <p className="mt-2 text-xs text-status-warning">{preview.omitted_comment_count} older comments were omitted by the bounded import.</p> : null}{pageCount > 1 ? <div className="mt-3 flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" size="sm" aria-label="Previous comment page" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>Previous</Button><Button type="button" variant="outline" size="sm" aria-label="Next comment page" disabled={page + 1 >= pageCount} onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}>Next</Button></div> : null}</section>;
+  return <section aria-labelledby="github-comment-preview-heading" className="border-t border-gold/20 pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 id="github-comment-preview-heading" className="text-sm font-semibold">Comment Preview</h4>{allComments.length > 0 ? <p aria-live="polite" className="text-xs text-foreground-subtle">Page {page + 1} of {pageCount}</p> : null}</div>{allComments.length === 0 ? <p role="status" className="mt-2 text-xs text-foreground-muted">No comment bodies are available for this issue.</p> : <ol className="mt-2 space-y-3">{comments.map((comment) => <li key={comment.provider_comment_id}><article className="min-w-0 rounded-md border border-border/80 bg-background/60 p-3"><header className="flex flex-wrap items-center justify-between gap-2 text-xs text-foreground-muted"><span>{comment.author || "Unknown GitHub author"}</span><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleString()}</time></header><div className="mt-2 max-h-40 min-w-0 overflow-auto text-sm">{comment.body.trim() ? <MarkdownBlock content={comment.body} /> : <p className="italic text-foreground-muted">Empty comment.</p>}</div>{comment.truncation_reason ? <p className="mt-2 text-xs text-status-warning">This comment was truncated to Kingdom's {comment.truncation_reason === "comment_byte_limit" ? "per-comment" : "aggregate"} preview limit.</p> : null}</article></li>)}</ol>}{preview.omitted_comment_count > 0 ? <p className="mt-2 text-xs text-status-warning">{preview.omitted_comment_count} older comments were omitted by the bounded import.</p> : null}{pageCount > 1 ? <div className="mt-3 flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" size="sm" aria-label="Previous comment page" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>Previous</Button><Button type="button" variant="outline" size="sm" aria-label="Next comment page" disabled={page + 1 >= pageCount} onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}>Next</Button></div> : null}</section>;
 }

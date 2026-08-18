@@ -136,7 +136,7 @@ function MetadataFields({
   );
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      {field("display_name", "Display name", 120)}
+      {field("display_name", "Display Name", 120)}
       {field("app_id", "App ID", 64)}
       {field("client_id", "Client ID", 128)}
       {field("installation_id", "Installation ID", 64)}
@@ -200,7 +200,7 @@ function ManifestSetupStatus({
       </div>
       {failed ? (
         <Button type="button" size="sm" variant="outline" className="mt-3" disabled={busy} onClick={onRecover}>
-          {recovery === "retry" ? "Retry this step" : "Start again"}
+          {recovery === "retry" ? "Retry This Step" : "Start Again"}
         </Button>
       ) : null}
     </div>
@@ -208,7 +208,7 @@ function ManifestSetupStatus({
 }
 
 const manifestHandoffCopy: Partial<Record<FlowStatus["stage"], string>> = {
-  awaiting_installation: "Choose repositories on GitHub",
+  awaiting_installation: "Choose Repositories on GitHub",
   awaiting_authorization: "Authorize on GitHub",
 };
 
@@ -915,7 +915,7 @@ export function ConnectionsPage() {
                     <h2 className="font-display text-xl font-semibold">
                       {setupOptions.shared_enabled
                         ? "Connect GitHub"
-                        : "Create a private GitHub App"}
+                        : "Create a Private GitHub App"}
                     </h2>
                   </div>
                 </div>
@@ -947,7 +947,7 @@ export function ConnectionsPage() {
                           size="sm"
                           onClick={() => setManifestOpen(true)}
                         >
-                          Resume setup
+                          Resume Setup
                         </Button>
                         <Button
                           type="button"
@@ -959,7 +959,7 @@ export function ConnectionsPage() {
                           {operation === "flow-discard" ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                           ) : null}
-                          Abandon setup
+                          Abandon Setup
                         </Button>
                       </div>
                     ) : null}
@@ -986,7 +986,7 @@ export function ConnectionsPage() {
                     variant="outline"
                     onClick={() => setManifestOpen(true)}
                   >
-                    Create a private GitHub App
+                    Create a Private GitHub App
                   </Button>
                   <button
                     type="button"
@@ -996,7 +996,7 @@ export function ConnectionsPage() {
                       setManualSaved(undefined);
                     }}
                   >
-                    Use manual setup
+                    Use Manual Setup
                   </button>
                 </div>
               ) : (
@@ -1019,10 +1019,10 @@ export function ConnectionsPage() {
                   </div>
                   {ownerType === "organization" && (
                     <label className="block text-xs font-medium text-foreground-muted">
-                      Organization login
+                      Organization Login
                       <input
                         required
-                        aria-label="Organization login"
+                        aria-label="Organization Login"
                         className={cn(fieldClass, "mt-1")}
                         value={organization}
                         onChange={(event) =>
@@ -1041,7 +1041,7 @@ export function ConnectionsPage() {
                     ) : (
                       <Github className="h-4 w-4" />
                     )}
-                    Create a private GitHub App
+                    Create a Private GitHub App
                   </Button>
                   <button
                     type="button"
@@ -1051,7 +1051,7 @@ export function ConnectionsPage() {
                       setManualSaved(undefined);
                     }}
                   >
-                    Use manual setup instead
+                    Use Manual Setup Instead
                   </button>
                 </div>
               )}
@@ -1062,7 +1062,7 @@ export function ConnectionsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-display text-lg font-semibold">
-              Saved connections
+              Saved Connections
             </h2>
             <p className="text-xs text-foreground-muted">
               Installation access is validated independently before use.
@@ -1119,7 +1119,7 @@ export function ConnectionsPage() {
                           </Button>
                         </div>
                         <label className="block text-xs font-medium text-foreground-muted">
-                          Display name
+                          Display Name
                           <input
                             required
                             maxLength={120}
@@ -1235,14 +1235,14 @@ export function ConnectionsPage() {
                         </div>
                         <details className="group mt-4 rounded-lg border border-border/70 bg-background/40">
                           <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-foreground-muted">
-                            Technical details
+                            Technical Details
                             <ChevronDown className="h-4 w-4 transition group-open:rotate-180" />
                           </summary>
                           <div className="border-t border-border/70 px-3 py-3 text-xs text-foreground-muted">
                             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
                               <dt>Strategy</dt>
                               <dd>{connection.credential_strategy}</dd>
-                              <dt>App slug</dt>
+                              <dt>App Slug</dt>
                               <dd>{connection.app_slug}</dd>
                               <dt>App ID</dt>
                               <dd className="break-all">{connection.app_id}</dd>
@@ -1313,7 +1313,7 @@ export function ConnectionsPage() {
           >
             <ModalShell
               title="Connect GitHub"
-              caption="One secure connection"
+              caption="One Secure Connection"
               description="Authorize on GitHub, then choose the installation Kingdom may use."
               onClose={() => setSharedOpen(false)}
               footer={
@@ -1335,7 +1335,7 @@ export function ConnectionsPage() {
                   <div className="space-y-5">
                     <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 text-center">
                       <p className="text-xs font-semibold uppercase tracking-[0.16em] text-foreground-muted">
-                        Enter this code on GitHub
+                        Enter This Code on GitHub
                       </p>
                       <div className="mt-3 flex items-center justify-center gap-2">
                         <code className="font-display text-3xl font-semibold tracking-[0.18em] text-gold">
@@ -1368,7 +1368,7 @@ export function ConnectionsPage() {
                   <div className="space-y-4 text-center">
                     <div className="rounded-xl border border-border bg-background/50 p-6">
                       <h3 className="font-display text-lg font-semibold">
-                        Choose repositories on GitHub
+                        Choose Repositories on GitHub
                       </h3>
                       <p className="mt-2 text-sm text-foreground-muted">
                         Install the App for an account and select the
@@ -1381,7 +1381,7 @@ export function ConnectionsPage() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Choose repositories
+                      Choose Repositories
                       <ExternalLink className="h-4 w-4" />
                     </a>
                     <Button
@@ -1393,14 +1393,14 @@ export function ConnectionsPage() {
                       {operation === "shared-refresh" && (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       )}
-                      I installed the App
+                      I Installed the App
                     </Button>
                   </div>
                 ) : sharedFlow.stage === "selecting_installation" ? (
                   <div className="space-y-4">
                     <div>
                       <h3 className="font-display text-lg font-semibold">
-                        Choose an installation
+                        Choose an Installation
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
                         One connection is created for the account you select.
@@ -1443,7 +1443,7 @@ export function ConnectionsPage() {
                       {operation === "shared-finalize" && (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       )}
-                      Connect selected installation
+                      Connect Selected Installation
                     </Button>
                   </div>
                 ) : (
@@ -1465,7 +1465,7 @@ export function ConnectionsPage() {
                           void startShared(sharedReconnectID || undefined)
                         }
                       >
-                        Start again
+                        Start Again
                       </Button>
                     )}
                   </div>
@@ -1479,12 +1479,12 @@ export function ConnectionsPage() {
           <ModalDialog
             open
             onClose={() => setManifestOpen(false)}
-            ariaLabel="Create a private GitHub App"
+            ariaLabel="Create a Private GitHub App"
             panelClassName={`w-full ${modalShellSizeClass("sm")}`}
           >
             <ModalShell
-              title="Create a private GitHub App"
-              caption="Private App option"
+              title="Create a Private GitHub App"
+              caption="Private App Option"
               description="Create and own a dedicated App for this Kingdom workspace."
               onClose={() => setManifestOpen(false)}
               footer={
@@ -1498,7 +1498,7 @@ export function ConnectionsPage() {
                       {operation === "flow-discard" ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : null}
-                      Abandon setup
+                      Abandon Setup
                     </Button>
                   ) : null}
                   <Button variant="ghost" onClick={() => setManifestOpen(false)}>
@@ -1536,7 +1536,7 @@ export function ConnectionsPage() {
                 </div>
                 {ownerType === "organization" && (
                   <label className="block text-xs font-medium text-foreground-muted">
-                    Organization login
+                    Organization Login
                     <input
                       className={cn(fieldClass, "mt-1")}
                       value={organization}
@@ -1549,7 +1549,7 @@ export function ConnectionsPage() {
                   disabled={startManifestDisabled}
                   onClick={() => void startManifest()}
                 >
-                  Create private App on GitHub
+                  Create Private App on GitHub
                 </Button>
               </div>
             </ModalShell>
@@ -1562,12 +1562,12 @@ export function ConnectionsPage() {
             onClose={() => {
               if (!createConnection.hasPendingRecovery) setManualOpen(false);
             }}
-            ariaLabel="Manual GitHub App setup"
+            ariaLabel="Manual GitHub App Setup"
             panelClassName={`w-full ${modalShellSizeClass("lg")}`}
           >
             <ModalShell
-              title="Manual GitHub App setup"
-              caption="Secondary setup path"
+              title="Manual GitHub App Setup"
+              caption="Secondary Setup Path"
               description="Save existing App metadata, then provision its private key from the host."
               onClose={() => {
                 if (!createConnection.hasPendingRecovery) setManualOpen(false);
@@ -1641,7 +1641,7 @@ export function ConnectionsPage() {
           >
             <ModalShell
               title={pendingRemoval.display_name}
-              caption="Remove connection"
+              caption="Remove Connection"
               description={`This tombstones the connection and removes its ${pendingRemoval.credential_strategy === "user_access_token" ? "local user tokens" : "local private key"}.`}
               onClose={() => {
                 if (!removeConnection.hasPendingRecovery) setPendingRemoval(undefined);

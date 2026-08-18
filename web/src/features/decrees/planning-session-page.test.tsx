@@ -259,7 +259,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
-    await user.click(screen.getByRole("button", { name: "Add GitHub issue" }));
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
 
     await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
     expect(request?.url).toMatch(/\/planning-sessions\/planning-session-1\/external-sources$/);
@@ -300,9 +300,9 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
-    await user.click(screen.getByRole("button", { name: "Add GitHub issue" }));
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("button", { name: "Add GitHub issue" }));
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(requestKeys[0]).toMatch(/^kd1\./);
@@ -327,7 +327,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
-    expect(screen.getByRole("button", { name: "Add source" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
     // Detail is opt-in per row, so ten sources stay ten short lines.
     expect(screen.queryByText(/use this issue exactly as it reads now/i)).not.toBeInTheDocument();

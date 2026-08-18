@@ -696,17 +696,17 @@ export function DecreeForm({
       </CardHeader>
         <CardContent>
           <form onSubmit={issueAndRun} className="space-y-4">
-            {!decreeLocked ? <IssuePicker actionLabel="Prefill decree" onSelect={prefillExternalIssue} /> : null}
+            {!decreeLocked ? <IssuePicker actionLabel="Prefill Decree" onSelect={prefillExternalIssue} /> : null}
             {origin.kind === "github" ? (
               <section aria-label="Selected GitHub source" className="space-y-3 rounded-lg border border-gold/25 bg-gold/5 p-3 text-xs">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium text-foreground">Imported from {externalIssueURL ? <a href={externalIssueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{origin.issue.repository}#{origin.issue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{origin.issue.repository}#{origin.issue.issue_number}</span>}</p>
-                    <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(externalUpdateAvailable ? "changed" : "unchanged", externalUpdateAvailable)}. Decree fields remain editable.</p>
+                    <p className="mt-1 text-foreground-muted"><span className="text-foreground">{externalSourceStatusLabel(externalUpdateAvailable ? "changed" : "unchanged", externalUpdateAvailable)}</span> — decree fields remain editable.</p>
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-2">
-                    <Button type="button" variant="ghost" size="sm" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for updates</Button>
-                    <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove source</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for Updates</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove Source</Button>
                   </div>
                 </div>
                 {origin.candidate?.snapshotId === origin.snapshotId ? <p role="status" className="text-foreground-muted">GitHub is up to date with the selected source.</p> : null}
@@ -715,10 +715,10 @@ export function DecreeForm({
                     <p className="font-medium text-foreground">An update is available. Choose which refreshed fields to apply; every choice also promotes its provenance.</p>
                     <ExternalSourceComparison baselineId={origin.snapshotId} candidateId={origin.candidate.snapshotId} />
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate()}>Use source, keep edits</Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyTitle: true })}>Use refreshed title</Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyBody: true })}>Use refreshed body</Button>
-                      <Button type="button" size="sm" onClick={() => promoteExternalCandidate({ applyTitle: true, applyBody: true })}>Use all refreshed fields</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate()}>Use Source, Keep Edits</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyTitle: true })}>Use Refreshed Title</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyBody: true })}>Use Refreshed Body</Button>
+                      <Button type="button" size="sm" onClick={() => promoteExternalCandidate({ applyTitle: true, applyBody: true })}>Use All Refreshed Fields</Button>
                     </div>
                   </div>
                 ) : null}

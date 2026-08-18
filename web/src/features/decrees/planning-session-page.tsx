@@ -412,7 +412,7 @@ export function PlanningSessionPage() {
             onClick={() => { void sessionQuery.refetch(); }}
             className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised/60"
           >
-            Try again
+            Try Again
           </button>
         </div>
       </div>
