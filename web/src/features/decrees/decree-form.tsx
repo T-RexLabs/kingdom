@@ -23,7 +23,7 @@ import { SelectField } from "@/components/ui/select-field";
 import { ModelSelectField } from "./model-select-field";
 import { findProviderModel, normalizeThinkingEffortSelection } from "./provider-model-selection";
 import { ThinkingEffortField } from "./thinking-effort-field";
-import { ToggleRow } from "./toggle-row";
+import { ToggleRow } from "@/components/ui/toggle-row";
 import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
 import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
@@ -705,8 +705,8 @@ export function DecreeForm({
                     <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(externalUpdateAvailable ? "changed" : "unchanged", externalUpdateAvailable)}. Decree fields remain editable.</p>
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-2">
-                    <button type="button" className="inline-flex items-center gap-1 text-gold" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for updates</button>
-                    <button type="button" className="text-gold" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove source</button>
+                    <Button type="button" variant="ghost" size="sm" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for updates</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove source</Button>
                   </div>
                 </div>
                 {origin.candidate?.snapshotId === origin.snapshotId ? <p role="status" className="text-foreground-muted">GitHub is up to date with the selected source.</p> : null}

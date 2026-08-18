@@ -448,7 +448,7 @@ describe("PlanningSessionPage", () => {
     expect(request).toBeUndefined();
     expect(screen.getByText(/you can add it back/i)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Remove", exact: true }));
+    await user.click(screen.getByRole("button", { name: /^Remove$/ }));
     await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
     expect(request?.url).toMatch(/\/external-source-links\/link-1\/detachments$/);
     expect(request?.init?.method).toBe("POST");

@@ -66,6 +66,15 @@
 }
 
 /* Base layer */
+
+/* Kingdom is dark-only. Declaring it at the root is what makes every native
+   control - select popups, checkboxes, scrollbars, date pickers - render in the
+   dark scheme instead of the OS default on top of a near-black UI. */
+:root {
+  color-scheme: dark;
+  accent-color: var(--color-gold);
+}
+
 body {
   background-color: var(--color-background);
   color: var(--color-foreground);
@@ -214,15 +223,6 @@ body {
 }
 
 /* Dark-theme native date/time pickers */
-.color-scheme-dark {
-  color-scheme: dark;
-}
-
-input[type="date"],
-input[type="datetime-local"] {
-  color-scheme: dark;
-}
-
 input[type="date"]::-webkit-calendar-picker-indicator,
 input[type="datetime-local"]::-webkit-calendar-picker-indicator {
   filter: invert(0.8);

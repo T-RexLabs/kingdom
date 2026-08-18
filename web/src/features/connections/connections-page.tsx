@@ -1,4 +1,6 @@
 import { ApiError, apiFetch } from "@/api/client";
+import { fieldClass } from "@/components/ui/field-styles";
+import { cn } from "@/lib/utils";
 import {
   openSetupWindow,
   postManifestToSetupWindow,
@@ -60,8 +62,6 @@ const devicePollFailure =
   "GitHub authorization could not be completed. Start again.";
 const devicePollRetry =
   "GitHub authorization status could not be checked. Retrying safely.";
-const inputClass =
-  "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none transition focus:border-gold/70 focus:ring-2 focus:ring-gold/15";
 
 // Stages where GitHub, not Kingdom, is holding the flow.
 const manifestWaitingStages = new Set<FlowStatus["stage"]>([
@@ -128,7 +128,7 @@ function MetadataFields({
         required
         disabled={disabled}
         maxLength={maxLength}
-        className={inputClass}
+        className={cn(fieldClass, "mt-1")}
         value={value[key]}
         onChange={(event) => onChange({ ...value, [key]: event.target.value })}
       />
@@ -1015,7 +1015,7 @@ export function ConnectionsPage() {
                       <input
                         required
                         aria-label="Organization login"
-                        className={inputClass}
+                        className={cn(fieldClass, "mt-1")}
                         value={organization}
                         onChange={(event) =>
                           setOrganization(event.target.value)
@@ -1115,7 +1115,7 @@ export function ConnectionsPage() {
                           <input
                             required
                             maxLength={120}
-                            className={inputClass}
+                            className={cn(fieldClass, "mt-1")}
                             value={editName}
                             disabled={editConnection.hasPendingRecovery}
                             onChange={(event) =>
@@ -1538,7 +1538,7 @@ export function ConnectionsPage() {
                   <label className="block text-xs font-medium text-foreground-muted">
                     Organization login
                     <input
-                      className={inputClass}
+                      className={cn(fieldClass, "mt-1")}
                       value={organization}
                       onChange={(event) => setOrganization(event.target.value)}
                     />

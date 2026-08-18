@@ -247,7 +247,7 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   type="date"
                   onChange={handleFromDateChange}
                   value={toDateLocal(parseRelativeTime(fromExpr) ?? new Date())}
-                  className="sr-only color-scheme-dark"
+                  className="sr-only"
                   tabIndex={-1}
                 />
               </div>
@@ -279,7 +279,7 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   type="date"
                   onChange={handleToDateChange}
                   value={toDateLocal(parseRelativeTime(toExpr) ?? new Date())}
-                  className="sr-only color-scheme-dark"
+                  className="sr-only"
                   tabIndex={-1}
                 />
               </div>

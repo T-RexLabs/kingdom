@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { ModalDialog } from "@/components/ui/modal-dialog";
 import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { PopoverListbox } from "@/components/ui/popover-listbox";
+import { SelectField } from "@/components/ui/select-field";
+import { ToggleRow } from "@/components/ui/toggle-row";
+import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { cn } from "@/lib/utils";
 import { ExternalLink, Github, Loader2, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -290,9 +294,16 @@ export function IssuePicker({
 
   return (
     <>
-      <button type="button" onClick={() => setOpened(true)} className={cn("inline-flex w-full items-center justify-center gap-2 border border-gold/35 bg-gold/5 font-medium text-gold transition-colors hover:bg-gold/10 sm:w-auto", compact ? "rounded-md px-2.5 py-1.5 text-xs" : "rounded-lg border-dashed px-4 py-2.5 text-sm")}>
-        <Github className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} /> {triggerLabel}
-      </button>
+      <Button
+        type="button"
+        variant="outline"
+        size={compact ? "sm" : "default"}
+        onClick={() => setOpened(true)}
+        className={cn("w-full border-gold/35 bg-gold/5 text-gold hover:bg-gold/10 hover:text-gold sm:w-auto", !compact && "border-dashed")}
+      >
+        <Github className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
+        {triggerLabel}
+      </Button>
       <ModalDialog open={opened} onClose={() => setOpened(false)} ariaLabel="Import from GitHub Issues" panelClassName={cn("w-full min-w-0", modalShellSizeClass("xl"))} overlayClassName="p-2 sm:p-4">
         <ModalShell
           title="Import from GitHub Issues"
@@ -315,21 +326,38 @@ export function IssuePicker({
                 onRetry={() => setConnectionAttempt((value) => value + 1)}
               />
               {connections.length > 0 ? (
-                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-                  <label className="min-w-0 text-xs text-foreground-muted">Repository filter
-                    <div className="relative mt-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" /><input aria-label="Filter repositories" className="w-full min-w-0 rounded-md border border-border bg-surface py-2 pl-9 pr-3 text-sm text-foreground" value={repositoryQuery} onChange={(event) => setRepositoryQuery(event.target.value)} placeholder="Filter owner/name" disabled={!connectionId} /></div>
-                  </label>
-                  <label className="min-w-0 text-xs text-foreground-muted">Repository
-                    <select aria-label="GitHub repository" className="mt-1 w-full min-w-0 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground" value={repositoryId} onChange={(event) => setRepositoryId(event.target.value)} disabled={!connectionId || loadingRepositories}><option value="">Select repository</option>{repositories.map((item) => <option key={item.id} value={item.id}>{item.locator}</option>)}</select>
-                  </label>
-                  {repositoryCursor ? <Button type="button" variant="ghost" size="sm" className="sm:col-span-2 sm:justify-self-start" onClick={() => void loadMoreRepositories()} disabled={loadingRepositories}>{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load more repositories</Button> : null}
+                <div className="min-w-0">
+                  <label htmlFor="github-repository" className={fieldLabelClass}>Repository</label>
+                  <PopoverListbox
+                    triggerId="github-repository"
+                    triggerRole="combobox"
+                    triggerAriaLabel="GitHub repository"
+                    triggerDisabled={!connectionId}
+                    triggerClassName={cn(fieldClass, "truncate text-left", !connectionId && "cursor-not-allowed opacity-50", !repositoryId && "text-foreground-subtle")}
+                    triggerContent={repositories.find((item) => item.id === repositoryId)?.locator ?? "Select repository"}
+                    items={repositories.map((item) => ({ id: item.id, label: item.locator }))}
+                    selectedId={repositoryId || null}
+                    onSelect={setRepositoryId}
+                    search={{ value: repositoryQuery, onChange: setRepositoryQuery, placeholder: "Filter owner/name" }}
+                    minWidth={280}
+                    emptyState={<p className="px-3 py-2 text-xs text-foreground-subtle">{loadingRepositories ? "Loading repositories..." : "No repositories match."}</p>}
+                    footer={repositoryCursor ? <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => void loadMoreRepositories()} disabled={loadingRepositories}>{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load more repositories</Button> : undefined}
+                  />
                 </div>
               ) : null}
               {repositoryId ? (
                 <>
                   <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
-                    <label className="relative min-w-0 flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" /><input aria-label="Search issues" className="w-full min-w-0 rounded-md border border-border bg-surface py-2 pl-9 pr-3 text-sm" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search this repository" /></label>
-                    <select aria-label="Issue state" className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm sm:w-auto" value={stateFilter} onChange={(event) => setStateFilter(event.target.value as typeof stateFilter)}><option value="open">Open</option><option value="closed">Closed</option><option value="all">All</option></select>
+                    <label className="relative min-w-0 flex-1"><Search className="absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" /><input aria-label="Search issues" className={cn(fieldClass, "py-2 pl-9 pr-3")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search this repository" /></label>
+                    <SelectField
+                      id="github-issue-state"
+                      label="Issue state"
+                      labelClassName="sr-only"
+                      className="sm:w-32"
+                      value={stateFilter}
+                      options={[{ label: "Open", value: "open" }, { label: "Closed", value: "closed" }, { label: "All", value: "all" }]}
+                      onChange={(next) => setStateFilter(next as typeof stateFilter)}
+                    />
                   </div>
                   {incomplete ? <p role="status" className="text-xs text-status-warning">GitHub returned partial search results. Search is capped at 1,000 issues.</p> : null}
                   <div className="max-h-64 min-w-0 divide-y divide-border overflow-auto rounded-md border border-border">
@@ -349,7 +377,21 @@ export function IssuePicker({
                   </div>
                   {loadingPreview ? <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading preview...</p> : null}
                   <div className="max-h-56 min-w-0 overflow-auto rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
-                  <div className="flex flex-col gap-2 text-xs sm:flex-row sm:flex-wrap sm:gap-4"><label className="flex items-start gap-2"><input type="checkbox" checked={includeCount} disabled={includeComments} onChange={(event) => setIncludeCount(event.target.checked)} /> Include comment count</label><label className="flex items-start gap-2"><input type="checkbox" checked={includeComments} onChange={(event) => { setIncludeComments(event.target.checked); if (event.target.checked) setIncludeCount(true); }} /> Include comment bodies (newest 100, bounded)</label></div>
+                  <div className="divide-y divide-border/60 rounded-lg border border-border bg-background/40 px-3">
+                    <ToggleRow
+                      label="Include comment count"
+                      checked={includeCount}
+                      disabled={includeComments}
+                      info="Imports how many comments the issue has. Required when comment bodies are imported."
+                      onChange={setIncludeCount}
+                    />
+                    <ToggleRow
+                      label="Include comment bodies"
+                      checked={includeComments}
+                      info="Imports the newest 100 comments, capped at 32 KiB each and 128 KiB in total. Turning this on also imports the comment count."
+                      onChange={(next) => { setIncludeComments(next); if (next) setIncludeCount(true); }}
+                    />
+                  </div>
                   {preview ? <p className="text-xs text-foreground-subtle">Previewed {preview.fetched_comment_count} comment bodies; {preview.comment_count} comments reported.</p> : null}
                   {includeComments && preview?.profile.include_comments ? <CommentPreview comments={shownComments} allComments={previewComments} page={commentPage} pageCount={commentPageCount} preview={preview} onPageChange={setCommentPage} /> : null}
                   {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}
@@ -368,7 +410,16 @@ function ConnectionControls({ loading, loaded, loadError, allConnections, connec
   if (loadError) return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>Could not load GitHub connections: {loadError.message}</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>Retry connections</Button></div>;
   if (loaded && allConnections.length === 0) return <ConnectionEmptyState message="No GitHub connection is configured." />;
   if (loaded && connections.length === 0) return <ConnectionEmptyState message="No configured GitHub connection is ready to use. Validate or enable one in Connections." />;
-  return <label className="block text-xs text-foreground-muted">Connection<select aria-label="GitHub connection" className="mt-1 w-full min-w-0 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground" value={connectionId} onChange={(event) => onConnectionChange(event.target.value)}><option value="">Select connection</option>{connections.map((item) => <option key={item.connection_id} value={item.connection_id}>{item.display_name}</option>)}</select></label>;
+  return (
+    <SelectField
+      id="github-connection"
+      label="Connection"
+      value={connectionId}
+      placeholder="Select connection"
+      options={connections.map((item) => ({ label: item.display_name, value: item.connection_id }))}
+      onChange={onConnectionChange}
+    />
+  );
 }
 
 function ConnectionEmptyState({ message }: { message: string }) {

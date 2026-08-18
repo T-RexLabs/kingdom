@@ -46,6 +46,19 @@ function deferredResponse() {
 
 afterEach(() => vi.unstubAllGlobals());
 
+/**
+ * Dropdowns are Kingdom's own listbox, not a native <select>: open the trigger,
+ * then pick the option.
+ */
+const chooseOption = async (
+  user: ReturnType<typeof userEvent.setup>,
+  triggerLabel: string,
+  optionLabel: string | RegExp,
+) => {
+  await user.click(await screen.findByLabelText(triggerLabel));
+  await user.click(await screen.findByRole("option", { name: optionLabel }));
+};
+
 describe("IssuePicker", () => {
   it("does not offer a nominally healthy connection whose credential is missing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ items: [{ connection_id: "stale", provider: "github", display_name: "Stale", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "missing", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] })));
@@ -73,13 +86,14 @@ describe("IssuePicker", () => {
     render(<IssuePicker onSelect={onSelect} actionLabel="Prefill decree" />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
+    await chooseOption(user, "Connection", "App");
+    await user.click(await screen.findByLabelText("GitHub repository"));
     await user.click(await screen.findByRole("button", { name: /load more repositories/i }));
-    await user.selectOptions(screen.getByLabelText("GitHub repository"), "repo-2");
+    await user.click(await screen.findByRole("option", { name: "owner/repo" }));
     await screen.findByText("First");
     await user.click(screen.getByRole("button", { name: /load more issues/i }));
     await user.click(await screen.findByRole("button", { name: /second/i }));
-    await user.click(screen.getByRole("checkbox", { name: /comment bodies/i }));
+    await user.click(screen.getByRole("switch", { name: /comment bodies/i }));
     await waitFor(() => expect(requests.some((url) => url.includes("/issues/2/preview") && url.includes("include_comments=true") && url.includes("include_comment_count=true"))).toBe(true));
     expect(await screen.findByText(/partial search results/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Prefill decree" }));
@@ -111,11 +125,11 @@ describe("IssuePicker", () => {
     const { container } = render(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /first/i }));
     expect(screen.queryByRole("heading", { name: /comment preview/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("checkbox", { name: /comment bodies/i }));
+    await user.click(screen.getByRole("switch", { name: /comment bodies/i }));
 
     expect(await screen.findByRole("heading", { name: /comment preview/i })).toBeInTheDocument();
     expect(screen.getByText("author-1")).toBeInTheDocument();
@@ -148,8 +162,8 @@ describe("IssuePicker", () => {
     render(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /selected issue/i }));
 
     const alert = await screen.findByRole("alert");
@@ -174,8 +188,8 @@ describe("IssuePicker", () => {
     const user = userEvent.setup();
     render(<IssuePicker onSelect={() => undefined} />);
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     await waitFor(() => expect(staleSignal).toBeDefined());
     await user.type(screen.getByLabelText("Search issues"), "new");
     await waitFor(() => expect(staleSignal?.aborted).toBe(true));
@@ -226,9 +240,10 @@ describe("IssuePicker", () => {
     render(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
+    await chooseOption(user, "Connection", "App");
+    await user.click(await screen.findByLabelText("GitHub repository"));
     await user.click(await screen.findByRole("button", { name: /load more repositories/i }));
-    await user.type(screen.getByLabelText("Filter repositories"), "fresh");
+    await user.type(await screen.findByLabelText("Filter owner/name"), "fresh");
     await waitFor(() => expect(staleSignal?.aborted).toBe(true));
     await act(async () => {
       stalePage.resolve(
@@ -302,15 +317,15 @@ describe("IssuePicker", () => {
       render(<IssuePicker onSelect={() => undefined} />);
 
       await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-      await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-      await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo-a");
+      await chooseOption(user, "Connection", "App");
+      await chooseOption(user, "GitHub repository", "owner/a");
       await user.click(await screen.findByRole("button", { name: /load more issues/i }));
       if (scopeChange === "search")
         await user.type(screen.getByLabelText("Search issues"), "fresh");
       else if (scopeChange === "state")
-        await user.selectOptions(screen.getByLabelText("Issue state"), "closed");
+        await chooseOption(user, "Issue state", /^Closed$/);
       else
-        await user.selectOptions(screen.getByLabelText("GitHub repository"), "repo-b");
+        await chooseOption(user, "GitHub repository", "owner/b");
       await waitFor(() => expect(staleSignal?.aborted).toBe(true));
       await act(async () => {
         stalePage.resolve(
@@ -373,8 +388,8 @@ describe("IssuePicker", () => {
     render(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /load more issues/i }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(staleSignal?.aborted).toBe(true));
@@ -390,34 +405,35 @@ describe("IssuePicker", () => {
     });
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     expect(await screen.findByText("Current issue")).toBeInTheDocument();
     expect(screen.queryByText("Stale closed issue")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /load more issues/i })).not.toBeInTheDocument();
   });
 
-	it("filters repositories and preserves the filter while paging", async () => {
-		const requests: string[] = [];
-		vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-			const url = String(input);
-			requests.push(url);
-			if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
-			if (url.includes("search=widget") && url.includes("cursor=")) return json({ items: [{ id: "repo-2", locator: "owner/widget-two", canonical_url: "https://github.com/owner/widget-two" }] });
-			if (url.includes("search=widget")) return json({ items: [{ id: "repo-1", locator: "owner/widget-one", canonical_url: "https://github.com/owner/widget-one" }], next_cursor: "next" });
-			if (url.endsWith("/repositories")) return json({ items: [] });
-			throw new Error(`unexpected request ${url}`);
-		}));
-		const user = userEvent.setup();
-		render(<IssuePicker onSelect={() => undefined} />);
-		await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-		await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-		await user.type(await screen.findByLabelText("Filter repositories"), "widget");
-		await screen.findByRole("option", { name: "owner/widget-one" });
-		await user.click(screen.getByRole("button", { name: /load more repositories/i }));
-		await screen.findByRole("option", { name: "owner/widget-two" });
-		expect(requests.some((url) => url.includes("search=widget") && url.includes("cursor=next"))).toBe(true);
-	});
+  it("filters repositories and preserves the filter while paging", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
+      if (url.includes("search=widget") && url.includes("cursor=")) return json({ items: [{ id: "repo-2", locator: "owner/widget-two", canonical_url: "https://github.com/owner/widget-two" }] });
+      if (url.includes("search=widget")) return json({ items: [{ id: "repo-1", locator: "owner/widget-one", canonical_url: "https://github.com/owner/widget-one" }], next_cursor: "next" });
+      if (url.endsWith("/repositories")) return json({ items: [] });
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<IssuePicker onSelect={() => undefined} />);
+    await user.click(screen.getByRole("button", { name: /import from github issue/i }));
+    await chooseOption(user, "Connection", "App");
+    await user.click(await screen.findByLabelText("GitHub repository"));
+    await user.type(await screen.findByLabelText("Filter owner/name"), "widget");
+    await screen.findByRole("option", { name: "owner/widget-one" });
+    await user.click(screen.getByRole("button", { name: /load more repositories/i }));
+    await screen.findByRole("option", { name: "owner/widget-two" });
+    expect(requests.some((url) => url.includes("search=widget") && url.includes("cursor=next"))).toBe(true);
+  });
 
   it("keeps the modal selection and error open until onSelect succeeds", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -433,8 +449,8 @@ describe("IssuePicker", () => {
     render(<IssuePicker onSelect={onSelect} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
-    await user.selectOptions(await screen.findByLabelText("GitHub connection"), "conn");
-    await user.selectOptions(await screen.findByLabelText("GitHub repository"), "repo");
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
     await user.click(await screen.findByRole("button", { name: /selected issue/i }));
     await user.click(await screen.findByRole("button", { name: "Use issue" }));
 
