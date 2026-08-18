@@ -1,6 +1,7 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { modalShellHeightClass } from "@/components/ui/modal-shell-styles";
 import { cn } from "@/lib/utils";
 
 export function ModalContentCard({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -20,6 +21,7 @@ export function ModalShell({
 	footer,
 	bodyClassName,
 	className,
+	height = "auto",
 }: {
 	title: ReactNode;
 	caption?: ReactNode;
@@ -29,9 +31,10 @@ export function ModalShell({
 	footer?: ReactNode;
 	bodyClassName?: string;
 	className?: string;
+	height?: "auto" | "workbench";
 }) {
 	return (
-		<div className={cn("flex max-h-[85vh] min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl", className)}>
+		<div className={cn("flex min-h-0 flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl", modalShellHeightClass(height), className)}>
 			<div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
 				<div className="min-w-0">
 					{caption ? <p className="text-xs uppercase tracking-[0.22em] text-foreground-subtle">{caption}</p> : null}

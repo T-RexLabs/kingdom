@@ -525,4 +525,52 @@ describe("IssuePicker", () => {
     expect(layout.className).toContain("lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]");
     expect(screen.getByRole("dialog", { name: "Import from GitHub Issues" })).toHaveClass("min-w-0");
   });
+
+  it("keeps the panel a fixed size while sections and toggles change", async () => {
+    const comments = Array.from({ length: 6 }, (_, index) => ({
+      provider_comment_id: `comment-${index + 1}`,
+      author: `author-${index + 1}`,
+      body: `Comment body ${index + 1}`,
+      canonical_url: `https://github.com/owner/repo/issues/1#issuecomment-${index + 1}`,
+      created_at: `2026-08-0${index + 1}T00:00:00Z`,
+      updated_at: `2026-08-0${index + 1}T00:00:00Z`,
+      original_bytes: 20,
+      retained_bytes: 20,
+    }));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
+      if (url.endsWith("/repositories")) return json({ items: [{ id: "repo", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
+      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "First").issue, profile: { include_comments: url.includes("include_comments=true") }, comment_count: 9, comments: url.includes("include_comments=true") ? comments : [], fetched_comment_count: url.includes("include_comments=true") ? 6 : 0, fetched_comment_pages: 1, omitted_comment_count: 3, omitted_comment_pages: 1, etag_present: true });
+      if (url.includes("/issues?")) return json({ items: [issue(1, "First")], incomplete_results: false, search_result_cap: 1000 });
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<IssuePicker onSelect={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: /import from github issue/i }));
+
+    // The shell commits to a definite height rather than shrink-wrapping, so
+    // mounting the repository field, the issue list, the preview pane and the
+    // comment preview cannot resize or re-centre the dialog.
+    const panel = screen.getByTestId("issue-picker-layout").closest("div[class*='rounded-2xl']");
+    expect(panel?.className).toContain("h-[min(85vh,44rem)]");
+    expect(panel?.className).not.toContain("max-h-[85vh]");
+
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
+    await user.click(await screen.findByRole("button", { name: /first/i }));
+    await screen.findByText(/9 comments reported/i);
+
+    // The status line is always mounted; the preview refetches on every flip,
+    // so a row that came and went would shift the pane each time.
+    const status = screen.getByRole("status");
+    await user.click(screen.getByRole("switch", { name: /include comments/i }));
+    expect(await screen.findByRole("heading", { name: /comment preview/i })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBe(status);
+    await user.click(screen.getByRole("switch", { name: /include comments/i }));
+    await waitFor(() => expect(screen.queryByRole("heading", { name: /comment preview/i })).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toBe(status);
+    expect(panel?.className).toContain("h-[min(85vh,44rem)]");
+  });
 });

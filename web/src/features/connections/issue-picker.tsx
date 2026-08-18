@@ -308,11 +308,12 @@ export function IssuePicker({
           caption="External Source"
           description="Private issue content may be sent to your configured model provider."
           onClose={() => setOpened(false)}
+          height="workbench"
           bodyClassName="overflow-hidden p-0"
           footer={<div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setOpened(false)}>Cancel</Button><Button type="button" onClick={() => void submit()} disabled={!preview || loadingPreview || submitting}>{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}{actionLabel}</Button></div>}
         >
           <div data-testid="issue-picker-layout" className="grid h-full min-h-0 min-w-0 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:overflow-hidden">
-            <div className="min-w-0 space-y-4 border-b border-border p-4 lg:overflow-y-auto lg:border-b-0 lg:border-r sm:p-5">
+            <div className="flex min-w-0 flex-col gap-4 border-b border-border p-4 lg:overflow-hidden lg:border-b-0 lg:border-r sm:p-5">
               <ConnectionControls
                 loading={loadingConnections}
                 loaded={connectionsLoaded}
@@ -358,7 +359,7 @@ export function IssuePicker({
                     />
                   </div>
                   {incomplete ? <p role="status" className="text-xs text-status-warning">GitHub returned partial search results. Search is capped at 1,000 issues.</p> : null}
-                  <div className="max-h-64 min-w-0 divide-y divide-border overflow-auto rounded-md border border-border">
+                  <div className="max-h-64 min-w-0 divide-y divide-border overflow-auto rounded-md border border-border lg:max-h-none lg:min-h-0 lg:flex-1">
                     {loadingIssues && issues.length === 0 ? <p className="flex items-center gap-2 p-3 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading issues...</p> : issues.length === 0 ? <p className="p-3 text-xs text-foreground-muted">No issues found. Pull requests are excluded.</p> : issues.map((item) => <button type="button" key={`${item.native_id}-${item.issue.issue_number}`} onClick={() => setSelected(item)} className={cn("w-full min-w-0 p-3 text-left hover:bg-surface-raised", selected?.native_id === item.native_id && "bg-gold/10")}><span className="text-xs text-foreground-subtle">#{item.issue.issue_number} / {item.issue.state}</span><p className="break-words text-sm font-medium">{item.issue.title}</p></button>)}
                   </div>
                   {issueCursor ? <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreIssues()} disabled={loadingIssues}>{loadingIssues ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Issues</Button> : null}
@@ -366,16 +367,14 @@ export function IssuePicker({
               ) : null}
               {error && (error.scope === "repositories" || error.scope === "issues") ? <PickerError error={error} onRetry={() => error.scope === "repositories" ? setRepositoryAttempt((value) => value + 1) : setIssueAttempt((value) => value + 1)} /> : null}
             </div>
-            <div className="min-w-0 p-4 lg:overflow-y-auto sm:p-5">
+            <div className="flex min-w-0 flex-col p-4 lg:overflow-hidden sm:p-5">
               {shownIssue ? (
-                <div className="min-w-0 space-y-4">
+                <div className="flex min-w-0 flex-1 flex-col">
                   <div className="min-w-0">
                     <p className="break-words font-semibold text-foreground">{shownIssue.title}</p>
                     <p className="mt-1 break-words text-xs text-foreground-muted">{issueURL ? <a href={issueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{shownIssue.repository}#{shownIssue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{shownIssue.repository}#{shownIssue.issue_number}</span>} / updated {new Date(shownIssue.updated_at).toLocaleString()}</p>
                   </div>
-                  {loadingPreview ? <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading preview...</p> : null}
-                  <div className="max-h-56 min-w-0 overflow-auto rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
-                  <div className="rounded-lg border border-border bg-background/40 px-3">
+                  <div className="mt-4 rounded-lg border border-border bg-background/40 px-3">
                     <ToggleRow
                       label="Include Comments"
                       checked={includeComments}
@@ -383,11 +382,19 @@ export function IssuePicker({
                       onChange={setIncludeComments}
                     />
                   </div>
-                  {preview ? <p className="text-xs text-foreground-subtle">Previewed {preview.fetched_comment_count} comment bodies; {preview.comment_count} comments reported.</p> : null}
-                  {includeComments && preview?.profile.include_comments ? <CommentPreview comments={shownComments} allComments={previewComments} page={commentPage} pageCount={commentPageCount} preview={preview} onPageChange={setCommentPage} /> : null}
-                  {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}
+                  {/* Always occupies one line: the preview refetches on every
+                      toggle flip, and a status row that mounts and unmounts
+                      would shift everything below it each time. */}
+                  <p role="status" className="mt-2 min-h-4 text-xs text-foreground-subtle">
+                    {loadingPreview ? "Loading preview..." : preview ? `Previewed ${preview.fetched_comment_count} comment bodies; ${preview.comment_count} comments reported.` : ""}
+                  </p>
+                  <div aria-busy={loadingPreview} className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto lg:pr-1">
+                    <div className="min-w-0 rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
+                    {includeComments && preview?.profile.include_comments ? <CommentPreview comments={shownComments} allComments={previewComments} page={commentPage} pageCount={commentPageCount} preview={preview} onPageChange={setCommentPage} /> : null}
+                    {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}
+                  </div>
                 </div>
-              ) : <div className="flex min-h-40 items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">Select an issue to preview its bounded import before continuing.</div>}
+              ) : <div className="flex h-full min-h-40 items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">Select an issue to preview its bounded import before continuing.</div>}
             </div>
           </div>
         </ModalShell>
