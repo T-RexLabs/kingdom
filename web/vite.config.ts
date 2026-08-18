@@ -50,7 +50,8 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    environment: "jsdom",
+    // jsdom plus the storage Node 26 would otherwise mask; see the module doc.
+    environment: "./src/test/jsdom-storage-env.ts",
     setupFiles: "./src/test/setup.ts",
   },
 });
