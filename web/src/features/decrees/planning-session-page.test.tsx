@@ -310,7 +310,7 @@ describe("PlanningSessionPage", () => {
     expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a restrained add-source action beside multiple responsive source cards", () => {
+  it("lists every source as one row and expands one at a time", async () => {
     const base = mockUsePlanningSession().data;
     mockUsePlanningSession.mockReturnValue({
       data: {
@@ -324,11 +324,18 @@ describe("PlanningSessionPage", () => {
       refetch: refetchPlanningSession,
     });
 
+    const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
     expect(screen.getByRole("button", { name: "Add source" })).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
-    expect(screen.getByLabelText("Linked GitHub sources").querySelector(".lg\\:grid-cols-2")).toBeInTheDocument();
+    // Detail is opt-in per row, so ten sources stay ten short lines.
+    expect(screen.queryByText(/use this issue exactly as it reads now/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Details for owner/one#1" }));
+    expect(screen.getAllByText(/use this issue exactly as it reads now/i)).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Details for owner/two#2" }));
+    expect(screen.getAllByText(/use this issue exactly as it reads now/i)).toHaveLength(1);
   });
 
   it("shows changed fields after refresh and keeps adoption explicit", async () => {
@@ -397,19 +404,55 @@ describe("PlanningSessionPage", () => {
     render(<PlanningSessionPage />);
 
     expect(screen.getAllByText(/update available/i)).toHaveLength(2);
-    expect(screen.getByRole("link", { name: /owner\/repo#17/i })).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getByRole("link", { name: /owner\/other#18/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open owner\/repo#17 on github/i })).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByRole("link", { name: /open owner\/other#18 on github/i })).toBeInTheDocument();
     const firstSource = screen.getByRole("region", { name: "Linked GitHub source owner/repo#17" });
     const secondSource = screen.getByRole("region", { name: "Linked GitHub source owner/other#18" });
-    expect(within(firstSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-used");
-    expect(within(secondSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-other-active");
     expect(within(firstSource).getByRole("button", { name: /adopt latest/i })).toBeInTheDocument();
     expect(within(secondSource).getByRole("button", { name: /adopt latest/i })).toBeInTheDocument();
+
+    // The diff belongs to the row's detail, and each source keeps its own baseline.
+    await user.click(within(firstSource).getByRole("button", { name: "Details for owner/repo#17" }));
+    expect(within(firstSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-used");
+    await user.click(within(secondSource).getByRole("button", { name: "Details for owner/other#18" }));
+    expect(within(secondSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-other-active");
+
     await user.click(within(firstSource).getByRole("button", { name: /^refresh /i }));
 
-    expect(await screen.findByText("A newer GitHub issue version is available.")).toBeInTheDocument();
-    expect(within(firstSource).getByText(/adopt the update to use it in future planner operations/i)).toBeInTheDocument();
+    expect(await within(firstSource).findByText("A newer GitHub issue version is available.")).toBeInTheDocument();
     expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes a source only after confirmation and detaches it on the server", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    let request: { url: string; init?: RequestInit } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = { url: String(input), init };
+      return new Response(JSON.stringify({ status: "detached" }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    // Removal is confirmed inline; nothing leaves until the operator says so.
+    await user.click(screen.getByRole("button", { name: "Remove owner/one#1" }));
+    expect(request).toBeUndefined();
+    expect(screen.getByText(/you can add it back/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Remove", exact: true }));
+    await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
+    expect(request?.url).toMatch(/\/external-source-links\/link-1\/detachments$/);
+    expect(request?.init?.method).toBe("POST");
+    expect(new Headers(request?.init?.headers).get("Idempotency-Key")).toBe("external-detach-test");
   });
 
   it("shows durable recovery guidance after a revoked refresh", async () => {

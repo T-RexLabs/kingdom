@@ -187,7 +187,6 @@ function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeS
       {updateAvailable ? <ExternalSourceComparison baselineId={source.used_snapshot_id} candidateId={latestSnapshotID} /> : null}
       {refreshResult?.retry_at ? <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
       {refreshError ? <p role="alert" className="text-status-failed">{refreshError}</p> : null}
-      <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><dl className="mt-1 space-y-1 font-mono text-[11px]"><div><dt className="inline">Issuance snapshot: </dt><dd className="inline break-all">{source.used_snapshot_id}</dd></div><div><dt className="inline">Latest snapshot: </dt><dd className="inline break-all">{latestSnapshotID}</dd></div></dl></details>
     </section>
   );
 }

@@ -77,7 +77,6 @@ describe("ExternalSourceComparison", () => {
     expect(screen.getByText("Comments")).toBeInTheDocument();
     expect(screen.getByText("2 reported, 2 retained")).toBeInTheDocument();
     expect(screen.getByText(/2 reported, 2 retained; 1 changed/)).toBeInTheDocument();
-    expect(screen.getByText("Technical details")).toBeInTheDocument();
     await waitFor(() => expect(requests.some((url) => url.includes("cursor=baseline-next"))).toBe(true));
   });
 });

@@ -5,18 +5,13 @@ import {
   usePlanningSessionDraft,
   useUpdatePlanningSessionModelSelection,
   useUpdatePlanningSessionTitle,
-  type PlanningSessionDetail,
 } from "@/api/hooks";
 import { apiFetch } from "@/api/client";
-import type { components } from "@/api/schema";
-import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
-import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { isAmbiguousMutationFailure } from "./mutation-recovery";
-import { safeGitHubIssueURL } from "@/features/connections/github-url";
-import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
+import { type IssueSelection } from "@/features/connections/issue-picker";
+import { PlanningSourcesPanel } from "./planning-sources-panel";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
-import { ExternalLink, Feather, FileText, Github, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Feather, FileText, Sparkles } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { getPlanningSessionDisplayTitleValue, hasPlaceholderTitle } from "./planning-session-title";
@@ -619,20 +614,11 @@ export function PlanningSessionPage() {
         </div>
       </div>
 
-      <aside aria-label="Linked GitHub sources" className="mx-4 mt-3 max-h-[min(42vh,28rem)] shrink-0 overflow-y-auto rounded-lg border border-gold/20 bg-gold/[0.03] p-2.5">
-          <div className="mb-2 flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">Planning sources</p>
-              <span className="rounded-full border border-gold/20 bg-gold/5 px-2 py-0.5 text-[10px] text-gold">{externalSources.length}</span>
-            </div>
-            <IssuePicker onSelect={attachSource} actionLabel="Add source" triggerLabel={externalSources.length > 0 ? "Add source" : "Add GitHub issue"} compact />
-          </div>
-          {externalSources.length > 0 ? (
-            <div className="grid gap-3 lg:grid-cols-2">
-              {externalSources.map((source) => <PlanningExternalSourceCard key={source.link_id} source={source} onChanged={() => sessionQuery.refetch()} />)}
-            </div>
-          ) : <p className="px-1 pb-1 text-xs text-foreground-muted">Add a GitHub issue as immutable context for future planner operations.</p>}
-      </aside>
+      <PlanningSourcesPanel
+        sources={externalSources}
+        onAttach={attachSource}
+        onChanged={() => sessionQuery.refetch()}
+      />
 
       {/* Session-load errors are handled by the early-return shell above. */}
       {createOperation.error ? (
@@ -663,101 +649,5 @@ export function PlanningSessionPage() {
         onClose={() => setShowPlanModal(false)}
       />
     </div>
-  );
-}
-
-type PlanningExternalSource = PlanningSessionDetail["external_sources"][number];
-type ExternalRefreshResult = components["schemas"]["ExternalRefreshResult"];
-
-function PlanningExternalSourceCard({
-  source,
-  onChanged,
-}: {
-  source: PlanningExternalSource;
-  onChanged: () => Promise<unknown>;
-}) {
-  const [busy, setBusy] = useState<"refresh" | "adopt" | "">("");
-  const [error, setError] = useState("");
-  const [refreshResult, setRefreshResult] = useState<ExternalRefreshResult>();
-  const refreshKeyRef = useRef<string | undefined>(undefined);
-  const adoptKeyRef = useRef<string | undefined>(undefined);
-  const activeSnapshotID = source.active_snapshot_id ?? source.used_snapshot_id;
-  const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
-  const sourceStatus = refreshResult?.outcome ?? source.status;
-  const updateAvailable = latestSnapshotID !== activeSnapshotID;
-  const failureGuidance = externalSourceFailureGuidance(sourceStatus);
-  const sourceURL = safeGitHubIssueURL(source.canonical_url, source.repository, source.issue_number);
-
-  const refresh = async () => {
-    setBusy("refresh");
-    setError("");
-    const key = refreshKeyRef.current ?? newIdempotencyKey("external-refresh");
-    refreshKeyRef.current = key;
-    try {
-      const result = await apiFetch<ExternalRefreshResult>(`/external-source-links/${source.link_id}/refreshes`, {
-        method: "POST",
-        headers: { "Idempotency-Key": key },
-      });
-      refreshKeyRef.current = undefined;
-      setRefreshResult(result);
-      await onChanged();
-    } catch (cause) {
-      if (!isAmbiguousMutationFailure(cause)) refreshKeyRef.current = undefined;
-      setError(cause instanceof Error ? cause.message : "Could not refresh GitHub source");
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const adopt = async () => {
-    setBusy("adopt");
-    setError("");
-    const key = adoptKeyRef.current ?? newIdempotencyKey("external-adopt");
-    adoptKeyRef.current = key;
-    try {
-      await apiFetch(`/external-source-links/${source.link_id}/adoptions`, {
-        method: "POST",
-        headers: { "Idempotency-Key": key },
-      });
-      adoptKeyRef.current = undefined;
-      setRefreshResult(undefined);
-      await onChanged();
-    } catch (cause) {
-      if (!isAmbiguousMutationFailure(cause)) adoptKeyRef.current = undefined;
-      setError(cause instanceof Error ? cause.message : "Could not adopt the latest GitHub source");
-    } finally {
-      setBusy("");
-    }
-  };
-
-  return (
-    <section aria-label={`Linked GitHub source ${source.repository}#${source.issue_number}`} className="min-w-0 space-y-3 rounded-lg border border-gold/25 bg-gold/5 p-3 text-xs">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="font-medium text-foreground"><Github className="mr-1 inline h-3.5 w-3.5" />{sourceURL ? <a href={sourceURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{source.repository}#{source.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{source.repository}#{source.issue_number}</span>}</p>
-          <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(sourceStatus, updateAvailable)}{updateAvailable ? ". Adopt the update to use it in future planner operations." : "."}</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" aria-label={`Refresh ${source.repository}#${source.issue_number}`} disabled={busy !== ""} className="rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => void refresh()}>
-            {busy === "refresh" ? <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 inline h-3 w-3" />}Refresh
-          </button>
-          {updateAvailable ? (
-            <button type="button" aria-label={`Adopt latest ${source.repository}#${source.issue_number}`} disabled={busy !== ""} className="rounded bg-gold px-2 py-1 font-medium text-black disabled:opacity-50" onClick={() => void adopt()}>
-              {busy === "adopt" ? "Adopting…" : "Adopt latest"}
-            </button>
-          ) : null}
-        </div>
-      </div>
-      {failureGuidance && !refreshResult ? <p role="status" className="text-status-failed">{failureGuidance}</p> : null}
-      {updateAvailable ? <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} /> : null}
-      {refreshResult ? (
-        <div aria-live="polite" className="space-y-1 border-t border-gold/15 pt-2 text-foreground-muted">
-          <p className="font-medium text-foreground">{refreshResult.message}</p>
-          {refreshResult.retry_at ? <p>Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
-        </div>
-      ) : null}
-      {error ? <p role="alert" className="text-status-failed">{error}</p> : null}
-      <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><dl className="mt-1 space-y-1 font-mono text-[11px]"><div><dt className="inline">Used snapshot: </dt><dd className="inline break-all">{source.used_snapshot_id}</dd></div><div><dt className="inline">Active snapshot: </dt><dd className="inline break-all">{activeSnapshotID}</dd></div><div><dt className="inline">Latest snapshot: </dt><dd className="inline break-all">{latestSnapshotID}</dd></div></dl></details>
-    </section>
   );
 }

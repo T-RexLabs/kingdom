@@ -722,7 +722,6 @@ export function DecreeForm({
                     </div>
                   </div>
                 ) : null}
-                <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><p className="mt-1 break-all font-mono text-[11px]">Selected snapshot: {origin.snapshotId}</p></details>
               </section>
             ) : null}
             {externalError ? <p role="alert" className="text-xs text-status-failed">{externalError}</p> : null}

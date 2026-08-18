@@ -101,13 +101,6 @@ export function ExternalSourceComparison({ baselineId, candidateId }: { baseline
           after={`${commentSummary(right, candidate.comments)}${commentDelta ? `; ${commentDelta}` : ""}`}
         />
       ) : null}
-      <details className="text-foreground-subtle">
-        <summary className="cursor-pointer select-none text-gold">Technical details</summary>
-        <dl className="mt-2 grid gap-1 font-mono text-[11px]">
-          <div><dt className="inline">Selected snapshot: </dt><dd className="inline break-all">{baselineId}</dd></div>
-          <div><dt className="inline">Candidate snapshot: </dt><dd className="inline break-all">{candidateId}</dd></div>
-        </dl>
-      </details>
     </section>
   );
 }
