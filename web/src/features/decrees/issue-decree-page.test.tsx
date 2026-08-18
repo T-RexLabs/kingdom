@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -10,6 +10,7 @@ const createRunMutate = vi.fn<(request: Record<string, unknown>) => Promise<Reco
 let idempotencyKeyCounter = 0;
 const mockUseProviderModels = vi.fn();
 const refreshProviderModelsMutate = vi.fn();
+let mockSearch: Record<string, string> = {};
 
 function makeDecreeResult(overrides: Record<string, unknown> = {}) {
   return {
@@ -64,11 +65,15 @@ let mockWorkspaceCapabilities = {
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: { children: ReactNode }) => <a href="#" {...props}>{children}</a>,
-  useSearch: () => ({
-    planning_session_id: "planning-session-1",
-    planning_draft_id: "planning-draft-1",
-    planning_context_snapshot_id: "planning-context-1",
-  }),
+  useSearch: () => mockSearch,
+}));
+
+vi.mock("@/features/connections/issue-picker", () => ({
+  IssuePicker: ({ onSelect }: { onSelect: (selection: unknown) => Promise<void> }) => <button type="button" onClick={() => void onSelect({ intake: { connection_id: "conn-1", repository_id: "repo-1", issue_number: 7, include_comment_count: true, include_comments: false }, issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" } })}>Mock prefill issue</button>,
+}));
+
+vi.mock("@/features/connections/external-source-comparison", () => ({
+  ExternalSourceComparison: ({ baselineId, candidateId }: { baselineId: string; candidateId: string }) => <div aria-label="GitHub source comparison" data-baseline={baselineId} data-candidate={candidateId}>Source comparison</div>,
 }));
 
 vi.mock("@/api/hooks", () => ({
@@ -129,12 +134,17 @@ vi.mock("@/api/hooks", () => ({
 }));
 
 describe("issue decree page", () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     createDecreeMutate.mockReset();
     createRunMutate.mockReset();
     createDecreeMutate.mockResolvedValue(makeDecreeResult());
     createRunMutate.mockResolvedValue(makeRunResult());
     idempotencyKeyCounter = 0;
+    mockSearch = {
+      planning_session_id: "planning-session-1",
+      planning_draft_id: "planning-draft-1",
+    };
     refreshProviderModelsMutate.mockReset();
     mockUseProviderModels.mockReturnValue({
       data: {
@@ -404,6 +414,28 @@ describe("issue decree page", () => {
     expect(firstRunRequest.key).toBe(secondRunRequest.key);
   });
 
+  it("allows only same-key recovery while run start is pending", async () => {
+    const user = userEvent.setup();
+    createRunMutate
+      .mockRejectedValueOnce(makeApiError(409, "request is still pending", { code: "idempotency_pending", retryable: true, correlationId: "idempotency-middleware" }))
+      .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
+    render(<IssueDecreePage />);
+
+    await selectGlobalModel(user);
+    await user.type(screen.getByLabelText("Decree Title"), "Pending run decree");
+    await user.type(screen.getByLabelText("Decree Text"), "Pending run body");
+    await user.click(screen.getByRole("button", { name: "Issue Decree" }));
+
+    await screen.findByText(/run start remains pending/i);
+    expect(screen.queryByRole("button", { name: "Discard Recovery" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
+    await screen.findByText("Decree Dispatched");
+
+    const firstRunRequest = createRunMutate.mock.calls[0][0] as { key: string };
+    const secondRunRequest = createRunMutate.mock.calls[1][0] as { key: string };
+    expect(secondRunRequest.key).toBe(firstRunRequest.key);
+  });
+
   it("lets operators explicitly discard ambiguous run recovery before starting over", async () => {
     const user = userEvent.setup();
     createRunMutate.mockRejectedValueOnce(new Error("connection lost"));
@@ -426,7 +458,7 @@ describe("issue decree page", () => {
     expect(screen.getByRole("button", { name: "Issue Decree" })).toBeEnabled();
   });
 
-  it("replays the same run request after an ambiguous HTTP run-start failure", async () => {
+  it("uses a fresh run request after a definitive retryable HTTP failure", async () => {
     const user = userEvent.setup();
     createRunMutate
       .mockRejectedValueOnce(makeApiError(503, "provider model catalog unavailable", { code: "internal_error", retryable: true, correlationId: "api.create_run" }))
@@ -440,13 +472,13 @@ describe("issue decree page", () => {
     await user.type(screen.getByLabelText("Decree Text"), "Recover the original run start");
     await user.click(screen.getByRole("button", { name: "Issue Decree" }));
 
-    await screen.findByText(/connection dropped before Kingdom could confirm whether the run started/i);
+    await screen.findByText(/Kingdom rejected the run start request before it was accepted/i);
 
     expect(createDecreeMutate).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Retry Run Start" })).toBeEnabled();
-    expect(screen.getByLabelText("Max Review Cycles")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Start Run" })).toBeEnabled();
+    expect(screen.getByLabelText("Max Review Cycles")).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
+    await user.click(screen.getByRole("button", { name: "Start Run" }));
     await screen.findByText("Decree Dispatched");
 
     expect(createRunMutate).toHaveBeenCalledTimes(2);
@@ -454,7 +486,7 @@ describe("issue decree page", () => {
     const secondRunRequest = createRunMutate.mock.calls[1][0] as { body: { decree_id: string }; key: string };
     expect(firstRunRequest.body.decree_id).toBe("decree-1");
     expect(secondRunRequest.body.decree_id).toBe("decree-1");
-    expect(firstRunRequest.key).toBe(secondRunRequest.key);
+    expect(firstRunRequest.key).not.toBe(secondRunRequest.key);
   });
 
   it("scrolls smoothly to the dispatch confirmation after a successful dispatch", async () => {
@@ -971,13 +1003,15 @@ describe("issue decree page", () => {
       body: expect.objectContaining({
         decree_title: "Chosen decree title",
         decree_text: "Chosen decree text",
-        metadata: {
+        planning_lineage: {
           planning_session_id: "planning-session-1",
           planning_draft_id: "planning-draft-1",
-          planning_context_snapshot_id: "planning-context-1",
         },
       }),
     }));
+    const decreeRequest = createDecreeMutate.mock.calls[0][0] as { body: Record<string, unknown> };
+    expect(decreeRequest.body).not.toHaveProperty("external_source_snapshot_id");
+		expect(decreeRequest.body.planning_lineage).not.toHaveProperty("planning_context_snapshot_id");
 	    expect(createRunMutate).toHaveBeenCalledWith(expect.objectContaining({
 	      body: expect.objectContaining({
 	        autonomous_approvals: true,
@@ -1044,6 +1078,8 @@ describe("issue decree page", () => {
       },
     });
     expect(decreeRequest.body.metadata).toBeUndefined();
+    expect(decreeRequest.body).not.toHaveProperty("planning_lineage");
+    expect(decreeRequest.body).not.toHaveProperty("external_source_snapshot_id");
   });
 
   it("renders agent override roles in required execution order", async () => {
@@ -1073,5 +1109,100 @@ describe("issue decree page", () => {
 
     const groupHeadings = screen.getAllByRole("heading", { level: 4 }).map((item) => item.textContent?.trim());
     expect(groupHeadings).toEqual(["King", "Advisors", "Chancellor", "Council Member", "Builder", "Reviewers", "Validators"]);
+  });
+
+  it("promotes refreshed provenance atomically with any applied fields", async () => {
+    let captureCount = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/external-source-captures")) {
+        captureCount += 1;
+        return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: captureCount === 1 ? "snapshot-a" : "snapshot-b" }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      const refreshed = url.endsWith("snapshot-b");
+      return new Response(JSON.stringify({ snapshot_id: refreshed ? "snapshot-b" : "snapshot-a", source_id: "source-1", issue: { title: refreshed ? "Issue B" : "Issue A", body: refreshed ? "Body B" : "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: refreshed ? "2026-08-03T00:00:00Z" : "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-03T00:00:00Z", fetched_at: "2026-08-03T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<IssueDecreePage />);
+    await user.click(screen.getByRole("button", { name: "Mock prefill issue" }));
+    expect(await screen.findByDisplayValue("Body A")).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Decree Text"));
+    await user.type(screen.getByLabelText("Decree Text"), "Operator edit");
+    await user.click(screen.getByRole("button", { name: /check for updates/i }));
+    expect(await screen.findByText(/an update is available/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-a");
+    expect(screen.getByLabelText("Decree Text")).toHaveValue("Operator edit");
+    await user.click(screen.getByRole("button", { name: "Use refreshed body" }));
+    expect(screen.getByLabelText("Decree Text")).toHaveValue("Body B");
+    expect(screen.queryByText(/an update is available/i)).not.toBeInTheDocument();
+
+    await selectGlobalModel(user);
+    await user.click(screen.getByRole("button", { name: "Issue Decree" }));
+    expect(createDecreeMutate).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ external_source_snapshot_id: "snapshot-b", decree_text: "Body B" }),
+    }));
+    const request = createDecreeMutate.mock.calls[0][0] as { body: Record<string, unknown> };
+    expect(request.body).not.toHaveProperty("planning_lineage");
+  });
+
+  it("does not select the newest plan unless the operator chooses it", () => {
+    mockSearch = {};
+    render(<IssueDecreePage />);
+
+    expect(screen.getByRole("button", { name: "From Plan" })).toHaveTextContent("No plan");
+    expect(screen.getByLabelText("Decree Title")).toHaveValue("");
+    expect(screen.getByLabelText("Decree Text")).toHaveValue("");
+  });
+
+  it("keeps the decree title, plan selector, and actions mobile-safe", () => {
+    render(<IssueDecreePage />);
+
+    const titlePlanRow = screen.getByLabelText("Decree Title").parentElement?.parentElement;
+    expect(titlePlanRow).toHaveClass("grid", "min-w-0");
+    expect(titlePlanRow?.className).toContain("md:grid-cols-[minmax(0,1fr)_minmax(12rem,15rem)_auto]");
+    expect(screen.getByRole("button", { name: "Issue Decree" }).parentElement).toHaveClass("flex-wrap");
+  });
+
+  it("clears planning lineage when a direct GitHub issue is imported", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/external-source-captures")) return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: "snapshot-direct" }), { status: 201, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<IssueDecreePage />);
+
+    await user.click(screen.getByRole("button", { name: "Mock prefill issue" }));
+    expect(await screen.findByRole("button", { name: "From Plan" })).toHaveTextContent("No plan");
+    await selectGlobalModel(user);
+    await user.click(screen.getByRole("button", { name: "Issue Decree" }));
+
+    const request = createDecreeMutate.mock.calls[0][0] as { body: Record<string, unknown> };
+    expect(request.body).toMatchObject({ external_source_snapshot_id: "snapshot-direct" });
+    expect(request.body).not.toHaveProperty("planning_lineage");
+  });
+
+  it("clears direct GitHub provenance when a plan is selected", async () => {
+    mockSearch = {};
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/external-source-captures")) return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: "snapshot-direct" }), { status: 201, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comment_count: true, include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<IssueDecreePage />);
+
+    await user.click(screen.getByRole("button", { name: "Mock prefill issue" }));
+    expect(await screen.findByLabelText("Selected GitHub source")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "From Plan" }));
+    await user.click(screen.getByRole("option", { name: "Test session" }));
+    await waitFor(() => expect(screen.getByLabelText("Decree Title")).toHaveValue("Draft supplied title"));
+    expect(screen.queryByLabelText("Selected GitHub source")).not.toBeInTheDocument();
+
+    await selectGlobalModel(user);
+    await user.click(screen.getByRole("button", { name: "Issue Decree" }));
+    const request = createDecreeMutate.mock.calls[0][0] as { body: Record<string, unknown> };
+    expect(request.body).toMatchObject({ planning_lineage: { planning_session_id: "planning-session-1", planning_draft_id: "planning-draft-1" } });
+    expect(request.body).not.toHaveProperty("external_source_snapshot_id");
   });
 });

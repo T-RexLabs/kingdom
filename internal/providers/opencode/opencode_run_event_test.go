@@ -36,3 +36,13 @@ func TestParseOpencodeRunEventPreservesNestedReasoningMetadata(t *testing.T) {
 		t.Fatalf("expected nested encrypted reasoning metadata, got %#v", event.Part.Metadata.OpenAI.ReasoningEncryptedContent)
 	}
 }
+
+func TestParseOpencodeRunEventReadsProviderErrorDataMessage(t *testing.T) {
+	event, err := parseOpencodeRunEvent(`{"type":"error","error":{"name":"APIError","data":{"message":"Forbidden: unauthorized: not licensed to use Copilot","statusCode":403,"responseBody":"sensitive provider body"}}}`)
+	if err != nil {
+		t.Fatalf("parse opencode run event: %v", err)
+	}
+	if event.ErrorText != "Forbidden: unauthorized: not licensed to use Copilot" {
+		t.Fatalf("expected safe nested provider message, got %q", event.ErrorText)
+	}
+}

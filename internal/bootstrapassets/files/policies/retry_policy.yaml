@@ -52,10 +52,12 @@ error_code_map:
   agent_unresponsive: conditional_limited
   container_oom_killed: conditional_limited
   tool_execution_failed: conditional_limited
+  idempotency_pending: conditional_limited
 
   invalid_output_schema: non_retryable
   policy_violation: non_retryable
   idempotency_conflict: non_retryable
+  idempotency_key_expired: non_retryable
   dependency_blocked: non_retryable
   llm_invalid_response: non_retryable
   provider_incomplete_turn: non_retryable

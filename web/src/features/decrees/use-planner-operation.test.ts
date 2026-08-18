@@ -22,6 +22,7 @@ function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningS
     project_root: "/tmp/project",
     model_selection: { model: "github-copilot/gpt-5.4" },
     ...overrides,
+    external_sources: overrides.external_sources ?? [],
   };
 }
 

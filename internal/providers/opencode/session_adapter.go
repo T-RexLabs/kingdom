@@ -188,12 +188,23 @@ type continuationTurnResult struct {
 	LastReason        stepFinishReasonEvidence
 	ProviderSessionID string
 	UpstreamErrorText string
+	Stderr            stderrCapture
+	WaitError         string
 }
 
 type startedOpencodeRun struct {
-	cmd    *exec.Cmd
-	stdout io.ReadCloser
-	stderr io.ReadCloser
+	cmd                    *exec.Cmd
+	stdout                 io.ReadCloser
+	stderr                 io.ReadCloser
+	releaseDatabaseStartup func()
+	releaseStartupOnce     sync.Once
+}
+
+func (r *startedOpencodeRun) databaseStartupObserved() {
+	if r == nil || r.releaseDatabaseStartup == nil {
+		return
+	}
+	r.releaseStartupOnce.Do(r.releaseDatabaseStartup)
 }
 
 const completionReceiptObservationGracePeriod = 750 * time.Millisecond
@@ -283,9 +294,10 @@ func executionResultForTimeout(timeoutErr error, providerSessionID string) attem
 	}).Result
 }
 
-func executionResultForProcessError(err error, providerSessionID, failureText string) attemptCompletionResult {
+func executionResultForProcessError(err error, providerSessionID, upstreamErrorText, failureText string) attemptCompletionResult {
 	return attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
 		ProviderSessionID: strings.TrimSpace(providerSessionID),
+		UpstreamErrorText: strings.TrimSpace(upstreamErrorText),
 		ProcessFailed:     true,
 		FailureText:       firstNonEmpty(strings.TrimSpace(failureText), strings.TrimSpace(errorString(err)), "opencode run failed"),
 	}).Result
@@ -473,7 +485,8 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	} else if a.workDir != "" {
 		cmd.Dir = a.workDir
 	}
-	cmd.Env = opencodeProcessEnvironment(opencodeCommandEnvironment(req, a.configDir, a.databasePath, a.inlineConfigContent))
+	databasePath := effectiveDatabasePath(req.DatabasePath, a.databasePath)
+	cmd.Env = opencodeProcessEnvironment(opencodeCommandEnvironment(req, a.configDir, databasePath, a.inlineConfigContent))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -483,10 +496,15 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	if err != nil {
 		return startedOpencodeRun{}, fmt.Errorf("open opencode stderr: %w", err)
 	}
+	releaseStartup, err := opencodeDatabaseStartupGates.acquire(ctx, databasePath)
+	if err != nil {
+		return startedOpencodeRun{}, fmt.Errorf("wait for opencode database startup: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
+		releaseStartup()
 		return startedOpencodeRun{}, fmt.Errorf("start opencode run: %w", err)
 	}
-	return startedOpencodeRun{cmd: cmd, stdout: stdout, stderr: stderr}, nil
+	return startedOpencodeRun{cmd: cmd, stdout: stdout, stderr: stderr, releaseDatabaseStartup: releaseStartup}, nil
 }
 
 func readStderrCapture(stream io.Reader) stderrCapture {
@@ -510,6 +528,26 @@ func readStderrCapture(stream io.Reader) stderrCapture {
 	capture.eofSeen = true
 	capture.raw = []byte(strings.Join(lines, "\n"))
 	return capture
+}
+
+func mergeStderrCapture(current, next stderrCapture) stderrCapture {
+	if len(next.raw) > 0 {
+		if len(current.raw) > 0 {
+			current.raw = append(current.raw, '\n')
+		}
+		current.raw = append(current.raw, next.raw...)
+	}
+	current.lineCount += next.lineCount
+	current.lastLineAt = firstNonEmpty(strings.TrimSpace(next.lastLineAt), strings.TrimSpace(current.lastLineAt))
+	current.eofSeen = current.eofSeen && next.eofSeen
+	if strings.TrimSpace(next.scannerError) != "" {
+		if strings.TrimSpace(current.scannerError) == "" {
+			current.scannerError = next.scannerError
+		} else {
+			current.scannerError += "; " + next.scannerError
+		}
+	}
+	return current
 }
 
 type completionReceiptFilePayload struct {
@@ -605,19 +643,27 @@ func configContentEnvironment(configContent string) []string {
 	return []string{"OPENCODE_CONFIG_CONTENT=" + trimmed}
 }
 
-func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, defaultDatabasePath string, defaultInlineConfigContent string) []string {
+func effectiveDatabasePath(requestDatabasePath, defaultDatabasePath string) string {
+	databasePath := strings.TrimSpace(requestDatabasePath)
+	if databasePath == "" {
+		databasePath = strings.TrimSpace(defaultDatabasePath)
+	}
+	return databasePath
+}
+
+func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, databasePath string, defaultInlineConfigContent string) []string {
 	env := completionReceiptEnvironment(req)
 	configDir := strings.TrimSpace(req.ConfigDir)
 	if configDir == "" {
 		configDir = strings.TrimSpace(defaultConfigDir)
 	}
-	databasePath := strings.TrimSpace(req.DatabasePath)
-	if databasePath == "" {
-		databasePath = strings.TrimSpace(defaultDatabasePath)
-	}
 	env = append(env, ConfigDirEnvironment(configDir)...)
 	env = append(env, DatabasePathEnvironment(databasePath)...)
-	return append(env, configContentEnvironment(defaultInlineConfigContent)...)
+	inlineConfigContent := strings.TrimSpace(req.InlineConfigContent)
+	if inlineConfigContent == "" {
+		inlineConfigContent = defaultInlineConfigContent
+	}
+	return append(env, configContentEnvironment(inlineConfigContent)...)
 }
 
 func loadCompletionReceipts(req ExecuteRequest) ([]completionReceiptFile, error) {
@@ -826,6 +872,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
+	defer startedRun.databaseStartupObserved()
 	cmd := startedRun.cmd
 	stdout := startedRun.stdout
 	stderr := startedRun.stderr
@@ -867,6 +914,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	terminalFailureSeen := false
 	conflictingTerminalEvidence := false
 	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+		startedRun.databaseStartupObserved()
 		now := time.Now().UTC()
 		diagnostics.EventCount++
 		if lastEventAt.IsZero() {
@@ -1079,11 +1127,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			})
 			return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
 		}
-		result := executionResultForProcessError(waitErr, actualSessionID, firstNonEmpty(stderrText, waitErr.Error()))
+		result := executionResultForProcessError(waitErr, actualSessionID, upstreamErrorText, firstNonEmpty(stderrText, waitErr.Error()))
 		result.OutputText = partialCombinedText
 		result.Tokens = accumulatedTokens
 		payload, _ := json.Marshal(map[string]any{
-			"error":                      firstNonEmpty(stderrText, waitErr.Error()),
+			"error":                      result.FailureText,
 			"stream_diagnostics":         diagnostics.toMap(),
 			"execution_path_diagnostics": execDiag.toMap(),
 		})
@@ -1200,6 +1248,16 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			})
 			continuationResult, continuationErr := a.executeContinuationTurn(attemptCtx, req, actualSessionID, invocationID)
 			continuationUsed = true
+			stderrSnapshot = mergeStderrCapture(stderrSnapshot, continuationResult.Stderr)
+			execDiag.StderrLineCount = stderrSnapshot.lineCount
+			execDiag.LastStderrLineAt = stderrSnapshot.lastLineAt
+			execDiag.StderrEOFSeen = stderrSnapshot.eofSeen
+			if strings.TrimSpace(continuationResult.WaitError) != "" {
+				execDiag.WaitError = strings.TrimSpace(continuationResult.WaitError)
+			}
+			if strings.TrimSpace(continuationResult.UpstreamErrorText) != "" {
+				execDiag.UpstreamErrorText = strings.TrimSpace(continuationResult.UpstreamErrorText)
+			}
 			if continuationResult.ProviderSessionID != "" {
 				actualSessionID = continuationResult.ProviderSessionID
 				a.bindActualSession(req.SessionID, actualSessionID)
@@ -1760,6 +1818,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	if err != nil {
 		return continuationTurnResult{}, err
 	}
+	defer startedRun.databaseStartupObserved()
 	cmd := startedRun.cmd
 	stdout := startedRun.stdout
 	stderr := startedRun.stderr
@@ -1788,6 +1847,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	providerSessionObserved := false
 
 	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		if strings.TrimSpace(event.SessionID) != "" {
 			result.ProviderSessionID = a.observeProviderSession(req, result.ProviderSessionID, event.SessionID, &providerSessionObserved)
@@ -1835,8 +1895,9 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		return result, fmt.Errorf("read opencode continuation stream: %w", err)
 	}
 
-	stderrRaw, _ := io.ReadAll(stderr)
+	result.Stderr = readStderrCapture(stderr)
 	if waitErr := cmd.Wait(); waitErr != nil {
+		result.WaitError = waitErr.Error()
 		if timeoutErr := watchdog.Err(); timeoutErr != nil {
 			return result, decorateTimeoutError(timeoutErr, streamDiagnostics{})
 		}
@@ -1846,11 +1907,8 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		if isExecutionTimedOut(waitErr) || isExecutionTimedOut(ctx.Err()) {
 			return result, context.DeadlineExceeded
 		}
-		trimmed := strings.TrimSpace(string(stderrRaw))
-		if trimmed == "" {
-			trimmed = waitErr.Error()
-		}
-		return result, fmt.Errorf("opencode continuation failed: %s", trimmed)
+		failureText := firstNonEmpty(strings.TrimSpace(result.UpstreamErrorText), strings.TrimSpace(string(result.Stderr.raw)), waitErr.Error())
+		return result, fmt.Errorf("opencode continuation failed: %s", failureText)
 	}
 	if timeoutErr := watchdog.Err(); timeoutErr != nil {
 		return result, decorateTimeoutError(timeoutErr, streamDiagnostics{})
@@ -1915,6 +1973,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
+	defer startedRun.databaseStartupObserved()
 	cmd := startedRun.cmd
 	stdout := startedRun.stdout
 	stderr := startedRun.stderr
@@ -1943,6 +2002,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 	providerSessionObserved := false
 
 	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		if strings.TrimSpace(event.SessionID) != "" {
 			result.ProviderSessionID = a.observeProviderSession(wrappedReq, result.ProviderSessionID, event.SessionID, &providerSessionObserved)
@@ -2013,7 +2073,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 		if trimmed == "" {
 			trimmed = waitErr.Error()
 		}
-		failedResult := executionResultForProcessError(waitErr, result.ProviderSessionID, trimmed)
+		failedResult := executionResultForProcessError(waitErr, result.ProviderSessionID, result.UpstreamErrorText, trimmed)
 		failedResult.OutputText = expectedFinalText
 		failedResult.Tokens = result.Tokens
 		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)
@@ -2023,7 +2083,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 		return executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID)), decorated
 	}
 	if strings.TrimSpace(result.UpstreamErrorText) != "" {
-		failedResult := executionResultForProcessError(errors.New(result.UpstreamErrorText), result.ProviderSessionID, result.UpstreamErrorText)
+		failedResult := executionResultForProcessError(errors.New(result.UpstreamErrorText), result.ProviderSessionID, result.UpstreamErrorText, "")
 		failedResult.OutputText = expectedFinalText
 		failedResult.Tokens = result.Tokens
 		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)

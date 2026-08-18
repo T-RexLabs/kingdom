@@ -20,20 +20,20 @@ func (s *PlanningStore) CreateSession(ctx context.Context, req CreatePlanningSes
 
 func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlanningSessionRequest) (PlanningSession, error) {
 	row := PlanningSession{
-		PlanningSessionID:        strings.TrimSpace(req.PlanningSessionID),
-		Title:                    strings.TrimSpace(req.Title),
-		TitleState:               strings.TrimSpace(req.TitleState),
-		LifecycleState:           req.LifecycleState,
-		ConversationState:        req.ConversationState,
-		ActiveLeafMessageID: nullableString(req.ActiveLeafMessageID),
-		CurrentOperationID:       nullableString(req.CurrentOperationID),
-		CurrentTitleOperationID:  nullableString(req.CurrentTitleOperationID),
-		CurrentDraftID:           nullableString(req.CurrentDraftID),
-		ContextSnapshotID:        nullableString(req.ContextSnapshotID),
-		ProjectRoot:              strings.TrimSpace(req.ProjectRoot),
-		ModelSelectionJSON:       strings.TrimSpace(req.ModelSelectionJSON),
-		CreatedAt:                strings.TrimSpace(req.CreatedAt),
-		UpdatedAt:                strings.TrimSpace(req.UpdatedAt),
+		PlanningSessionID:       strings.TrimSpace(req.PlanningSessionID),
+		Title:                   strings.TrimSpace(req.Title),
+		TitleState:              strings.TrimSpace(req.TitleState),
+		LifecycleState:          req.LifecycleState,
+		ConversationState:       req.ConversationState,
+		ActiveLeafMessageID:     nullableString(req.ActiveLeafMessageID),
+		CurrentOperationID:      nullableString(req.CurrentOperationID),
+		CurrentTitleOperationID: nullableString(req.CurrentTitleOperationID),
+		CurrentDraftID:          nullableString(req.CurrentDraftID),
+		ContextSnapshotID:       nullableString(req.ContextSnapshotID),
+		ProjectRoot:             strings.TrimSpace(req.ProjectRoot),
+		ModelSelectionJSON:      strings.TrimSpace(req.ModelSelectionJSON),
+		CreatedAt:               strings.TrimSpace(req.CreatedAt),
+		UpdatedAt:               strings.TrimSpace(req.UpdatedAt),
 	}
 	_, err := exec.ExecContext(ctx,
 		`INSERT INTO planning_sessions (
@@ -89,6 +89,18 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 	operation, err := insertPlanningOperation(ctx, tx, req.BootstrapOperation)
 	if err != nil {
 		return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", err)
+	}
+	if req.ExternalCapture != nil {
+		snapshot, _, captureErr := captureExternalIssueTx(ctx, tx, *req.ExternalCapture)
+		if captureErr != nil {
+			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", captureErr)
+		}
+		if linkErr := createExternalLinkTx(ctx, tx, req.ExternalLinkID, "planning_session", session.PlanningSessionID, snapshot.SourceID, snapshot.SnapshotID, req.ActorID, req.ExternalAdoptionID, session.CreatedAt); linkErr != nil {
+			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", linkErr)
+		}
+		if auditErr := appendExternalAudit(ctx, tx, req.ExternalAuditEventID, req.ExternalCapture.ConnectionID, snapshot.SourceID, "source.planning_intake", req.ActorID, map[string]any{"planning_session_id": session.PlanningSessionID, "link_id": req.ExternalLinkID, "snapshot_id": snapshot.SnapshotID}, session.CreatedAt); auditErr != nil {
+			return PlanningSession{}, PlanningOperation{}, rollbackPlanningTx(tx, "create planning session bundle", auditErr)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return PlanningSession{}, PlanningOperation{}, fmt.Errorf("commit create planning session bundle: %w", err)

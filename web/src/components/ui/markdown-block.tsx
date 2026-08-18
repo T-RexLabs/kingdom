@@ -23,14 +23,15 @@ const components = {
   ),
   a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
     <a
-      href={href}
+      href={safeMarkdownURL(href)}
       target="_blank"
-      rel="noreferrer"
+      rel="noopener noreferrer"
       className="font-medium text-gold underline underline-offset-4 transition-colors hover:text-gold/80"
     >
       {children}
     </a>
   ),
+  img: ({ alt }: { alt?: string }) => <span className="text-foreground-muted">[remote image blocked{alt ? `: ${alt}` : ""}]</span>,
   li: ({ children }: { children?: React.ReactNode }) => (
     <li className="mb-1">{children}</li>
   ),
@@ -71,6 +72,16 @@ const components = {
   ),
 };
 
+function safeMarkdownURL(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw, window.location.origin);
+    return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:" ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Shared markdown renderer used across the plan panel, decree panel,
  * and mailbox message viewer.  Keeps styling consistent everywhere.
@@ -90,7 +101,7 @@ export const MarkdownBlock = memo(function MarkdownBlock({
   }
   return (
     <div className={cn("text-wrap-anywhere", className)}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} components={components}>
         {content}
       </ReactMarkdown>
     </div>

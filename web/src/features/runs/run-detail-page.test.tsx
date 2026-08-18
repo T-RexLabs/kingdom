@@ -1571,7 +1571,7 @@ describe("run detail page", () => {
 
     expect(cancelMutateAsyncMock).toHaveBeenCalledWith({
       body: { reason: "manual cancellation from run detail" },
-      key: "idem-cancel-test",
+      key: expect.stringMatching(/^kd1\./),
     });
     expect(screen.queryByRole("dialog", { name: "Cancel run" })).not.toBeInTheDocument();
   });

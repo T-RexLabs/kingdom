@@ -339,6 +339,7 @@ func TestPlanningStoreActivatePlanningProviderInvocationOpensAndLinksOperation(t
 	}); err != nil {
 		t.Fatalf("create planning session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_activation")
 	operation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_activation",
 		PlanningSessionID:  "ps_activation",
@@ -438,6 +439,7 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 	}); err != nil {
 		t.Fatalf("create planning session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_planning_receipt")
 	operation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_planning_receipt",
 		PlanningSessionID:  "ps_planning_receipt",

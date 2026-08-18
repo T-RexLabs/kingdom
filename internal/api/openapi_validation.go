@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -24,25 +24,25 @@ func NewOpenAPIRequestValidator() (func(http.Handler) http.Handler, error) {
 
 	validatorOpts := &middleware.Options{
 		Options: openapi3filter.Options{
-			AuthenticationFunc: func(_ context.Context, input *openapi3filter.AuthenticationInput) error {
+			AuthenticationFunc: func(ctx context.Context, input *openapi3filter.AuthenticationInput) error {
 				if input == nil || input.SecurityScheme == nil || input.RequestValidationInput == nil || input.RequestValidationInput.Request == nil {
 					return fmt.Errorf("missing authentication context")
 				}
 
-				headerName := strings.TrimSpace(input.SecurityScheme.Name)
-				if headerName == "" {
-					return fmt.Errorf("security scheme header is not configured")
-				}
-
-				if strings.TrimSpace(input.RequestValidationInput.Request.Header.Get(headerName)) == "" {
-					return fmt.Errorf("missing %s header", headerName)
+				if _, ok := authenticatedPrincipal(ctx); !ok {
+					return fmt.Errorf("missing authenticated principal")
 				}
 
 				return nil
 			},
 		},
 		ErrorHandlerWithOpts: func(ctx context.Context, err error, w http.ResponseWriter, r *http.Request, opts middleware.ErrorHandlerOpts) {
-			code := validationErrorCodeForStatus(opts.StatusCode)
+			statusCode := opts.StatusCode
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				statusCode = http.StatusRequestEntityTooLarge
+			}
+			code := validationErrorCodeForStatus(statusCode)
 			correlationID := "openapi-validator"
 			if route := opts.MatchedRoute; route != nil && route.Route != nil {
 				correlationID = "openapi-validator:" + route.Route.Path
@@ -50,7 +50,7 @@ func NewOpenAPIRequestValidator() (func(http.Handler) http.Handler, error) {
 
 			writeCanonicalError(
 				w,
-				opts.StatusCode,
+				statusCode,
 				code,
 				err.Error(),
 				correlationID,

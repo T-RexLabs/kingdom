@@ -90,7 +90,7 @@ Run `kd init` from the root of the target project:
 kd init
 ```
 
-This creates Kingdom's local workspace under `.kingdom/` and installs Kingdom-managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/` in that project. Runtime startup validates those managed assets read-only and fails fast on drift instead of rewriting them.
+This creates Kingdom's local workspace under `.kingdom/`, a protected operator credential at `.kingdom/secrets/operator-token`, and Kingdom-managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`. Runtime startup validates those managed assets and secret permissions read-only and fails fast on drift instead of rewriting them. The credential value is never written to config, SQLite, logs, URLs, or browser storage.
 
 ### 4. Start the runtime
 
@@ -98,7 +98,11 @@ This creates Kingdom's local workspace under `.kingdom/` and installs Kingdom-ma
 kd summon
 ```
 
-Open `http://localhost:8080` (`http://127.0.0.1:8080`).
+Open `http://localhost:8080` or `http://127.0.0.1:8080`. A browser connecting directly through loopback establishes its local session automatically; there is no login or pairing step. The session is restart-scoped, expires after eight hours, uses an origin-scoped `HttpOnly`, `SameSite=Strict` cookie, and keeps its CSRF token in memory only. Session expiry closes active browser requests, including SSE streams, and the UI recovers transparently. Bearer-authenticated CLI and API calls are not bounded by browser-session expiry.
+
+Browser access is deliberately host-local. A browser reaching Kingdom through a LAN address or forwarding proxy cannot establish a session. Programmatic non-loopback access requires an HTTPS API URL and an explicitly supplied `--credential-file`; Kingdom never auto-discovers a credential for a remote server.
+
+Database backups do not include `.kingdom/secrets`; retain that directory separately or reinitialize/reprovision local credentials after restore. `kd clean` deletes the complete `.kingdom` tree, including local credentials, and reports that consequence explicitly.
 
 ### 5. Use Kingdom
 
@@ -115,6 +119,24 @@ Open `http://localhost:8080` (`http://127.0.0.1:8080`).
 > If `kd` is not found after `make install`, make sure `$(go env GOPATH)/bin` is on your `PATH`.
 > 
 > If OpenCode is missing or unavailable, Kingdom will fail to initialize the provider path or fail to load the model catalog.
+
+## GitHub Issue Connections
+
+Kingdom can start planning, attach additional issues to an active planning session, or prefill direct decree issuance from a GitHub App installation through three local setup paths.
+
+1. Fresh `kd init` configuration enables Kingdom's official public GitHub App automatically. Select **Connect GitHub**, enter the displayed device code on GitHub, install the App if needed, and choose one verified installation. The App uses device flow and expiring user tokens with exactly **Metadata: read-only** and **Issues: read-only**, and no events.
+2. Select **Create a private GitHub App** to use the preserved Manifest path and own a dedicated private App under a personal account or organization.
+3. Select **Use manual setup** for an existing private App.
+
+For manual setup, save display name, App ID, client ID, and installation ID, then provision the key from the initialized workspace host. Kingdom discovers and pins the slug during the first successful health check:
+
+   ```bash
+   kd connections github key provision --connection-id <connection-id> --from ./private-key.pem
+   ```
+
+Run the connection health check after manual provisioning or any key rotation. The check requires the App and installation to grant exactly **Metadata: read-only** and **Issues: read-only**, with zero subscribed events and no additional App permissions. Healthy connections become available in the shared issue picker on planning and direct-decree screens.
+
+Private keys remain in `.kingdom/secrets/github-apps/`; shared user tokens remain in protected local files under `.kingdom/secrets/github-user-tokens/`. Tokens never enter SQLite, logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect**. The picker paginates repositories/issues and renders selected bounded comment bodies through restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
 
 ## How Work Moves Through Kingdom
 
@@ -218,6 +240,8 @@ make verify
 `make verify` runs the main verification sweep:
 
 - `make test`
+- `make test-web`
+- `make lint-web`
 - `make test-race`
 - `make vet`
 - `make coverage-core`
@@ -284,7 +308,7 @@ That scaffold includes:
 - logs
 - runtime control files
 
-`kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. Use `kd summon --listen <host:port>` for a full runtime-only address override, or `kd summon --host <host>` and `kd summon --port <port>` for symmetric partial overrides. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
+`kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. Use `kd summon --listen <host:port>` for a full runtime-only address override, or `kd summon --host <host>` and `kd summon --port <port>` for symmetric partial overrides. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Standalone and installed servers bound request headers and bodies with 5-second header, 15-second read, and 60-second idle timeouts; response writes remain unbounded so authenticated SSE streams stay connected. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
 
 Use `kd clean` to remove the local `.kingdom/` scaffold before re-initializing from a clean state.
 
@@ -300,6 +324,8 @@ When the migration baseline changes, `kd clean` followed by `kd init` is the sup
 | `make build` | Build the local `kd` binary into `bin/` |
 | `make dev-web` | Start the web UI in Vite dev mode |
 | `make test` | Run `go test ./...` |
+| `make test-web` | Run the frontend unit tests |
+| `make lint-web` | Run frontend ESLint with zero warnings allowed |
 | `make test-race` | Run targeted race-enabled tests |
 | `make vet` | Run `go vet ./...` |
 | `make verify` | Run the main verification sweep |
@@ -358,5 +384,6 @@ Start here when you want more detail:
 | `address already in use` | Free port `8080` or change `server.listen` |
 | `initialize opencode session adapter` | Install `opencode` or set `provider.binary_path` |
 | `model_selection.global.model is required` | Choose a model in the UI or pass `--global-model` |
-| `GET /api/v1/health` returns `401` | Include `X-Actor-Id` and `X-Role-Id` |
+| `GET /api/v1/health` returns `401` | Run `kd` from the initialized workspace so it discovers the bearer credential, or pass `--credential-file` explicitly; actor/role headers are not supported |
+| GitHub request returns `424` with `provider_failure_class=revoked` | Reconnect the GitHub connection, then run its health check; the local browser session remains valid |
 | `git_worktree` publish failure | Confirm `git` exists and the project root is a valid non-bare worktree |

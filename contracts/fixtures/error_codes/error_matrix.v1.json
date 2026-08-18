@@ -140,6 +140,20 @@
       "retry_class": "non_retryable",
       "retryable": false,
       "escalation_target": "chancellor"
+    },
+    {
+      "code": "idempotency_key_expired",
+      "category": "control_plane",
+      "retry_class": "non_retryable",
+      "retryable": false,
+      "escalation_target": "chancellor"
+    },
+    {
+      "code": "idempotency_pending",
+      "category": "control_plane",
+      "retry_class": "conditional_limited",
+      "retryable": true,
+      "escalation_target": "chancellor"
     }
   ]
 }

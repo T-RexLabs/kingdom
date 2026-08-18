@@ -155,7 +155,7 @@ describe("governance actions visibility", () => {
 
     expect(finalApprovalState.mutateAsync).toHaveBeenCalledWith({
       body: { action: "confirm" },
-      key: "idem-final-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 

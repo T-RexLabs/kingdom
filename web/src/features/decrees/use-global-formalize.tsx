@@ -1,25 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePlanningOperation } from "@/api/hooks";
 import { useNotifications } from "@/components/notifications";
 import { router } from "@/router";
+import { GlobalFormalizeContext, useGlobalFormalize, type FormalizeEntry } from "./global-formalize-context";
 import { isPlannerOperationTerminal, type PlannerOperationState } from "./planner-operation-controller";
 import { usePlannerOperation } from "./use-planner-operation";
 
 const STORAGE_KEY = "kingdom:pending-formalize";
-
-type FormalizeEntry = {
-  sessionId: string;
-  operationId: string;
-  sessionTitle: string;
-};
-
-type GlobalFormalizeContextValue = {
-  current: FormalizeEntry | null;
-  trackFormalize: (sessionId: string, operationId: string, sessionTitle: string) => void;
-  clearFormalize: () => void;
-};
-
-const GlobalFormalizeContext = createContext<GlobalFormalizeContextValue | null>(null);
 
 function readStorage(): FormalizeEntry | null {
   try {
@@ -97,12 +84,6 @@ export function GlobalFormalizeProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useGlobalFormalize() {
-  const ctx = useContext(GlobalFormalizeContext);
-  if (!ctx) throw new Error("useGlobalFormalize must be used within GlobalFormalizeProvider");
-  return ctx;
-}
-
 /**
  * Pure orchestrator: reads `current` from the public context, takes
  * `streamed` as a prop, runs the latch + addNotification on terminal.
@@ -122,6 +103,10 @@ export function FormalizeNotifier({ streamed }: { streamed: PlannerOperationStat
   const { current, clearFormalize } = useGlobalFormalize();
   const { addNotification } = useNotifications();
   const terminalHandledRef = useRef<string | null>(null);
+  const dismissTimerRef = useRef<{
+    operationId: string;
+    timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
 
   // Reset the latch whenever the tracked operation changes (or
   // clears entirely). Op IDs are server-issued and never collide,
@@ -130,70 +115,82 @@ export function FormalizeNotifier({ streamed }: { streamed: PlannerOperationStat
   // lifecycle easier to reason about and shields against any
   // future ID source change.
   useEffect(() => {
+    const scheduledDismiss = dismissTimerRef.current;
+    if (scheduledDismiss && scheduledDismiss.operationId !== current?.operationId) {
+      clearTimeout(scheduledDismiss.timer);
+      dismissTimerRef.current = null;
+    }
     if (terminalHandledRef.current && terminalHandledRef.current !== current?.operationId) {
       terminalHandledRef.current = null;
     }
   }, [current?.operationId]);
 
+  useEffect(() => () => {
+    if (dismissTimerRef.current) {
+      clearTimeout(dismissTimerRef.current.timer);
+      dismissTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!current || !streamed) return;
     if (streamed.operationId !== current.operationId) return;
-    if (terminalHandledRef.current === current.operationId) return;
     if (!isPlannerOperationTerminal(streamed.status)) return;
 
-    terminalHandledRef.current = current.operationId;
-
-    let dismissDelay = 5000;
-    if (streamed.status === "done") {
-      addNotification({
-        id: notificationId(current.operationId),
-        title: "Plan Ready",
-        message: current.sessionTitle || undefined,
-        status: "success",
-        autoDismissMs: 4000,
-        action: {
-          label: "View Plan",
-          onClick: () => {
-            void router.navigate({
-              to: "/decrees/planning/$sessionId",
-              params: { sessionId: current.sessionId },
-              search: { show_plan: true },
-            });
+    const dismissDelay = streamed.status === "error" ? 9000 : 5000;
+    if (terminalHandledRef.current !== current.operationId) {
+      terminalHandledRef.current = current.operationId;
+      if (streamed.status === "done") {
+        addNotification({
+          id: notificationId(current.operationId),
+          title: "Plan Ready",
+          message: current.sessionTitle || undefined,
+          status: "success",
+          autoDismissMs: 4000,
+          action: {
+            label: "View Plan",
+            onClick: () => {
+              void router.navigate({
+                to: "/decrees/planning/$sessionId",
+                params: { sessionId: current.sessionId },
+                search: { show_plan: true },
+              });
+            },
           },
-        },
-      });
-    } else if (streamed.status === "cancelled") {
-      addNotification({
-        id: notificationId(current.operationId),
-        title: "Plan Generation Cancelled",
-        message: streamed.error ?? "Server restarted before the plan finished generating.",
-        status: "info",
-        autoDismissMs: 4000,
-      });
-    } else {
-      // status === "error"
-      addNotification({
-        id: notificationId(current.operationId),
-        title: "Plan Failed",
-        message: streamed.error ?? "An error occurred",
-        status: "error",
-        autoDismissMs: 8000,
-      });
-      dismissDelay = 9000;
+        });
+      } else if (streamed.status === "cancelled") {
+        addNotification({
+          id: notificationId(current.operationId),
+          title: "Plan Generation Cancelled",
+          message: streamed.error ?? "Server restarted before the plan finished generating.",
+          status: "info",
+          autoDismissMs: 4000,
+        });
+      } else {
+        addNotification({
+          id: notificationId(current.operationId),
+          title: "Plan Failed",
+          message: streamed.error ?? "An error occurred",
+          status: "error",
+          autoDismissMs: 8000,
+        });
+      }
+
+      // Clear persisted terminal work immediately so rehydration cannot duplicate the toast.
+      clearStorage();
     }
 
-    // Eager storage clear (refresh-safety): without this, a refresh
-    // during the dismiss window would re-mount the Provider, read
-    // sessionStorage, and re-fire the terminal effect → duplicate
-    // toast on every refresh until dismissDelay elapsed.
-    clearStorage();
-
-    // Delayed entry clear via the existing public clearFormalize.
-    // By dismissDelay elapsed, the toast has auto-faded; clearFormalize
-    // calls removeNotification (idempotent on missing id), setEntry(null),
-    // and clearStorage (idempotent on already-empty storage).
-    const t = setTimeout(() => clearFormalize(), dismissDelay);
-    return () => clearTimeout(t);
+    const operationId = current.operationId;
+    if (dismissTimerRef.current?.operationId === operationId) return;
+    if (dismissTimerRef.current) {
+      clearTimeout(dismissTimerRef.current.timer);
+    }
+    const timer = setTimeout(() => {
+      if (dismissTimerRef.current?.timer !== timer) return;
+      dismissTimerRef.current = null;
+      clearFormalize();
+    }, dismissDelay);
+    dismissTimerRef.current = { operationId, timer };
   }, [current, streamed, addNotification, clearFormalize]);
 
   return null;

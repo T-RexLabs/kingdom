@@ -8,13 +8,18 @@ import { FormalizeNotifierMount, GlobalFormalizeProvider } from "@/features/decr
 import { RunsCollectionEventStreamMount } from "@/features/runs/use-runs-collection-event-stream";
 import { SCENE_ROOT_ID } from "@/lib/overlay-system";
 import { router } from "./router";
+import { LocalSessionBoundary } from "@/features/local-session/local-session-boundary";
+import { shouldRetryApiMutation, shouldRetryApiQuery } from "@/api/client";
 import "./index.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 2_000,
-      retry: 1,
+      retry: (failureCount, error) => shouldRetryApiQuery(failureCount, error, 1),
+    },
+    mutations: {
+      retry: (failureCount, error) => shouldRetryApiMutation(failureCount, error, 2),
     },
   },
 });
@@ -24,7 +29,7 @@ createRoot(document.getElementById(SCENE_ROOT_ID)!).render(
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <NotificationProvider>
-          <GlobalFormalizeProvider>
+          <LocalSessionBoundary><GlobalFormalizeProvider>
             {/* Headless side-effect component: subscribes to the
                 tracked formalize operation's stream and fires the
                 terminal toast (Plan Ready / Plan Failed / Plan
@@ -41,7 +46,7 @@ createRoot(document.getElementById(SCENE_ROOT_ID)!).render(
             >
               <RouterProvider router={router} />
             </Suspense>
-          </GlobalFormalizeProvider>
+          </GlobalFormalizeProvider></LocalSessionBoundary>
         </NotificationProvider>
       </QueryClientProvider>
     </ErrorBoundary>

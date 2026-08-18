@@ -119,6 +119,7 @@ export function useUpdatePlanningSessionTitle(sessionId: string) {
         title_state: updated.title_state,
       });
     },
+    sessionId,
   );
 }
 
@@ -128,6 +129,7 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
     {
       modelSelection: UpdatePlanningSessionRequest["model_selection"];
       key: string;
+      editGeneration?: number;
     },
     PlanningSessionDetail
   >(
@@ -143,6 +145,7 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
         model_selection: updated.model_selection,
       });
     },
+    sessionId,
   );
 }
 

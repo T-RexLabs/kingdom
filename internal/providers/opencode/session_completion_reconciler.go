@@ -168,6 +168,11 @@ func (e cliSessionExporter) Export(ctx context.Context, req sessionExportRequest
 	var stderr bytes.Buffer
 	cmd.Stdout = stdoutFile
 	cmd.Stderr = &stderr
+	releaseStartup, err := opencodeDatabaseStartupGates.acquire(ctx, req.DatabasePath)
+	if err != nil {
+		return sessionExportResult{}, fmt.Errorf("wait for opencode database startup: %w", err)
+	}
+	defer releaseStartup()
 	err = cmd.Run()
 	if _, seekErr := stdoutFile.Seek(0, 0); seekErr != nil {
 		return sessionExportResult{}, fmt.Errorf("rewind temp export file: %w", seekErr)

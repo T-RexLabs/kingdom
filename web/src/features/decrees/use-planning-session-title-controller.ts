@@ -1,5 +1,5 @@
 import type { PlanningSessionDetail } from "@/api/hooks";
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useReducer, useRef } from "react";
 import { getCanonicalPlanningSessionTitle } from "./planning-session-title";
 
 /**
@@ -143,19 +143,14 @@ export function usePlanningSessionTitleController({
   const canonicalTitle = useMemo(() => getCanonicalPlanningSessionTitle(session), [session]);
   const revealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // We need to seed `draft` from canonicalTitle on session change but must
-  // NOT re-run the reset effect when canonicalTitle changes (e.g. because
-  // an autosave succeeded mid-edit). Read it via a ref so the reset effect
-  // depends only on sessionId.
-  const canonicalRef = useRef(canonicalTitle);
-  canonicalRef.current = canonicalTitle;
+  const resetForSession = useEffectEvent(() => {
+    dispatch({ type: "session_changed", sessionId, canonical: canonicalTitle });
+  });
 
-  // Reset everything when the session id changes. canonicalTitle is read
-  // through canonicalRef so a successful autosave that updates canonical
-  // mid-edit does not trigger this reset and clobber the user's edit
-  // session.
+  // Reset only when the session id changes. The effect event reads the latest
+  // canonical title without making title updates restart the edit session.
   useEffect(() => {
-    dispatch({ type: "session_changed", sessionId, canonical: canonicalRef.current });
+    resetForSession();
   }, [sessionId]);
 
   // Mirror the canonical title into the draft when not editing — keeps the

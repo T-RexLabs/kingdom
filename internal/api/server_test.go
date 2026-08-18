@@ -27,8 +27,6 @@ func TestServerRejectsUnknownFields(t *testing.T) {
 			"decree_text":  "Text",
 			"unexpected":   true,
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-unknown-fields",
 	})
 
@@ -68,8 +66,6 @@ func TestServerWaiverEndpointRemoved(t *testing.T) {
 			"target_gate": "functional_validation",
 			"reason":      "attempted by non-king",
 		},
-		actorID:        "actor-2",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-waiver-forbidden",
 	})
 
@@ -102,11 +98,12 @@ func TestNewHandlerRespectsStartupContextCancellation(t *testing.T) {
 	cancel()
 
 	_, err := NewHandler(ServerConfig{
-		DB:             openAPIServerTestDB(t),
-		ProjectRoot:    t.TempDir(),
-		PlannerAgent:   &testPlannerAgent{},
-		ProviderEngine: "opencode",
-		StartupContext: startupCtx,
+		DB:                 openAPIServerTestDB(t),
+		ProjectRoot:        t.TempDir(),
+		PlannerAgent:       &testPlannerAgent{},
+		ProviderEngine:     "opencode",
+		StartupContext:     startupCtx,
+		OperatorCredential: []byte(apiTestOperatorCredential),
 	})
 	if err == nil {
 		t.Fatal("expected handler bootstrap to fail when startup context is cancelled")
@@ -121,10 +118,11 @@ func TestNewHandlerWithCustomPlannerAgentDoesNotWriteManagedOpenCodeAssets(t *te
 
 	projectRoot := t.TempDir()
 	_, err := NewHandler(ServerConfig{
-		DB:             openAPIServerTestDB(t),
-		ProjectRoot:    projectRoot,
-		PlannerAgent:   &testPlannerAgent{},
-		ProviderEngine: "opencode",
+		DB:                 openAPIServerTestDB(t),
+		ProjectRoot:        projectRoot,
+		PlannerAgent:       &testPlannerAgent{},
+		ProviderEngine:     "opencode",
+		OperatorCredential: []byte(apiTestOperatorCredential),
 	})
 	if err != nil {
 		t.Fatalf("new handler with custom planner agent: %v", err)
@@ -143,6 +141,7 @@ func TestNewHandlerFailsWhenManagedPlannerAssetsAreMissing(t *testing.T) {
 		ProjectRoot:        projectRoot,
 		ProviderEngine:     "opencode",
 		OpenCodeBinaryPath: filepath.Join(projectRoot, "missing-opencode"),
+		OperatorCredential: []byte(apiTestOperatorCredential),
 	})
 	if err == nil {
 		t.Fatal("expected handler bootstrap to fail when managed planner assets are missing")
@@ -166,10 +165,8 @@ func TestServerListProviderModels(t *testing.T) {
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/provider/models",
-		actorID: "actor-1",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/provider/models",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected provider models 200, got %d (%s)", res.Code, res.Body.String())
@@ -200,10 +197,8 @@ func TestServerListProviderModelsReturnsUnavailablePayloadWhenCatalogFails(t *te
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/provider/models",
-		actorID: "actor-1",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/provider/models",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected provider models 200, got %d (%s)", res.Code, res.Body.String())
@@ -240,10 +235,8 @@ func TestServerListProviderModelsReturnsStaleCachedModelsWhenCatalogRefreshFails
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog, Now: func() time.Time { return now }})
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/provider/models",
-		actorID: "actor-1",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/provider/models",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected provider models 200, got %d (%s)", res.Code, res.Body.String())
@@ -267,10 +260,8 @@ func TestServerGetWorkspaceCapabilitiesReportsUnavailableGitWorktree(t *testing.
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot, DefaultPublishMode: "git_worktree"})
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/workspace-capabilities",
-		actorID: "actor-1",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/workspace-capabilities",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected workspace capabilities 200, got %d (%s)", res.Code, res.Body.String())
@@ -306,35 +297,35 @@ func TestServerAllMVPEndpointsSmoke(t *testing.T) {
 	seedTimelineEvents(t, db, runID)
 	seedArtifact(t, db, runID)
 
-	graphRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/graph", actorID: "actor-1", roleID: "chancellor"})
+	graphRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/graph"})
 	if graphRes.Code != http.StatusOK {
 		t.Fatalf("graph endpoint expected 200, got %d", graphRes.Code)
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	retryRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/nodes/kickoff/retry", actorID: "actor-1", roleID: "chancellor", idempotencyKey: "idem-retry", body: map[string]any{"reason": "retry"}})
+	retryRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/nodes/kickoff/retry", idempotencyKey: "idem-retry", body: map[string]any{"reason": "retry"}})
 	if retryRes.Code != http.StatusAccepted {
 		t.Fatalf("retry endpoint expected 202, got %d", retryRes.Code)
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	rerunRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/rerun-from/kickoff", actorID: "actor-1", roleID: "chancellor", idempotencyKey: "idem-rerun", body: map[string]any{"reason": "rerun"}})
+	rerunRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/rerun-from/kickoff", idempotencyKey: "idem-rerun", body: map[string]any{"reason": "rerun"}})
 	if rerunRes.Code != http.StatusAccepted {
 		t.Fatalf("rerun endpoint expected 202, got %d", rerunRes.Code)
 	}
 
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'awaiting_human_confirmation', autonomous_approvals = 0 WHERE run_id = ?`, runID)
-	finalRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/final-approval", actorID: "god-smoke", roleID: "allfather", idempotencyKey: "idem-final", body: map[string]any{"action": "confirm", "reason": "smoke approval"}})
+	finalRes := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/runs/" + runID + "/final-approval", idempotencyKey: "idem-final", body: map[string]any{"action": "confirm", "reason": "smoke approval"}})
 	if finalRes.Code != http.StatusCreated {
 		t.Fatalf("final approval endpoint expected 201, got %d", finalRes.Code)
 	}
 
-	artifactRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-1", actorID: "actor-1", roleID: "chancellor"})
+	artifactRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-1"})
 	if artifactRes.Code != http.StatusOK {
 		t.Fatalf("artifact endpoint expected 200, got %d", artifactRes.Code)
 	}
 
-	streamRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/events/stream?run_id=" + runID, actorID: "actor-1", roleID: "chancellor"})
+	streamRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/events/stream?run_id=" + runID})
 	if streamRes.Code != http.StatusOK {
 		t.Fatalf("stream endpoint expected 200, got %d", streamRes.Code)
 	}
@@ -353,7 +344,7 @@ func TestServerListAgentsReturnsAllRegisteredAgents(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-chancellor-1', 'chancellor', 'Chancellor', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-1', 'council-member', 'Council', 'offline', 'agent-chancellor-1', 1, ?, ?)`, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/agents", actorID: "actor-1", roleID: "king"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/agents"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -397,7 +388,7 @@ func TestServerListAgentsReturnsEmptyWhenNoneExist(t *testing.T) {
 
 	handler, _ := newAPIServerForTest(t)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/agents", actorID: "actor-1", roleID: "king"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/agents"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}

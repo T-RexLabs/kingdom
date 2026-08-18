@@ -28,8 +28,6 @@ func TestServerRuntimeMetricsEndpointReportsRunningAndStaleNodes(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/metrics/runtime",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -72,8 +70,6 @@ func seedMetricsRun(t *testing.T, handler http.Handler, suffix string, title str
 			"decree_title": title,
 			"decree_text":  "Seed text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: fmt.Sprintf("idem-metrics-decree-%s", suffix),
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -99,8 +95,6 @@ func seedMetricsRun(t *testing.T, handler http.Handler, suffix string, title str
 				"edges":       []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: fmt.Sprintf("idem-metrics-workflow-%s", suffix),
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -115,8 +109,6 @@ func seedMetricsRun(t *testing.T, handler http.Handler, suffix string, title str
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: fmt.Sprintf("idem-metrics-run-%s", suffix),
 	})
 	if runRes.Code != http.StatusCreated {
@@ -165,8 +157,6 @@ func TestServerDashboardSnapshotAggregatesCurrentStatusAndWindowMetrics(t *testi
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/dashboard/snapshot",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -237,8 +227,6 @@ func TestServerDashboardSnapshotTrendUsesExact24HourWindow(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/dashboard/snapshot",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -282,8 +270,6 @@ func TestServerDashboardSnapshotUsesSnapshotTimestampForRuntimeStaleCutoff(t *te
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/dashboard/snapshot",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -329,8 +315,6 @@ func TestServerRealmAnalyticsSnapshotSupportsWindowScopedAggregates(t *testing.T
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/realm-analytics/snapshot?window_minutes=90",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -411,8 +395,6 @@ func TestServerRealmAnalyticsExecutionDetailSnapshotSupportsWindowAndSelectedRun
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -459,8 +441,6 @@ func TestServerRealmAnalyticsExecutionDetailSnapshotReturnsNotFoundForUnknownRun
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=run_missing",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d (%s)", res.Code, res.Body.String())

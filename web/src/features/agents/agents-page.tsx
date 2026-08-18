@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { createElement, useMemo } from "react";
 import { useAgents, usePendingGovernanceRuns, useRoles, useRuns, type RunAgent, type Role } from "@/api/hooks";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -232,7 +232,6 @@ function AgentList({
 function RoleGroupCard({ group }: { group: RoleGroup }) {
   const { roleId, roleName, roleDescription, agents } = group;
   const hasAgents = agents.length > 0;
-  const Icon = getRoleIcon(roleId);
   const hasBusyAgent = agents.some((a) => a.status === "busy");
 
   const roleStatusCounts = useMemo(() => {
@@ -265,13 +264,13 @@ function RoleGroupCard({ group }: { group: RoleGroup }) {
         <div className="space-y-1 px-3 py-2.5">
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
-              <Icon
-                className={cn(
+              {createElement(getRoleIcon(roleId), {
+                className: cn(
                   "h-4 w-4 shrink-0",
                   hasAgents ? getRoleColor(roleId) : "text-foreground-subtle",
                   hasBusyAgent && "animate-glow-pulse",
-                )}
-              />
+                ),
+              })}
               <h3
                 className={cn(
                   "truncate text-sm font-semibold",

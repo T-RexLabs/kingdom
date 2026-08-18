@@ -11,30 +11,30 @@ import (
 	"kingdom/internal/acp"
 )
 
-func normalizePlanningOperationAcpRunID(operationID, acpRunID string) string {
-	trimmedOperationID := strings.TrimSpace(operationID)
-	trimmedRunID := strings.TrimSpace(acpRunID)
-	canonical := strings.TrimSpace(acp.PlannerRunID(trimmedOperationID))
-	if canonical == "" {
-		return trimmedRunID
-	}
-	if trimmedRunID == "" || trimmedRunID == trimmedOperationID {
-		return canonical
-	}
-	return trimmedRunID
-}
-
 func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningOperationRequest) (PlanningOperation, error) {
 	if err := validatePlanningOperationCreate(req); err != nil {
 		return PlanningOperation{}, err
 	}
-	return insertPlanningOperation(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, fmt.Errorf("begin create planning operation: %w", err)
+	}
+	operation, err := insertPlanningOperation(ctx, tx, req)
+	if err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning operation", err)
+	}
+	if err := bindPlanningOperationExternalContext(ctx, tx, operation); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning operation", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, fmt.Errorf("commit create planning operation: %w", err)
+	}
+	return operation, nil
 }
 
 func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePlanningOperationRequest) (PlanningOperation, error) {
 	row := PlanningOperation{
 		OperationID:                strings.TrimSpace(req.OperationID),
-		AcpRunID:                   strings.TrimSpace(req.AcpRunID),
 		PlanningSessionID:          strings.TrimSpace(req.PlanningSessionID),
 		Type:                       req.Type,
 		Status:                     req.Status,
@@ -53,13 +53,35 @@ func insertPlanningOperation(ctx context.Context, exec sqlExecutor, req CreatePl
 		StartedAt:                  nullableString(req.StartedAt),
 		FinishedAt:                 nullableString(req.FinishedAt),
 	}
-	row.AcpRunID = normalizePlanningOperationAcpRunID(row.OperationID, row.AcpRunID)
+	row.AcpRunID = acp.PlannerRunID(row.OperationID)
+	if row.Type != PlanningOperationTypeBootstrapContext {
+		queryer, ok := exec.(sqlQueryRower)
+		if !ok {
+			return PlanningOperation{}, fmt.Errorf("planning operation context binding requires QueryRow")
+		}
+		var snapshotID sql.NullString
+		if err := queryer.QueryRowContext(ctx, `
+			SELECT session.context_snapshot_id
+			FROM planning_sessions session
+			LEFT JOIN planning_context_snapshots snapshot
+			  ON snapshot.planning_context_snapshot_id=session.context_snapshot_id
+			 AND snapshot.planning_session_id=session.planning_session_id
+			WHERE session.planning_session_id=?
+			  AND snapshot.planning_context_snapshot_id IS NOT NULL`, row.PlanningSessionID).Scan(&snapshotID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return PlanningOperation{}, fmt.Errorf("planning session %q has no active context snapshot", row.PlanningSessionID)
+			}
+			return PlanningOperation{}, fmt.Errorf("bind planning operation context snapshot: %w", err)
+		}
+		row.PlanningContextSnapshotID = nullableString(snapshotID.String)
+	}
 	_, err := exec.ExecContext(ctx,
-		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.OperationID,
 		row.AcpRunID,
 		row.PlanningSessionID,
+		nullableStringValue(row.PlanningContextSnapshotID),
 		row.Type,
 		row.Status,
 		row.RequestPayloadJSON,
@@ -124,6 +146,9 @@ func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlannin
 		}
 		return PlanningOperation{}, rollbackErr
 	}
+	if err := bindPlanningOperationExternalContext(ctx, tx, operation); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
+	}
 	if req.InitialEvent != nil {
 		if _, err := insertPlanningOperationEvent(ctx, tx, *req.InitialEvent); err != nil {
 			return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
@@ -178,6 +203,9 @@ func (s *PlanningStore) CreateFormalizeBundle(ctx context.Context, req CreatePla
 		}
 		return PlanningOperation{}, rollbackErr
 	}
+	if err := bindPlanningOperationExternalContext(ctx, tx, operation); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning formalize bundle", err)
+	}
 	if req.InitialEvent != nil {
 		if _, err := insertPlanningOperationEvent(ctx, tx, *req.InitialEvent); err != nil {
 			return PlanningOperation{}, rollbackPlanningTx(tx, "create planning formalize bundle", err)
@@ -224,6 +252,9 @@ func (s *PlanningStore) CreateGenerateTitleBundle(ctx context.Context, req Creat
 			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
 		}
 		return PlanningOperation{}, rollbackErr
+	}
+	if err := bindPlanningOperationExternalContext(ctx, tx, operation); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning generate title bundle", err)
 	}
 	if req.InitialEvent != nil {
 		if _, err := insertPlanningOperationEvent(ctx, tx, *req.InitialEvent); err != nil {
@@ -274,6 +305,9 @@ func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRe
 			return PlanningOperation{}, errors.Join(ErrPlanningUniqueViolation, rollbackErr)
 		}
 		return PlanningOperation{}, rollbackErr
+	}
+	if err := bindPlanningOperationExternalContext(ctx, tx, operation); err != nil {
+		return PlanningOperation{}, rollbackPlanningTx(tx, "create regenerate bundle", err)
 	}
 	if req.InitialEvent != nil {
 		if _, err := insertPlanningOperationEvent(ctx, tx, *req.InitialEvent); err != nil {
@@ -915,7 +949,7 @@ func (s *PlanningStore) GetOperationByAcpRunID(ctx context.Context, acpRunID str
 func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID string) (PlanningOperation, bool, error) {
 	var row PlanningOperation
 	err := scanPlanningOperation(query.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations WHERE operation_id = ?`,
 		strings.TrimSpace(operationID),
 	), &row)
@@ -930,12 +964,10 @@ func getPlanningOperation(ctx context.Context, query sqlQueryRower, operationID 
 
 func getPlanningOperationByAcpRunID(ctx context.Context, query sqlQueryRower, acpRunID string) (PlanningOperation, bool, error) {
 	var row PlanningOperation
-	trimmedRunID := strings.TrimSpace(acpRunID)
 	err := scanPlanningOperation(query.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
-		 FROM planning_operations WHERE acp_run_id = ? OR operation_id = ?`,
-		trimmedRunID,
-		trimmedRunID,
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		 FROM planning_operations WHERE acp_run_id = ?`,
+		strings.TrimSpace(acpRunID),
 	), &row)
 	if err == sql.ErrNoRows {
 		return PlanningOperation{}, false, nil
@@ -951,7 +983,7 @@ func (s *PlanningStore) ListSessionOperations(ctx context.Context, planningSessi
 		limit = DefaultPlanningOperationListLimit
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ?
 		 ORDER BY created_at DESC, operation_id DESC
@@ -984,7 +1016,7 @@ func (s *PlanningStore) GetLatestOperationByResultRef(ctx context.Context, plann
 	}
 	var row PlanningOperation
 	err := scanPlanningOperation(s.db.QueryRowContext(ctx,
-		`SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+		`SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ? AND result_ref = ?
 		 ORDER BY created_at DESC, operation_id DESC
@@ -1029,7 +1061,7 @@ func (s *PlanningStore) ListLatestOperationsByResultRefs(ctx context.Context, pl
 		placeholders = append(placeholders, "?")
 		args = append(args, resultRef)
 	}
-	query := `SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE planning_session_id = ? AND result_ref IN (` + strings.Join(placeholders, ",") + `)
 		 ORDER BY created_at DESC, operation_id DESC`
@@ -1084,7 +1116,7 @@ func (s *PlanningStore) ListOperationsByStatusPage(ctx context.Context, afterCre
 		args = append(args, status)
 	}
 	args = append(args, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterCreatedAt, trimmedAfterOperationID, limit)
-	query := `SELECT operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
+	query := `SELECT operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at
 		 FROM planning_operations
 		 WHERE status IN (` + strings.Join(placeholders, ", ") + `)
 		   AND (? = '' OR created_at > ? OR (created_at = ? AND operation_id > ?))
@@ -1181,6 +1213,7 @@ func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, 
 }
 
 func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
+	var planningContextSnapshotID sql.NullString
 	var leaseExpiresAt sql.NullString
 	var lastHeartbeatAt sql.NullString
 	var providerSessionID sql.NullString
@@ -1196,6 +1229,7 @@ func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
 		&dest.OperationID,
 		&dest.AcpRunID,
 		&dest.PlanningSessionID,
+		&planningContextSnapshotID,
 		&dest.Type,
 		&dest.Status,
 		&dest.RequestPayloadJSON,
@@ -1215,8 +1249,7 @@ func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
 	); err != nil {
 		return err
 	}
-	dest.AcpRunID = normalizePlanningOperationAcpRunID(dest.OperationID, dest.AcpRunID)
-
+	dest.PlanningContextSnapshotID = nullableStringFromSQL(planningContextSnapshotID)
 	dest.LeaseExpiresAt = nullableStringFromSQL(leaseExpiresAt)
 	dest.LastHeartbeatAt = nullableStringFromSQL(lastHeartbeatAt)
 	dest.ProviderSessionID = nullableStringFromSQL(providerSessionID)

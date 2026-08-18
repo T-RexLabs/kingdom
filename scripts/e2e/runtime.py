@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import http.client
+import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -8,12 +11,17 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
 from scripts.e2e.models import DEFAULT_BASE_PATH, DEFAULT_WORKFLOW_ID, PollResult, RunRequest, WorktreeRecord, WorkspacePaths
+
+
+def new_idempotency_key(scope: str) -> str:
+    if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?", scope) is None:
+        raise ValueError("idempotency scope must be 1-40 lowercase alphanumeric or hyphen characters")
+    return f"kd1.{int(time.time())}.86400.{scope}.{secrets.token_urlsafe(16)}"
 
 
 class CommandError(RuntimeError):
@@ -93,6 +101,7 @@ class RuntimeService:
             report_dir=workspace_dir.parent / "report",
             config_path=workspace_dir / ".kingdom" / "config.yaml",
             db_path=workspace_dir / ".kingdom" / "kingdom.db",
+            credential_path=workspace_dir / ".kingdom" / "secrets" / "operator-token",
         )
 
     def start_summon(self, config_path: Path, bootstrap_log_path: Path) -> None:
@@ -119,8 +128,7 @@ class RuntimeService:
     def create_decree_run(
         self,
         server_url: str,
-        actor_id: str,
-        role_id: str,
+        credential_path: Path,
         request: RunRequest,
         decree_path: Path,
     ) -> str:
@@ -130,9 +138,8 @@ class RuntimeService:
                 "decree_title": request.title,
                 "decree_text": request.text,
             },
-            actor_id,
-            role_id,
-            f"decree-create-{uuid.uuid4()}",
+            credential_path,
+            new_idempotency_key("decree-create"),
         )
         decree_id = str(decree_payload.get("decree_id") or "").strip()
         if not decree_id:
@@ -140,9 +147,8 @@ class RuntimeService:
         run_payload = self.post_json(
             f"{server_url}/runs",
             self.build_run_payload(decree_id, request),
-            actor_id,
-            role_id,
-            f"run-start-{uuid.uuid4()}",
+            credential_path,
+            new_idempotency_key("run-start"),
         )
         payload = {
             "decree_id": decree_id,
@@ -194,8 +200,7 @@ class RuntimeService:
     def poll_run(
         self,
         server_url: str,
-        actor_id: str,
-        role_id: str,
+        credential_path: Path,
         run_id: str,
         timeout_seconds: int,
         poll_interval_seconds: int,
@@ -214,10 +219,8 @@ class RuntimeService:
                         "kd",
                         "--server",
                         server_url,
-                        "--actor-id",
-                        actor_id,
-                        "--role-id",
-                        role_id,
+                        "--credential-file",
+                        str(credential_path),
                         "--json",
                         "run",
                         "status",
@@ -247,8 +250,7 @@ class RuntimeService:
     def capture_run_api_artifacts(
         self,
         server_url: str,
-        actor_id: str,
-        role_id: str,
+        credential_path: Path,
         run_id: str,
         report_dir: Path,
     ) -> None:
@@ -259,16 +261,15 @@ class RuntimeService:
             "messages.json": f"{server_url}/runs/{run_id}/mailbox/messages?limit=200",
         }
         for filename, url in endpoints.items():
-            payload = self.fetch_json(url, actor_id, role_id)
+            payload = self.fetch_json(url, credential_path)
             self.write_json(report_dir / filename, payload)
 
-    def fetch_json(self, url: str, actor_id: str, role_id: str) -> Any:
+    def fetch_json(self, url: str, credential_path: Path) -> Any:
         request = urllib.request.Request(
             url,
             headers={
                 "Accept": "application/json",
-                "X-Actor-Id": actor_id,
-                "X-Role-Id": role_id,
+                "Authorization": f"Bearer {self.read_credential(credential_path)}",
             },
         )
         try:
@@ -282,29 +283,55 @@ class RuntimeService:
         self,
         url: str,
         payload: dict[str, Any],
-        actor_id: str,
-        role_id: str,
+        credential_path: Path,
         idempotency_key: str,
     ) -> Any:
         encoded = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            url,
-            data=encoded,
-            method="POST",
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-Actor-Id": actor_id,
-                "X-Role-Id": role_id,
-                "Idempotency-Key": idempotency_key,
-            },
-        )
-        try:
-            with urllib.request.urlopen(request) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"request failed: {url}: {exc.code} {body}") from exc
+        credential = self.read_credential(credential_path)
+        last_error: BaseException | None = None
+        for attempt in range(3):
+            request = urllib.request.Request(
+                url,
+                data=encoded,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {credential}",
+                    "Idempotency-Key": idempotency_key,
+                },
+            )
+            try:
+                with urllib.request.urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                try:
+                    body = exc.read().decode("utf-8", errors="replace")
+                except (http.client.IncompleteRead, ConnectionError, OSError) as read_error:
+                    if attempt == 2:
+                        raise RuntimeError(f"request outcome is ambiguous: {url}: {read_error}") from read_error
+                    last_error = read_error
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                try:
+                    code = json.loads(body).get("error", {}).get("code")
+                except (AttributeError, json.JSONDecodeError):
+                    code = None
+                if code != "idempotency_pending" or attempt == 2:
+                    raise RuntimeError(f"request failed: {url}: {exc.code} {body}") from exc
+                last_error = exc
+            except (urllib.error.URLError, http.client.IncompleteRead, json.JSONDecodeError, ConnectionError, OSError) as exc:
+                if attempt == 2:
+                    raise RuntimeError(f"request outcome is ambiguous: {url}: {exc}") from exc
+                last_error = exc
+            time.sleep(0.1 * (attempt + 1))
+        raise RuntimeError(f"request outcome remained ambiguous: {url}: {last_error}")
+
+    def read_credential(self, credential_path: Path) -> str:
+        credential = credential_path.read_text(encoding="utf-8").strip()
+        if not credential:
+            raise RuntimeError(f"credential file is empty: {credential_path}")
+        return credential
 
     def query_rows(
         self,

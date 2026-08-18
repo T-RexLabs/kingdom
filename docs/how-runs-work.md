@@ -13,13 +13,13 @@ Planning sessions are optional. A decree can be issued directly without using th
 
 ## Planning Session Lifecycle
 
-Planning lives under `/planning-sessions` and `/planning-operations`.
+Planning domain resources live under `/planning-sessions`; durable provider activity is exposed through `/api/v1/acp`.
 
 ### What a Planning Session Stores
 
 - `lifecycle_state`
 - `conversation_state`
-- `current_question_message_id`
+- `active_leaf_message_id`
 - `current_operation_id`
 - `current_title_operation_id`
 - `current_draft_id`
@@ -45,18 +45,19 @@ Important behavior:
 - assistant answers can have multiple variants.
 - one assistant variant can be activated as the canonical transcript entry.
 - `formalize` produces the current planning draft.
-- `generate_title` runs as a durable planner operation behind `POST /planning-sessions/{id}/generate-title`, uses the session's dedicated `current_title_operation_id` lane, and updates the session title only after receipt-backed settlement succeeds.
+- `generate_title` runs as a durable planner operation through `POST /api/v1/acp/runs`, uses the session's dedicated title-operation lane, and updates the session title only after server-owned settlement succeeds.
 - `generate_title` does not claim the session's interactive `current_operation_id` slot or change `conversation_state`, so title generation can run in the background while interactive planning continues.
 - context refresh exists as an explicit API call on the session.
 - planner stream text is provisional operator feedback; canonical planner state comes from persisted message variants, drafts, and session fields rather than from transient stream output.
 - provider-backed planner work settles through planner-specific runtime-owned invocation, evidence, and settlement records before canonical planning tables are updated.
+- planner success uses the provider's adjudicated terminal success plus non-empty runtime-assembled output. Planning never uses a `kingdom_complete_attempt` receipt; process exit, provisional stream text, and export output are not success authority.
 - planner operations persist canonical state through planning message variants, drafts, and session fields; planner settlement records authorize those writes but do not replace the planning tables as transcript/draft/session truth.
 
 ### Planner Streaming and Recovery
 
 Planning operation events stream from:
 
-- `GET /api/v1/planning-operations/{id}/events`
+- `GET /api/v1/acp/runs/{runId}/events`
 
 The stream supports:
 
@@ -69,10 +70,13 @@ If the client exhausts SSE retries, the web planner falls back to polling the pl
 
 ### Issuing a Decree from a Plan
 
-When the operator issues a decree from a planning session, Kingdom attaches lineage metadata to the decree:
+When the operator issues a decree from a planning session, the client supplies:
 
 - `planning_session_id`
 - `planning_draft_id`
+
+Kingdom derives the following immutable lineage from the draft's unique successful formalize operation and attaches all three values to decree metadata:
+
 - `planning_context_snapshot_id`
 
 That lineage is attached only at decree issuance time. Planning itself does not mutate a decree run.
@@ -274,7 +278,7 @@ For `publish_mode=direct`, publication is per-path and best-effort. If a destina
 Kingdom exposes two important SSE channels:
 
 - `GET /api/v1/events/stream` for run events
-- `GET /api/v1/planning-operations/{id}/events` for planner operation events
+- `GET /api/v1/acp/runs/{runId}/events` for planner operation events
 
 Both are intended to support replay/resume with `Last-Event-ID`.
 

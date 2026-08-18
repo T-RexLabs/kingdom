@@ -75,7 +75,6 @@ type Config struct {
 	ReconcileInterval   time.Duration
 	DispatchInterval    time.Duration
 	WorkspaceRoot       string
-	WorkspaceFallbacks  []string
 	YoloOutputRoot      string
 	WorktreeRetention   time.Duration
 }
@@ -239,11 +238,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	fsStore, err := runtimefs.NewStore(cfg.DB, workspaceRoot)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap runtime filesystem store: %w", err)
-	}
-	for _, fallbackRoot := range cfg.WorkspaceFallbacks {
-		if err := fsStore.AddBlobFallbackRoot(fallbackRoot); err != nil {
-			return nil, fmt.Errorf("configure runtime filesystem fallback: %w", err)
-		}
 	}
 
 	outputValidator := state.NewWorkerOutputValidator(cfg.DB, schemaSet)

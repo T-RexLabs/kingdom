@@ -20,10 +20,21 @@ type canonicalErrorPayload struct {
 	Details       map[string]any        `json:"details"`
 	CorrelationID string                `json:"correlation_id"`
 	OccurredAt    time.Time             `json:"occurred_at"`
+	RetryAt       string                `json:"retry_at,omitempty"`
 }
 
 func writeCanonicalError(w http.ResponseWriter, statusCode int, code errorcatalog.Code, message string, correlationID string, details map[string]any) {
+	writeCanonicalErrorWithRetryAt(w, statusCode, code, message, correlationID, details, nil)
+}
+
+func writeCanonicalErrorWithRetryAt(w http.ResponseWriter, statusCode int, code errorcatalog.Code, message string, correlationID string, details map[string]any, retryAt *time.Time) {
 	envelope := buildCanonicalErrorEnvelope(code, message, correlationID, details)
+	if retryAt != nil {
+		value := retryAt.UTC()
+		if !value.IsZero() && value.Year() >= 1 && value.Year() <= 9999 {
+			envelope.Error.RetryAt = value.Format(time.RFC3339)
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

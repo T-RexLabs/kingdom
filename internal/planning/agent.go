@@ -19,12 +19,12 @@ type ProviderActivity struct {
 	ProviderPartID string
 	OccurredAt     string
 	ToolName       string
-	ToolStatus string
-	ToolTitle  string
-	ToolInput  string
-	Label      string
-	Summary    string
-	RawText    string
+	ToolStatus     string
+	ToolTitle      string
+	ToolInput      string
+	Label          string
+	Summary        string
+	RawText        string
 }
 
 type ProviderInvocationContext struct {
@@ -38,14 +38,16 @@ type ProviderInvocationContext struct {
 }
 
 type AgentContext struct {
-	SessionID          string
-	Title              string
-	ProjectRoot        string
-	ContextSummary     string
-	Messages           []state.PlanningMessage
-	ModelSelection     PlannerModelSelection
-	ForceNewSession    bool
-	ProviderInvocation *ProviderInvocationContext
+	SessionID           string
+	Title               string
+	ProjectRoot         string
+	ContextSummary      string
+	ExternalContext     string
+	ExternalSnapshotIDs []string
+	Messages            []state.PlanningMessage
+	ModelSelection      PlannerModelSelection
+	ForceNewSession     bool
+	ProviderInvocation  *ProviderInvocationContext
 }
 
 type ProviderExecutionMetadata struct {

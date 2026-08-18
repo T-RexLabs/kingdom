@@ -35,7 +35,7 @@ function NotificationCard({ notification, onRemove }: { notification: Notificati
     notification.onDismiss?.();
     setPhase("exiting");
     animEndRef.current = setTimeout(() => onRemove(notification.id), 260);
-  }, [notification.id, notification.onDismiss, onRemove]);
+  }, [notification, onRemove]);
 
   // Transition from entering to visible after slide-in completes
   useEffect(() => {

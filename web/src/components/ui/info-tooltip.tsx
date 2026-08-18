@@ -21,10 +21,11 @@ export function InfoTooltip({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number; maxWidth: number }>({
+  const [position, setPosition] = useState<{ top: number; left: number; maxWidth: number; zIndex: number }>({
     top: 0,
     left: 0,
     maxWidth: 320,
+    zIndex: 120,
   });
 
   const updatePosition = useCallback(() => {
@@ -55,7 +56,7 @@ export function InfoTooltip({
       top = viewportPadding;
     }
 
-    setPosition({ top, left, maxWidth });
+    setPosition({ top, left, maxWidth, zIndex: tooltipZIndexForOwner(triggerRef.current) });
   }, []);
 
   useLayoutEffect(() => {
@@ -99,7 +100,7 @@ export function InfoTooltip({
               "pointer-events-none fixed z-[120] rounded-md border border-border bg-surface-overlay px-2 py-1 text-[11px] leading-snug text-foreground shadow-lg",
               tooltipClassName,
             )}
-            style={{ top: position.top, left: position.left, maxWidth: position.maxWidth, zIndex: tooltipZIndexForOwner(triggerRef.current) }}
+            style={{ top: position.top, left: position.left, maxWidth: position.maxWidth, zIndex: position.zIndex }}
           >
             {message}
           </span>,

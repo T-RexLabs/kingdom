@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { setCSRFToken, subscribeToUnauthorized } from "@/api/client";
 import {
   defaultSSEBackoff,
   subscribeSSE,
@@ -104,6 +105,33 @@ describe("subscribeSSE", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     expect(states[states.length - 1].state).toBe("failed");
+  });
+
+  it("signals one unauthorized transition and never retries 401 responses", async () => {
+    setCSRFToken("active-session");
+    const unauthorized = vi.fn();
+    const unsubscribe = subscribeToUnauthorized(unauthorized);
+    const fetcher = vi.fn(async () => new Response(null, { status: 401 }));
+    const sleep = vi.fn();
+    const subscribe = () => subscribeSSE({
+      url: "https://example.invalid/events",
+      buildHeaders: () => ({}),
+      onEvent: () => true,
+      onConnectionChange: () => {},
+      isTerminalEventType: () => false,
+      signal: new AbortController().signal,
+      fetcher,
+      sleep,
+    });
+
+    await subscribe();
+    await subscribe();
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(unauthorized).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    setCSRFToken("");
   });
 
   it("parses CRLF-terminated streams (proxies often normalize to \\r\\n)", async () => {

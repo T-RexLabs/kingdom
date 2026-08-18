@@ -449,10 +449,6 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	snapshot, _, err := r.deps.store.GetLatestContextSnapshot(ctx, session.PlanningSessionID)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !request.ForceNewSession))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -462,7 +458,10 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
@@ -578,10 +577,6 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	snapshot, _, err := r.deps.store.GetLatestContextSnapshot(ctx, session.PlanningSessionID)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -591,7 +586,10 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext := r.deps.agentContext(session, snapshot, messages, request.ForceNewSession)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
@@ -685,10 +683,6 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	snapshot, _, err := r.deps.store.GetLatestContextSnapshot(ctx, session.PlanningSessionID)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -697,7 +691,10 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext := r.deps.agentContext(session, snapshot, messages, false)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, false)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
 	agentContext.ProviderInvocation = providerInvocation
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
@@ -789,7 +786,10 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
-	agentContext := r.deps.titleAgentContext(session, messages)
+	agentContext, err := r.deps.titleAgentContext(ctx, operation, session, messages)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
 	agentContext.ProviderInvocation = providerInvocation
 	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext, func(text string) {
 		textWriter.Write(text)

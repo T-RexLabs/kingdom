@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"kingdom/internal/acp"
 )
 
 func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
@@ -332,6 +334,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
+	bindTestPlanningContext(t, db, "ps_ops")
 	operation, err := store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
 		OperationID:        "po_1",
 		PlanningSessionID:  "ps_ops",
@@ -423,6 +426,81 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 	}
 }
 
+func TestPlanningStoreOperationAcpRunIDIsCanonicalAndCorruptionRemainsVisible(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	ctx := context.Background()
+	store := NewPlanningStore(db)
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_acp_run_id",
+		Title:              "ACP run ID",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-04-21T16:40:00Z",
+		UpdatedAt:          "2026-04-21T16:40:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	bindTestPlanningContext(t, db, "ps_acp_run_id")
+
+	const operationID = "po_acp_run_id"
+	operation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        operationID,
+		PlanningSessionID:  "ps_acp_run_id",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusQueued,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-04-21T16:40:01Z",
+	})
+	if err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	want := acp.PlannerRunID(operationID)
+	if operation.AcpRunID != want {
+		t.Fatalf("expected canonical ACP run ID %q, got %q", want, operation.AcpRunID)
+	}
+	var storedRunID string
+	if err := db.QueryRowContext(ctx, `SELECT acp_run_id FROM planning_operations WHERE operation_id = ?`, operationID).Scan(&storedRunID); err != nil {
+		t.Fatalf("read stored ACP run ID: %v", err)
+	}
+	if storedRunID != want {
+		t.Fatalf("expected stored canonical ACP run ID %q, got %q", want, storedRunID)
+	}
+
+	if _, err := db.ExecContext(ctx, `UPDATE planning_operations SET acp_run_id = operation_id WHERE operation_id = ?`, operationID); err != nil {
+		t.Fatalf("persist operation-id ACP run ID corruption: %v", err)
+	}
+	corrupted, ok, err := NewPlanningStore(db).GetOperation(ctx, operationID)
+	if err != nil || !ok {
+		t.Fatalf("read corrupted operation: ok=%v err=%v", ok, err)
+	}
+	if corrupted.AcpRunID != operationID {
+		t.Fatalf("expected stored ACP run ID %q unchanged, got %q", operationID, corrupted.AcpRunID)
+	}
+
+	const noncanonicalRunID = "noncanonical-planner-run"
+	if _, err := db.ExecContext(ctx, `UPDATE planning_operations SET acp_run_id = ? WHERE operation_id = ?`, noncanonicalRunID, operationID); err != nil {
+		t.Fatalf("persist noncanonical ACP run ID: %v", err)
+	}
+	if _, found, err := store.GetOperationByAcpRunID(ctx, operationID); err != nil {
+		t.Fatalf("look up operation ID as ACP run ID: %v", err)
+	} else if found {
+		t.Fatal("expected operation ID not to be accepted as an ACP run ID")
+	}
+	corrupted, found, err := store.GetOperationByAcpRunID(ctx, noncanonicalRunID)
+	if err != nil || !found {
+		t.Fatalf("look up stored noncanonical ACP run ID: found=%v err=%v", found, err)
+	}
+	if corrupted.AcpRunID != noncanonicalRunID {
+		t.Fatalf("expected stored ACP run ID %q unchanged, got %q", noncanonicalRunID, corrupted.AcpRunID)
+	}
+}
+
 func TestPlanningStoreOperationPagingUsesLimitAndCursor(t *testing.T) {
 	t.Parallel()
 
@@ -507,6 +585,7 @@ func TestPlanningStoreOperationEventPagingUsesLimitAndCursor(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_event_paging")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_event_paging",
 		PlanningSessionID:  "ps_event_paging",
@@ -687,6 +766,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
+	bindTestPlanningContext(t, db, "ps_operation_optional")
 	_, err = store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
 		OperationID:        "po_optional",
 		PlanningSessionID:  "ps_operation_optional",
@@ -818,6 +898,7 @@ func TestPlanningStoreClaimOperationPreventsDualExecution(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
+	bindTestPlanningContext(t, db, "ps_claim")
 	_, err = store.CreateOperation(context.Background(), CreatePlanningOperationRequest{
 		OperationID:        "po_claim_1",
 		PlanningSessionID:  "ps_claim",
@@ -890,6 +971,7 @@ func TestClaimOperationRejectsExpiredRunningRow(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	// Seed a running row with an already-expired lease.
+	bindTestPlanningContext(t, db, "ps_claim_expired")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_running_expired",
 		PlanningSessionID:  "ps_claim_expired",
@@ -949,6 +1031,7 @@ func TestFinalizeOperationRejectsStaleLeaseOwner(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_fence")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_fence",
 		PlanningSessionID:  "ps_fence",
@@ -1029,6 +1112,7 @@ func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageIn
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_reply_race")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_reply_race",
 		PlanningSessionID:  "ps_reply_race",
@@ -1150,6 +1234,7 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 	}); err != nil {
 		t.Fatalf("append future user message: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_regen_race")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_regen_race",
 		PlanningSessionID:  "ps_regen_race",
@@ -1264,13 +1349,14 @@ func TestFinalizeOperationRegenerateCancelRestoresPreviousActiveLeaf(t *testing.
 	}); err != nil {
 		t.Fatalf("append follow-up user: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_regen_cancel_restore")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
-		OperationID:       "po_regen_cancel_restore",
-		PlanningSessionID: "ps_regen_cancel_restore",
-		Type:              PlanningOperationTypeRegenerate,
-		Status:            PlanningOperationStatusQueued,
+		OperationID:        "po_regen_cancel_restore",
+		PlanningSessionID:  "ps_regen_cancel_restore",
+		Type:               PlanningOperationTypeRegenerate,
+		Status:             PlanningOperationStatusQueued,
 		RequestPayloadJSON: `{"target_message_id":"pm_target","parent_message_id":"","previous_active_leaf_message_id":"pm_followup"}`,
-		CreatedAt:         "2026-04-27T12:00:03Z",
+		CreatedAt:          "2026-04-27T12:00:03Z",
 	}); err != nil {
 		t.Fatalf("create operation: %v", err)
 	}
@@ -1369,13 +1455,14 @@ func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T)
 	}); err != nil {
 		t.Fatalf("append follow-up user: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_regen_fail_restore")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
-		OperationID:       "po_regen_fail_restore",
-		PlanningSessionID: "ps_regen_fail_restore",
-		Type:              PlanningOperationTypeRegenerate,
-		Status:            PlanningOperationStatusQueued,
+		OperationID:        "po_regen_fail_restore",
+		PlanningSessionID:  "ps_regen_fail_restore",
+		Type:               PlanningOperationTypeRegenerate,
+		Status:             PlanningOperationStatusQueued,
 		RequestPayloadJSON: `{"target_message_id":"pm_target_fail","parent_message_id":"","previous_active_leaf_message_id":"pm_followup_fail"}`,
-		CreatedAt:         "2026-04-27T14:00:03Z",
+		CreatedAt:          "2026-04-27T14:00:03Z",
 	}); err != nil {
 		t.Fatalf("create operation: %v", err)
 	}
@@ -1447,6 +1534,7 @@ func TestFinalizeOperationCancel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_cancel")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_cancel",
 		PlanningSessionID:  "ps_cancel",
@@ -1680,6 +1768,7 @@ func TestFinalizeBootstrapAbortWhileForegroundOpHoldsSlot(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	// Foreground reply op (running) — owns the session slot.
+	bindTestPlanningContext(t, db, "ps_bs_fg")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_reply_fg",
 		PlanningSessionID:  "ps_bs_fg",
@@ -1867,6 +1956,7 @@ func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_title_fg")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_reply_fg",
 		PlanningSessionID:  "ps_title_fg",
@@ -1971,6 +2061,7 @@ func TestFinalizeGenerateTitleAbortClearsTitleSlot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_title_abort")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_title_abort",
 		PlanningSessionID:  "ps_title_abort",
@@ -2046,6 +2137,7 @@ func TestCancelQueuedGenerateTitleOperationClearsTitleSlot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_title_cancel_queued")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_title_cancel_queued",
 		PlanningSessionID:  "ps_title_cancel_queued",
@@ -2148,6 +2240,7 @@ func TestCancelQueuedRegenerateRestoresPreviousActiveLeaf(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append follow-up user: %v", err)
 	}
+	bindTestPlanningContext(t, db, "ps_regen_cancel_queued")
 	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
 		OperationID:        "po_regen_cancel_queued",
 		PlanningSessionID:  "ps_regen_cancel_queued",

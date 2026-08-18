@@ -12,21 +12,20 @@ import {
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Spinner } from "@/components/ui/spinner";
 import type { PlanningDraft } from "@/api/hooks";
+import type { components } from "@/api/schema";
 import { isPlannerOperationTerminal, type PlannerOperationState } from "./planner-operation-controller";
 import { useTextReveal } from "@/lib/use-text-reveal";
 
 export function PlanResultModal({
   open,
   draft,
-  sessionId,
-  contextSnapshotId,
+  planningLineage,
   operation,
   onClose,
 }: {
   open: boolean;
   draft: PlanningDraft | null;
-  sessionId: string;
-  contextSnapshotId?: string;
+  planningLineage?: components["schemas"]["PlanningLineage"];
   operation: PlannerOperationState | null;
   onClose: () => void;
 }) {
@@ -52,19 +51,19 @@ export function PlanResultModal({
 						<Button variant="ghost" onClick={onClose}>
 							Close
 						</Button>
-						<Link
-							to="/decrees/new"
-							search={{
-								planning_session_id: sessionId,
-								planning_draft_id: draft?.planning_draft_id ?? "",
-								...(contextSnapshotId ? { planning_context_snapshot_id: contextSnapshotId } : {}),
-							}}
-						>
-							<Button disabled={!draft}>
+						{draft && planningLineage ? (
+							<Link to="/decrees/new" search={planningLineage}>
+								<Button>
+									Issue Decree from Plan
+									<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+								</Button>
+							</Link>
+						) : (
+							<Button disabled>
 								Issue Decree from Plan
 								<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
 							</Button>
-						</Link>
+						)}
 					</div>
 				)}
 			>

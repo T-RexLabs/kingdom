@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -122,18 +123,13 @@ func TestOpenAPISpecPlacesPlannerResumeHeaderOnAcpEventsEndpoint(t *testing.T) {
 		t.Fatal("expected streamAcpRunEvents to accept Last-Event-ID")
 	}
 
-	getParamsType := reflect.TypeOf(gen.GetAcpRunParams{})
-	if _, ok := getParamsType.FieldByName("LastEventID"); ok {
-		t.Fatal("expected GetAcpRunParams to omit LastEventID")
-	}
-
 	streamParamsType := reflect.TypeOf(gen.StreamAcpRunEventsParams{})
 	if _, ok := streamParamsType.FieldByName("LastEventID"); !ok {
 		t.Fatal("expected StreamAcpRunEventsParams to include LastEventID")
 	}
 }
 
-func TestOpenAPISpecIncludesPreviewRoutes(t *testing.T) {
+func TestOpenAPISpecExcludesExecutablePreviewRoutes(t *testing.T) {
 	t.Parallel()
 
 	swagger, err := gen.GetSwagger()
@@ -141,28 +137,71 @@ func TestOpenAPISpecIncludesPreviewRoutes(t *testing.T) {
 		t.Fatalf("load swagger: %v", err)
 	}
 
-	previewSession := swagger.Paths.Find("/artifacts/{id}/preview-session")
-	if previewSession == nil || previewSession.Post == nil {
-		t.Fatal("expected POST /artifacts/{id}/preview-session in the spec")
+	for _, path := range []string{"/artifacts/{id}/preview-session", "/preview/{token}", "/preview/{token}/{assetPath}"} {
+		if swagger.Paths.Find(path) != nil {
+			t.Fatalf("executable preview route %s remained in the spec", path)
+		}
 	}
-	if !operationHasParameterRef(previewSession.Post, "#/components/parameters/IdempotencyKey") {
-		t.Fatal("expected preview session creation to require Idempotency-Key")
+	for _, parameter := range []string{"PreviewToken", "PreviewAssetPath"} {
+		if swagger.Components.Parameters[parameter] != nil {
+			t.Fatalf("executable preview parameter %s remained in the spec", parameter)
+		}
 	}
+}
 
-	previewRoot := mustGetOperation(t, swagger, "/preview/{token}")
-	if previewRoot.Security == nil || len(*previewRoot.Security) != 0 {
-		t.Fatal("expected GET /preview/{token} to override top-level security with []")
-	}
+func TestOpenAPIAuthenticatedMutationsExposeCSRFHeader(t *testing.T) {
+	t.Parallel()
 
-	previewAsset := mustGetOperation(t, swagger, "/preview/{token}/{assetPath}")
-	if previewAsset.Security == nil || len(*previewAsset.Security) != 0 {
-		t.Fatal("expected GET /preview/{token}/{assetPath} to override top-level security with []")
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !operationHasParameterRef(previewAsset, "#/components/parameters/PreviewAssetPath") {
-		t.Fatal("expected preview asset route to declare assetPath")
+	for path, item := range swagger.Paths.Map() {
+		for method, operation := range item.Operations() {
+			if path == "/auth/session" || !isMutatingMethod(strings.ToUpper(method)) {
+				continue
+			}
+			if !operationHasParameterRef(operation, "#/components/parameters/CSRFToken") {
+				t.Errorf("%s %s does not expose the optional browser CSRF header", strings.ToUpper(method), path)
+			}
+		}
 	}
-	if previewAsset.Description == "" {
-		t.Fatal("expected preview asset route description to document the raw content boundary")
+}
+
+func TestOpenAPIGitHubCallbacksArePublicAndFlowMutationsRequireIdempotency(t *testing.T) {
+	t.Parallel()
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"/connections/github/manifest-flows/manifest-callback",
+		"/connections/github/manifest-flows/setup-callback",
+		"/connections/github/manifest-flows/oauth-callback",
+	} {
+		operation := mustGetOperation(t, swagger, path)
+		if operation.Security == nil || len(*operation.Security) != 0 {
+			t.Fatalf("GET %s must override top-level security with []", path)
+		}
+	}
+	for _, path := range []string{
+		"/connections/github/manifest-flows",
+		"/connections/github/manifest-flows/{id}/conversion",
+		"/connections/github/manifest-flows/{id}/installation",
+		"/connections/github/manifest-flows/{id}/authorization",
+		"/connections/github/manifest-flows/{id}/completion",
+		"/connections/github/device-flows",
+		"/connections/github/device-flows/{id}/poll",
+		"/connections/github/device-flows/{id}/candidates",
+		"/connections/github/device-flows/{id}/finalize",
+	} {
+		item := swagger.Paths.Find(path)
+		if item == nil || item.Post == nil {
+			t.Fatalf("missing POST %s", path)
+		}
+		if !operationHasParameterRef(item.Post, "#/components/parameters/IdempotencyKey") {
+			t.Fatalf("setup POST %s must require idempotency", path)
+		}
 	}
 }
 
@@ -226,6 +265,81 @@ func TestOpenAPISpecIncludesCanonicalExamplesForCoreSchemas(t *testing.T) {
 		if schemaRef.Value.Example == nil {
 			t.Fatalf("expected %s schema to define an example", schemaName)
 		}
+	}
+}
+
+func TestOpenAPIErrorEnvelopeDefinesOptionalRetryAt(t *testing.T) {
+	t.Parallel()
+
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatalf("load swagger: %v", err)
+	}
+	envelope := swagger.Components.Schemas["ErrorEnvelope"]
+	if envelope == nil || envelope.Value == nil {
+		t.Fatal("expected ErrorEnvelope schema")
+	}
+	errorProperty := envelope.Value.Properties["error"]
+	if errorProperty == nil || errorProperty.Value == nil {
+		t.Fatal("expected ErrorEnvelope.error schema")
+	}
+	retryAt := errorProperty.Value.Properties["retry_at"]
+	if retryAt == nil || retryAt.Value == nil || retryAt.Value.Format != "date-time" {
+		t.Fatalf("expected retry_at date-time property, got %#v", retryAt)
+	}
+	if containsRequiredField(errorProperty.Value.Required, "retry_at") {
+		t.Fatal("retry_at must remain optional")
+	}
+}
+
+func TestOpenAPIExternalSourceStatusMatchesPersistedEnum(t *testing.T) {
+	t.Parallel()
+
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatalf("load swagger: %v", err)
+	}
+	status := swagger.Components.Schemas["ExternalSourceStatus"]
+	if status == nil || status.Value == nil {
+		t.Fatal("expected reusable ExternalSourceStatus schema")
+	}
+	want := []any{"never_checked", "unchanged", "changed", "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response"}
+	if !reflect.DeepEqual(status.Value.Enum, want) {
+		t.Fatalf("ExternalSourceStatus enum=%v, want %v", status.Value.Enum, want)
+	}
+	for _, schemaName := range []string{"ExternalLink", "ExternalProvenanceSummary"} {
+		property := swagger.Components.Schemas[schemaName].Value.Properties["status"]
+		if property == nil || property.Ref != "#/components/schemas/ExternalSourceStatus" {
+			t.Fatalf("%s.status does not reuse ExternalSourceStatus: %#v", schemaName, property)
+		}
+	}
+}
+
+func TestOpenAPIPlanningSourceAttachHasExactMutationContract(t *testing.T) {
+	t.Parallel()
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := swagger.Paths.Find("/planning-sessions/{id}/external-sources")
+	if item == nil || item.Post == nil {
+		t.Fatal("expected planning source attach POST operation")
+	}
+	operation := item.Post
+	if operation.OperationID != "AttachPlanningSessionExternalSource" {
+		t.Fatalf("attach operation id=%q", operation.OperationID)
+	}
+	for _, ref := range []string{"#/components/parameters/PlanningSessionId", "#/components/parameters/IdempotencyKey", "#/components/parameters/CSRFToken"} {
+		if !operationHasParameterRef(operation, ref) {
+			t.Fatalf("planning source attach is missing %s", ref)
+		}
+	}
+	if operation.RequestBody == nil || operation.RequestBody.Value == nil || operation.RequestBody.Value.Content.Get("application/json") == nil || operation.RequestBody.Value.Content.Get("application/json").Schema == nil || operation.RequestBody.Value.Content.Get("application/json").Schema.Ref != "#/components/schemas/ExternalIntake" {
+		t.Fatalf("planning source attach request body is not ExternalIntake: %#v", operation.RequestBody)
+	}
+	created := operation.Responses.Status(http.StatusCreated)
+	if created == nil || created.Value == nil || created.Value.Content.Get("application/json") == nil || created.Value.Content.Get("application/json").Schema == nil || created.Value.Content.Get("application/json").Schema.Ref != "#/components/schemas/ExternalProvenanceSummary" {
+		t.Fatalf("planning source attach response is not ExternalProvenanceSummary: %#v", created)
 	}
 }
 

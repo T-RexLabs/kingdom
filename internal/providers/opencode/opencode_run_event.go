@@ -125,7 +125,8 @@ func extractRunEventErrorText(raw json.RawMessage, fallback string) string {
 	}
 	var object map[string]any
 	if err := json.Unmarshal(raw, &object); err == nil {
-		return firstNonEmpty(stringValue(object["message"]), stringValue(object["text"]), "provider error event")
+		data, _ := object["data"].(map[string]any)
+		return firstNonEmpty(stringValue(object["message"]), stringValue(object["text"]), stringValue(data["message"]), "provider error event")
 	}
 	return "provider error event"
 }

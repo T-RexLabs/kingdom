@@ -26,8 +26,9 @@ export function RunsPage() {
     navigate({
       search: (previous) => {
         if (nextFilter === "all") {
-          const { state_filter: _ignored, ...rest } = previous;
-          return rest;
+          const next = { ...previous };
+          delete next.state_filter;
+          return next;
         }
         return {
           ...previous,

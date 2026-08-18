@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { createElement, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   getRoleColor,
@@ -110,7 +110,6 @@ function RoleGroupSection({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const RoleIcon = getRoleIcon(group.roleId);
   const roleColorClass = getRoleColor(group.roleId);
   const hasBusyAgent = group.agents.some((a) => a.status === "busy");
   const statusCounts = group.agents.reduce<Record<string, number>>((acc, agent) => {
@@ -131,7 +130,9 @@ function RoleGroupSection({
         onClick={onToggle}
         className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2 text-left"
       >
-        <RoleIcon className={cn("h-4 w-4 shrink-0", roleColorClass, hasBusyAgent && "animate-glow-pulse")} />
+        {createElement(getRoleIcon(group.roleId), {
+          className: cn("h-4 w-4 shrink-0", roleColorClass, hasBusyAgent && "animate-glow-pulse"),
+        })}
         <span className={cn("text-sm font-semibold text-wrap-anywhere", roleColorClass)}>
           {roleTitle(group.roleId)}
         </span>

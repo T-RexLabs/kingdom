@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ApiError } from "@/api/client";
+import { ApiError, apiFetch } from "@/api/client";
+import type { components } from "@/api/schema";
 import {
   type CreateDecreeRequest,
   newIdempotencyKey,
@@ -16,14 +17,22 @@ import {
   type RunSummary,
   type Role,
 } from "@/api/hooks";
-import { ChevronDown, ChevronUp, CircleAlert, Play, Scroll, Send, X } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleAlert, ExternalLink, Loader2, Play, RefreshCw, Scroll, Send, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SelectField } from "@/components/ui/select-field";
 import { ModelSelectField } from "./model-select-field";
 import { findProviderModel, normalizeThinkingEffortSelection } from "./provider-model-selection";
 import { ThinkingEffortField } from "./thinking-effort-field";
 import { ToggleRow } from "./toggle-row";
-import { ProviderModelCatalogNotice, useProviderModelCatalogController } from "./provider-model-catalog-state";
+import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
+import { useProviderModelCatalogController } from "./use-provider-model-catalog";
+import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
+import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
+import { externalSourceStatusLabel } from "@/features/connections/external-source-status";
+import { safeGitHubIssueURL } from "@/features/connections/github-url";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
+import type { DecreePlanningLineageSearch } from "./decree-route-search";
+import { isAmbiguousMutationFailure } from "./mutation-recovery";
 
 function parseNonNegativeCycleInput(rawValue: string, fallback: number): number {
   const trimmed = rawValue.trim();
@@ -79,11 +88,21 @@ function ErrorBanner({ message }: { message: string }) {
   return <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-3 py-2 text-sm text-status-failed">{message}</div>;
 }
 
-type PlanningLineage = {
-  planning_session_id?: string;
-  planning_draft_id?: string;
-  planning_context_snapshot_id?: string;
+type CapturedExternalSource = {
+  snapshotId: string;
+  issue: components["schemas"]["NormalizedIssue"];
 };
+
+type DecreeOrigin =
+  | { kind: "manual" }
+  | { kind: "planning"; sessionId: string; routeLineage?: DecreePlanningLineageSearch }
+  | {
+      kind: "github";
+      snapshotId: string;
+      issue: components["schemas"]["NormalizedIssue"];
+      intake: components["schemas"]["ExternalIntake"];
+      candidate?: CapturedExternalSource;
+    };
 
 export type DecreeDispatchResult = {
   decreeId: string;
@@ -92,7 +111,7 @@ export type DecreeDispatchResult = {
 
 type DispatchPhase = "submitting_decree" | "decree_recovery" | "submitting_run" | "run_recovery";
 
-type RecoveryMode = "fresh" | "replay";
+type RecoveryMode = "fresh" | "replay" | "pending";
 
 type DispatchSession = {
   phase: DispatchPhase;
@@ -115,16 +134,8 @@ function buildRunStartRequest(decreeId: string | undefined, runRequest: Omit<Cre
   };
 }
 
-// Replay only when the request outcome is ambiguous and we need the same idempotency key to recover safely.
-function isAmbiguousMutationFailure(error: unknown): boolean {
-  if (!(error instanceof ApiError)) {
-    return true;
-  }
-
-  return error.status === 408 || error.status >= 500;
-}
-
 function classifyRecoveryMode(error: unknown): RecoveryMode {
+  if (error instanceof ApiError && error.code === "idempotency_pending") return "pending";
   return isAmbiguousMutationFailure(error) ? "replay" : "fresh";
 }
 
@@ -132,11 +143,16 @@ export function DecreeForm({
   initialPlanningLineage,
   onDispatched,
 }: {
-  initialPlanningLineage?: PlanningLineage;
+  initialPlanningLineage?: Partial<DecreePlanningLineageSearch>;
   onDispatched?: (result: DecreeDispatchResult) => void;
 }) {
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
+  const [origin, setOrigin] = useState<DecreeOrigin>(() => initialPlanningLineage?.planning_session_id && initialPlanningLineage.planning_draft_id
+    ? { kind: "planning", sessionId: initialPlanningLineage.planning_session_id, routeLineage: initialPlanningLineage as DecreePlanningLineageSearch }
+    : { kind: "manual" });
+  const [externalBusy, setExternalBusy] = useState(false);
+  const [externalError, setExternalError] = useState("");
   const [skipReviewsAndValidations, setSkipReviewsAndValidations] = useState(false);
   const [runUntilAllApprove, setRunUntilAllApprove] = useState(false);
   const [maxExecutionReviewCyclesInput, setMaxExecutionReviewCyclesInput] = useState("5");
@@ -151,9 +167,54 @@ export function DecreeForm({
 
   const createDecree = useCreateDecree();
   const createRun = useCreateRun();
-  const [selectedPlanSessionId, setSelectedPlanSessionId] = useState<string | undefined>(
-    initialPlanningLineage?.planning_session_id?.trim() || undefined
+  const recoverableExternalCapture = useRecoverableMutation(
+    "external-capture",
+    async (intake: components["schemas"]["ExternalIntake"], key) => ({
+      captured: await apiFetch<components["schemas"]["CaptureResult"]>("/external-source-captures", {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify(intake),
+      }),
+      intake,
+    }),
   );
+
+  const captureExternalSnapshot = async (intake: components["schemas"]["ExternalIntake"]) => {
+    const { captured, intake: capturedIntake } = await recoverableExternalCapture.mutateAsync(intake);
+    const snapshot = await apiFetch<components["schemas"]["ExternalSnapshotResponse"]>(`/external-source-snapshots/${captured.snapshot_id}`);
+    return { snapshotId: captured.snapshot_id, issue: snapshot.issue, intake: capturedIntake };
+  };
+
+  const prefillExternalIssue = async (selection: IssueSelection) => {
+    setExternalBusy(true);
+    setExternalError("");
+    try {
+      const captured = await captureExternalSnapshot(selection.intake);
+      setOrigin({ kind: "github", snapshotId: captured.snapshotId, issue: captured.issue, intake: captured.intake });
+      setTitle(captured.issue.title);
+      setText(captured.issue.body);
+    } catch (error) {
+      setExternalError(error instanceof Error ? error.message : "Could not capture GitHub issue");
+      throw error;
+    } finally {
+      setExternalBusy(false);
+    }
+  };
+
+  const refreshExternalCandidate = async () => {
+    if (origin.kind !== "github") return;
+    setExternalBusy(true);
+    setExternalError("");
+    try {
+      const candidate = await captureExternalSnapshot(origin.intake);
+      setOrigin((current) => current.kind === "github" ? { ...current, candidate } : current);
+    } catch (error) {
+      setExternalError(error instanceof Error ? error.message : "Could not refresh GitHub issue");
+    } finally {
+      setExternalBusy(false);
+    }
+  };
+  const selectedPlanSessionId = origin.kind === "planning" ? origin.sessionId : undefined;
   const planningSessionId = selectedPlanSessionId;
   const currentPlanningDraft = usePlanningSessionDraft(planningSessionId);
   const { data: planningSessionsData } = usePlanningSessions();
@@ -161,7 +222,6 @@ export function DecreeForm({
     () => (planningSessionsData?.items ?? []).filter((s) => Boolean(s.current_draft_id)),
     [planningSessionsData?.items]
   );
-	const [hasAutoSelected, setHasAutoSelected] = useState(false);
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
 	const { data: roles } = useRoles();
@@ -221,14 +281,6 @@ export function DecreeForm({
     dispatchSessionRef.current = next;
     setDispatchSession(next);
   };
-
-  useEffect(() => {
-    if (hasAutoSelected) return;
-    if (initialPlanningLineage?.planning_session_id) return;
-    if (sessionsWithPlans.length === 0) return;
-    setSelectedPlanSessionId(sessionsWithPlans[0].planning_session_id);
-    setHasAutoSelected(true);
-  }, [hasAutoSelected, initialPlanningLineage?.planning_session_id, sessionsWithPlans]);
 
   useEffect(() => {
     if (sameModelSelection(globalSelection, normalizedGlobalSelection)) {
@@ -296,23 +348,18 @@ export function DecreeForm({
       return null;
     }
 
-    const activeLineage: PlanningLineage | undefined = selectedPlanSessionId && selectedPlanningDraft
-      ? {
-          planning_session_id: selectedPlanSessionId,
-          planning_draft_id: selectedPlanningDraft.planning_draft_id,
-          planning_context_snapshot_id:
-            selectedPlanSessionId === initialPlanningLineage?.planning_session_id
-              ? initialPlanningLineage?.planning_context_snapshot_id
-              : undefined,
-        }
+		const activeLineage: components["schemas"]["PlanningLineage"] | undefined = origin.kind === "planning" && selectedPlanningDraft
+			? {
+					planning_session_id: origin.sessionId,
+					planning_draft_id: selectedPlanningDraft.planning_draft_id,
+				}
       : undefined;
 
     return {
       decree_title: title.trim(),
       decree_text: text.trim(),
-      metadata: activeLineage && Object.values(activeLineage).some(Boolean)
-        ? Object.fromEntries(Object.entries(activeLineage).filter(([, value]) => typeof value === "string" && value.trim() !== ""))
-        : undefined,
+      ...(activeLineage ? { planning_lineage: activeLineage } : {}),
+      ...(origin.kind === "github" ? { external_source_snapshot_id: origin.snapshotId } : {}),
     };
   };
 
@@ -368,7 +415,8 @@ export function DecreeForm({
     setCurrentDispatchSession(null);
     setTitle("");
     setText("");
-    setSelectedPlanSessionId(undefined);
+    setOrigin({ kind: "manual" });
+    setExternalError("");
     setAppliedDraftKey("");
     createDecree.reset();
     createRun.reset();
@@ -388,7 +436,7 @@ export function DecreeForm({
 
     if (session?.phase === "run_recovery") {
       createRun.reset();
-      if (session.runRecoveryMode === "replay") {
+      if (session.runRecoveryMode !== "fresh") {
         nextRunRequest = session.runRequest;
         nextRunKey = session.runKey;
       } else {
@@ -531,7 +579,8 @@ export function DecreeForm({
     setCurrentDispatchSession(null);
 	setTitle("");
 	setText("");
-	setSelectedPlanSessionId(undefined);
+	setOrigin({ kind: "manual" });
+	setExternalError("");
 	setAppliedDraftKey("");
 	setSkipReviewsAndValidations(false);
 	setRunUntilAllApprove(false);
@@ -560,11 +609,12 @@ export function DecreeForm({
     }
     setTitle("");
     setText("");
-    setSelectedPlanSessionId(undefined);
+	setOrigin({ kind: "manual" });
+	setExternalError("");
     setAppliedDraftKey("");
   };
 
-  const hasDecreeContent = title.trim() !== "" || text.trim() !== "" || Boolean(selectedPlanSessionId);
+  const hasDecreeContent = title.trim() !== "" || text.trim() !== "" || origin.kind !== "manual";
 
 	const dispatchPhase = dispatchSession?.phase ?? null;
 	const isSubmitting = dispatchPhase === "submitting_decree" || dispatchPhase === "submitting_run";
@@ -574,12 +624,13 @@ export function DecreeForm({
 	const runRecoveryMode = dispatchSession?.runRecoveryMode ?? null;
 	const isRecoveringRun = dispatchPhase === "run_recovery" && Boolean(dispatchSession?.decreeId);
 	const isReplayRecovery = (isRecoveringDecree && decreeRecoveryMode === "replay") || (isRecoveringRun && runRecoveryMode === "replay");
-	const canRetryRunStart = isRecoveringRun && (runRecoveryMode === "replay"
+	const isPendingRecovery = (isRecoveringDecree && decreeRecoveryMode === "pending") || (isRecoveringRun && runRecoveryMode === "pending");
+	const canRetryRunStart = isRecoveringRun && (runRecoveryMode !== "fresh"
 	  ? Boolean(dispatchSession?.runKey && dispatchSession?.runRequest)
 	  : normalizedGlobalSelection.model.trim() !== "");
 	const hasIssuedDecree = Boolean(dispatchSession?.decreeId);
-	const decreeLocked = isSubmitting || hasIssuedDecree || (isRecoveringDecree && decreeRecoveryMode === "replay");
-	const runControlsLocked = isSubmitting || (isRecoveringRun && runRecoveryMode === "replay");
+	const decreeLocked = isSubmitting || hasIssuedDecree || (isRecoveringDecree && decreeRecoveryMode !== "fresh");
+	const runControlsLocked = isSubmitting || (isRecoveringRun && runRecoveryMode !== "fresh");
 	const gitWorktreeToggleDisabled = runControlsLocked || workspaceCapabilities.isLoading || !gitWorktreeAvailable;
 	const reviewControlsDisabled = runControlsLocked || skipReviewsAndValidations || runUntilAllApprove;
 	const skipToggleDisabled = runControlsLocked;
@@ -588,11 +639,11 @@ export function DecreeForm({
 	const submitLabel = isSubmitting
 	  ? "Dispatching..."
 	  : isRecoveringDecree
-	    ? decreeRecoveryMode === "replay"
+	    ? decreeRecoveryMode !== "fresh"
 	      ? "Retry Decree"
 	      : "Issue Decree"
 	  : isRecoveringRun
-	    ? runRecoveryMode === "replay"
+	    ? runRecoveryMode !== "fresh"
 	      ? "Retry Run Start"
 	      : "Start Run"
 	    : "Issue Decree";
@@ -616,6 +667,25 @@ export function DecreeForm({
 	  setSkipReviewsAndValidations(next);
 	};
 
+  const promoteExternalCandidate = ({ applyTitle = false, applyBody = false }: { applyTitle?: boolean; applyBody?: boolean } = {}) => {
+    if (origin.kind !== "github" || !origin.candidate) return;
+    const candidate = origin.candidate;
+    setOrigin({
+      kind: "github",
+      snapshotId: candidate.snapshotId,
+      issue: candidate.issue,
+      intake: origin.intake,
+    });
+    if (applyTitle) setTitle(candidate.issue.title);
+    if (applyBody) setText(candidate.issue.body);
+  };
+
+  const externalIssueURL = origin.kind === "github"
+    ? safeGitHubIssueURL(origin.issue.canonical_url, origin.issue.repository, origin.issue.issue_number)
+    : null;
+  const externalUpdateAvailable = origin.kind === "github"
+    && Boolean(origin.candidate && origin.candidate.snapshotId !== origin.snapshotId);
+
   return (
     <Card>
       <CardHeader>
@@ -626,8 +696,38 @@ export function DecreeForm({
       </CardHeader>
         <CardContent>
           <form onSubmit={issueAndRun} className="space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="flex-1">
+            {!decreeLocked ? <IssuePicker actionLabel="Prefill decree" onSelect={prefillExternalIssue} /> : null}
+            {origin.kind === "github" ? (
+              <section aria-label="Selected GitHub source" className="space-y-3 rounded-lg border border-gold/25 bg-gold/5 p-3 text-xs">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">Imported from {externalIssueURL ? <a href={externalIssueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{origin.issue.repository}#{origin.issue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{origin.issue.repository}#{origin.issue.issue_number}</span>}</p>
+                    <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(externalUpdateAvailable ? "changed" : "unchanged", externalUpdateAvailable)}. Decree fields remain editable.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-2">
+                    <button type="button" className="inline-flex items-center gap-1 text-gold" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for updates</button>
+                    <button type="button" className="text-gold" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove source</button>
+                  </div>
+                </div>
+                {origin.candidate?.snapshotId === origin.snapshotId ? <p role="status" className="text-foreground-muted">GitHub is up to date with the selected source.</p> : null}
+                {origin.candidate && origin.candidate.snapshotId !== origin.snapshotId ? (
+                  <div className="border-t border-gold/15 pt-3">
+                    <p className="font-medium text-foreground">An update is available. Choose which refreshed fields to apply; every choice also promotes its provenance.</p>
+                    <ExternalSourceComparison baselineId={origin.snapshotId} candidateId={origin.candidate.snapshotId} />
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate()}>Use source, keep edits</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyTitle: true })}>Use refreshed title</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => promoteExternalCandidate({ applyBody: true })}>Use refreshed body</Button>
+                      <Button type="button" size="sm" onClick={() => promoteExternalCandidate({ applyTitle: true, applyBody: true })}>Use all refreshed fields</Button>
+                    </div>
+                  </div>
+                ) : null}
+                <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><p className="mt-1 break-all font-mono text-[11px]">Selected snapshot: {origin.snapshotId}</p></details>
+              </section>
+            ) : null}
+            {externalError ? <p role="alert" className="text-xs text-status-failed">{externalError}</p> : null}
+            <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,15rem)_auto] md:items-end">
+              <div className="min-w-0">
                 <label htmlFor="decree-title" className="mb-1.5 block text-sm font-medium">
                   Decree Title
                 </label>
@@ -641,8 +741,7 @@ export function DecreeForm({
                   className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-foreground-subtle"
                 />
               </div>
-              <div className="flex items-end gap-1.5">
-                <div className="w-[240px]">
+              <div className="min-w-0">
                   <SelectField
                     id="plan-selector"
                     label="From Plan"
@@ -657,18 +756,22 @@ export function DecreeForm({
                       })),
                     ]}
                     onChange={(next) => {
-                      setSelectedPlanSessionId(next || undefined);
-                      if (!next) {
+                      if (next) {
+                        setOrigin({ kind: "planning", sessionId: next });
+                        setAppliedDraftKey("");
+                        setExternalError("");
+                      } else {
+                        setOrigin({ kind: "manual" });
                         setTitle("");
                         setText("");
                         setAppliedDraftKey("");
                       }
                     }}
                   />
-                </div>
-                {hasDecreeContent && (
-                  <div className="flex flex-col items-center gap-0.5">
-                    <span className="text-[10px] text-foreground-subtle">Clear</span>
+              </div>
+                {hasDecreeContent ? (
+                  <div className="flex items-center justify-end md:flex-col md:gap-0.5">
+                    <span className="mr-1 text-[10px] text-foreground-subtle md:mr-0">Clear</span>
                     <button
                       type="button"
                       onClick={handleClearDecree}
@@ -678,8 +781,7 @@ export function DecreeForm({
                       <X className="h-4 w-4" />
                     </button>
                   </div>
-                )}
-              </div>
+                ) : <span />}
             </div>
 
             <div>
@@ -940,9 +1042,11 @@ export function DecreeForm({
 	              <div className="flex items-start gap-2 rounded-md border border-gold/35 bg-gold/10 px-3 py-2 text-xs text-gold">
 	                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
 	                <span>
-	                  {decreeRecoveryMode === "replay"
-	                    ? <>Kingdom may have accepted this decree, but the connection dropped before the response arrived. Retry will reuse the same decree request and idempotency key so Kingdom can recover without duplicating decrees. Discard recovery only if you intentionally want to abandon that replay path.</>
-	                    : <>Kingdom rejected the decree request before it was accepted. Update the decree fields if needed, then issue the decree again.</>}
+	                  {decreeRecoveryMode === "pending"
+	                    ? <>Kingdom is still resolving this decree request. Retry will reuse the same request and idempotency key; starting over with a new key is unsafe while the original outcome remains pending.</>
+	                    : decreeRecoveryMode === "replay"
+	                      ? <>Kingdom may have accepted this decree, but the connection dropped before the response arrived. Retry will reuse the same decree request and idempotency key so Kingdom can recover without duplicating decrees. Discard recovery only if you intentionally want to abandon that replay path.</>
+	                      : <>Kingdom rejected the decree request before it was accepted. Update the decree fields if needed, then issue the decree again.</>}
 	                </span>
 	              </div>
 	            ) : null}
@@ -950,9 +1054,11 @@ export function DecreeForm({
 	              <div className="flex items-start gap-2 rounded-md border border-gold/35 bg-gold/10 px-3 py-2 text-xs text-gold">
 	                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
 	                <span>
-	                  {runRecoveryMode === "replay"
-	                    ? <>Decree <span className="font-mono">{dispatchSession.decreeId}</span> was issued, but the connection dropped before Kingdom could confirm whether the run started. Retry will reuse the same run request and idempotency key so Kingdom can recover without duplicating work. Discard recovery only if you intentionally want to abandon that replay path.</>
-	                    : <>Decree <span className="font-mono">{dispatchSession.decreeId}</span> was issued, but Kingdom rejected the run start request before it was accepted. Update the run controls if needed, or start a new decree.</>}
+	                  {runRecoveryMode === "pending"
+	                    ? <>Decree <span className="font-mono">{dispatchSession.decreeId}</span> was issued and the run start remains pending. Retry will reuse the same request and idempotency key; starting over with a new key is unsafe.</>
+	                    : runRecoveryMode === "replay"
+	                      ? <>Decree <span className="font-mono">{dispatchSession.decreeId}</span> was issued, but the connection dropped before Kingdom could confirm whether the run started. Retry will reuse the same run request and idempotency key so Kingdom can recover without duplicating work. Discard recovery only if you intentionally want to abandon that replay path.</>
+	                      : <>Decree <span className="font-mono">{dispatchSession.decreeId}</span> was issued, but Kingdom rejected the run start request before it was accepted. Update the run controls if needed, or start a new decree.</>}
 	                </span>
 	              </div>
 	            ) : null}
@@ -960,14 +1066,16 @@ export function DecreeForm({
 	              <ErrorBanner message={(createDecree.error ?? createRun.error)?.message ?? "Request failed"} />
 	            )}
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
 	              <Button type="submit" disabled={submitDisabled}>
                 {isSubmitting ? <Send className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
 	                {submitLabel}
               </Button>
-	              <Button type="button" variant={secondaryActionVariant} onClick={secondaryActionHandler} disabled={isSubmitting}>
-	                {secondaryActionLabel}
-              </Button>
+	              {!isPendingRecovery ? (
+	                <Button type="button" variant={secondaryActionVariant} onClick={secondaryActionHandler} disabled={isSubmitting}>
+	                  {secondaryActionLabel}
+	                </Button>
+	              ) : null}
             </div>
           </form>
         </CardContent>

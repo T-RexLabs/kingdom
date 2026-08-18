@@ -37,8 +37,8 @@ Provider completion note:
 
 - `provider_incomplete_turn` is the terminal provider-backed decree execution failure code for an invocation that does not produce one valid runtime-owned completion receipt the runtime can accept for success.
 - For provider-backed decree execution, missing or invalid receipt remains failure even if output text, artifacts, mailbox projections, or later export diagnostics exist.
-- Provider-backed planner operations use the same runtime-owned receipt rule: missing or invalid receipt is terminal planner-operation failure even if stream text or export diagnostics exist.
-- Planner canonical persistence is still defined by planning messages, variants, drafts, and session fields, but those writes now happen only after accepted runtime receipt settlement for the active planner invocation.
+- Provider-backed planner operations do not use a `kingdom_complete_attempt` receipt. The server settles the active planner invocation from the provider's adjudicated terminal outcome and non-empty runtime-assembled output; process exit, provisional stream text, and export diagnostics cannot independently authorize success.
+- Planner canonical persistence is still defined by planning messages, variants, drafts, and session fields. Those writes happen only after the invocation-scoped `stream_observation` evidence and server-owned settlement are recorded atomically.
 
 ### Runtime
 
@@ -52,13 +52,21 @@ Provider completion note:
 
 - `event_sequence_gap`
 - `idempotency_conflict`
+- `idempotency_key_expired`
+- `idempotency_pending`
 
 ## Retry Mapping
 
 - `transient_transport_provider_session` (retryable): `transient_transport`, `timeout`, `llm_rate_limited`, `llm_model_unavailable`, `session_lease_expired`, `container_start_failed`
-- `conditional_limited` (retryable, capped): `agent_unresponsive`, `container_oom_killed`, `tool_execution_failed`
+- `conditional_limited` (retryable, capped): `agent_unresponsive`, `container_oom_killed`, `tool_execution_failed`, `idempotency_pending`
 - `internal_runtime` (retryable, minimal): `internal_error`
-- `non_retryable` (fail-fast): `invalid_output_schema`, `policy_violation`, `idempotency_conflict`, `dependency_blocked`, `llm_invalid_response`, `llm_context_overflow`, `provider_incomplete_turn`, `provider_cancelled`, `budget_exceeded`, `event_sequence_gap`
+- `non_retryable` (fail-fast): `invalid_output_schema`, `policy_violation`, `idempotency_conflict`, `idempotency_key_expired`, `dependency_blocked`, `llm_invalid_response`, `llm_context_overflow`, `provider_incomplete_turn`, `provider_cancelled`, `budget_exceeded`, `event_sequence_gap`
+
+An `idempotency_key_expired` response is definitive: the server did not admit the mutation. Create a new key only after receiving this response. For transport failures without a response, retain the original key so a retry can recover the original result without duplicating the mutation.
+
+An `idempotency_pending` response means the original mutation may still be executing. Retry only with the same key; never replace it with a fresh key.
+
+The web UI retains pending and transport-ambiguous requests in memory and exposes only same-key recovery. `kd` retries automatically; if its retry budget is exhausted, it reports the exact key. Resume the corresponding leaf mutation with global `--idempotency-key <reported-key>` rather than rerunning with a fresh key.
 
 Retry exhaustion escalates to `chancellor` via dead-letter flow.
 

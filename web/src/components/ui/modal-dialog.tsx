@@ -5,6 +5,7 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useRef,
 } from "react";
@@ -40,31 +41,39 @@ export function ModalDialog({
 }: ModalDialogProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
+  const presenceRegisteredRef = useRef(false);
+
+  const registerPanel = useCallback((panel: HTMLDivElement | null) => {
+    panelRef.current = panel;
+    if (!panel || !open || presenceRegisteredRef.current) {
+      return;
+    }
+
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusables = listFocusable(panel);
+    if (focusables.length > 0) {
+      focusables[0]?.focus();
+    } else {
+      panel.focus();
+    }
+    presenceRegisteredRef.current = true;
+    setModalPresence(true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
-    setModalPresence(true);
-
-    previousFocusRef.current = document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-
-    const timer = window.setTimeout(() => {
-      const focusables = listFocusable(panelRef.current);
-      if (focusables.length > 0) {
-        focusables[0]?.focus();
-        return;
-      }
-      panelRef.current?.focus();
-    }, 0);
-
     return () => {
-      window.clearTimeout(timer);
-      setModalPresence(false);
+      if (presenceRegisteredRef.current) {
+        presenceRegisteredRef.current = false;
+        setModalPresence(false);
+      }
       const previousFocus = previousFocusRef.current;
+      previousFocusRef.current = null;
       if (previousFocus) {
         window.requestAnimationFrame(() => {
           if (previousFocus.isConnected) {
@@ -128,7 +137,7 @@ export function ModalDialog({
         }}
       >
         <div
-          ref={panelRef}
+          ref={registerPanel}
           role="dialog"
           tabIndex={-1}
           aria-label={ariaLabel}

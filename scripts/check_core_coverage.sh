@@ -10,11 +10,20 @@ mkdir -p "$ROOT_DIR/.tmp"
 
 pushd "$ROOT_DIR" >/dev/null
 
-go test -coverprofile="$PROFILE_PATH" \
+# Core state is exercised through its owning API, planning, and orchestration
+# services as well as package-local tests. Instrument the core packages across
+# those consumers so the gate measures real behavioral coverage rather than
+# treating integration-owned paths as uncovered.
+go test \
+  -coverpkg=./internal/core/workflow,./internal/state,./internal/core/policyguard,./internal/core/schemas \
+  -coverprofile="$PROFILE_PATH" \
   ./internal/core/workflow \
   ./internal/state \
   ./internal/core/policyguard \
-  ./internal/core/schemas
+  ./internal/core/schemas \
+  ./internal/planning \
+  ./internal/api \
+  ./internal/orchestration
 
 TOTAL_COVERAGE="$(go tool cover -func="$PROFILE_PATH" | awk '/^total:/ {gsub("%", "", $3); print $3}')"
 

@@ -4,6 +4,500 @@
  */
 
 export interface paths {
+    "/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create or reuse a browser session from a direct loopback request.
+         * @description Available only to an exact same-origin browser request whose immediate peer and Host are loopback. The operation accepts no query or request body.
+         */
+        post: operations["createAuthSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List saved external-source connections without credential material. */
+        get: operations["listConnections"];
+        put?: never;
+        /** Save GitHub App installation metadata. */
+        post: operations["createConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resume the latest restart-scoped GitHub manifest flow bound to this browser session and origin. */
+        get: operations["getCurrentGitHubManifestFlow"];
+        put?: never;
+        /** Start user-owned GitHub App manifest registration for this exact browser session and origin. */
+        post: operations["startGitHubManifestFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/setup-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Report whether this local runtime has the public shared GitHub App configured. */
+        get: operations["getGitHubSetupOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/device-flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start restart-scoped GitHub device authorization bound to this browser session and exact origin. */
+        post: operations["startGitHubDeviceFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/device-flows/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read safe status for a shared-App flow bound to this browser and origin. */
+        get: operations["getGitHubDeviceFlow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/device-flows/{id}/poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Perform one server-paced provider device authorization poll. */
+        post: operations["pollGitHubDeviceFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/device-flows/{id}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-fetch exact eligible installations after the user installs the App without reauthorizing. */
+        post: operations["refreshGitHubDeviceCandidates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/device-flows/{id}/finalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-verify one selected installation and atomically finalize or reconnect a shared connection. */
+        post: operations["finalizeGitHubDeviceFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read safe status for a flow bound to this browser session and exact origin. */
+        get: operations["getGitHubManifestFlow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/{id}/conversion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Exchange the one-time manifest code and prepare installation. */
+        post: operations["convertGitHubManifestFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/{id}/installation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume installation for a converted manifest flow. */
+        post: operations["getGitHubManifestInstallationURL"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/{id}/authorization": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start explicit temporary GitHub App user authorization with PKCE. */
+        post: operations["authorizeGitHubManifestFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/{id}/completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prove user and App installation ownership and atomically finalize a healthy connection. */
+        post: operations["completeGitHubManifestFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/manifest-callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Receive a one-time GitHub manifest callback without relying on the browser session cookie. */
+        get: operations["receiveGitHubManifestCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/setup-callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Record an untrusted claimed installation identity under one-time state authority. */
+        get: operations["receiveGitHubSetupCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/github/manifest-flows/oauth-callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Receive a one-time temporary GitHub App OAuth callback without relying on the browser session cookie. */
+        get: operations["receiveGitHubOAuthCallback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        /** Get saved connection metadata and redacted credential state. */
+        get: operations["getConnection"];
+        put?: never;
+        post?: never;
+        /**
+         * Tombstone a connection and remove its local credential.
+         * @description Tombstone the connection and remove its local key without deleting provenance. This does not uninstall the GitHub App.
+         */
+        delete: operations["deleteConnection"];
+        options?: never;
+        head?: never;
+        /** Edit metadata or enable or disable a saved connection. */
+        patch: operations["updateConnection"];
+        trace?: never;
+    };
+    "/connections/{id}/health-checks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate App identity, installation state, and exact permissions. */
+        post: operations["checkConnectionHealth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}/repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List repositories currently granted to the installation. */
+        get: operations["listConnectionRepositories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}/repositories/{repositoryId}/issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse or search issues in one granted repository. */
+        get: operations["listConnectionIssues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}/repositories/{repositoryId}/issues/{number}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview an issue without creating durable provenance.
+         * @description Transient no-store issue preview. This operation creates no durable source or link.
+         */
+        get: operations["previewConnectionIssue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-captures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Capture an immutable issue snapshot for decree prefill. */
+        post: operations["captureExternalSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-snapshots/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one immutable external-source snapshot. */
+        get: operations["getExternalSourceSnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-links/{id}/refreshes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Manually check a linked source and append an observation. */
+        post: operations["refreshExternalSourceLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-snapshots/{id}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded immutable snapshot comments with opaque pagination. */
+        get: operations["listExternalSourceSnapshotComments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-links/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read immutable snapshot history for one linked source. */
+        get: operations["getExternalSourceLinkHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/external-source-links/{id}/adoptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Adopt the latest observed planning source explicitly.
+         * @description Explicitly adopt the latest observed snapshot for future planning operations only.
+         */
+        post: operations["adoptExternalSourceLink"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -90,6 +584,26 @@ export interface paths {
         head?: never;
         /** Update a planning session title or planner model. */
         patch: operations["updatePlanningSession"];
+        trace?: never;
+    };
+    "/planning-sessions/{id}/external-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach a GitHub issue to an existing active planning session.
+         * @description Fetches the issue before atomically capturing immutable provenance, creating a unique planning link, and adopting its initial snapshot for future operations. Transcript messages and the planning context snapshot are unchanged.
+         */
+        post: operations["attachPlanningSessionExternalSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/planning-sessions/{id}/messages": {
@@ -796,65 +1310,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/artifacts/{id}/preview-session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a short-lived browser preview session for a previewable artifact. */
-        post: operations["createArtifactPreviewSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/preview/{token}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch preview root content by token.
-         * @description Returns inline preview content using the artifact MIME type recorded for the preview session.
-         */
-        get: operations["getArtifactPreviewContent"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/preview/{token}/{assetPath}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch linked preview asset content by token and relative path.
-         * @description Browser preview HTML may request linked assets under this route.
-         *
-         *     `assetPath` is an opaque slash-preserving relative path emitted by the preview content. This route intentionally stays outside the strict request-validation middleware because standard OpenAPI path parameters do not model arbitrary nested asset paths without changing the public browser URL contract.
-         */
-        get: operations["getArtifactPreviewAssetContent"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/events/stream": {
         parameters: {
             query?: never;
@@ -944,6 +1399,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AuthSession: {
+            actor_id: string;
+            role_id: string;
+            csrf_token: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
         HealthResponse: {
             /** @enum {string} */
             status: "ok";
@@ -1149,7 +1611,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */
@@ -1160,7 +1622,318 @@ export interface components {
                 correlation_id: string;
                 /** Format: date-time */
                 occurred_at: string;
+                /** Format: date-time */
+                retry_at?: string;
             };
+        };
+        Connection: {
+            connection_id: string;
+            /** @enum {string} */
+            provider: "github";
+            /** @enum {string} */
+            credential_strategy: "app_private_key" | "user_access_token";
+            display_name: string;
+            app_id: string;
+            client_id: string;
+            app_slug: string;
+            installation_id: string;
+            installation_account_id?: string;
+            installation_account_login?: string;
+            /** @enum {string} */
+            lifecycle: "enabled" | "disabled" | "removal_pending" | "removed";
+            /** @enum {string} */
+            health_class: "missing_credential" | "never_checked" | "healthy" | "permission_mismatch" | "revoked" | "suspended" | "rate_limited" | "unavailable" | "disabled" | "removal_pending" | "removed";
+            failure_class?: string;
+            /** @enum {string} */
+            credential_state: "missing" | "present";
+            /** Format: date-time */
+            last_checked_at?: string;
+            /** Format: date-time */
+            last_success_at?: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ConnectionList: {
+            items: components["schemas"]["Connection"][];
+        };
+        CreateConnectionRequest: {
+            /** @enum {string} */
+            provider: "github";
+            /** @enum {string} */
+            credential_strategy: "app_private_key";
+            display_name: string;
+            app_id: string;
+            client_id: string;
+            app_slug?: string;
+            installation_id: string;
+        };
+        StartGitHubManifestFlowRequest: {
+            /** @enum {string} */
+            owner_type: "personal" | "organization";
+            organization?: string;
+        };
+        StartGitHubManifestFlowPayload: {
+            flow_id: string;
+            /** Format: uri */
+            form_action: string;
+            manifest: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        GitHubManifestFlowStatus: {
+            flow_id: string;
+            /** @enum {string} */
+            stage: "awaiting_app_creation" | "app_created" | "converting_app" | "awaiting_installation" | "installation_received" | "awaiting_authorization" | "authorization_received" | "validating_connection" | "completed" | "failed";
+            /** Format: date-time */
+            expires_at: string;
+            app_name?: string;
+            app_slug?: string;
+            connection_id?: string;
+            failure?: string;
+        };
+        GitHubInstallationURL: {
+            /** Format: uri */
+            installation_url: string;
+        };
+        GitHubAuthorizationURL: {
+            /** Format: uri */
+            authorization_url: string;
+        };
+        GitHubSetupOptions: {
+            shared_enabled: boolean;
+            app_slug?: string;
+            /** Format: uri */
+            install_url?: string;
+        };
+        StartGitHubDeviceFlowRequest: {
+            connection_id?: string;
+        };
+        GitHubInstallationCandidate: {
+            installation_id: string;
+            display_name: string;
+            account_id: string;
+            account_login: string;
+            app_id: string;
+            client_id: string;
+            app_slug: string;
+        };
+        GitHubDeviceFlowStatus: {
+            flow_id: string;
+            /** @enum {string} */
+            stage: "awaiting_authorization" | "discovering_installations" | "selecting_installation" | "needs_installation" | "finalizing" | "completed" | "access_denied" | "expired" | "failed";
+            user_code?: string;
+            /** Format: uri */
+            verification_uri?: string;
+            /** Format: date-time */
+            expires_at: string;
+            interval_seconds: number;
+            /** Format: date-time */
+            retry_at?: string;
+            /** Format: uri */
+            install_url?: string;
+            candidates: components["schemas"]["GitHubInstallationCandidate"][];
+            connection_id?: string;
+            failure?: string;
+        };
+        FinalizeGitHubDeviceFlowRequest: {
+            installation_id: string;
+            display_name: string;
+        };
+        UpdateConnectionRequest: {
+            enabled?: boolean;
+            display_name?: string;
+        };
+        Repository: {
+            id: string;
+            locator: string;
+            /** Format: uri */
+            canonical_url: string;
+        };
+        RepositoryPage: {
+            items: components["schemas"]["Repository"][];
+            next_cursor?: string;
+        };
+        NormalizedIssue: {
+            title: string;
+            body: string;
+            /** @enum {string} */
+            state: "open" | "closed";
+            repository: string;
+            issue_number: number;
+            /** Format: uri */
+            canonical_url: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        IssueSummary: {
+            native_id: string;
+            issue: components["schemas"]["NormalizedIssue"];
+            comment_count: number;
+        };
+        IssuePage: {
+            items: components["schemas"]["IssueSummary"][];
+            next_cursor?: string;
+            incomplete_results: boolean;
+            /** @enum {integer} */
+            search_result_cap: 1000;
+        };
+        ExternalImportProfile: {
+            /** @default true */
+            include_comment_count: boolean;
+            /**
+             * @description Comment bodies imply comment count. At most 100 bodies, 32 KiB each and 128 KiB aggregate are retained.
+             * @default false
+             */
+            include_comments: boolean;
+        };
+        ExternalComment: {
+            provider_comment_id: string;
+            author: string;
+            body: string;
+            /** Format: uri */
+            canonical_url: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            original_bytes: number;
+            retained_bytes: number;
+            /** @enum {string} */
+            truncation_reason?: "comment_byte_limit" | "aggregate_byte_limit";
+        };
+        /** @description Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors. */
+        IssuePreview: {
+            native_id: string;
+            repository_id: string;
+            issue: components["schemas"]["NormalizedIssue"];
+            profile: components["schemas"]["ExternalImportProfile"];
+            comment_count: number;
+            comments: components["schemas"]["ExternalComment"][];
+            fetched_comment_count: number;
+            fetched_comment_pages: number;
+            omitted_comment_count: number;
+            omitted_comment_pages: number;
+            etag_present: boolean;
+        };
+        ExternalIntake: {
+            connection_id: string;
+            repository_id: string;
+            issue_number: number;
+            /** @default true */
+            include_comment_count: boolean;
+            /** @default false */
+            include_comments: boolean;
+        };
+        CaptureResult: {
+            source_id: string;
+            snapshot_id: string;
+        };
+        /** @description Immutable normalized snapshot metadata. Comment bodies are available only through the paginated comments route. */
+        ExternalSnapshotResponse: {
+            snapshot_id: string;
+            source_id: string;
+            issue: components["schemas"]["NormalizedIssue"];
+            profile: components["schemas"]["ExternalImportProfile"];
+            /** Format: date-time */
+            provider_updated_at: string;
+            /** Format: date-time */
+            fetched_at: string;
+            comment_count: number;
+            fetched_comment_count: number;
+            fetched_comment_pages: number;
+            omitted_comment_count: number;
+            omitted_comment_pages: number;
+            retained_comment_count: number;
+            retained_comment_bytes: number;
+            comments_truncated: boolean;
+        };
+        ExternalLink: {
+            link_id: string;
+            /** @enum {string} */
+            target_kind: "planning_session" | "decree";
+            target_id: string;
+            source_id: string;
+            used_snapshot_id: string;
+            latest_snapshot_id: string;
+            active_snapshot_id?: string;
+            status: components["schemas"]["ExternalSourceStatus"];
+            /** Format: date-time */
+            checked_at?: string;
+            row_version: number;
+            /** @enum {string} */
+            provider: "github";
+            repository: string;
+            /** Format: uri */
+            canonical_url: string;
+            issue_number: number;
+            /** Format: date-time */
+            created_at: string;
+        };
+        ExternalRefreshChanges: {
+            title: boolean;
+            body: boolean;
+            state: boolean;
+            repository: boolean;
+            issue_number: boolean;
+            canonical_url: boolean;
+            created_at: boolean;
+            updated_at: boolean;
+            comment_count: boolean;
+            comments: boolean;
+        };
+        ExternalRefreshResult: {
+            link: components["schemas"]["ExternalLink"];
+            /** @enum {string} */
+            outcome: "unchanged" | "changed" | "superseded" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
+            snapshot_created: boolean;
+            changes: components["schemas"]["ExternalRefreshChanges"];
+            /** Format: date-time */
+            retry_at?: string;
+            message: string;
+        };
+        ExternalCommentPage: {
+            items: components["schemas"]["ExternalComment"][];
+            next_cursor?: string;
+        };
+        ExternalHistoryEntry: {
+            snapshot_id: string;
+            predecessor_snapshot_id?: string;
+            /** Format: date-time */
+            provider_updated_at: string;
+            /** Format: date-time */
+            fetched_at: string;
+            content_digest: string;
+        };
+        ExternalHistoryPage: {
+            items: components["schemas"]["ExternalHistoryEntry"][];
+            next_cursor?: string;
+        };
+        ExternalAdoptionResult: {
+            /** @enum {string} */
+            status: "adopted";
+        };
+        ExternalProvenanceSummary: {
+            link_id: string;
+            /** @enum {string} */
+            provider: "github";
+            repository: string;
+            issue_number: number;
+            /** Format: uri */
+            canonical_url: string;
+            used_snapshot_id: string;
+            active_snapshot_id?: string;
+            latest_snapshot_id: string;
+            status: components["schemas"]["ExternalSourceStatus"];
+        };
+        /** @enum {string} */
+        ExternalSourceStatus: "never_checked" | "unchanged" | "changed" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
+        PlanningLineage: {
+            planning_session_id: string;
+            planning_draft_id: string;
         };
         /**
          * @example {
@@ -1178,6 +1951,9 @@ export interface components {
             metadata?: {
                 [key: string]: unknown;
             };
+            planning_lineage?: components["schemas"]["PlanningLineage"];
+            /** @description Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field. */
+            external_source_snapshot_id?: string;
         };
         /**
          * @example {
@@ -1199,10 +1975,12 @@ export interface components {
             };
             /** Format: date-time */
             created_at: string;
+            external_sources: components["schemas"]["ExternalProvenanceSummary"][];
         };
         CreatePlanningSessionRequest: {
             title?: string;
             model_selection?: components["schemas"]["PlanningAgentModelSelection"];
+            external_intake?: components["schemas"]["ExternalIntake"];
         };
         CreatePlanningSessionResult: {
             session: components["schemas"]["PlanningSessionDetail"];
@@ -1263,6 +2041,7 @@ export interface components {
             project_root: string;
             auto_title_eligible: boolean;
             model_selection: components["schemas"]["PlanningAgentModelSelection"];
+            external_sources: components["schemas"]["ExternalProvenanceSummary"][];
         };
         PlanningReplyOperationRequest: {
             content_markdown: string;
@@ -2020,19 +2799,14 @@ export interface components {
         };
         ArtifactResponse: {
             artifact_id: string;
+            /** @enum {string} */
+            artifact_action: "write" | "delete";
             name: string;
             mime: string;
             size_bytes: number;
-            sha256: string;
+            sha256?: string;
             /** Format: uri */
-            download_url: string;
-        };
-        CreateArtifactPreviewSessionRequest: Record<string, never>;
-        CreateArtifactPreviewSessionResult: {
-            token: string;
-            preview_url: string;
-            /** Format: date-time */
-            expires_at: string;
+            download_url?: string;
         };
         RunArtifactsResponse: {
             run_id: string;
@@ -2042,16 +2816,16 @@ export interface components {
             artifact_id: string;
             /** @enum {string} */
             artifact_kind: "deliverable" | "verification" | "orchestration_meta";
+            /** @enum {string} */
+            artifact_action: "write" | "delete";
             name: string;
             mime: string;
             path: string;
             size_bytes: number;
-            sha256: string;
+            sha256?: string;
             /** Format: date-time */
             created_at: string;
-            previewable: boolean;
-            content_url: string;
-            download_url: string;
+            download_url?: string;
         };
     };
     responses: {
@@ -2118,11 +2892,11 @@ export interface components {
                  * @example {
                  *       "error": {
                  *         "code": "policy_violation",
-                 *         "message": "missing authentication headers",
+                 *         "message": "authentication required",
                  *         "retryable": false,
                  *         "category": "core",
                  *         "details": {},
-                 *         "correlation_id": "api.require_actor_headers",
+                 *         "correlation_id": "api.auth",
                  *         "occurred_at": "2026-04-30T12:00:00Z"
                  *       }
                  *     }
@@ -2140,13 +2914,11 @@ export interface components {
                  * @example {
                  *       "error": {
                  *         "code": "policy_violation",
-                 *         "message": "plan approval endpoint is allfather-only",
+                 *         "message": "same-origin CSRF validation failed",
                  *         "retryable": false,
                  *         "category": "core",
-                 *         "details": {
-                 *           "role_id": "chancellor"
-                 *         },
-                 *         "correlation_id": "api.create_plan_approval",
+                 *         "details": {},
+                 *         "correlation_id": "api.auth.csrf",
                  *         "occurred_at": "2026-04-30T12:00:00Z"
                  *       }
                  *     }
@@ -2226,17 +2998,24 @@ export interface components {
         };
     };
     parameters: {
-        ActorId: string;
-        RoleId: string;
+        /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
         IdempotencyKey: string;
+        /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+        CSRFToken: string;
+        BrowserBootstrap: "1";
+        Origin: string;
         RunId: string;
         AttemptId: string;
         DecreeId: string;
+        ConnectionId: string;
+        ManifestFlowId: string;
+        DeviceFlowId: string;
+        /** @description Provider-native repository ID returned by installation discovery. */
+        RepositoryId: string;
+        SnapshotId: string;
+        ExternalLinkId: string;
         NodeKey: string;
         ArtifactId: string;
-        PreviewToken: string;
-        /** @description Relative preview asset path as emitted by preview content. Browser requests may include nested slash-separated segments. */
-        PreviewAssetPath: string;
         MessageId: string;
         RunIdQuery: string;
         WindowMinutes: number;
@@ -2260,13 +3039,945 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    getHealth: {
+    createAuthSession: {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                "X-Kingdom-Browser-Bootstrap": components["parameters"]["BrowserBootstrap"];
+                Origin: components["parameters"]["Origin"];
             };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing browser session reused. */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSession"];
+                };
+            };
+            /** @description Browser session created. */
+            201: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthSession"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            403: components["responses"]["ForbiddenError"];
+            429: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Saved connections. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionList"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    createConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getCurrentGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current safe flow status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubManifestFlowStatus"];
+                };
+            };
+            /** @description No active flow is bound to this browser session and origin. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    startGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartGitHubManifestFlowRequest"];
+            };
+        };
+        responses: {
+            /** @description Transient GitHub form action and manifest. The response is replayable only within the current process and is never persisted. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartGitHubManifestFlowPayload"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getGitHubSetupOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe setup options. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubSetupOptions"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    startGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartGitHubDeviceFlowRequest"];
+            };
+        };
+        responses: {
+            /** @description Safe device authorization instructions without provider device or token secrets. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            429: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["DeviceFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe flow status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    pollGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["DeviceFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe flow status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            429: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    refreshGitHubDeviceCandidates: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["DeviceFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe refreshed candidates. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    finalizeGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["DeviceFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinalizeGitHubDeviceFlowRequest"];
+            };
+        };
+        responses: {
+            /** @description Healthy finalized connection. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Safe flow status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubManifestFlowStatus"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    convertGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transient installation URL. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubInstallationURL"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getGitHubManifestInstallationURL: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transient installation URL. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubInstallationURL"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    authorizeGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Transient GitHub authorization URL. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubAuthorizationURL"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    completeGitHubManifestFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ManifestFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Healthy finalized connection. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    receiveGitHubManifestCallback: {
+        parameters: {
+            query: {
+                state: string;
+                code: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the stored exact-origin Connections page without callback query data. */
+            303: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    receiveGitHubSetupCallback: {
+        parameters: {
+            query: {
+                state: string;
+                installation_id: string;
+                setup_action: "install";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the stored exact-origin Connections page without callback query data. */
+            303: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    receiveGitHubOAuthCallback: {
+        parameters: {
+            query: {
+                state: string;
+                code: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the stored exact-origin Connections page without callback query data. */
+            303: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    deleteConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connection removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    updateConnection: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateConnectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    checkConnectionHealth: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listConnectionRepositories: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Installation repositories */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepositoryPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listConnectionIssues: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                state?: "open" | "closed" | "all";
+                search?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+                /** @description Provider-native repository ID returned by installation discovery. */
+                repositoryId: components["parameters"]["RepositoryId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue-only results; pull requests are excluded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuePage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    previewConnectionIssue: {
+        parameters: {
+            query?: {
+                include_comment_count?: boolean;
+                include_comments?: boolean;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+                /** @description Provider-native repository ID returned by installation discovery. */
+                repositoryId: components["parameters"]["RepositoryId"];
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Issue preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IssuePreview"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    captureExternalSource: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalIntake"];
+            };
+        };
+        responses: {
+            /** @description Compact durable capture identity. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getExternalSourceSnapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable normalized snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalSnapshotResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    refreshExternalSourceLink: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ExternalLinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Compact refresh result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalRefreshResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listExternalSourceSnapshotComments: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshot comments page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalCommentPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getExternalSourceLinkHistory: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ExternalLinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable source version history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalHistoryPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    adoptExternalSourceLink: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ExternalLinkId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Snapshot adopted. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalAdoptionResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2282,9 +3993,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path?: never;
             cookie?: never;
@@ -2306,16 +4018,15 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
     getDecree: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["DecreeId"];
             };
@@ -2343,10 +4054,7 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2370,9 +4078,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path?: never;
             cookie?: never;
@@ -2400,10 +4109,7 @@ export interface operations {
     getPlanningSession: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["PlanningSessionId"];
             };
@@ -2430,9 +4136,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["PlanningSessionId"];
@@ -2458,9 +4165,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["PlanningSessionId"];
@@ -2488,16 +4196,49 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
+    attachPlanningSessionExternalSource: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["PlanningSessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExternalIntake"];
+            };
+        };
+        responses: {
+            /** @description Attached planning source. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalProvenanceSummary"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
     listPlanningSessionMessages: {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 before?: components["parameters"]["PlanningMessagesBefore"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["PlanningSessionId"];
             };
@@ -2523,10 +4264,7 @@ export interface operations {
     getPlanningSessionPlan: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["PlanningSessionId"];
             };
@@ -2552,10 +4290,7 @@ export interface operations {
     listAcpAgents: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2578,10 +4313,7 @@ export interface operations {
     getAcpAgent: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 name: components["parameters"]["AcpAgentName"];
             };
@@ -2608,9 +4340,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path?: never;
             cookie?: never;
@@ -2639,10 +4372,7 @@ export interface operations {
     getAcpRun: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 runId: components["parameters"]["AcpRunId"];
             };
@@ -2668,9 +4398,7 @@ export interface operations {
     streamAcpRunEvents: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+            header?: {
                 "Last-Event-ID"?: components["parameters"]["LastEventId"];
             };
             path: {
@@ -2698,10 +4426,7 @@ export interface operations {
     getAcpRunActivity: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 runId: components["parameters"]["AcpRunId"];
             };
@@ -2728,9 +4453,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 runId: components["parameters"]["AcpRunId"];
@@ -2762,9 +4488,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["PlanningSessionId"];
@@ -2792,9 +4519,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["PlanningSessionId"];
@@ -2822,10 +4550,7 @@ export interface operations {
     listPlanningMessageVariants: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["PlanningSessionId"];
                 messageId: string;
@@ -2853,9 +4578,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path?: never;
             cookie?: never;
@@ -2883,10 +4609,7 @@ export interface operations {
     listRoles: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2909,10 +4632,7 @@ export interface operations {
     listAgents: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2937,10 +4657,7 @@ export interface operations {
             query?: {
                 refresh?: boolean;
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2964,10 +4681,7 @@ export interface operations {
     getWorkspaceCapabilities: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -2996,10 +4710,7 @@ export interface operations {
                 /** @description Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms. */
                 search?: components["parameters"]["RunSearch"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3023,9 +4734,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path?: never;
             cookie?: never;
@@ -3057,9 +4769,7 @@ export interface operations {
                 follow?: components["parameters"]["Follow"];
                 poll_ms?: components["parameters"]["PollMs"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+            header?: {
                 "Last-Event-ID"?: components["parameters"]["LastEventId"];
             };
             path?: never;
@@ -3084,10 +4794,7 @@ export interface operations {
     getRun: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3113,9 +4820,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3145,10 +4853,7 @@ export interface operations {
     getRunPlan: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3173,10 +4878,7 @@ export interface operations {
     listRunPlanReviews: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3204,10 +4906,7 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3233,10 +4932,7 @@ export interface operations {
     listRunArtifacts: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3261,10 +4957,7 @@ export interface operations {
     getRunArtifactsArchive: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3289,10 +4982,7 @@ export interface operations {
     getRunGraph: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3318,10 +5008,7 @@ export interface operations {
     listRunExecutions: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3347,10 +5034,7 @@ export interface operations {
     getRunExecution: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
                 attemptId: components["parameters"]["AttemptId"];
@@ -3377,10 +5061,7 @@ export interface operations {
     getRunExecutionActivity: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
                 attemptId: components["parameters"]["AttemptId"];
@@ -3407,10 +5088,7 @@ export interface operations {
     listRunAgents: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3439,10 +5117,7 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3475,10 +5150,7 @@ export interface operations {
                 /** @description Filter handoff messages by communication type (`instruction_dispatched`, `response_received`, `approval_request`, `approval_response`). */
                 communication_type?: string;
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
             };
@@ -3503,10 +5175,7 @@ export interface operations {
     getRunMailboxMessage: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["RunId"];
                 messageId: components["parameters"]["MessageId"];
@@ -3533,8 +5202,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3560,9 +5231,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3595,9 +5267,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3630,9 +5303,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3666,9 +5340,10 @@ export interface operations {
         parameters: {
             query?: never;
             header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
                 "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
             };
             path: {
                 id: components["parameters"]["RunId"];
@@ -3701,10 +5376,7 @@ export interface operations {
     getArtifact: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["ArtifactId"];
             };
@@ -3728,13 +5400,8 @@ export interface operations {
     };
     getArtifactContent: {
         parameters: {
-            query?: {
-                download?: boolean;
-            };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            query?: never;
+            header?: never;
             path: {
                 id: components["parameters"]["ArtifactId"];
             };
@@ -3742,7 +5409,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Artifact content. */
+            /** @description Artifact content delivered as a download. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -3753,91 +5420,6 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
-            default: components["responses"]["ErrorResponse"];
-        };
-    };
-    createArtifactPreviewSession: {
-        parameters: {
-            query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                id: components["parameters"]["ArtifactId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["CreateArtifactPreviewSessionRequest"];
-            };
-        };
-        responses: {
-            /** @description Preview session created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateArtifactPreviewSessionResult"];
-                };
-            };
-            400: components["responses"]["BadRequestError"];
-            401: components["responses"]["UnauthorizedError"];
-            404: components["responses"]["NotFoundError"];
-            default: components["responses"]["ErrorResponse"];
-        };
-    };
-    getArtifactPreviewContent: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                token: components["parameters"]["PreviewToken"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Preview content bytes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            404: components["responses"]["NotFoundError"];
-            default: components["responses"]["ErrorResponse"];
-        };
-    };
-    getArtifactPreviewAssetContent: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                token: components["parameters"]["PreviewToken"];
-                /** @description Relative preview asset path as emitted by preview content. Browser requests may include nested slash-separated segments. */
-                assetPath: components["parameters"]["PreviewAssetPath"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Preview asset content bytes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": string;
-                };
-            };
-            400: components["responses"]["BadRequestError"];
-            404: components["responses"]["NotFoundError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -3848,9 +5430,7 @@ export interface operations {
                 follow?: components["parameters"]["Follow"];
                 poll_ms?: components["parameters"]["PollMs"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
+            header?: {
                 "Last-Event-ID"?: components["parameters"]["LastEventId"];
             };
             path?: never;
@@ -3875,10 +5455,7 @@ export interface operations {
     getMetricsRuntime: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3901,10 +5478,7 @@ export interface operations {
     getDashboardSnapshot: {
         parameters: {
             query?: never;
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3929,10 +5503,7 @@ export interface operations {
             query?: {
                 window_minutes?: components["parameters"]["WindowMinutes"];
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -3959,10 +5530,7 @@ export interface operations {
                 /** @description When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted. */
                 run_id?: string;
             };
-            header: {
-                "X-Actor-Id": components["parameters"]["ActorId"];
-                "X-Role-Id": components["parameters"]["RoleId"];
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };

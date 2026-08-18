@@ -20,6 +20,14 @@ func newSessionService(deps runtimeDeps, runner *operationRunner) *sessionServic
 }
 
 func (s *sessionService) CreateSession(ctx context.Context, title string, modelSelectionJSON string) (state.PlanningSession, error) {
+	return s.createSession(ctx, title, modelSelectionJSON, nil, "", "", "")
+}
+
+func (s *sessionService) CreateSessionFromExternalIssue(ctx context.Context, title string, modelSelectionJSON string, capture state.CaptureExternalIssueRequest, linkID, adoptionID, actorID string) (state.PlanningSession, error) {
+	return s.createSession(ctx, title, modelSelectionJSON, &capture, linkID, adoptionID, actorID)
+}
+
+func (s *sessionService) createSession(ctx context.Context, title string, modelSelectionJSON string, capture *state.CaptureExternalIssueRequest, linkID, adoptionID, actorID string) (state.PlanningSession, error) {
 	if s == nil || s.deps.store == nil {
 		return state.PlanningSession{}, fmt.Errorf("planning service store is required")
 	}
@@ -34,12 +42,16 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 	if err != nil {
 		return state.PlanningSession{}, fmt.Errorf("marshal opening question: %w", err)
 	}
+	externalAuditEventID := ""
+	if capture != nil {
+		externalAuditEventID = s.deps.nextID("external_audit")
+	}
 
 	session, bootstrapOperation, err := s.deps.store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
 		Session: state.CreatePlanningSessionRequest{
-			PlanningSessionID:        sessionID,
-			Title:                    firstNonEmpty(strings.TrimSpace(title), defaultTitle),
-			TitleState:               defaultPlanningSessionTitleState(title),
+			PlanningSessionID:   sessionID,
+			Title:               firstNonEmpty(strings.TrimSpace(title), defaultTitle),
+			TitleState:          defaultPlanningSessionTitleState(title),
 			LifecycleState:      state.PlanningSessionLifecycleStateActive,
 			ConversationState:   state.PlanningSessionConversationStateReady,
 			ActiveLeafMessageID: messageID,
@@ -69,6 +81,11 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 			LeaseVersion:       0,
 			CreatedAt:          now,
 		},
+		ExternalCapture:      capture,
+		ExternalLinkID:       linkID,
+		ExternalAdoptionID:   adoptionID,
+		ExternalAuditEventID: externalAuditEventID,
+		ActorID:              actorID,
 	})
 	if err != nil {
 		return state.PlanningSession{}, err

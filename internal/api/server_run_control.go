@@ -26,7 +26,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.cancel_run")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.cancel_run")
 	if !ok {
 		return
 	}
@@ -135,9 +135,8 @@ func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID := strings.TrimSpace(r.Header.Get(actorIDHeader))
-	roleID := strings.TrimSpace(r.Header.Get(roleIDHeader))
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.retry_node"); !ok {
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.retry_node")
+	if !ok {
 		return
 	}
 	runStatus, err := s.runStatusForRun(r.Context(), runID)
@@ -195,9 +194,8 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID := strings.TrimSpace(r.Header.Get(actorIDHeader))
-	roleID := strings.TrimSpace(r.Header.Get(roleIDHeader))
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.rerun_from_node"); !ok {
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.rerun_from_node")
+	if !ok {
 		return
 	}
 	runStatus, err := s.runStatusForRun(r.Context(), runID)
@@ -283,12 +281,8 @@ func (s *Server) handleCreatePlanApproval(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.create_plan_approval")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.create_plan_approval")
 	if !ok {
-		return
-	}
-	if roleID != "allfather" {
-		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "plan approval endpoint is allfather-only", "api.create_plan_approval", map[string]any{"role_id": roleID})
 		return
 	}
 
@@ -459,12 +453,8 @@ func (s *Server) handleCreateFinalApproval(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.create_final_approval")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.create_final_approval")
 	if !ok {
-		return
-	}
-	if roleID != "allfather" {
-		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "final approval endpoint is allfather-only", "api.create_final_approval", map[string]any{"role_id": roleID})
 		return
 	}
 

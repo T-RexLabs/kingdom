@@ -3,19 +3,23 @@
 This document explains the fields in `.kingdom/config.yaml`.
 
 It is intentionally limited to the actual config file shape used by local installed-mode Kingdom.
+Unknown fields are rejected so retired or misspelled settings cannot be silently ignored.
 
 ## What This File Controls
 
 - local runtime listen address
 - API base path
-- preview session TTL
-- local operator identity defaults
+- no credentials or operator authority; local authentication lives under `.kingdom/secrets/`
 - provider startup and binary settings
 - publish mode defaults
 - worktree retention behavior
 - default local approval mode
 
 This file does not define workflow structure, retry policy, role permissions, or per-run model selection rules.
+
+It also never contains local operator credentials, GitHub private keys, App/client secrets, OAuth tokens, or installation tokens. Operator auth lives at `.kingdom/secrets/operator-token`; private App keys use `.kingdom/secrets/github-apps/`, and shared user tokens use `.kingdom/secrets/github-user-tokens/`. SQLite stores only opaque credential handles.
+
+GitHub provider origins are not configurable. Production registration, OAuth, and device flow use `https://github.com`; API exchanges use `https://api.github.com` with REST version `2026-03-10`. Manifest callback URLs come only from the authenticated browser request's direct origin. Shared device flow is browser-session/origin bound but callback-free.
 
 ## File Shape
 
@@ -36,11 +40,6 @@ publish:
 server:
   listen: <host:port>
   base_path: <path>
-  preview_session_ttl: <duration>
-
-operator:
-  actor_id: <string>
-  role_id: <string>
 
 provider:
   engine: opencode
@@ -51,6 +50,11 @@ provider:
   agent: <string>
   attach_url: <url>
   skip_permissions: <bool>
+
+github:
+  shared_app:
+    slug: kingdom-issue-importer
+    client_id: Iv23li1tLBTzhr70LA1J
 ```
 
 ## Field Reference
@@ -94,20 +98,8 @@ provider:
   - required
   - default scaffold value is `/api/v1`
   - normalized on read, so values like `v1` become `/v1`
-
-- `preview_session_ttl`
-  - default: `30m`
-  - controls preview token lifetime for artifact previews
-
-### `operator`
-
-- `actor_id`
-  - default: `summon-system`
-  - used as the local runtime's operator identity
-
-- `role_id`
-  - default: `allfather`
-  - used as the local runtime's operator role
+  - cannot be `/`, malformed, or collide with a built-in web route or static-asset prefix
+  - injected into the embedded web UI so browser API and SSE requests use the same configured path
 
 ### `provider`
 
@@ -139,6 +131,15 @@ provider:
 - `skip_permissions`
   - default: `true`
   - keeps local execution non-interactive so permission prompts do not block runs
+
+### `github.shared_app`
+
+- `slug` and `client_id` are public identifiers and must both be set or both be blank.
+- `kd init` defaults to Kingdom's official public App: `kingdom-issue-importer` / `Iv23li1tLBTzhr70LA1J`.
+- both blank disable the branded shared setup and leave private Manifest setup primary.
+- exactly one set is a startup error.
+- never configure a client secret, App private key, or owner credential. The App must be public/installable, have device flow and expiring user tokens enabled, request exactly metadata read plus Issues read, and subscribe to no events.
+- standalone `kingdomd` uses `--github-shared-app-slug` / `KINGDOM_GITHUB_SHARED_APP_SLUG` and `--github-shared-app-client-id` / `KINGDOM_GITHUB_SHARED_APP_CLIENT_ID` with the same two-field rule.
 
 ## Practical Guidance
 

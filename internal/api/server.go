@@ -27,6 +27,8 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/external"
+	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/planning"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
@@ -37,9 +39,6 @@ const (
 	defaultAPIBasePath   = "/api/v1"
 	defaultTimelineLimit = 50
 	maxTimelineLimit     = 200
-	defaultPreviewTTL    = 30 * time.Minute
-
-	roleIDHeader = "X-Role-Id"
 )
 
 var generatedIDCounter uint64
@@ -49,7 +48,6 @@ type ServerConfig struct {
 	StartupContext             context.Context
 	BasePath                   string
 	ArtifactDownloadURL        string
-	PreviewSessionTTL          time.Duration
 	AutonomousApprovalsDefault *bool
 	ProviderEngine             string
 	OpenCodeBinaryPath         string
@@ -62,6 +60,16 @@ type ServerConfig struct {
 	Now                        func() time.Time
 	IDGenerator                func(prefix string) string
 	PlannerAgent               planning.Agent
+	ExternalAdapter            external.Adapter
+	GitHubKeyStore             *githubexternal.KeyStore
+	GitHubUserTokenStore       *githubexternal.UserTokenStore
+	GitHubSetupClient          *githubexternal.SetupClient
+	GitHubDeviceOAuthClient    *githubexternal.DeviceOAuthClient
+	GitHubSharedAppSlug        string
+	GitHubSharedAppClientID    string
+	// OperatorCredential is the local bearer credential read from a protected
+	// file by the process entrypoint. It is never persisted by the API.
+	OperatorCredential []byte
 }
 
 type Server struct {
@@ -70,21 +78,31 @@ type Server struct {
 	idGenerator                func(prefix string) string
 	basePath                   string
 	artifactDownloadURL        string
-	previewSessions            *previewSessionStore
 	autonomousApprovalsDefault bool
 	providerEngine             string
 	providerModelCatalog       ProviderModelCatalog
 	projectRoot                string
 	defaultPublishMode         string
 
-	eventIngestor     *state.AttemptEventIngestor
-	transitionService *state.TransitionService
-	artifactService   *state.ArtifactService
-	tokenUsageStore   *state.TokenUsageStore
-	planningStore     *state.PlanningStore
-	planningService   *planning.Service
-	workflowCompiler  *workflow.Compiler
-	cursors           *cursorSigner
+	eventIngestor           *state.AttemptEventIngestor
+	transitionService       *state.TransitionService
+	artifactService         *state.ArtifactService
+	tokenUsageStore         *state.TokenUsageStore
+	planningStore           *state.PlanningStore
+	planningService         *planning.Service
+	externalStore           *state.ExternalStore
+	externalRegistry        *external.Registry
+	githubKeys              *githubexternal.KeyStore
+	githubUserTokens        *githubexternal.UserTokenStore
+	githubSetup             *githubexternal.SetupClient
+	githubDeviceOAuth       *githubexternal.DeviceOAuthClient
+	githubSharedAppSlug     string
+	githubSharedAppClientID string
+	manifestFlows           *manifestFlowManager
+	deviceFlows             *deviceFlowManager
+	workflowCompiler        *workflow.Compiler
+	cursors                 *cursorSigner
+	auth                    *authManager
 	// handler is the fully composed http handler tree (mux + middleware).
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
@@ -135,7 +153,10 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		startupCtx = context.Background()
 	}
 
-	basePath := NormalizeBasePath(cfg.BasePath)
+	basePath, err := ValidateBasePath(cfg.BasePath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid API base path: %w", err)
+	}
 
 	now := cfg.Now
 	if now == nil {
@@ -154,11 +175,6 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		artifactDownloadURL = basePath + "/artifacts"
 	}
 	artifactDownloadURL = strings.TrimSuffix(artifactDownloadURL, "/")
-
-	previewSessionTTL := cfg.PreviewSessionTTL
-	if previewSessionTTL <= 0 {
-		previewSessionTTL = defaultPreviewTTL
-	}
 
 	autonomousApprovalsDefault := true
 	if cfg.AutonomousApprovalsDefault != nil {
@@ -198,13 +214,14 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	workflowParser := workflow.NewParser(state.CanonicalRoleIDs())
 	workflowCompiler := workflow.NewCompiler(schemaSet, workflowParser)
 	planningStore := state.NewPlanningStore(cfg.DB)
-	if err := planningStore.NormalizePlannerAcpRunIDs(context.Background()); err != nil {
-		return nil, fmt.Errorf("normalize planner acp run ids: %w", err)
-	}
 
 	cursorSigner, err := newCursorSigner()
 	if err != nil {
 		return nil, err
+	}
+	auth, err := newAuthManager(cfg.OperatorCredential, now)
+	if err != nil {
+		return nil, fmt.Errorf("initialize local authentication: %w", err)
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
@@ -213,6 +230,67 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("unsupported default publish mode %q", cfg.DefaultPublishMode)
 	}
 	defaultPublishMode := workspace.NormalizePublishMode(rawDefaultPublishMode)
+	githubKeys := cfg.GitHubKeyStore
+	sharedSlug := strings.TrimSpace(cfg.GitHubSharedAppSlug)
+	sharedClientID := strings.TrimSpace(cfg.GitHubSharedAppClientID)
+	if (sharedSlug == "") != (sharedClientID == "") {
+		return nil, fmt.Errorf("github shared app slug and client id must both be set or both be blank")
+	}
+	if sharedSlug != "" && (!appSlugPatternAPI.MatchString(sharedSlug) || !githubClientIDPattern.MatchString(sharedClientID)) {
+		return nil, fmt.Errorf("github shared app slug or client id is invalid")
+	}
+	if githubKeys == nil && projectRoot != "" {
+		githubKeys, err = githubexternal.NewKeyStore(filepath.Join(projectRoot, ".kingdom", "secrets"))
+		if err != nil {
+			return nil, fmt.Errorf("initialize github key store: %w", err)
+		}
+	}
+	if githubKeys != nil {
+		if cleanupErr := githubKeys.CleanupTemps(); cleanupErr != nil {
+			return nil, fmt.Errorf("clean orphaned github key stages: %w", cleanupErr)
+		}
+	}
+	githubUserTokens := cfg.GitHubUserTokenStore
+	if githubUserTokens == nil && projectRoot != "" {
+		githubUserTokens, err = githubexternal.NewUserTokenStore(filepath.Join(projectRoot, ".kingdom", "secrets"))
+		if err != nil {
+			return nil, fmt.Errorf("initialize github user token store: %w", err)
+		}
+	}
+	if githubUserTokens != nil {
+		if cleanupErr := githubUserTokens.CleanupTemps(); cleanupErr != nil {
+			return nil, fmt.Errorf("clean orphaned github user token stages: %w", cleanupErr)
+		}
+	}
+	githubDeviceOAuth := cfg.GitHubDeviceOAuthClient
+	if sharedSlug != "" && githubDeviceOAuth == nil {
+		githubDeviceOAuth, err = githubexternal.NewDeviceOAuthClient(githubexternal.DeviceOAuthClientConfig{Now: now})
+		if err != nil {
+			return nil, fmt.Errorf("initialize github device oauth client: %w", err)
+		}
+	}
+	var externalAdapter external.Adapter = cfg.ExternalAdapter
+	if externalAdapter == nil && githubKeys != nil {
+		clientConfig := githubexternal.ClientConfig{Keys: githubKeys, Now: now}
+		if sharedSlug != "" {
+			clientConfig.UserTokens, clientConfig.DeviceOAuth, clientConfig.SharedClientID = githubUserTokens, githubDeviceOAuth, sharedClientID
+		}
+		externalAdapter, err = githubexternal.NewClient(clientConfig)
+		if err != nil {
+			return nil, fmt.Errorf("initialize github adapter: %w", err)
+		}
+	}
+	adapters := map[string]external.Adapter{}
+	if externalAdapter != nil {
+		adapters["github"] = externalAdapter
+	}
+	githubSetup := cfg.GitHubSetupClient
+	if githubSetup == nil {
+		githubSetup, err = githubexternal.NewSetupClient(githubexternal.SetupClientConfig{Now: now})
+		if err != nil {
+			return nil, fmt.Errorf("initialize github setup client: %w", err)
+		}
+	}
 
 	s := &Server{
 		db:                         cfg.DB,
@@ -225,16 +303,62 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		artifactService:            state.NewArtifactService(cfg.DB),
 		tokenUsageStore:            state.NewTokenUsageStore(cfg.DB),
 		planningStore:              planningStore,
+		externalStore:              state.NewExternalStore(cfg.DB),
+		externalRegistry:           external.NewRegistry(adapters),
+		githubKeys:                 githubKeys,
+		githubUserTokens:           githubUserTokens,
+		githubSetup:                githubSetup,
+		githubDeviceOAuth:          githubDeviceOAuth,
+		githubSharedAppSlug:        sharedSlug,
+		githubSharedAppClientID:    sharedClientID,
+		manifestFlows:              newManifestFlowManager(now),
+		deviceFlows:                newDeviceFlowManager(now),
 		workflowCompiler:           workflowCompiler,
-		previewSessions:            newPreviewSessionStore(previewSessionTTL, now, idGenerator),
 		autonomousApprovalsDefault: autonomousApprovalsDefault,
 		providerEngine:             providerEngine,
 		providerModelCatalog:       cfg.ProviderModelCatalog,
 		projectRoot:                projectRoot,
 		defaultPublishMode:         defaultPublishMode,
 		cursors:                    cursorSigner,
+		auth:                       auth,
 	}
 	var plannerAgent planning.Agent
+	if githubKeys != nil || githubUserTokens != nil {
+		connections, listErr := s.externalStore.ListConnections(startupCtx)
+		if listErr != nil {
+			return nil, fmt.Errorf("list connections for removal reconciliation: %w", listErr)
+		}
+		for _, connection := range connections {
+			if connection.Lifecycle != "removal_pending" && connection.Lifecycle != "removed" {
+				continue
+			}
+			reconcile := func() error {
+				var removeErr error
+				if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
+					removeErr = githubUserTokens.RemoveWhileLocked(connection.ConnectionID)
+				} else if githubKeys != nil {
+					removeErr = githubKeys.Remove(connection.ConnectionID)
+				}
+				if removeErr != nil {
+					return removeErr
+				}
+				if connection.Lifecycle == "removed" {
+					return nil
+				}
+				at := now().UTC().Format(time.RFC3339Nano)
+				return s.externalStore.UpdateConnectionStateAudited(startupCtx, connection.ConnectionID, "removed", "removed", "", at, false, "system", idGenerator("external_audit"), "connection.removal_reconciled")
+			}
+			var reconcileErr error
+			if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
+				reconcileErr = githubUserTokens.WithConnectionLock(connection.ConnectionID, reconcile)
+			} else if githubKeys != nil {
+				reconcileErr = githubKeys.WithConnectionLock(connection.ConnectionID, reconcile)
+			}
+			if reconcileErr != nil {
+				return nil, fmt.Errorf("reconcile connection removal: %w", reconcileErr)
+			}
+		}
+	}
 	if cfg.PlannerAgent != nil {
 		plannerAgent = cfg.PlannerAgent
 	} else if providerEngine == "opencode" {
@@ -300,35 +424,62 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		return nil, err
 	}
 
-	idempotency := NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB))
-	wrapped := validator(idempotency(inner))
+	idempotency := NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB), now)
+	wrapped := s.authenticationMiddleware(validator(idempotency(inner)))
 
 	// SSE streaming endpoints bypass idempotency middleware (which buffers the full response)
 	// but still go through OpenAPI validation.
 	streamingMux := http.NewServeMux()
 	streamingMux.HandleFunc("GET /acp/runs/{runId}/events", s.handleStreamAcpRunEvents)
-	wrappedStreaming := validator(streamingMux)
+	wrappedStreaming := s.authenticationMiddleware(validator(streamingMux))
 
 	mux := http.NewServeMux()
-	mux.Handle("GET "+basePath+"/preview/{token}", http.StripPrefix(basePath, wrapped))
-	// Nested preview assets keep the raw outer route because slash-preserving
-	// asset paths are browser content URLs, not a good fit for strict OpenAPI
-	// request validation without changing the public route contract.
-	mux.HandleFunc("GET "+basePath+"/preview/{token}/{assetPath...}", s.handlePreviewArtifactContent)
 	mux.Handle("GET "+basePath+"/acp/runs/{runId}/events", http.StripPrefix(basePath, wrappedStreaming))
 	mux.Handle(basePath+"/", http.StripPrefix(basePath, wrapped))
 
-	s.handler = mux
+	s.handler = limitRequestBody(mux)
 	constructorOK = true
 	return s, nil
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /auth/session", s.handleCreateAuthSession)
 	mux.HandleFunc("GET /health", s.handleGetHealth)
 	mux.HandleFunc("GET /roles", s.handleListRoles)
 	mux.HandleFunc("GET /agents", s.handleListAgents)
 	mux.HandleFunc("GET /provider/models", s.handleListProviderModels)
 	mux.HandleFunc("GET /workspace-capabilities", s.handleGetWorkspaceCapabilities)
+	mux.HandleFunc("GET /connections", s.handleListConnections)
+	mux.HandleFunc("POST /connections", s.handleCreateConnection)
+	mux.HandleFunc("GET /connections/github/setup-options", s.handleGitHubSetupOptions)
+	mux.HandleFunc("POST /connections/github/device-flows", s.handleStartGitHubDeviceFlow)
+	mux.HandleFunc("GET /connections/github/device-flows/{id}", s.handleGetGitHubDeviceFlow)
+	mux.HandleFunc("POST /connections/github/device-flows/{id}/poll", s.handlePollGitHubDeviceFlow)
+	mux.HandleFunc("POST /connections/github/device-flows/{id}/candidates", s.handleRefreshGitHubDeviceCandidates)
+	mux.HandleFunc("POST /connections/github/device-flows/{id}/finalize", s.handleFinalizeGitHubDeviceFlow)
+	mux.HandleFunc("GET /connections/github/manifest-flows", s.handleCurrentGitHubManifestFlow)
+	mux.HandleFunc("POST /connections/github/manifest-flows", s.handleStartGitHubManifestFlow)
+	mux.HandleFunc("GET /connections/github/manifest-flows/{id}", s.handleGetGitHubManifestFlow)
+	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/conversion", s.handleConvertGitHubManifestFlow)
+	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/installation", s.handleGetGitHubManifestInstallationURL)
+	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/authorization", s.handleAuthorizeGitHubManifestFlow)
+	mux.HandleFunc("POST /connections/github/manifest-flows/{id}/completion", s.handleCompleteGitHubManifestFlow)
+	mux.HandleFunc("GET /connections/github/manifest-flows/manifest-callback", s.handleGitHubManifestCallback)
+	mux.HandleFunc("GET /connections/github/manifest-flows/setup-callback", s.handleGitHubSetupCallback)
+	mux.HandleFunc("GET /connections/github/manifest-flows/oauth-callback", s.handleGitHubOAuthCallback)
+	mux.HandleFunc("GET /connections/{id}", s.handleGetConnection)
+	mux.HandleFunc("PATCH /connections/{id}", s.handleUpdateConnection)
+	mux.HandleFunc("DELETE /connections/{id}", s.handleDeleteConnection)
+	mux.HandleFunc("POST /connections/{id}/health-checks", s.handleConnectionHealthCheck)
+	mux.HandleFunc("GET /connections/{id}/repositories", s.handleListConnectionRepositories)
+	mux.HandleFunc("GET /connections/{id}/repositories/{repositoryId}/issues", s.handleListConnectionIssues)
+	mux.HandleFunc("GET /connections/{id}/repositories/{repositoryId}/issues/{number}/preview", s.handlePreviewConnectionIssue)
+	mux.HandleFunc("POST /external-source-captures", s.handleCaptureExternalSource)
+	mux.HandleFunc("GET /external-source-snapshots/{id}", s.handleGetExternalSourceSnapshot)
+	mux.HandleFunc("GET /external-source-snapshots/{id}/comments", s.handleGetExternalSourceSnapshotComments)
+	mux.HandleFunc("GET /external-source-links/{id}/history", s.handleGetExternalSourceLinkHistory)
+	mux.HandleFunc("POST /external-source-links/{id}/refreshes", s.handleRefreshExternalSourceLink)
+	mux.HandleFunc("POST /external-source-links/{id}/adoptions", s.handleAdoptExternalSourceLink)
 	mux.HandleFunc("POST /decrees", s.handleCreateDecree)
 	mux.HandleFunc("GET /decrees/{id}", s.handleGetDecree)
 	mux.HandleFunc("POST /planning-sessions", s.handleCreatePlanningSession)
@@ -336,6 +487,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /planning-sessions/{id}", s.handleGetPlanningSession)
 	mux.HandleFunc("PATCH /planning-sessions/{id}", s.handleUpdatePlanningSession)
 	mux.HandleFunc("DELETE /planning-sessions/{id}", s.handleDeletePlanningSession)
+	mux.HandleFunc("POST /planning-sessions/{id}/external-sources", s.handleAttachPlanningExternalSource)
 	mux.HandleFunc("GET /acp/agents", s.handleListAcpAgents)
 	mux.HandleFunc("GET /acp/agents/{name}", s.handleGetAcpAgent)
 	mux.HandleFunc("POST /acp/runs", s.handleCreateAcpRun)
@@ -374,8 +526,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runs/{id}/final-approval", s.handleCreateFinalApproval)
 	mux.HandleFunc("GET /artifacts/{id}", s.handleGetArtifact)
 	mux.HandleFunc("GET /artifacts/{id}/content", s.handleGetArtifactContent)
-	mux.HandleFunc("POST /artifacts/{id}/preview-session", s.handleCreateArtifactPreviewSession)
-	mux.HandleFunc("GET /preview/{token}", s.handlePreviewArtifactContent)
 	mux.HandleFunc("GET /events/stream", s.handleStreamEvents)
 	mux.HandleFunc("GET /metrics/runtime", s.handleGetMetricsRuntime)
 	mux.HandleFunc("GET /dashboard/snapshot", s.handleGetDashboardSnapshot)
@@ -527,8 +677,34 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 			detail.Metadata = &metadata
 		}
 	}
+	links, linkErr := s.externalStore.GetLinksForTarget(r.Context(), "decree", decreeID)
+	if linkErr != nil {
+		s.writeInternalError(w, "fetch decree provenance failed")
+		return
+	}
+	detail.ExternalSources = externalProvenanceListFromState(links, false)
 
 	writeJSON(w, http.StatusOK, detail)
+}
+
+func externalProvenanceListFromState(links []state.ExternalLinkSummary, planning bool) []gen.ExternalProvenanceSummary {
+	result := make([]gen.ExternalProvenanceSummary, 0, len(links))
+	for _, link := range links {
+		result = append(result, externalProvenanceFromState(link, planning))
+	}
+	return result
+}
+
+func externalProvenanceFromState(link state.ExternalLinkSummary, planning bool) gen.ExternalProvenanceSummary {
+	result := gen.ExternalProvenanceSummary{LinkId: link.LinkID, Provider: gen.ExternalProvenanceSummaryProvider(link.Provider), Repository: link.Repository, IssueNumber: link.IssueNumber, CanonicalUrl: link.CanonicalURL, UsedSnapshotId: link.UsedSnapshotID, LatestSnapshotId: link.LatestSnapshotID, Status: gen.ExternalSourceStatus(link.Status)}
+	if planning {
+		active := link.ActiveSnapshotID
+		if active == "" {
+			active = link.UsedSnapshotID
+		}
+		result.ActiveSnapshotId = &active
+	}
+	return result
 }
 
 func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
@@ -633,24 +809,13 @@ func (s *Server) runExists(ctx context.Context, runID string) bool {
 	return err == nil
 }
 
-func (s *Server) roleExists(ctx context.Context, roleID string) bool {
-	var marker int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM roles WHERE role_id = ? LIMIT 1`, roleID).Scan(&marker)
-	return err == nil
-}
-
-func (s *Server) requireActorRoleHeaders(w http.ResponseWriter, r *http.Request, authority string) (string, string, bool) {
-	actorID := strings.TrimSpace(r.Header.Get(actorIDHeader))
-	roleID := strings.TrimSpace(r.Header.Get(roleIDHeader))
-	if actorID == "" || roleID == "" {
-		writeCanonicalError(w, http.StatusUnauthorized, errorcatalog.CodePolicyViolation, "missing authentication headers", authority, nil)
+func (s *Server) requirePrincipal(w http.ResponseWriter, r *http.Request, authority string) (string, string, bool) {
+	principal, ok := authenticatedPrincipal(r.Context())
+	if !ok || strings.TrimSpace(principal.ActorID) == "" {
+		writeCanonicalError(w, http.StatusUnauthorized, errorcatalog.CodePolicyViolation, "missing authenticated principal", authority, nil)
 		return "", "", false
 	}
-	if !s.roleExists(r.Context(), roleID) {
-		writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "unknown role", authority, map[string]any{"role_id": roleID})
-		return "", "", false
-	}
-	return actorID, roleID, true
+	return principal.ActorID, operatorRoleID, true
 }
 
 func (s *Server) writeBadRequest(w http.ResponseWriter, message string) {

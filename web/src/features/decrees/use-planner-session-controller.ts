@@ -14,6 +14,7 @@ import { isPlannerOperationTerminal, type AnswerPayload, type PlannerOperationSt
 import { usePlannerOperation } from "./use-planner-operation";
 import { applyPlanningSessionFields } from "./planner-session-cache";
 import { plannerKeys } from "./planner-query-keys";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 /**
  * Coordinates the decree-planning page's optimistic mutation flow around one
@@ -64,27 +65,47 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
   const queryClient = useQueryClient();
   const sessionId = session?.planning_session_id ?? "";
   const createOperation = useCreatePlanningOperation(sessionId);
+  const recoverableReply = useRecoverableMutation(
+    "planning-reply",
+    (body: CreateAcpRunRequest, key) => createOperation.mutateAsync({ body, key }),
+    sessionId,
+  );
+  const recoverableRegenerate = useRecoverableMutation(
+    "planning-regenerate",
+    (body: CreateAcpRunRequest, key) => createOperation.mutateAsync({ body, key }),
+    sessionId,
+  );
+  const recoverableFormalize = useRecoverableMutation(
+    "planning-formalize",
+    (body: CreateAcpRunRequest, key) => createOperation.mutateAsync({ body, key }),
+    sessionId,
+  );
+  const recoveryKind = recoverableReply.hasPendingRecovery
+    ? "reply"
+    : recoverableRegenerate.hasPendingRecovery
+      ? "regenerate"
+      : recoverableFormalize.hasPendingRecovery
+        ? "formalize"
+        : null;
   const activateVariantMutation = useActivateVariant(sessionId);
   const activateVariantRef = useRef(activateVariantMutation);
   useEffect(() => { activateVariantRef.current = activateVariantMutation; });
-  const [activeOperationId, setActiveOperationId] = useState<string | undefined>(undefined);
+  const [trackedOperationId, setActiveOperationId] = useState<string | undefined>(undefined);
   const [optimisticOperation, setOptimisticOperation] = useState<PlannerOperationState | null>(null);
   const requestSeqRef = useRef(0);
 
-  const operationId = activeOperationId ?? session?.current_run_id ?? undefined;
+  const operationId = trackedOperationId ?? session?.current_run_id ?? undefined;
   const activeOperationQuery = usePlanningOperation(operationId);
   const { operation: streamedOperation, connection } = usePlannerOperation(activeOperationQuery.data ?? null);
   const activeOperation = streamedOperation ?? optimisticOperation;
-
-	useEffect(() => {
-		if (!activeOperationId || !activeOperation || activeOperation.operationId !== activeOperationId) {
-			return;
-		}
-		if (!isPlannerOperationTerminal(activeOperation.status)) {
-			return;
-		}
-		setActiveOperationId(undefined);
-	}, [activeOperation, activeOperationId]);
+  const trackedOperationIsTerminal =
+    trackedOperationId &&
+    activeOperation?.operationId === trackedOperationId &&
+    isPlannerOperationTerminal(activeOperation.status);
+  if (trackedOperationIsTerminal) {
+    setActiveOperationId(undefined);
+  }
+  const activeOperationId = trackedOperationIsTerminal ? undefined : trackedOperationId;
 
   const state = useMemo(
     () => ({
@@ -93,8 +114,10 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       connection,
       setActiveOperationId,
       createOperation,
+      recoveryKind,
       submitReply: async ({ text, answer, parentMessageId }: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => {
         if (!session) throw new Error("Planning session is required");
+        if (recoveryKind && recoveryKind !== "reply") throw new Error(`Retry the pending ${recoveryKind} request before starting another planner operation`);
         requestSeqRef.current += 1;
         const seq = requestSeqRef.current;
         const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
@@ -126,8 +149,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         });
 
         try {
-          const created = await createOperation.mutateAsync({
-            body: {
+          const created = await recoverableReply.mutateAsync({
               agent_name: "planner-reply",
               planning_session_id: session.planning_session_id,
               reply: {
@@ -135,9 +157,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
                 ...(answer ? { answer_payload: answer } : {}),
                 ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
               },
-            } satisfies CreateAcpRunRequest,
-            key: newIdempotencyKey("planning-operation"),
-          });
+            } satisfies CreateAcpRunRequest);
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
           setActiveOperationId(created.run_id);
@@ -152,6 +172,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       },
       regenerate: async ({ messageId, parentMessageId }: { messageId: string; parentMessageId?: string }) => {
         if (!session) throw new Error("Planning session is required");
+        if (recoveryKind && recoveryKind !== "regenerate") throw new Error(`Retry the pending ${recoveryKind} request before starting another planner operation`);
         requestSeqRef.current += 1;
         const seq = requestSeqRef.current;
         const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
@@ -177,14 +198,11 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           conversation_state: "processing",
         });
         try {
-          const created = await createOperation.mutateAsync({
-            body: {
+          const created = await recoverableRegenerate.mutateAsync({
               agent_name: "planner-regenerate",
               planning_session_id: session.planning_session_id,
               regenerate: { target_message_id: messageId },
-            } satisfies CreateAcpRunRequest,
-            key: newIdempotencyKey("planning-operation"),
-          });
+            } satisfies CreateAcpRunRequest);
           if (seq !== requestSeqRef.current) return;
           setOptimisticOperation(null);
           setActiveOperationId(created.run_id);
@@ -199,6 +217,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       },
       activateVariant: async ({ messageId }: { messageId: string }) => {
         if (!session) throw new Error("Planning session is required");
+        if (recoveryKind) throw new Error(`Retry the pending ${recoveryKind} request before changing the active planner branch`);
         await activateVariantRef.current.mutateAsync({
           value: messageId,
           key: newIdempotencyKey("activate-variant"),
@@ -208,6 +227,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       },
       startFormalize: async () => {
         if (!session) throw new Error("Planning session is required");
+        if (recoveryKind && recoveryKind !== "formalize") throw new Error(`Retry the pending ${recoveryKind} request before starting another planner operation`);
         requestSeqRef.current += 1;
         const seq = requestSeqRef.current;
         // Formalize doesn't touch session detail in the pre-success
@@ -231,13 +251,10 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           activityItems: [],
         });
         try {
-          const created = await createOperation.mutateAsync({
-            body: {
+          const created = await recoverableFormalize.mutateAsync({
               agent_name: "planner-formalize",
               planning_session_id: session.planning_session_id,
-            } satisfies CreateAcpRunRequest,
-            key: newIdempotencyKey("planning-operation"),
-          });
+            } satisfies CreateAcpRunRequest);
           if (seq !== requestSeqRef.current) return created;
           setOptimisticOperation(null);
           setActiveOperationId(created.run_id);
@@ -253,7 +270,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         }
       },
     }),
-    [activeOperation, activeOperationId, connection, createOperation, optimisticOperation, queryClient, session],
+    [activeOperation, activeOperationId, connection, createOperation, optimisticOperation, queryClient, recoverableFormalize, recoverableRegenerate, recoverableReply, recoveryKind, session],
   );
 
   return state;

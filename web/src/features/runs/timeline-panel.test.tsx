@@ -1,8 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TimelinePanel, orderMilestonesForDisplay } from "./timeline-panel";
+import { TimelinePanel } from "./timeline-panel";
 import { buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
+import { orderMilestonesForDisplay } from "./timeline-ordering";
 
 describe("timeline panel", () => {
 	beforeEach(() => {
@@ -543,6 +544,60 @@ describe("timeline panel", () => {
 		);
 
 		expect(scrollTo).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: /Jump to latest/i })).toBeInTheDocument();
+	});
+
+	it("shows a hidden latest update when a fixed-size tail advances while inspection is locked", async () => {
+		const user = userEvent.setup();
+		const initialEvents = [
+			{
+				event_id: "evt-1",
+				run_event_seq: 1,
+				attempt_seq: 1,
+				event_type: "attempt.started",
+				emitted_at: "2026-03-18T11:40:00Z",
+				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+			},
+			{
+				event_id: "evt-2",
+				run_event_seq: 2,
+				attempt_seq: 2,
+				event_type: "attempt.progress",
+				emitted_at: "2026-03-18T11:41:00Z",
+				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+			},
+		];
+		const graph = {
+			nodes: [{
+				node_id: "advisor_consultation_peasant",
+				required_role: "peasant-delegate",
+				execution_ownership: "provider_backed" as const,
+				state: "running" as const,
+			}],
+			edges: [],
+		};
+		const view = render(<TimelinePanel events={initialEvents} graph={graph} hasMore={false} />);
+		await user.click(screen.getByRole("button", { name: /Advisor Consultation Peasant/i }));
+		expect(screen.queryByRole("button", { name: /Jump to latest/i })).not.toBeInTheDocument();
+
+		view.rerender(
+			<TimelinePanel
+				events={[
+					initialEvents[1],
+					{
+						event_id: "evt-3",
+						run_event_seq: 3,
+						attempt_seq: 3,
+						event_type: "attempt.succeeded",
+						emitted_at: "2026-03-18T11:42:00Z",
+						payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+					},
+				]}
+				graph={graph}
+				hasMore={false}
+			/>,
+		);
+
 		expect(screen.getByRole("button", { name: /Jump to latest/i })).toBeInTheDocument();
 	});
 });

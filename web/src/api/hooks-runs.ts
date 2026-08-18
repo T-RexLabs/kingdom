@@ -1,5 +1,5 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
 import { manualRefetchQueryOptions, searchDrivenCollectionQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
 import { RUNS_STATE_FILTERS, type RunsStateFilter } from "@/lib/run-filters";
@@ -411,16 +411,17 @@ export function useAgents() {
   });
 }
 
-function fetchProviderModels(refresh: boolean) {
+function fetchProviderModels(refresh: boolean, signal?: AbortSignal) {
 	return apiFetch<ProviderModelsResponse>("/provider/models", {
 		params: { refresh },
+		signal,
 	});
 }
 
 export function useProviderModels(options?: RunDetailQueryOptions) {
   return useQuery({
 	queryKey: providerModelsQueryKey,
-	queryFn: () => fetchProviderModels(false),
+	queryFn: ({ signal }) => fetchProviderModels(false, signal),
 	enabled: options?.enabled ?? true,
 	refetchInterval: 60_000,
   });
@@ -430,7 +431,12 @@ export function useRefreshProviderModels() {
 	const qc = useQueryClient();
 	return useMutation({
 		mutationFn: () => fetchProviderModels(true),
-		onSuccess: (response) => {
+		onMutate: async () => {
+			await qc.cancelQueries({ queryKey: providerModelsQueryKey, exact: true });
+			return { dataUpdatedAt: qc.getQueryState(providerModelsQueryKey)?.dataUpdatedAt ?? 0 };
+		},
+		onSuccess: async (response) => {
+			await qc.cancelQueries({ queryKey: providerModelsQueryKey, exact: true });
 			qc.setQueryData(providerModelsQueryKey, response);
 		},
 	});
@@ -488,7 +494,7 @@ function retryRunDetailQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof ApiError && error.status === 404) {
     return false;
   }
-  return failureCount < 3;
+  return shouldRetryApiQuery(failureCount, error, 3);
 }
 
 function normalizeRunsSearch(search?: string): string | null {
@@ -636,8 +642,6 @@ export function useCreateFinalApproval(runId: string) {
         method: "POST",
         headers: {
           "Idempotency-Key": key,
-          "X-Actor-Id": "allfather",
-          "X-Role-Id": "allfather",
         },
         body: JSON.stringify(body),
       }),
@@ -662,8 +666,6 @@ export function useCreatePlanApproval(runId: string) {
         method: "POST",
         headers: {
           "Idempotency-Key": key,
-          "X-Actor-Id": "allfather",
-          "X-Role-Id": "allfather",
         },
         body: JSON.stringify(body),
       }),

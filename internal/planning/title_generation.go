@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -89,7 +88,6 @@ func enqueueGeneratedTitleForSession(
 	}
 	now := deps.nowString()
 	operationID := deps.nextID("planning_operation")
-	acpRunID := acp.PlannerRunID(operationID)
 	requestJSON, err := json.Marshal(operationRequest{TriggerSource: strings.TrimSpace(string(source))})
 	if err != nil {
 		return state.PlanningSession{}, nil, false, fmt.Errorf("marshal generate title request: %w", err)
@@ -98,7 +96,6 @@ func enqueueGeneratedTitleForSession(
 		SessionID: session.PlanningSessionID,
 		Operation: state.CreatePlanningOperationRequest{
 			OperationID:        operationID,
-			AcpRunID:           acpRunID,
 			PlanningSessionID:  session.PlanningSessionID,
 			Type:               state.PlanningOperationTypeGenerateTitle,
 			Status:             state.PlanningOperationStatusQueued,

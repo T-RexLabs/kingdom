@@ -45,4 +45,4 @@ The production build is embedded into the `kd` binary and any locally built `kin
 ## Notes
 
 - Web defaults for bounded review/validation cycles follow seeded workflow expectations (`5` each in the decree form) and can be overridden per run.
-- API routes are governed by runtime policy; when testing endpoints directly, include required actor/role headers.
+- API routes are governed by runtime policy. Direct clients use `Authorization: Bearer` with the initialized workspace credential; caller-supplied actor and role headers never grant authority.

@@ -29,26 +29,42 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 	createdAt := s.now().UTC().Format(time.RFC3339)
 	decreeID := s.idGenerator("decree")
 
-	metadataJSON := "{}"
+	metadata := map[string]any{}
 	if req.Metadata != nil {
-		raw, err := json.Marshal(req.Metadata)
-		if err != nil {
-			s.writeInternalError(w, "encode decree metadata failed")
-			return
+		for key, value := range *req.Metadata {
+			metadata[key] = value
 		}
-		metadataJSON = string(raw)
 	}
 
-	_, err := s.db.ExecContext(
-		r.Context(),
-		`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES (?, ?, ?, ?, ?)`,
-		decreeID,
-		req.DecreeTitle,
-		req.DecreeText,
-		metadataJSON,
-		createdAt,
-	)
+	directSnapshotID := ""
+	if req.ExternalSourceSnapshotId != nil {
+		directSnapshotID = strings.TrimSpace(*req.ExternalSourceSnapshotId)
+	}
+	var planningLineage *state.DecreePlanningLineage
+	if req.PlanningLineage != nil {
+		planningLineage = &state.DecreePlanningLineage{
+			PlanningSessionID: req.PlanningLineage.PlanningSessionId,
+			PlanningDraftID:   req.PlanningLineage.PlanningDraftId,
+		}
+	}
+	err := s.externalStore.CreateDecree(r.Context(), state.CreateDecreeRequest{
+		DecreeID: decreeID, Title: req.DecreeTitle, Text: req.DecreeText,
+		Metadata: metadata, CreatedAt: createdAt, DirectSnapshotID: directSnapshotID,
+		PlanningLineage: planningLineage, NewLinkID: func() string { return s.idGenerator("external_link") },
+		ActorID: authenticatedActorID(r.Context()),
+	})
 	if err != nil {
+		switch {
+		case errors.Is(err, state.ErrDecreeLineageInvalid):
+			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), "api.create_decree", nil)
+			return
+		case errors.Is(err, state.ErrDecreeProvenanceConflict):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), "api.create_decree", nil)
+			return
+		case errors.Is(err, state.ErrDecreeProvenanceNotFound), errors.Is(err, state.ErrExternalNotFound):
+			writeExternalError(w, err, "api.create_decree")
+			return
+		}
 		s.writeInternalError(w, "create decree failed")
 		return
 	}
@@ -92,7 +108,20 @@ func (s *Server) handlePublishWorkflow(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if isUniqueConstraintError(err) {
-			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "workflow version already exists", "api.publish_workflow", nil)
+			var existingDefinition string
+			if lookupErr := s.db.QueryRowContext(r.Context(),
+				`SELECT definition_json FROM workflow_definitions WHERE workflow_name = ? AND workflow_version = ?`,
+				req.WorkflowId,
+				req.Version,
+			).Scan(&existingDefinition); lookupErr != nil {
+				s.writeInternalError(w, "read existing workflow version failed")
+				return
+			}
+			message := "workflow version already exists with a different definition"
+			if existingDefinition == string(compiled.CanonicalJSON) {
+				message = "workflow version already exists"
+			}
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, message, "api.publish_workflow", nil)
 			return
 		}
 		s.writeInternalError(w, "publish workflow failed")

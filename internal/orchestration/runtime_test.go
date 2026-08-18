@@ -1376,10 +1376,8 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 			repairErr <- err
 			return
 		}
-		if err := os.Mkdir(retryRoot, 0o755); err != nil {
-			repairErr <- err
-			return
-		}
+		// The retrying projector owns creation of the workspace root after the
+		// blocker is removed, avoiding a race between two creators.
 		repairErr <- nil
 	}()
 
@@ -4902,10 +4900,8 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 			repairErr <- err
 			return
 		}
-		if err := os.Mkdir(retryRoot, 0o755); err != nil {
-			repairErr <- err
-			return
-		}
+		// The retrying projector owns creation of the workspace root after the
+		// blocker is removed, avoiding a race between two creators.
 		repairErr <- nil
 	}()
 
@@ -4935,7 +4931,16 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
+	// GracefulClose intentionally cancels an in-flight SQLite operation. Use a
+	// file-backed database so a driver-replaced connection observes the same
+	// durable state instead of opening a fresh private :memory: database.
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "close-timeout.sqlite"))
+	if err != nil {
+		t.Fatalf("open close-timeout sqlite db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	mustExec(t, db, "PRAGMA foreign_keys = ON")
 	applyMigration(t, db)
 
 	now := "2026-03-01T12:00:00Z"
@@ -5013,7 +5018,7 @@ func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := rt.GracefulClose(closeCtx)
+	err = rt.GracefulClose(closeCtx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected graceful close to return deadline exceeded while pending outbox remains, got %v", err)
 	}

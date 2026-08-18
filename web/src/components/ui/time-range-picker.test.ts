@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { minutesToRelativeExpr, parseRelativeTime } from "@/components/ui/time-range-picker";
+import { minutesToRelativeExpr, parseRelativeTime } from "@/components/ui/time-range";
 
 describe("time range picker helpers", () => {
   it("does not emit fractional hour expressions", () => {

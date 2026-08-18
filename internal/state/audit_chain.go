@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const AuditGenesisPrevHash = "0000000000000000000000000000000000000000000000000000000000000000"
+const (
+	AuditGenesisPrevHash                = "0000000000000000000000000000000000000000000000000000000000000000"
+	ExternalIntegrationAuditHashVersion = "v1"
+)
 
 type AuditIntegrityFailure struct {
 	Stream   string
@@ -21,9 +24,10 @@ type AuditIntegrityFailure struct {
 }
 
 type VerifyAuditIntegrityResult struct {
-	TransitionsVerified int
-	EventsVerified      int
-	Failures            []AuditIntegrityFailure
+	TransitionsVerified               int
+	EventsVerified                    int
+	ExternalIntegrationEventsVerified int
+	Failures                          []AuditIntegrityFailure
 }
 
 type AuditIntegrityError struct {
@@ -57,15 +61,94 @@ func (v *AuditIntegrityVerifier) Verify(ctx context.Context) (VerifyAuditIntegri
 		return VerifyAuditIntegrityResult{}, err
 	}
 
-	failures := make([]AuditIntegrityFailure, 0, len(transitionFailures)+len(eventFailures))
+	externalVerified, externalFailures, err := verifyExternalIntegrationAuditChain(ctx, v.db)
+	if err != nil {
+		return VerifyAuditIntegrityResult{}, err
+	}
+
+	failures := make([]AuditIntegrityFailure, 0, len(transitionFailures)+len(eventFailures)+len(externalFailures))
 	failures = append(failures, transitionFailures...)
 	failures = append(failures, eventFailures...)
+	failures = append(failures, externalFailures...)
 
 	return VerifyAuditIntegrityResult{
-		TransitionsVerified: transitionsVerified,
-		EventsVerified:      eventsVerified,
-		Failures:            failures,
+		TransitionsVerified:               transitionsVerified,
+		EventsVerified:                    eventsVerified,
+		ExternalIntegrationEventsVerified: externalVerified,
+		Failures:                          failures,
 	}, nil
+}
+
+type externalIntegrationAuditRecord struct {
+	EventID, ConnectionID, SourceID, EventType, ActorID string
+	SafePayloadJSON, PreviousHash, EventHash, CreatedAt string
+	Sequence                                            int
+	HashVersion                                         string
+}
+
+func externalIntegrationEventHash(rec externalIntegrationAuditRecord) string {
+	sum := sha256.Sum256([]byte(rec.PreviousHash + "\n" + rec.EventID + "\n" + rec.ConnectionID + "\n" + rec.SourceID + "\n" + rec.EventType + "\n" + rec.ActorID + "\n" + rec.SafePayloadJSON + "\n" + rec.CreatedAt))
+	return hex.EncodeToString(sum[:])
+}
+
+func verifyExternalIntegrationAuditChain(ctx context.Context, db *sql.DB) (int, []AuditIntegrityFailure, error) {
+	rows, err := db.QueryContext(ctx, `SELECT audit_event_id,event_sequence,hash_version,COALESCE(connection_id,''),COALESCE(source_id,''),event_type,actor_id,safe_payload_json,previous_hash,event_hash,created_at FROM external_integration_audit_events ORDER BY event_sequence`)
+	if err != nil {
+		return 0, nil, fmt.Errorf("query external integration audit events: %w", err)
+	}
+	expectedPrevious := AuditGenesisPrevHash
+	expectedSequence := 1
+	verified := 0
+	var failures []AuditIntegrityFailure
+	for rows.Next() {
+		var rec externalIntegrationAuditRecord
+		if err := rows.Scan(&rec.EventID, &rec.Sequence, &rec.HashVersion, &rec.ConnectionID, &rec.SourceID, &rec.EventType, &rec.ActorID, &rec.SafePayloadJSON, &rec.PreviousHash, &rec.EventHash, &rec.CreatedAt); err != nil {
+			_ = rows.Close()
+			return 0, nil, fmt.Errorf("scan external integration audit event: %w", err)
+		}
+		if rec.Sequence != expectedSequence {
+			failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_events", RunID: rec.ConnectionID, RecordID: rec.EventID, Reason: fmt.Sprintf("event_sequence gap: expected %d got %d", expectedSequence, rec.Sequence)})
+		}
+		if rec.HashVersion != ExternalIntegrationAuditHashVersion {
+			failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_events", RunID: rec.ConnectionID, RecordID: rec.EventID, Reason: fmt.Sprintf("unsupported hash_version: expected %q got %q", ExternalIntegrationAuditHashVersion, rec.HashVersion)})
+		}
+		if rec.PreviousHash != expectedPrevious {
+			failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_events", RunID: rec.ConnectionID, RecordID: rec.EventID, Reason: fmt.Sprintf("previous_hash mismatch: expected %q got %q", expectedPrevious, rec.PreviousHash)})
+		}
+		expectedHash := externalIntegrationEventHash(rec)
+		if rec.EventHash != expectedHash {
+			failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_events", RunID: rec.ConnectionID, RecordID: rec.EventID, Reason: fmt.Sprintf("event_hash mismatch: expected %q got %q", expectedHash, rec.EventHash)})
+		}
+		expectedPrevious = rec.EventHash
+		expectedSequence = rec.Sequence + 1
+		verified++
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, nil, fmt.Errorf("iterate external integration audit events: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, nil, fmt.Errorf("close external integration audit events: %w", err)
+	}
+
+	var headSequence int
+	var headHash string
+	if err := db.QueryRowContext(ctx, `SELECT last_sequence,last_hash FROM external_integration_audit_head WHERE head_id=1`).Scan(&headSequence, &headHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_head", RecordID: "1", Reason: "durable head is missing"})
+			return verified, failures, nil
+		}
+		return 0, nil, fmt.Errorf("query external integration audit head: %w", err)
+	}
+	expectedHeadSequence := verified
+	expectedHeadHash := expectedPrevious
+	if headSequence != expectedHeadSequence {
+		failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_head", RecordID: "1", Reason: fmt.Sprintf("last_sequence mismatch: expected %d got %d", expectedHeadSequence, headSequence)})
+	}
+	if headHash != expectedHeadHash {
+		failures = append(failures, AuditIntegrityFailure{Stream: "external_integration_audit_head", RecordID: "1", Reason: fmt.Sprintf("last_hash mismatch: expected %q got %q", expectedHeadHash, headHash)})
+	}
+	return verified, failures, nil
 }
 
 func (v *AuditIntegrityVerifier) VerifyOrError(ctx context.Context) error {

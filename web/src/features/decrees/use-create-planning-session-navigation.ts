@@ -1,44 +1,29 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { newIdempotencyKey, useCreatePlanningSession, type CreatePlanningSessionRequest, type PlanningMessagesPage, type PlanningSessionDetail } from "@/api/hooks";
+import { useCreatePlanningSession, type CreatePlanningSessionRequest, type PlanningMessagesPage, type PlanningSessionDetail } from "@/api/hooks";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { plannerKeys } from "./planner-query-keys";
-import { isAmbiguousMutationFailure } from "./mutation-recovery";
-
-type PlanningSessionRecoveryRequest = {
-	body: CreatePlanningSessionRequest;
-	key: string;
-};
 
 function normalizeCreatePlanningSessionRequest(body: CreatePlanningSessionRequest): CreatePlanningSessionRequest {
 	const model = body.model_selection?.model?.trim() ?? "";
 	const thinkingEffort = body.model_selection?.thinking_effort?.trim() ?? "";
-	if (model === "") {
-		return {};
-	}
 	return {
-		model_selection: {
+		...(body.title?.trim() ? { title: body.title.trim() } : {}),
+		...(body.external_intake ? { external_intake: body.external_intake } : {}),
+		...(model ? { model_selection: {
 			model,
 			...(thinkingEffort !== "" ? { thinking_effort: thinkingEffort } : {}),
-		},
+		}} : {}),
 	};
-}
-
-function planningSessionRecoveryMatchesBody(
-	recoveryRequest: PlanningSessionRecoveryRequest | null,
-	body: CreatePlanningSessionRequest,
-): boolean {
-	if (!recoveryRequest) {
-		return false;
-	}
-	const normalizedBody = normalizeCreatePlanningSessionRequest(body);
-	const normalizedRecoveryBody = normalizeCreatePlanningSessionRequest(recoveryRequest.body);
-	return JSON.stringify(normalizedRecoveryBody) === JSON.stringify(normalizedBody);
 }
 
 export function useCreatePlanningSessionNavigation() {
   const queryClient = useQueryClient();
   const createPlanningSession = useCreatePlanningSession();
-  const [recoveryRequest, setRecoveryRequest] = useState<PlanningSessionRecoveryRequest | null>(null);
+  const recoverableCreate = useRecoverableMutation(
+    "planning-session",
+    (body: CreatePlanningSessionRequest, key) => createPlanningSession.mutateAsync({ body, key }),
+  );
 
 	const applyCreatedSession = useCallback((created: Awaited<ReturnType<typeof createPlanningSession.mutateAsync>>) => {
 		const session = created.session;
@@ -63,51 +48,22 @@ export function useCreatePlanningSessionNavigation() {
 
 	const mutateAsync = useCallback(async (body: CreatePlanningSessionRequest) => {
 		const normalizedBody = normalizeCreatePlanningSessionRequest(body);
-		const request = planningSessionRecoveryMatchesBody(recoveryRequest, normalizedBody) && recoveryRequest ? recoveryRequest : {
-			body: normalizedBody,
-			key: newIdempotencyKey("planning-session"),
-		};
-		try {
-			const created = await createPlanningSession.mutateAsync(request);
-			setRecoveryRequest(null);
-			createPlanningSession.reset();
-			return applyCreatedSession(created);
-		} catch (error) {
-			if (isAmbiguousMutationFailure(error)) {
-				setRecoveryRequest(request);
-			} else {
-				setRecoveryRequest(null);
-			}
-			throw error;
-		}
-	}, [applyCreatedSession, createPlanningSession, recoveryRequest]);
-
-	const retryRecovery = useCallback(async () => {
-		if (!recoveryRequest) {
-			throw new Error("planner session recovery request is not available");
-		}
-		const created = await createPlanningSession.mutateAsync(recoveryRequest);
-		setRecoveryRequest(null);
+		const created = await recoverableCreate.mutateAsync(normalizedBody);
 		createPlanningSession.reset();
 		return applyCreatedSession(created);
-	}, [applyCreatedSession, createPlanningSession, recoveryRequest]);
+	}, [applyCreatedSession, createPlanningSession, recoverableCreate]);
 
-	const discardRecovery = useCallback(() => {
-		setRecoveryRequest(null);
+	const retryRecovery = useCallback(async () => {
+		const created = await recoverableCreate.retry();
 		createPlanningSession.reset();
-	}, [createPlanningSession]);
-
-	const canRecoverWith = useCallback((body: CreatePlanningSessionRequest) => (
-		planningSessionRecoveryMatchesBody(recoveryRequest, body)
-	), [recoveryRequest]);
+		return applyCreatedSession(created);
+	}, [applyCreatedSession, createPlanningSession, recoverableCreate]);
 
   return {
     ...createPlanningSession,
     mutateAsync,
-	recoveryRequest,
-	hasRecovery: recoveryRequest !== null,
-	canRecoverWith,
+	recoveryRequest: recoverableCreate.pendingRequest,
+	hasRecovery: recoverableCreate.hasPendingRecovery,
 	retryRecovery,
-	discardRecovery,
   };
 }

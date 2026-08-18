@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	ActorIdHeaderScopes = "ActorIdHeader.Scopes"
-	RoleIdHeaderScopes  = "RoleIdHeader.Scopes"
+	BearerAuthScopes     = "BearerAuth.Scopes"
+	BrowserSessionScopes = "BrowserSession.Scopes"
 )
 
 // Defines values for AcpAgentName.
@@ -68,12 +68,68 @@ const (
 	Tool     AcpRunActivityItemKind = "tool"
 )
 
+// Defines values for ArtifactResponseArtifactAction.
+const (
+	ArtifactResponseArtifactActionDelete ArtifactResponseArtifactAction = "delete"
+	ArtifactResponseArtifactActionWrite  ArtifactResponseArtifactAction = "write"
+)
+
+// Defines values for ConnectionCredentialState.
+const (
+	Missing ConnectionCredentialState = "missing"
+	Present ConnectionCredentialState = "present"
+)
+
+// Defines values for ConnectionCredentialStrategy.
+const (
+	ConnectionCredentialStrategyAppPrivateKey   ConnectionCredentialStrategy = "app_private_key"
+	ConnectionCredentialStrategyUserAccessToken ConnectionCredentialStrategy = "user_access_token"
+)
+
+// Defines values for ConnectionHealthClass.
+const (
+	ConnectionHealthClassDisabled           ConnectionHealthClass = "disabled"
+	ConnectionHealthClassHealthy            ConnectionHealthClass = "healthy"
+	ConnectionHealthClassMissingCredential  ConnectionHealthClass = "missing_credential"
+	ConnectionHealthClassNeverChecked       ConnectionHealthClass = "never_checked"
+	ConnectionHealthClassPermissionMismatch ConnectionHealthClass = "permission_mismatch"
+	ConnectionHealthClassRateLimited        ConnectionHealthClass = "rate_limited"
+	ConnectionHealthClassRemovalPending     ConnectionHealthClass = "removal_pending"
+	ConnectionHealthClassRemoved            ConnectionHealthClass = "removed"
+	ConnectionHealthClassRevoked            ConnectionHealthClass = "revoked"
+	ConnectionHealthClassSuspended          ConnectionHealthClass = "suspended"
+	ConnectionHealthClassUnavailable        ConnectionHealthClass = "unavailable"
+)
+
+// Defines values for ConnectionLifecycle.
+const (
+	ConnectionLifecycleDisabled       ConnectionLifecycle = "disabled"
+	ConnectionLifecycleEnabled        ConnectionLifecycle = "enabled"
+	ConnectionLifecycleRemovalPending ConnectionLifecycle = "removal_pending"
+	ConnectionLifecycleRemoved        ConnectionLifecycle = "removed"
+)
+
+// Defines values for ConnectionProvider.
+const (
+	ConnectionProviderGithub ConnectionProvider = "github"
+)
+
 // Defines values for CreateAcpRunRequestAgentName.
 const (
 	CreateAcpRunRequestAgentNamePlannerFormalize     CreateAcpRunRequestAgentName = "planner-formalize"
 	CreateAcpRunRequestAgentNamePlannerGenerateTitle CreateAcpRunRequestAgentName = "planner-generate-title"
 	CreateAcpRunRequestAgentNamePlannerRegenerate    CreateAcpRunRequestAgentName = "planner-regenerate"
 	CreateAcpRunRequestAgentNamePlannerReply         CreateAcpRunRequestAgentName = "planner-reply"
+)
+
+// Defines values for CreateConnectionRequestCredentialStrategy.
+const (
+	CreateConnectionRequestCredentialStrategyAppPrivateKey CreateConnectionRequestCredentialStrategy = "app_private_key"
+)
+
+// Defines values for CreateConnectionRequestProvider.
+const (
+	CreateConnectionRequestProviderGithub CreateConnectionRequestProvider = "github"
 )
 
 // Defines values for CreateFinalApprovalRequestAction.
@@ -110,24 +166,116 @@ const (
 
 // Defines values for ErrorEnvelopeErrorCode.
 const (
-	ErrorEnvelopeErrorCodeAgentUnresponsive    ErrorEnvelopeErrorCode = "agent_unresponsive"
-	ErrorEnvelopeErrorCodeBudgetExceeded       ErrorEnvelopeErrorCode = "budget_exceeded"
-	ErrorEnvelopeErrorCodeContainerOomKilled   ErrorEnvelopeErrorCode = "container_oom_killed"
-	ErrorEnvelopeErrorCodeContainerStartFailed ErrorEnvelopeErrorCode = "container_start_failed"
-	ErrorEnvelopeErrorCodeDependencyBlocked    ErrorEnvelopeErrorCode = "dependency_blocked"
-	ErrorEnvelopeErrorCodeEventSequenceGap     ErrorEnvelopeErrorCode = "event_sequence_gap"
-	ErrorEnvelopeErrorCodeIdempotencyConflict  ErrorEnvelopeErrorCode = "idempotency_conflict"
-	ErrorEnvelopeErrorCodeInternalError        ErrorEnvelopeErrorCode = "internal_error"
-	ErrorEnvelopeErrorCodeInvalidOutputSchema  ErrorEnvelopeErrorCode = "invalid_output_schema"
-	ErrorEnvelopeErrorCodeLlmContextOverflow   ErrorEnvelopeErrorCode = "llm_context_overflow"
-	ErrorEnvelopeErrorCodeLlmInvalidResponse   ErrorEnvelopeErrorCode = "llm_invalid_response"
-	ErrorEnvelopeErrorCodeLlmModelUnavailable  ErrorEnvelopeErrorCode = "llm_model_unavailable"
-	ErrorEnvelopeErrorCodeLlmRateLimited       ErrorEnvelopeErrorCode = "llm_rate_limited"
-	ErrorEnvelopeErrorCodePolicyViolation      ErrorEnvelopeErrorCode = "policy_violation"
-	ErrorEnvelopeErrorCodeSessionLeaseExpired  ErrorEnvelopeErrorCode = "session_lease_expired"
-	ErrorEnvelopeErrorCodeTimeout              ErrorEnvelopeErrorCode = "timeout"
-	ErrorEnvelopeErrorCodeToolExecutionFailed  ErrorEnvelopeErrorCode = "tool_execution_failed"
-	ErrorEnvelopeErrorCodeTransientTransport   ErrorEnvelopeErrorCode = "transient_transport"
+	ErrorEnvelopeErrorCodeAgentUnresponsive      ErrorEnvelopeErrorCode = "agent_unresponsive"
+	ErrorEnvelopeErrorCodeBudgetExceeded         ErrorEnvelopeErrorCode = "budget_exceeded"
+	ErrorEnvelopeErrorCodeContainerOomKilled     ErrorEnvelopeErrorCode = "container_oom_killed"
+	ErrorEnvelopeErrorCodeContainerStartFailed   ErrorEnvelopeErrorCode = "container_start_failed"
+	ErrorEnvelopeErrorCodeDependencyBlocked      ErrorEnvelopeErrorCode = "dependency_blocked"
+	ErrorEnvelopeErrorCodeEventSequenceGap       ErrorEnvelopeErrorCode = "event_sequence_gap"
+	ErrorEnvelopeErrorCodeIdempotencyConflict    ErrorEnvelopeErrorCode = "idempotency_conflict"
+	ErrorEnvelopeErrorCodeIdempotencyKeyExpired  ErrorEnvelopeErrorCode = "idempotency_key_expired"
+	ErrorEnvelopeErrorCodeIdempotencyPending     ErrorEnvelopeErrorCode = "idempotency_pending"
+	ErrorEnvelopeErrorCodeInternalError          ErrorEnvelopeErrorCode = "internal_error"
+	ErrorEnvelopeErrorCodeInvalidOutputSchema    ErrorEnvelopeErrorCode = "invalid_output_schema"
+	ErrorEnvelopeErrorCodeLlmContextOverflow     ErrorEnvelopeErrorCode = "llm_context_overflow"
+	ErrorEnvelopeErrorCodeLlmInvalidResponse     ErrorEnvelopeErrorCode = "llm_invalid_response"
+	ErrorEnvelopeErrorCodeLlmModelUnavailable    ErrorEnvelopeErrorCode = "llm_model_unavailable"
+	ErrorEnvelopeErrorCodeLlmRateLimited         ErrorEnvelopeErrorCode = "llm_rate_limited"
+	ErrorEnvelopeErrorCodePolicyViolation        ErrorEnvelopeErrorCode = "policy_violation"
+	ErrorEnvelopeErrorCodeProviderCancelled      ErrorEnvelopeErrorCode = "provider_cancelled"
+	ErrorEnvelopeErrorCodeProviderIncompleteTurn ErrorEnvelopeErrorCode = "provider_incomplete_turn"
+	ErrorEnvelopeErrorCodeSessionLeaseExpired    ErrorEnvelopeErrorCode = "session_lease_expired"
+	ErrorEnvelopeErrorCodeTimeout                ErrorEnvelopeErrorCode = "timeout"
+	ErrorEnvelopeErrorCodeToolExecutionFailed    ErrorEnvelopeErrorCode = "tool_execution_failed"
+	ErrorEnvelopeErrorCodeTransientTransport     ErrorEnvelopeErrorCode = "transient_transport"
+)
+
+// Defines values for ExternalAdoptionResultStatus.
+const (
+	Adopted ExternalAdoptionResultStatus = "adopted"
+)
+
+// Defines values for ExternalCommentTruncationReason.
+const (
+	AggregateByteLimit ExternalCommentTruncationReason = "aggregate_byte_limit"
+	CommentByteLimit   ExternalCommentTruncationReason = "comment_byte_limit"
+)
+
+// Defines values for ExternalLinkProvider.
+const (
+	ExternalLinkProviderGithub ExternalLinkProvider = "github"
+)
+
+// Defines values for ExternalLinkTargetKind.
+const (
+	Decree          ExternalLinkTargetKind = "decree"
+	PlanningSession ExternalLinkTargetKind = "planning_session"
+)
+
+// Defines values for ExternalProvenanceSummaryProvider.
+const (
+	ExternalProvenanceSummaryProviderGithub ExternalProvenanceSummaryProvider = "github"
+)
+
+// Defines values for ExternalRefreshResultOutcome.
+const (
+	ExternalRefreshResultOutcomeChanged               ExternalRefreshResultOutcome = "changed"
+	ExternalRefreshResultOutcomeConnectionDisabled    ExternalRefreshResultOutcome = "connection_disabled"
+	ExternalRefreshResultOutcomeDeleted               ExternalRefreshResultOutcome = "deleted"
+	ExternalRefreshResultOutcomeInaccessibleOrMissing ExternalRefreshResultOutcome = "inaccessible_or_missing"
+	ExternalRefreshResultOutcomeMalformedResponse     ExternalRefreshResultOutcome = "malformed_response"
+	ExternalRefreshResultOutcomeOversizedResponse     ExternalRefreshResultOutcome = "oversized_response"
+	ExternalRefreshResultOutcomePermissionMismatch    ExternalRefreshResultOutcome = "permission_mismatch"
+	ExternalRefreshResultOutcomeRateLimited           ExternalRefreshResultOutcome = "rate_limited"
+	ExternalRefreshResultOutcomeRevoked               ExternalRefreshResultOutcome = "revoked"
+	ExternalRefreshResultOutcomeServiceUnavailable    ExternalRefreshResultOutcome = "service_unavailable"
+	ExternalRefreshResultOutcomeSuperseded            ExternalRefreshResultOutcome = "superseded"
+	ExternalRefreshResultOutcomeTimeout               ExternalRefreshResultOutcome = "timeout"
+	ExternalRefreshResultOutcomeUnchanged             ExternalRefreshResultOutcome = "unchanged"
+)
+
+// Defines values for ExternalSourceStatus.
+const (
+	ExternalSourceStatusChanged               ExternalSourceStatus = "changed"
+	ExternalSourceStatusConnectionDisabled    ExternalSourceStatus = "connection_disabled"
+	ExternalSourceStatusDeleted               ExternalSourceStatus = "deleted"
+	ExternalSourceStatusInaccessibleOrMissing ExternalSourceStatus = "inaccessible_or_missing"
+	ExternalSourceStatusMalformedResponse     ExternalSourceStatus = "malformed_response"
+	ExternalSourceStatusNeverChecked          ExternalSourceStatus = "never_checked"
+	ExternalSourceStatusOversizedResponse     ExternalSourceStatus = "oversized_response"
+	ExternalSourceStatusPermissionMismatch    ExternalSourceStatus = "permission_mismatch"
+	ExternalSourceStatusRateLimited           ExternalSourceStatus = "rate_limited"
+	ExternalSourceStatusRevoked               ExternalSourceStatus = "revoked"
+	ExternalSourceStatusServiceUnavailable    ExternalSourceStatus = "service_unavailable"
+	ExternalSourceStatusTimeout               ExternalSourceStatus = "timeout"
+	ExternalSourceStatusUnchanged             ExternalSourceStatus = "unchanged"
+)
+
+// Defines values for GitHubDeviceFlowStatusStage.
+const (
+	GitHubDeviceFlowStatusStageAccessDenied             GitHubDeviceFlowStatusStage = "access_denied"
+	GitHubDeviceFlowStatusStageAwaitingAuthorization    GitHubDeviceFlowStatusStage = "awaiting_authorization"
+	GitHubDeviceFlowStatusStageCompleted                GitHubDeviceFlowStatusStage = "completed"
+	GitHubDeviceFlowStatusStageDiscoveringInstallations GitHubDeviceFlowStatusStage = "discovering_installations"
+	GitHubDeviceFlowStatusStageExpired                  GitHubDeviceFlowStatusStage = "expired"
+	GitHubDeviceFlowStatusStageFailed                   GitHubDeviceFlowStatusStage = "failed"
+	GitHubDeviceFlowStatusStageFinalizing               GitHubDeviceFlowStatusStage = "finalizing"
+	GitHubDeviceFlowStatusStageNeedsInstallation        GitHubDeviceFlowStatusStage = "needs_installation"
+	GitHubDeviceFlowStatusStageSelectingInstallation    GitHubDeviceFlowStatusStage = "selecting_installation"
+)
+
+// Defines values for GitHubManifestFlowStatusStage.
+const (
+	GitHubManifestFlowStatusStageAppCreated            GitHubManifestFlowStatusStage = "app_created"
+	GitHubManifestFlowStatusStageAuthorizationReceived GitHubManifestFlowStatusStage = "authorization_received"
+	GitHubManifestFlowStatusStageAwaitingAppCreation   GitHubManifestFlowStatusStage = "awaiting_app_creation"
+	GitHubManifestFlowStatusStageAwaitingAuthorization GitHubManifestFlowStatusStage = "awaiting_authorization"
+	GitHubManifestFlowStatusStageAwaitingInstallation  GitHubManifestFlowStatusStage = "awaiting_installation"
+	GitHubManifestFlowStatusStageCompleted             GitHubManifestFlowStatusStage = "completed"
+	GitHubManifestFlowStatusStageConvertingApp         GitHubManifestFlowStatusStage = "converting_app"
+	GitHubManifestFlowStatusStageFailed                GitHubManifestFlowStatusStage = "failed"
+	GitHubManifestFlowStatusStageInstallationReceived  GitHubManifestFlowStatusStage = "installation_received"
+	GitHubManifestFlowStatusStageValidatingConnection  GitHubManifestFlowStatusStage = "validating_connection"
 )
 
 // Defines values for GovernanceDecisionDecision.
@@ -146,6 +294,17 @@ const (
 // Defines values for HealthResponseStatus.
 const (
 	HealthResponseStatusOk HealthResponseStatus = "ok"
+)
+
+// Defines values for IssuePageSearchResultCap.
+const (
+	N1000 IssuePageSearchResultCap = 1000
+)
+
+// Defines values for NormalizedIssueState.
+const (
+	NormalizedIssueStateClosed NormalizedIssueState = "closed"
+	NormalizedIssueStateOpen   NormalizedIssueState = "open"
 )
 
 // Defines values for PlanningMessageRole.
@@ -230,6 +389,12 @@ const (
 	RunAgentStatusFailed  RunAgentStatus = "failed"
 	RunAgentStatusIdle    RunAgentStatus = "idle"
 	RunAgentStatusOffline RunAgentStatus = "offline"
+)
+
+// Defines values for RunArtifactItemArtifactAction.
+const (
+	RunArtifactItemArtifactActionDelete RunArtifactItemArtifactAction = "delete"
+	RunArtifactItemArtifactActionWrite  RunArtifactItemArtifactAction = "write"
 )
 
 // Defines values for RunArtifactItemArtifactKind.
@@ -495,6 +660,12 @@ const (
 	RuntimeMetricsStatusOk       RuntimeMetricsStatus = "ok"
 )
 
+// Defines values for StartGitHubManifestFlowRequestOwnerType.
+const (
+	Organization StartGitHubManifestFlowRequestOwnerType = "organization"
+	Personal     StartGitHubManifestFlowRequestOwnerType = "personal"
+)
+
 // Defines values for StructuredQuestionType.
 const (
 	LongText     StructuredQuestionType = "long_text"
@@ -502,6 +673,11 @@ const (
 	ShortText    StructuredQuestionType = "short_text"
 	SingleSelect StructuredQuestionType = "single_select"
 	YesNo        StructuredQuestionType = "yes_no"
+)
+
+// Defines values for BrowserBootstrap.
+const (
+	BrowserBootstrapN1 BrowserBootstrap = "1"
 )
 
 // Defines values for RunStateFilter.
@@ -520,6 +696,23 @@ const (
 	GetAcpAgentParamsNamePlannerGenerateTitle GetAcpAgentParamsName = "planner-generate-title"
 	GetAcpAgentParamsNamePlannerRegenerate    GetAcpAgentParamsName = "planner-regenerate"
 	GetAcpAgentParamsNamePlannerReply         GetAcpAgentParamsName = "planner-reply"
+)
+
+// Defines values for CreateAuthSessionParamsXKingdomBrowserBootstrap.
+const (
+	CreateAuthSessionParamsXKingdomBrowserBootstrapN1 CreateAuthSessionParamsXKingdomBrowserBootstrap = "1"
+)
+
+// Defines values for ReceiveGitHubSetupCallbackParamsSetupAction.
+const (
+	Install ReceiveGitHubSetupCallbackParamsSetupAction = "install"
+)
+
+// Defines values for ListConnectionIssuesParamsState.
+const (
+	ListConnectionIssuesParamsStateAll    ListConnectionIssuesParamsState = "all"
+	ListConnectionIssuesParamsStateClosed ListConnectionIssuesParamsState = "closed"
+	ListConnectionIssuesParamsStateOpen   ListConnectionIssuesParamsState = "open"
 )
 
 // Defines values for ListRunsParamsStateFilter.
@@ -611,12 +804,24 @@ type AnalyticsRoleDuration struct {
 
 // ArtifactResponse defines model for ArtifactResponse.
 type ArtifactResponse struct {
-	ArtifactId  string `json:"artifact_id"`
-	DownloadUrl string `json:"download_url"`
-	Mime        string `json:"mime"`
-	Name        string `json:"name"`
-	Sha256      string `json:"sha256"`
-	SizeBytes   int    `json:"size_bytes"`
+	ArtifactAction ArtifactResponseArtifactAction `json:"artifact_action"`
+	ArtifactId     string                         `json:"artifact_id"`
+	DownloadUrl    *string                        `json:"download_url,omitempty"`
+	Mime           string                         `json:"mime"`
+	Name           string                         `json:"name"`
+	Sha256         *string                        `json:"sha256,omitempty"`
+	SizeBytes      int                            `json:"size_bytes"`
+}
+
+// ArtifactResponseArtifactAction defines model for ArtifactResponse.ArtifactAction.
+type ArtifactResponseArtifactAction string
+
+// AuthSession defines model for AuthSession.
+type AuthSession struct {
+	ActorId   string    `json:"actor_id"`
+	CsrfToken string    `json:"csrf_token"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RoleId    string    `json:"role_id"`
 }
 
 // CancelAcpRunRequest defines model for CancelAcpRunRequest.
@@ -627,6 +832,54 @@ type CancelAcpRunRequest struct {
 // CancelRunRequest defines model for CancelRunRequest.
 type CancelRunRequest struct {
 	Reason *string `json:"reason,omitempty"`
+}
+
+// CaptureResult defines model for CaptureResult.
+type CaptureResult struct {
+	SnapshotId string `json:"snapshot_id"`
+	SourceId   string `json:"source_id"`
+}
+
+// Connection defines model for Connection.
+type Connection struct {
+	AppId                    string                       `json:"app_id"`
+	AppSlug                  string                       `json:"app_slug"`
+	ClientId                 string                       `json:"client_id"`
+	ConnectionId             string                       `json:"connection_id"`
+	CreatedAt                time.Time                    `json:"created_at"`
+	CredentialState          ConnectionCredentialState    `json:"credential_state"`
+	CredentialStrategy       ConnectionCredentialStrategy `json:"credential_strategy"`
+	DisplayName              string                       `json:"display_name"`
+	FailureClass             *string                      `json:"failure_class,omitempty"`
+	HealthClass              ConnectionHealthClass        `json:"health_class"`
+	InstallationAccountId    *string                      `json:"installation_account_id,omitempty"`
+	InstallationAccountLogin *string                      `json:"installation_account_login,omitempty"`
+	InstallationId           string                       `json:"installation_id"`
+	LastCheckedAt            *time.Time                   `json:"last_checked_at,omitempty"`
+	LastSuccessAt            *time.Time                   `json:"last_success_at,omitempty"`
+	Lifecycle                ConnectionLifecycle          `json:"lifecycle"`
+	Provider                 ConnectionProvider           `json:"provider"`
+	UpdatedAt                time.Time                    `json:"updated_at"`
+}
+
+// ConnectionCredentialState defines model for Connection.CredentialState.
+type ConnectionCredentialState string
+
+// ConnectionCredentialStrategy defines model for Connection.CredentialStrategy.
+type ConnectionCredentialStrategy string
+
+// ConnectionHealthClass defines model for Connection.HealthClass.
+type ConnectionHealthClass string
+
+// ConnectionLifecycle defines model for Connection.Lifecycle.
+type ConnectionLifecycle string
+
+// ConnectionProvider defines model for Connection.Provider.
+type ConnectionProvider string
+
+// ConnectionList defines model for ConnectionList.
+type ConnectionList struct {
+	Items []Connection `json:"items"`
 }
 
 // CreateAcpRunRequest defines model for CreateAcpRunRequest.
@@ -640,21 +893,32 @@ type CreateAcpRunRequest struct {
 // CreateAcpRunRequestAgentName defines model for CreateAcpRunRequest.AgentName.
 type CreateAcpRunRequestAgentName string
 
-// CreateArtifactPreviewSessionRequest defines model for CreateArtifactPreviewSessionRequest.
-type CreateArtifactPreviewSessionRequest = map[string]interface{}
-
-// CreateArtifactPreviewSessionResult defines model for CreateArtifactPreviewSessionResult.
-type CreateArtifactPreviewSessionResult struct {
-	ExpiresAt  time.Time `json:"expires_at"`
-	PreviewUrl string    `json:"preview_url"`
-	Token      string    `json:"token"`
+// CreateConnectionRequest defines model for CreateConnectionRequest.
+type CreateConnectionRequest struct {
+	AppId              string                                    `json:"app_id"`
+	AppSlug            *string                                   `json:"app_slug,omitempty"`
+	ClientId           string                                    `json:"client_id"`
+	CredentialStrategy CreateConnectionRequestCredentialStrategy `json:"credential_strategy"`
+	DisplayName        string                                    `json:"display_name"`
+	InstallationId     string                                    `json:"installation_id"`
+	Provider           CreateConnectionRequestProvider           `json:"provider"`
 }
+
+// CreateConnectionRequestCredentialStrategy defines model for CreateConnectionRequest.CredentialStrategy.
+type CreateConnectionRequestCredentialStrategy string
+
+// CreateConnectionRequestProvider defines model for CreateConnectionRequest.Provider.
+type CreateConnectionRequestProvider string
 
 // CreateDecreeRequest defines model for CreateDecreeRequest.
 type CreateDecreeRequest struct {
-	DecreeText  string                  `json:"decree_text"`
-	DecreeTitle string                  `json:"decree_title"`
-	Metadata    *map[string]interface{} `json:"metadata,omitempty"`
+	DecreeText  string `json:"decree_text"`
+	DecreeTitle string `json:"decree_title"`
+
+	// ExternalSourceSnapshotId Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field.
+	ExternalSourceSnapshotId *string                 `json:"external_source_snapshot_id,omitempty"`
+	Metadata                 *map[string]interface{} `json:"metadata,omitempty"`
+	PlanningLineage          *PlanningLineage        `json:"planning_lineage,omitempty"`
 }
 
 // CreateDecreeResult defines model for CreateDecreeResult.
@@ -706,6 +970,7 @@ type CreatePlanApprovalResultStatus string
 
 // CreatePlanningSessionRequest defines model for CreatePlanningSessionRequest.
 type CreatePlanningSessionRequest struct {
+	ExternalIntake *ExternalIntake              `json:"external_intake,omitempty"`
 	ModelSelection *PlanningAgentModelSelection `json:"model_selection,omitempty"`
 	Title          *string                      `json:"title,omitempty"`
 }
@@ -766,11 +1031,12 @@ type DashboardTrendPoint struct {
 
 // DecreeDetail defines model for DecreeDetail.
 type DecreeDetail struct {
-	CreatedAt   time.Time               `json:"created_at"`
-	DecreeId    string                  `json:"decree_id"`
-	DecreeText  string                  `json:"decree_text"`
-	DecreeTitle string                  `json:"decree_title"`
-	Metadata    *map[string]interface{} `json:"metadata,omitempty"`
+	CreatedAt       time.Time                   `json:"created_at"`
+	DecreeId        string                      `json:"decree_id"`
+	DecreeText      string                      `json:"decree_text"`
+	DecreeTitle     string                      `json:"decree_title"`
+	ExternalSources []ExternalProvenanceSummary `json:"external_sources"`
+	Metadata        *map[string]interface{}     `json:"metadata,omitempty"`
 }
 
 // ErrorEnvelope defines model for ErrorEnvelope.
@@ -782,6 +1048,7 @@ type ErrorEnvelope struct {
 		Details       map[string]interface{}     `json:"details"`
 		Message       string                     `json:"message"`
 		OccurredAt    time.Time                  `json:"occurred_at"`
+		RetryAt       *time.Time                 `json:"retry_at,omitempty"`
 		Retryable     bool                       `json:"retryable"`
 	} `json:"error"`
 }
@@ -791,6 +1058,163 @@ type ErrorEnvelopeErrorCategory string
 
 // ErrorEnvelopeErrorCode defines model for ErrorEnvelope.Error.Code.
 type ErrorEnvelopeErrorCode string
+
+// ExternalAdoptionResult defines model for ExternalAdoptionResult.
+type ExternalAdoptionResult struct {
+	Status ExternalAdoptionResultStatus `json:"status"`
+}
+
+// ExternalAdoptionResultStatus defines model for ExternalAdoptionResult.Status.
+type ExternalAdoptionResultStatus string
+
+// ExternalComment defines model for ExternalComment.
+type ExternalComment struct {
+	Author            string                           `json:"author"`
+	Body              string                           `json:"body"`
+	CanonicalUrl      string                           `json:"canonical_url"`
+	CreatedAt         time.Time                        `json:"created_at"`
+	OriginalBytes     int                              `json:"original_bytes"`
+	ProviderCommentId string                           `json:"provider_comment_id"`
+	RetainedBytes     int                              `json:"retained_bytes"`
+	TruncationReason  *ExternalCommentTruncationReason `json:"truncation_reason,omitempty"`
+	UpdatedAt         time.Time                        `json:"updated_at"`
+}
+
+// ExternalCommentTruncationReason defines model for ExternalComment.TruncationReason.
+type ExternalCommentTruncationReason string
+
+// ExternalCommentPage defines model for ExternalCommentPage.
+type ExternalCommentPage struct {
+	Items      []ExternalComment `json:"items"`
+	NextCursor *string           `json:"next_cursor,omitempty"`
+}
+
+// ExternalHistoryEntry defines model for ExternalHistoryEntry.
+type ExternalHistoryEntry struct {
+	ContentDigest         string    `json:"content_digest"`
+	FetchedAt             time.Time `json:"fetched_at"`
+	PredecessorSnapshotId *string   `json:"predecessor_snapshot_id,omitempty"`
+	ProviderUpdatedAt     time.Time `json:"provider_updated_at"`
+	SnapshotId            string    `json:"snapshot_id"`
+}
+
+// ExternalHistoryPage defines model for ExternalHistoryPage.
+type ExternalHistoryPage struct {
+	Items      []ExternalHistoryEntry `json:"items"`
+	NextCursor *string                `json:"next_cursor,omitempty"`
+}
+
+// ExternalImportProfile defines model for ExternalImportProfile.
+type ExternalImportProfile struct {
+	IncludeCommentCount bool `json:"include_comment_count"`
+
+	// IncludeComments Comment bodies imply comment count. At most 100 bodies, 32 KiB each and 128 KiB aggregate are retained.
+	IncludeComments bool `json:"include_comments"`
+}
+
+// ExternalIntake defines model for ExternalIntake.
+type ExternalIntake struct {
+	ConnectionId        string `json:"connection_id"`
+	IncludeCommentCount *bool  `json:"include_comment_count,omitempty"`
+	IncludeComments     *bool  `json:"include_comments,omitempty"`
+	IssueNumber         int    `json:"issue_number"`
+	RepositoryId        string `json:"repository_id"`
+}
+
+// ExternalLink defines model for ExternalLink.
+type ExternalLink struct {
+	ActiveSnapshotId *string                `json:"active_snapshot_id,omitempty"`
+	CanonicalUrl     string                 `json:"canonical_url"`
+	CheckedAt        *time.Time             `json:"checked_at,omitempty"`
+	CreatedAt        time.Time              `json:"created_at"`
+	IssueNumber      int                    `json:"issue_number"`
+	LatestSnapshotId string                 `json:"latest_snapshot_id"`
+	LinkId           string                 `json:"link_id"`
+	Provider         ExternalLinkProvider   `json:"provider"`
+	Repository       string                 `json:"repository"`
+	RowVersion       int                    `json:"row_version"`
+	SourceId         string                 `json:"source_id"`
+	Status           ExternalSourceStatus   `json:"status"`
+	TargetId         string                 `json:"target_id"`
+	TargetKind       ExternalLinkTargetKind `json:"target_kind"`
+	UsedSnapshotId   string                 `json:"used_snapshot_id"`
+}
+
+// ExternalLinkProvider defines model for ExternalLink.Provider.
+type ExternalLinkProvider string
+
+// ExternalLinkTargetKind defines model for ExternalLink.TargetKind.
+type ExternalLinkTargetKind string
+
+// ExternalProvenanceSummary defines model for ExternalProvenanceSummary.
+type ExternalProvenanceSummary struct {
+	ActiveSnapshotId *string                           `json:"active_snapshot_id,omitempty"`
+	CanonicalUrl     string                            `json:"canonical_url"`
+	IssueNumber      int                               `json:"issue_number"`
+	LatestSnapshotId string                            `json:"latest_snapshot_id"`
+	LinkId           string                            `json:"link_id"`
+	Provider         ExternalProvenanceSummaryProvider `json:"provider"`
+	Repository       string                            `json:"repository"`
+	Status           ExternalSourceStatus              `json:"status"`
+	UsedSnapshotId   string                            `json:"used_snapshot_id"`
+}
+
+// ExternalProvenanceSummaryProvider defines model for ExternalProvenanceSummary.Provider.
+type ExternalProvenanceSummaryProvider string
+
+// ExternalRefreshChanges defines model for ExternalRefreshChanges.
+type ExternalRefreshChanges struct {
+	Body         bool `json:"body"`
+	CanonicalUrl bool `json:"canonical_url"`
+	CommentCount bool `json:"comment_count"`
+	Comments     bool `json:"comments"`
+	CreatedAt    bool `json:"created_at"`
+	IssueNumber  bool `json:"issue_number"`
+	Repository   bool `json:"repository"`
+	State        bool `json:"state"`
+	Title        bool `json:"title"`
+	UpdatedAt    bool `json:"updated_at"`
+}
+
+// ExternalRefreshResult defines model for ExternalRefreshResult.
+type ExternalRefreshResult struct {
+	Changes         ExternalRefreshChanges       `json:"changes"`
+	Link            ExternalLink                 `json:"link"`
+	Message         string                       `json:"message"`
+	Outcome         ExternalRefreshResultOutcome `json:"outcome"`
+	RetryAt         *time.Time                   `json:"retry_at,omitempty"`
+	SnapshotCreated bool                         `json:"snapshot_created"`
+}
+
+// ExternalRefreshResultOutcome defines model for ExternalRefreshResult.Outcome.
+type ExternalRefreshResultOutcome string
+
+// ExternalSnapshotResponse Immutable normalized snapshot metadata. Comment bodies are available only through the paginated comments route.
+type ExternalSnapshotResponse struct {
+	CommentCount         int                   `json:"comment_count"`
+	CommentsTruncated    bool                  `json:"comments_truncated"`
+	FetchedAt            time.Time             `json:"fetched_at"`
+	FetchedCommentCount  int                   `json:"fetched_comment_count"`
+	FetchedCommentPages  int                   `json:"fetched_comment_pages"`
+	Issue                NormalizedIssue       `json:"issue"`
+	OmittedCommentCount  int                   `json:"omitted_comment_count"`
+	OmittedCommentPages  int                   `json:"omitted_comment_pages"`
+	Profile              ExternalImportProfile `json:"profile"`
+	ProviderUpdatedAt    time.Time             `json:"provider_updated_at"`
+	RetainedCommentBytes int                   `json:"retained_comment_bytes"`
+	RetainedCommentCount int                   `json:"retained_comment_count"`
+	SnapshotId           string                `json:"snapshot_id"`
+	SourceId             string                `json:"source_id"`
+}
+
+// ExternalSourceStatus defines model for ExternalSourceStatus.
+type ExternalSourceStatus string
+
+// FinalizeGitHubDeviceFlowRequest defines model for FinalizeGitHubDeviceFlowRequest.
+type FinalizeGitHubDeviceFlowRequest struct {
+	DisplayName    string `json:"display_name"`
+	InstallationId string `json:"installation_id"`
+}
 
 // GeneratedTitleLatencyMetrics defines model for GeneratedTitleLatencyMetrics.
 type GeneratedTitleLatencyMetrics struct {
@@ -810,6 +1234,66 @@ type GeneratedTitleRuntimeMetrics struct {
 	OldestRunningStartedAt *time.Time                   `json:"oldest_running_started_at,omitempty"`
 	QueuedOperations       int                          `json:"queued_operations"`
 	RunningOperations      int                          `json:"running_operations"`
+}
+
+// GitHubAuthorizationURL defines model for GitHubAuthorizationURL.
+type GitHubAuthorizationURL struct {
+	AuthorizationUrl string `json:"authorization_url"`
+}
+
+// GitHubDeviceFlowStatus defines model for GitHubDeviceFlowStatus.
+type GitHubDeviceFlowStatus struct {
+	Candidates      []GitHubInstallationCandidate `json:"candidates"`
+	ConnectionId    *string                       `json:"connection_id,omitempty"`
+	ExpiresAt       time.Time                     `json:"expires_at"`
+	Failure         *string                       `json:"failure,omitempty"`
+	FlowId          string                        `json:"flow_id"`
+	InstallUrl      *string                       `json:"install_url,omitempty"`
+	IntervalSeconds int                           `json:"interval_seconds"`
+	RetryAt         *time.Time                    `json:"retry_at,omitempty"`
+	Stage           GitHubDeviceFlowStatusStage   `json:"stage"`
+	UserCode        *string                       `json:"user_code,omitempty"`
+	VerificationUri *string                       `json:"verification_uri,omitempty"`
+}
+
+// GitHubDeviceFlowStatusStage defines model for GitHubDeviceFlowStatus.Stage.
+type GitHubDeviceFlowStatusStage string
+
+// GitHubInstallationCandidate defines model for GitHubInstallationCandidate.
+type GitHubInstallationCandidate struct {
+	AccountId      string `json:"account_id"`
+	AccountLogin   string `json:"account_login"`
+	AppId          string `json:"app_id"`
+	AppSlug        string `json:"app_slug"`
+	ClientId       string `json:"client_id"`
+	DisplayName    string `json:"display_name"`
+	InstallationId string `json:"installation_id"`
+}
+
+// GitHubInstallationURL defines model for GitHubInstallationURL.
+type GitHubInstallationURL struct {
+	InstallationUrl string `json:"installation_url"`
+}
+
+// GitHubManifestFlowStatus defines model for GitHubManifestFlowStatus.
+type GitHubManifestFlowStatus struct {
+	AppName      *string                       `json:"app_name,omitempty"`
+	AppSlug      *string                       `json:"app_slug,omitempty"`
+	ConnectionId *string                       `json:"connection_id,omitempty"`
+	ExpiresAt    time.Time                     `json:"expires_at"`
+	Failure      *string                       `json:"failure,omitempty"`
+	FlowId       string                        `json:"flow_id"`
+	Stage        GitHubManifestFlowStatusStage `json:"stage"`
+}
+
+// GitHubManifestFlowStatusStage defines model for GitHubManifestFlowStatus.Stage.
+type GitHubManifestFlowStatusStage string
+
+// GitHubSetupOptions defines model for GitHubSetupOptions.
+type GitHubSetupOptions struct {
+	AppSlug       *string `json:"app_slug,omitempty"`
+	InstallUrl    *string `json:"install_url,omitempty"`
+	SharedEnabled bool    `json:"shared_enabled"`
 }
 
 // GovernanceDecision defines model for GovernanceDecision.
@@ -841,6 +1325,54 @@ type HealthResponse struct {
 
 // HealthResponseStatus defines model for HealthResponse.Status.
 type HealthResponseStatus string
+
+// IssuePage defines model for IssuePage.
+type IssuePage struct {
+	IncompleteResults bool                     `json:"incomplete_results"`
+	Items             []IssueSummary           `json:"items"`
+	NextCursor        *string                  `json:"next_cursor,omitempty"`
+	SearchResultCap   IssuePageSearchResultCap `json:"search_result_cap"`
+}
+
+// IssuePageSearchResultCap defines model for IssuePage.SearchResultCap.
+type IssuePageSearchResultCap int
+
+// IssuePreview Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors.
+type IssuePreview struct {
+	CommentCount        int                   `json:"comment_count"`
+	Comments            []ExternalComment     `json:"comments"`
+	EtagPresent         bool                  `json:"etag_present"`
+	FetchedCommentCount int                   `json:"fetched_comment_count"`
+	FetchedCommentPages int                   `json:"fetched_comment_pages"`
+	Issue               NormalizedIssue       `json:"issue"`
+	NativeId            string                `json:"native_id"`
+	OmittedCommentCount int                   `json:"omitted_comment_count"`
+	OmittedCommentPages int                   `json:"omitted_comment_pages"`
+	Profile             ExternalImportProfile `json:"profile"`
+	RepositoryId        string                `json:"repository_id"`
+}
+
+// IssueSummary defines model for IssueSummary.
+type IssueSummary struct {
+	CommentCount int             `json:"comment_count"`
+	Issue        NormalizedIssue `json:"issue"`
+	NativeId     string          `json:"native_id"`
+}
+
+// NormalizedIssue defines model for NormalizedIssue.
+type NormalizedIssue struct {
+	Body         string               `json:"body"`
+	CanonicalUrl string               `json:"canonical_url"`
+	CreatedAt    time.Time            `json:"created_at"`
+	IssueNumber  int                  `json:"issue_number"`
+	Repository   string               `json:"repository"`
+	State        NormalizedIssueState `json:"state"`
+	Title        string               `json:"title"`
+	UpdatedAt    time.Time            `json:"updated_at"`
+}
+
+// NormalizedIssueState defines model for NormalizedIssue.State.
+type NormalizedIssueState string
 
 // PlannerDispatchMetrics defines model for PlannerDispatchMetrics.
 type PlannerDispatchMetrics struct {
@@ -911,6 +1443,12 @@ type PlanningDraft struct {
 	Summary           *map[string]interface{} `json:"summary,omitempty"`
 }
 
+// PlanningLineage defines model for PlanningLineage.
+type PlanningLineage struct {
+	PlanningDraftId   string `json:"planning_draft_id"`
+	PlanningSessionId string `json:"planning_session_id"`
+}
+
 // PlanningMessage defines model for PlanningMessage.
 type PlanningMessage struct {
 	AnswerPayload *StructuredQuestionAnswer `json:"answer_payload,omitempty"`
@@ -977,6 +1515,7 @@ type PlanningSessionDetail struct {
 	CurrentDraftId      *string                                `json:"current_draft_id,omitempty"`
 	CurrentRunId        *openapi_types.UUID                    `json:"current_run_id,omitempty"`
 	CurrentTitleRunId   *openapi_types.UUID                    `json:"current_title_run_id,omitempty"`
+	ExternalSources     []ExternalProvenanceSummary            `json:"external_sources"`
 	LifecycleState      PlanningSessionDetailLifecycleState    `json:"lifecycle_state"`
 	ModelSelection      PlanningAgentModelSelection            `json:"model_selection"`
 	PlanningSessionId   string                                 `json:"planning_session_id"`
@@ -1156,6 +1695,19 @@ type RefreshPlanningSessionContextResult struct {
 	Session         PlanningSessionDetail   `json:"session"`
 }
 
+// Repository defines model for Repository.
+type Repository struct {
+	CanonicalUrl string `json:"canonical_url"`
+	Id           string `json:"id"`
+	Locator      string `json:"locator"`
+}
+
+// RepositoryPage defines model for RepositoryPage.
+type RepositoryPage struct {
+	Items      []Repository `json:"items"`
+	NextCursor *string      `json:"next_cursor,omitempty"`
+}
+
 // RerunFromNodeRequest defines model for RerunFromNodeRequest.
 type RerunFromNodeRequest struct {
 	Reason string `json:"reason"`
@@ -1220,18 +1772,20 @@ type RunAgentsResponse struct {
 
 // RunArtifactItem defines model for RunArtifactItem.
 type RunArtifactItem struct {
-	ArtifactId   string                      `json:"artifact_id"`
-	ArtifactKind RunArtifactItemArtifactKind `json:"artifact_kind"`
-	ContentUrl   string                      `json:"content_url"`
-	CreatedAt    time.Time                   `json:"created_at"`
-	DownloadUrl  string                      `json:"download_url"`
-	Mime         string                      `json:"mime"`
-	Name         string                      `json:"name"`
-	Path         string                      `json:"path"`
-	Previewable  bool                        `json:"previewable"`
-	Sha256       string                      `json:"sha256"`
-	SizeBytes    int                         `json:"size_bytes"`
+	ArtifactAction RunArtifactItemArtifactAction `json:"artifact_action"`
+	ArtifactId     string                        `json:"artifact_id"`
+	ArtifactKind   RunArtifactItemArtifactKind   `json:"artifact_kind"`
+	CreatedAt      time.Time                     `json:"created_at"`
+	DownloadUrl    *string                       `json:"download_url,omitempty"`
+	Mime           string                        `json:"mime"`
+	Name           string                        `json:"name"`
+	Path           string                        `json:"path"`
+	Sha256         *string                       `json:"sha256,omitempty"`
+	SizeBytes      int                           `json:"size_bytes"`
 }
+
+// RunArtifactItemArtifactAction defines model for RunArtifactItem.ArtifactAction.
+type RunArtifactItemArtifactAction string
 
 // RunArtifactItemArtifactKind defines model for RunArtifactItem.ArtifactKind.
 type RunArtifactItemArtifactKind string
@@ -1664,6 +2218,28 @@ type RuntimeRetryStatus struct {
 	RetryMax     int    `json:"retry_max"`
 }
 
+// StartGitHubDeviceFlowRequest defines model for StartGitHubDeviceFlowRequest.
+type StartGitHubDeviceFlowRequest struct {
+	ConnectionId *string `json:"connection_id,omitempty"`
+}
+
+// StartGitHubManifestFlowPayload defines model for StartGitHubManifestFlowPayload.
+type StartGitHubManifestFlowPayload struct {
+	ExpiresAt  time.Time `json:"expires_at"`
+	FlowId     string    `json:"flow_id"`
+	FormAction string    `json:"form_action"`
+	Manifest   string    `json:"manifest"`
+}
+
+// StartGitHubManifestFlowRequest defines model for StartGitHubManifestFlowRequest.
+type StartGitHubManifestFlowRequest struct {
+	Organization *string                                 `json:"organization,omitempty"`
+	OwnerType    StartGitHubManifestFlowRequestOwnerType `json:"owner_type"`
+}
+
+// StartGitHubManifestFlowRequestOwnerType defines model for StartGitHubManifestFlowRequest.OwnerType.
+type StartGitHubManifestFlowRequestOwnerType string
+
 // StructuredQuestion defines model for StructuredQuestion.
 type StructuredQuestion struct {
 	Options *[]StructuredQuestionOption `json:"options,omitempty"`
@@ -1736,6 +2312,12 @@ type TokenUsageByRoleModel struct {
 	ThinkingEffort      *string `json:"thinking_effort,omitempty"`
 }
 
+// UpdateConnectionRequest defines model for UpdateConnectionRequest.
+type UpdateConnectionRequest struct {
+	DisplayName *string `json:"display_name,omitempty"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+}
+
 // UpdatePlanningSessionRequest defines model for UpdatePlanningSessionRequest.
 type UpdatePlanningSessionRequest struct {
 	ModelSelection *PlanningAgentModelSelection `json:"model_selection,omitempty"`
@@ -1754,20 +2336,32 @@ type WorkspaceCapabilities struct {
 // AcpRunId defines model for AcpRunId.
 type AcpRunId = string
 
-// ActorId defines model for ActorId.
-type ActorId = string
-
 // ArtifactId defines model for ArtifactId.
 type ArtifactId = string
 
 // AttemptId defines model for AttemptId.
 type AttemptId = string
 
+// BrowserBootstrap defines model for BrowserBootstrap.
+type BrowserBootstrap string
+
+// CSRFToken defines model for CSRFToken.
+type CSRFToken = string
+
+// ConnectionId defines model for ConnectionId.
+type ConnectionId = string
+
 // Cursor defines model for Cursor.
 type Cursor = string
 
 // DecreeId defines model for DecreeId.
 type DecreeId = string
+
+// DeviceFlowId defines model for DeviceFlowId.
+type DeviceFlowId = string
+
+// ExternalLinkId defines model for ExternalLinkId.
+type ExternalLinkId = string
 
 // Follow defines model for Follow.
 type Follow = bool
@@ -1781,11 +2375,17 @@ type LastEventId = string
 // Limit defines model for Limit.
 type Limit = int
 
+// ManifestFlowId defines model for ManifestFlowId.
+type ManifestFlowId = string
+
 // MessageId defines model for MessageId.
 type MessageId = string
 
 // NodeKey defines model for NodeKey.
 type NodeKey = string
+
+// Origin defines model for Origin.
+type Origin = string
 
 // PlanningMessagesBefore defines model for PlanningMessagesBefore.
 type PlanningMessagesBefore = string
@@ -1796,14 +2396,8 @@ type PlanningSessionId = string
 // PollMs defines model for PollMs.
 type PollMs = int
 
-// PreviewAssetPath defines model for PreviewAssetPath.
-type PreviewAssetPath = string
-
-// PreviewToken defines model for PreviewToken.
-type PreviewToken = string
-
-// RoleId defines model for RoleId.
-type RoleId = string
+// RepositoryId defines model for RepositoryId.
+type RepositoryId = string
 
 // RunId defines model for RunId.
 type RunId = string
@@ -1816,6 +2410,9 @@ type RunSearch = string
 
 // RunStateFilter defines model for RunStateFilter.
 type RunStateFilter string
+
+// SnapshotId defines model for SnapshotId.
+type SnapshotId = string
 
 // WindowMinutes defines model for WindowMinutes.
 type WindowMinutes = int
@@ -1841,97 +2438,208 @@ type ServiceUnavailableError = ErrorEnvelope
 // UnauthorizedError defines model for UnauthorizedError.
 type UnauthorizedError = ErrorEnvelope
 
-// ListAcpAgentsParams defines parameters for ListAcpAgents.
-type ListAcpAgentsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetAcpAgentParams defines parameters for GetAcpAgent.
-type GetAcpAgentParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
 // GetAcpAgentParamsName defines parameters for GetAcpAgent.
 type GetAcpAgentParamsName string
 
 // CreateAcpRunParams defines parameters for CreateAcpRun.
 type CreateAcpRunParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// GetAcpRunParams defines parameters for GetAcpRun.
-type GetAcpRunParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetAcpRunActivityParams defines parameters for GetAcpRunActivity.
-type GetAcpRunActivityParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // CancelAcpRunParams defines parameters for CancelAcpRun.
 type CancelAcpRunParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // StreamAcpRunEventsParams defines parameters for StreamAcpRunEvents.
 type StreamAcpRunEventsParams struct {
-	XActorId    ActorId      `json:"X-Actor-Id"`
-	XRoleId     RoleId       `json:"X-Role-Id"`
 	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
 }
 
-// ListAgentsParams defines parameters for ListAgents.
-type ListAgentsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+// CreateAuthSessionParams defines parameters for CreateAuthSession.
+type CreateAuthSessionParams struct {
+	XKingdomBrowserBootstrap CreateAuthSessionParamsXKingdomBrowserBootstrap `json:"X-Kingdom-Browser-Bootstrap"`
+	Origin                   Origin                                          `json:"Origin"`
 }
 
-// GetArtifactParams defines parameters for GetArtifact.
-type GetArtifactParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
+// CreateAuthSessionParamsXKingdomBrowserBootstrap defines parameters for CreateAuthSession.
+type CreateAuthSessionParamsXKingdomBrowserBootstrap string
 
-// GetArtifactContentParams defines parameters for GetArtifactContent.
-type GetArtifactContentParams struct {
-	Download *bool   `form:"download,omitempty" json:"download,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// CreateArtifactPreviewSessionParams defines parameters for CreateArtifactPreviewSession.
-type CreateArtifactPreviewSessionParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+// CreateConnectionParams defines parameters for CreateConnection.
+type CreateConnectionParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
-// GetDashboardSnapshotParams defines parameters for GetDashboardSnapshot.
-type GetDashboardSnapshotParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+// StartGitHubDeviceFlowParams defines parameters for StartGitHubDeviceFlow.
+type StartGitHubDeviceFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RefreshGitHubDeviceCandidatesParams defines parameters for RefreshGitHubDeviceCandidates.
+type RefreshGitHubDeviceCandidatesParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// FinalizeGitHubDeviceFlowParams defines parameters for FinalizeGitHubDeviceFlow.
+type FinalizeGitHubDeviceFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PollGitHubDeviceFlowParams defines parameters for PollGitHubDeviceFlow.
+type PollGitHubDeviceFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// StartGitHubManifestFlowParams defines parameters for StartGitHubManifestFlow.
+type StartGitHubManifestFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ReceiveGitHubManifestCallbackParams defines parameters for ReceiveGitHubManifestCallback.
+type ReceiveGitHubManifestCallbackParams struct {
+	State string `form:"state" json:"state"`
+	Code  string `form:"code" json:"code"`
+}
+
+// ReceiveGitHubOAuthCallbackParams defines parameters for ReceiveGitHubOAuthCallback.
+type ReceiveGitHubOAuthCallbackParams struct {
+	State string `form:"state" json:"state"`
+	Code  string `form:"code" json:"code"`
+}
+
+// ReceiveGitHubSetupCallbackParams defines parameters for ReceiveGitHubSetupCallback.
+type ReceiveGitHubSetupCallbackParams struct {
+	State          string                                      `form:"state" json:"state"`
+	InstallationId string                                      `form:"installation_id" json:"installation_id"`
+	SetupAction    ReceiveGitHubSetupCallbackParamsSetupAction `form:"setup_action" json:"setup_action"`
+}
+
+// ReceiveGitHubSetupCallbackParamsSetupAction defines parameters for ReceiveGitHubSetupCallback.
+type ReceiveGitHubSetupCallbackParamsSetupAction string
+
+// AuthorizeGitHubManifestFlowParams defines parameters for AuthorizeGitHubManifestFlow.
+type AuthorizeGitHubManifestFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CompleteGitHubManifestFlowParams defines parameters for CompleteGitHubManifestFlow.
+type CompleteGitHubManifestFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ConvertGitHubManifestFlowParams defines parameters for ConvertGitHubManifestFlow.
+type ConvertGitHubManifestFlowParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// GetGitHubManifestInstallationURLParams defines parameters for GetGitHubManifestInstallationURL.
+type GetGitHubManifestInstallationURLParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteConnectionParams defines parameters for DeleteConnection.
+type DeleteConnectionParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// UpdateConnectionParams defines parameters for UpdateConnection.
+type UpdateConnectionParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CheckConnectionHealthParams defines parameters for CheckConnectionHealth.
+type CheckConnectionHealthParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListConnectionRepositoriesParams defines parameters for ListConnectionRepositories.
+type ListConnectionRepositoriesParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// ListConnectionIssuesParams defines parameters for ListConnectionIssues.
+type ListConnectionIssuesParams struct {
+	Cursor *Cursor                          `form:"cursor,omitempty" json:"cursor,omitempty"`
+	State  *ListConnectionIssuesParamsState `form:"state,omitempty" json:"state,omitempty"`
+	Search *string                          `form:"search,omitempty" json:"search,omitempty"`
+}
+
+// ListConnectionIssuesParamsState defines parameters for ListConnectionIssues.
+type ListConnectionIssuesParamsState string
+
+// PreviewConnectionIssueParams defines parameters for PreviewConnectionIssue.
+type PreviewConnectionIssueParams struct {
+	IncludeCommentCount *bool `form:"include_comment_count,omitempty" json:"include_comment_count,omitempty"`
+	IncludeComments     *bool `form:"include_comments,omitempty" json:"include_comments,omitempty"`
 }
 
 // CreateDecreeParams defines parameters for CreateDecree.
 type CreateDecreeParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// GetDecreeParams defines parameters for GetDecree.
-type GetDecreeParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // StreamEventsParams defines parameters for StreamEvents.
@@ -1939,96 +2647,114 @@ type StreamEventsParams struct {
 	RunId       RunIdQuery   `form:"run_id" json:"run_id"`
 	Follow      *Follow      `form:"follow,omitempty" json:"follow,omitempty"`
 	PollMs      *PollMs      `form:"poll_ms,omitempty" json:"poll_ms,omitempty"`
-	XActorId    ActorId      `json:"X-Actor-Id"`
-	XRoleId     RoleId       `json:"X-Role-Id"`
 	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
 }
 
-// GetHealthParams defines parameters for GetHealth.
-type GetHealthParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+// CaptureExternalSourceParams defines parameters for CaptureExternalSource.
+type CaptureExternalSourceParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
-// GetMetricsRuntimeParams defines parameters for GetMetricsRuntime.
-type GetMetricsRuntimeParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+// AdoptExternalSourceLinkParams defines parameters for AdoptExternalSourceLink.
+type AdoptExternalSourceLinkParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// GetExternalSourceLinkHistoryParams defines parameters for GetExternalSourceLinkHistory.
+type GetExternalSourceLinkHistoryParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// RefreshExternalSourceLinkParams defines parameters for RefreshExternalSourceLink.
+type RefreshExternalSourceLinkParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ListExternalSourceSnapshotCommentsParams defines parameters for ListExternalSourceSnapshotComments.
+type ListExternalSourceSnapshotCommentsParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
 // ListPlanningSessionsParams defines parameters for ListPlanningSessions.
 type ListPlanningSessionsParams struct {
-	Limit    *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // CreatePlanningSessionParams defines parameters for CreatePlanningSession.
 type CreatePlanningSessionParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // DeletePlanningSessionParams defines parameters for DeletePlanningSession.
 type DeletePlanningSessionParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// GetPlanningSessionParams defines parameters for GetPlanningSession.
-type GetPlanningSessionParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // UpdatePlanningSessionParams defines parameters for UpdatePlanningSession.
 type UpdatePlanningSessionParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // RefreshPlanningSessionContextParams defines parameters for RefreshPlanningSessionContext.
 type RefreshPlanningSessionContextParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// AttachPlanningSessionExternalSourceParams defines parameters for AttachPlanningSessionExternalSource.
+type AttachPlanningSessionExternalSourceParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // ListPlanningSessionMessagesParams defines parameters for ListPlanningSessionMessages.
 type ListPlanningSessionMessagesParams struct {
-	Limit    *Limit                  `form:"limit,omitempty" json:"limit,omitempty"`
-	Before   *PlanningMessagesBefore `form:"before,omitempty" json:"before,omitempty"`
-	XActorId ActorId                 `json:"X-Actor-Id"`
-	XRoleId  RoleId                  `json:"X-Role-Id"`
+	Limit  *Limit                  `form:"limit,omitempty" json:"limit,omitempty"`
+	Before *PlanningMessagesBefore `form:"before,omitempty" json:"before,omitempty"`
 }
 
 // ActivatePlanningMessageVariantParams defines parameters for ActivatePlanningMessageVariant.
 type ActivatePlanningMessageVariantParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// ListPlanningMessageVariantsParams defines parameters for ListPlanningMessageVariants.
-type ListPlanningMessageVariantsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetPlanningSessionPlanParams defines parameters for GetPlanningSessionPlan.
-type GetPlanningSessionPlanParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // ListProviderModelsParams defines parameters for ListProviderModels.
 type ListProviderModelsParams struct {
-	Refresh  *bool   `form:"refresh,omitempty" json:"refresh,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
 // GetRealmAnalyticsExecutionDetailSnapshotParams defines parameters for GetRealmAnalyticsExecutionDetailSnapshot.
@@ -2036,22 +2762,12 @@ type GetRealmAnalyticsExecutionDetailSnapshotParams struct {
 	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
 
 	// RunId When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted.
-	RunId    *string `form:"run_id,omitempty" json:"run_id,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	RunId *string `form:"run_id,omitempty" json:"run_id,omitempty"`
 }
 
 // GetRealmAnalyticsSnapshotParams defines parameters for GetRealmAnalyticsSnapshot.
 type GetRealmAnalyticsSnapshotParams struct {
 	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
-	XActorId      ActorId        `json:"X-Actor-Id"`
-	XRoleId       RoleId         `json:"X-Role-Id"`
-}
-
-// ListRolesParams defines parameters for ListRoles.
-type ListRolesParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
 }
 
 // ListRunsParams defines parameters for ListRuns.
@@ -2061,9 +2777,7 @@ type ListRunsParams struct {
 	StateFilter *ListRunsParamsStateFilter `form:"state_filter,omitempty" json:"state_filter,omitempty"`
 
 	// Search Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms.
-	Search   *RunSearch `form:"search,omitempty" json:"search,omitempty"`
-	XActorId ActorId    `json:"X-Actor-Id"`
-	XRoleId  RoleId     `json:"X-Role-Id"`
+	Search *RunSearch `form:"search,omitempty" json:"search,omitempty"`
 }
 
 // ListRunsParamsStateFilter defines parameters for ListRuns.
@@ -2071,88 +2785,42 @@ type ListRunsParamsStateFilter string
 
 // CreateRunParams defines parameters for CreateRun.
 type CreateRunParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // StreamRunCollectionEventsParams defines parameters for StreamRunCollectionEvents.
 type StreamRunCollectionEventsParams struct {
 	Follow      *Follow      `form:"follow,omitempty" json:"follow,omitempty"`
 	PollMs      *PollMs      `form:"poll_ms,omitempty" json:"poll_ms,omitempty"`
-	XActorId    ActorId      `json:"X-Actor-Id"`
-	XRoleId     RoleId       `json:"X-Role-Id"`
 	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
-}
-
-// GetRunParams defines parameters for GetRun.
-type GetRunParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// ListRunAgentsParams defines parameters for ListRunAgents.
-type ListRunAgentsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// ListRunArtifactsParams defines parameters for ListRunArtifacts.
-type ListRunArtifactsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetRunArtifactsArchiveParams defines parameters for GetRunArtifactsArchive.
-type GetRunArtifactsArchiveParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
 }
 
 // CancelRunParams defines parameters for CancelRun.
 type CancelRunParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// ListRunExecutionsParams defines parameters for ListRunExecutions.
-type ListRunExecutionsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetRunExecutionParams defines parameters for GetRunExecution.
-type GetRunExecutionParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetRunExecutionActivityParams defines parameters for GetRunExecutionActivity.
-type GetRunExecutionActivityParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // CreateFinalApprovalParams defines parameters for CreateFinalApproval.
 type CreateFinalApprovalParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // ListRunGovernanceDecisionsParams defines parameters for ListRunGovernanceDecisions.
 type ListRunGovernanceDecisionsParams struct {
-	Cursor   *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit    *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
-}
-
-// GetRunGraphParams defines parameters for GetRunGraph.
-type GetRunGraphParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // ListRunMailboxMessagesParams defines parameters for ListRunMailboxMessages.
@@ -2164,74 +2832,57 @@ type ListRunMailboxMessagesParams struct {
 
 	// CommunicationType Filter handoff messages by communication type (`instruction_dispatched`, `response_received`, `approval_request`, `approval_response`).
 	CommunicationType *string `form:"communication_type,omitempty" json:"communication_type,omitempty"`
-	XActorId          ActorId `json:"X-Actor-Id"`
-	XRoleId           RoleId  `json:"X-Role-Id"`
-}
-
-// GetRunMailboxMessageParams defines parameters for GetRunMailboxMessage.
-type GetRunMailboxMessageParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
 }
 
 // MarkRunMailboxMessageReadParams defines parameters for MarkRunMailboxMessageRead.
 type MarkRunMailboxMessageReadParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // RetryNodeParams defines parameters for RetryNode.
 type RetryNodeParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// GetRunPlanParams defines parameters for GetRunPlan.
-type GetRunPlanParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // CreatePlanApprovalParams defines parameters for CreatePlanApproval.
 type CreatePlanApprovalParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// ListRunPlanReviewsParams defines parameters for ListRunPlanReviews.
-type ListRunPlanReviewsParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // RerunFromNodeParams defines parameters for RerunFromNode.
 type RerunFromNodeParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // GetRunTimelineParams defines parameters for GetRunTimeline.
 type GetRunTimelineParams struct {
-	Cursor   *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
-	Limit    *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // PublishWorkflowParams defines parameters for PublishWorkflow.
 type PublishWorkflowParams struct {
-	XActorId       ActorId        `json:"X-Actor-Id"`
-	XRoleId        RoleId         `json:"X-Role-Id"`
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
 	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-}
 
-// GetWorkspaceCapabilitiesParams defines parameters for GetWorkspaceCapabilities.
-type GetWorkspaceCapabilitiesParams struct {
-	XActorId ActorId `json:"X-Actor-Id"`
-	XRoleId  RoleId  `json:"X-Role-Id"`
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
 // CreateAcpRunJSONRequestBody defines body for CreateAcpRun for application/json ContentType.
@@ -2240,17 +2891,35 @@ type CreateAcpRunJSONRequestBody = CreateAcpRunRequest
 // CancelAcpRunJSONRequestBody defines body for CancelAcpRun for application/json ContentType.
 type CancelAcpRunJSONRequestBody = CancelAcpRunRequest
 
-// CreateArtifactPreviewSessionJSONRequestBody defines body for CreateArtifactPreviewSession for application/json ContentType.
-type CreateArtifactPreviewSessionJSONRequestBody = CreateArtifactPreviewSessionRequest
+// CreateConnectionJSONRequestBody defines body for CreateConnection for application/json ContentType.
+type CreateConnectionJSONRequestBody = CreateConnectionRequest
+
+// StartGitHubDeviceFlowJSONRequestBody defines body for StartGitHubDeviceFlow for application/json ContentType.
+type StartGitHubDeviceFlowJSONRequestBody = StartGitHubDeviceFlowRequest
+
+// FinalizeGitHubDeviceFlowJSONRequestBody defines body for FinalizeGitHubDeviceFlow for application/json ContentType.
+type FinalizeGitHubDeviceFlowJSONRequestBody = FinalizeGitHubDeviceFlowRequest
+
+// StartGitHubManifestFlowJSONRequestBody defines body for StartGitHubManifestFlow for application/json ContentType.
+type StartGitHubManifestFlowJSONRequestBody = StartGitHubManifestFlowRequest
+
+// UpdateConnectionJSONRequestBody defines body for UpdateConnection for application/json ContentType.
+type UpdateConnectionJSONRequestBody = UpdateConnectionRequest
 
 // CreateDecreeJSONRequestBody defines body for CreateDecree for application/json ContentType.
 type CreateDecreeJSONRequestBody = CreateDecreeRequest
+
+// CaptureExternalSourceJSONRequestBody defines body for CaptureExternalSource for application/json ContentType.
+type CaptureExternalSourceJSONRequestBody = ExternalIntake
 
 // CreatePlanningSessionJSONRequestBody defines body for CreatePlanningSession for application/json ContentType.
 type CreatePlanningSessionJSONRequestBody = CreatePlanningSessionRequest
 
 // UpdatePlanningSessionJSONRequestBody defines body for UpdatePlanningSession for application/json ContentType.
 type UpdatePlanningSessionJSONRequestBody = UpdatePlanningSessionRequest
+
+// AttachPlanningSessionExternalSourceJSONRequestBody defines body for AttachPlanningSessionExternalSource for application/json ContentType.
+type AttachPlanningSessionExternalSourceJSONRequestBody = ExternalIntake
 
 // CreateRunJSONRequestBody defines body for CreateRun for application/json ContentType.
 type CreateRunJSONRequestBody = CreateRunRequest
@@ -2347,10 +3016,10 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 	// ListAcpAgents request
-	ListAcpAgents(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListAcpAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetAcpAgent request
-	GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateAcpRunWithBody request with any body
 	CreateAcpRunWithBody(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2358,10 +3027,10 @@ type ClientInterface interface {
 	CreateAcpRun(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetAcpRun request
-	GetAcpRun(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetAcpRun(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetAcpRunActivity request
-	GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetAcpRunActivity(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CancelAcpRunWithBody request with any body
 	CancelAcpRunWithBody(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2372,21 +3041,104 @@ type ClientInterface interface {
 	StreamAcpRunEvents(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListAgents request
-	ListAgents(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetArtifact request
-	GetArtifact(ctx context.Context, id ArtifactId, params *GetArtifactParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetArtifact(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetArtifactContent request
-	GetArtifactContent(ctx context.Context, id ArtifactId, params *GetArtifactContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetArtifactContent(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateArtifactPreviewSessionWithBody request with any body
-	CreateArtifactPreviewSessionWithBody(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// CreateAuthSession request
+	CreateAuthSession(ctx context.Context, params *CreateAuthSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	CreateArtifactPreviewSession(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, body CreateArtifactPreviewSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// ListConnections request
+	ListConnections(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateConnectionWithBody request with any body
+	CreateConnectionWithBody(ctx context.Context, params *CreateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateConnection(ctx context.Context, params *CreateConnectionParams, body CreateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartGitHubDeviceFlowWithBody request with any body
+	StartGitHubDeviceFlowWithBody(ctx context.Context, params *StartGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	StartGitHubDeviceFlow(ctx context.Context, params *StartGitHubDeviceFlowParams, body StartGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGitHubDeviceFlow request
+	GetGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RefreshGitHubDeviceCandidates request
+	RefreshGitHubDeviceCandidates(ctx context.Context, id DeviceFlowId, params *RefreshGitHubDeviceCandidatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// FinalizeGitHubDeviceFlowWithBody request with any body
+	FinalizeGitHubDeviceFlowWithBody(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	FinalizeGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, body FinalizeGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PollGitHubDeviceFlow request
+	PollGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, params *PollGitHubDeviceFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetCurrentGitHubManifestFlow request
+	GetCurrentGitHubManifestFlow(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StartGitHubManifestFlowWithBody request with any body
+	StartGitHubManifestFlowWithBody(ctx context.Context, params *StartGitHubManifestFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	StartGitHubManifestFlow(ctx context.Context, params *StartGitHubManifestFlowParams, body StartGitHubManifestFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReceiveGitHubManifestCallback request
+	ReceiveGitHubManifestCallback(ctx context.Context, params *ReceiveGitHubManifestCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReceiveGitHubOAuthCallback request
+	ReceiveGitHubOAuthCallback(ctx context.Context, params *ReceiveGitHubOAuthCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReceiveGitHubSetupCallback request
+	ReceiveGitHubSetupCallback(ctx context.Context, params *ReceiveGitHubSetupCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGitHubManifestFlow request
+	GetGitHubManifestFlow(ctx context.Context, id ManifestFlowId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AuthorizeGitHubManifestFlow request
+	AuthorizeGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *AuthorizeGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CompleteGitHubManifestFlow request
+	CompleteGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *CompleteGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ConvertGitHubManifestFlow request
+	ConvertGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *ConvertGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGitHubManifestInstallationURL request
+	GetGitHubManifestInstallationURL(ctx context.Context, id ManifestFlowId, params *GetGitHubManifestInstallationURLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetGitHubSetupOptions request
+	GetGitHubSetupOptions(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteConnection request
+	DeleteConnection(ctx context.Context, id ConnectionId, params *DeleteConnectionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetConnection request
+	GetConnection(ctx context.Context, id ConnectionId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateConnectionWithBody request with any body
+	UpdateConnectionWithBody(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateConnection(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, body UpdateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CheckConnectionHealth request
+	CheckConnectionHealth(ctx context.Context, id ConnectionId, params *CheckConnectionHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListConnectionRepositories request
+	ListConnectionRepositories(ctx context.Context, id ConnectionId, params *ListConnectionRepositoriesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListConnectionIssues request
+	ListConnectionIssues(ctx context.Context, id ConnectionId, repositoryId RepositoryId, params *ListConnectionIssuesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PreviewConnectionIssue request
+	PreviewConnectionIssue(ctx context.Context, id ConnectionId, repositoryId RepositoryId, number int, params *PreviewConnectionIssueParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetDashboardSnapshot request
-	GetDashboardSnapshot(ctx context.Context, params *GetDashboardSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetDashboardSnapshot(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateDecreeWithBody request with any body
 	CreateDecreeWithBody(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2394,16 +3146,36 @@ type ClientInterface interface {
 	CreateDecree(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetDecree request
-	GetDecree(ctx context.Context, id DecreeId, params *GetDecreeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetDecree(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// StreamEvents request
 	StreamEvents(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// CaptureExternalSourceWithBody request with any body
+	CaptureExternalSourceWithBody(ctx context.Context, params *CaptureExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CaptureExternalSource(ctx context.Context, params *CaptureExternalSourceParams, body CaptureExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AdoptExternalSourceLink request
+	AdoptExternalSourceLink(ctx context.Context, id ExternalLinkId, params *AdoptExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExternalSourceLinkHistory request
+	GetExternalSourceLinkHistory(ctx context.Context, id ExternalLinkId, params *GetExternalSourceLinkHistoryParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RefreshExternalSourceLink request
+	RefreshExternalSourceLink(ctx context.Context, id ExternalLinkId, params *RefreshExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExternalSourceSnapshot request
+	GetExternalSourceSnapshot(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListExternalSourceSnapshotComments request
+	ListExternalSourceSnapshotComments(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetHealth request
-	GetHealth(ctx context.Context, params *GetHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetMetricsRuntime request
-	GetMetricsRuntime(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetMetricsRuntime(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPlanningSessions request
 	ListPlanningSessions(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2417,7 +3189,7 @@ type ClientInterface interface {
 	DeletePlanningSession(ctx context.Context, id PlanningSessionId, params *DeletePlanningSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetPlanningSession request
-	GetPlanningSession(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetPlanningSession(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdatePlanningSessionWithBody request with any body
 	UpdatePlanningSessionWithBody(ctx context.Context, id PlanningSessionId, params *UpdatePlanningSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2427,6 +3199,11 @@ type ClientInterface interface {
 	// RefreshPlanningSessionContext request
 	RefreshPlanningSessionContext(ctx context.Context, id PlanningSessionId, params *RefreshPlanningSessionContextParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// AttachPlanningSessionExternalSourceWithBody request with any body
+	AttachPlanningSessionExternalSourceWithBody(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AttachPlanningSessionExternalSource(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, body AttachPlanningSessionExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListPlanningSessionMessages request
 	ListPlanningSessionMessages(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2434,16 +3211,10 @@ type ClientInterface interface {
 	ActivatePlanningMessageVariant(ctx context.Context, id PlanningSessionId, messageId string, params *ActivatePlanningMessageVariantParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPlanningMessageVariants request
-	ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetPlanningSessionPlan request
-	GetPlanningSessionPlan(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetArtifactPreviewContent request
-	GetArtifactPreviewContent(ctx context.Context, token PreviewToken, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetArtifactPreviewAssetContent request
-	GetArtifactPreviewAssetContent(ctx context.Context, token PreviewToken, assetPath PreviewAssetPath, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetPlanningSessionPlan(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListProviderModels request
 	ListProviderModels(ctx context.Context, params *ListProviderModelsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2455,7 +3226,7 @@ type ClientInterface interface {
 	GetRealmAnalyticsSnapshot(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRoles request
-	ListRoles(ctx context.Context, params *ListRolesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRuns request
 	ListRuns(ctx context.Context, params *ListRunsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2469,16 +3240,16 @@ type ClientInterface interface {
 	StreamRunCollectionEvents(ctx context.Context, params *StreamRunCollectionEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRun request
-	GetRun(ctx context.Context, id RunId, params *GetRunParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRun(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunAgents request
-	ListRunAgents(ctx context.Context, id RunId, params *ListRunAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRunAgents(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunArtifacts request
-	ListRunArtifacts(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRunArtifacts(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunArtifactsArchive request
-	GetRunArtifactsArchive(ctx context.Context, id RunId, params *GetRunArtifactsArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunArtifactsArchive(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CancelRunWithBody request with any body
 	CancelRunWithBody(ctx context.Context, id RunId, params *CancelRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2486,13 +3257,13 @@ type ClientInterface interface {
 	CancelRun(ctx context.Context, id RunId, params *CancelRunParams, body CancelRunJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunExecutions request
-	ListRunExecutions(ctx context.Context, id RunId, params *ListRunExecutionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRunExecutions(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunExecution request
-	GetRunExecution(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunExecution(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunExecutionActivity request
-	GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateFinalApprovalWithBody request with any body
 	CreateFinalApprovalWithBody(ctx context.Context, id RunId, params *CreateFinalApprovalParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2503,13 +3274,13 @@ type ClientInterface interface {
 	ListRunGovernanceDecisions(ctx context.Context, id RunId, params *ListRunGovernanceDecisionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunGraph request
-	GetRunGraph(ctx context.Context, id RunId, params *GetRunGraphParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunGraph(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunMailboxMessages request
 	ListRunMailboxMessages(ctx context.Context, id RunId, params *ListRunMailboxMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunMailboxMessage request
-	GetRunMailboxMessage(ctx context.Context, id RunId, messageId MessageId, params *GetRunMailboxMessageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunMailboxMessage(ctx context.Context, id RunId, messageId MessageId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// MarkRunMailboxMessageRead request
 	MarkRunMailboxMessageRead(ctx context.Context, id RunId, messageId MessageId, params *MarkRunMailboxMessageReadParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2520,7 +3291,7 @@ type ClientInterface interface {
 	RetryNode(ctx context.Context, id RunId, nodeKey NodeKey, params *RetryNodeParams, body RetryNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunPlan request
-	GetRunPlan(ctx context.Context, id RunId, params *GetRunPlanParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunPlan(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreatePlanApprovalWithBody request with any body
 	CreatePlanApprovalWithBody(ctx context.Context, id RunId, params *CreatePlanApprovalParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2528,7 +3299,7 @@ type ClientInterface interface {
 	CreatePlanApproval(ctx context.Context, id RunId, params *CreatePlanApprovalParams, body CreatePlanApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunPlanReviews request
-	ListRunPlanReviews(ctx context.Context, id RunId, params *ListRunPlanReviewsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRunPlanReviews(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RerunFromNodeWithBody request with any body
 	RerunFromNodeWithBody(ctx context.Context, id RunId, nodeKey NodeKey, params *RerunFromNodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2544,11 +3315,11 @@ type ClientInterface interface {
 	PublishWorkflow(ctx context.Context, params *PublishWorkflowParams, body PublishWorkflowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetWorkspaceCapabilities request
-	GetWorkspaceCapabilities(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetWorkspaceCapabilities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
-func (c *Client) ListAcpAgents(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListAcpAgentsRequest(c.Server, params)
+func (c *Client) ListAcpAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAcpAgentsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2559,8 +3330,8 @@ func (c *Client) ListAcpAgents(ctx context.Context, params *ListAcpAgentsParams,
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetAcpAgentRequest(c.Server, name, params)
+func (c *Client) GetAcpAgent(ctx context.Context, name GetAcpAgentParamsName, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpAgentRequest(c.Server, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2595,8 +3366,8 @@ func (c *Client) CreateAcpRun(ctx context.Context, params *CreateAcpRunParams, b
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetAcpRun(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetAcpRunRequest(c.Server, runId, params)
+func (c *Client) GetAcpRun(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpRunRequest(c.Server, runId)
 	if err != nil {
 		return nil, err
 	}
@@ -2607,8 +3378,8 @@ func (c *Client) GetAcpRun(ctx context.Context, runId AcpRunId, params *GetAcpRu
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetAcpRunActivityRequest(c.Server, runId, params)
+func (c *Client) GetAcpRunActivity(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpRunActivityRequest(c.Server, runId)
 	if err != nil {
 		return nil, err
 	}
@@ -2655,8 +3426,8 @@ func (c *Client) StreamAcpRunEvents(ctx context.Context, runId AcpRunId, params 
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListAgents(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListAgentsRequest(c.Server, params)
+func (c *Client) ListAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAgentsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2667,8 +3438,8 @@ func (c *Client) ListAgents(ctx context.Context, params *ListAgentsParams, reqEd
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetArtifact(ctx context.Context, id ArtifactId, params *GetArtifactParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetArtifactRequest(c.Server, id, params)
+func (c *Client) GetArtifact(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetArtifactRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2679,8 +3450,8 @@ func (c *Client) GetArtifact(ctx context.Context, id ArtifactId, params *GetArti
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetArtifactContent(ctx context.Context, id ArtifactId, params *GetArtifactContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetArtifactContentRequest(c.Server, id, params)
+func (c *Client) GetArtifactContent(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetArtifactContentRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2691,8 +3462,8 @@ func (c *Client) GetArtifactContent(ctx context.Context, id ArtifactId, params *
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreateArtifactPreviewSessionWithBody(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateArtifactPreviewSessionRequestWithBody(c.Server, id, params, contentType, body)
+func (c *Client) CreateAuthSession(ctx context.Context, params *CreateAuthSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateAuthSessionRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2703,8 +3474,8 @@ func (c *Client) CreateArtifactPreviewSessionWithBody(ctx context.Context, id Ar
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreateArtifactPreviewSession(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, body CreateArtifactPreviewSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateArtifactPreviewSessionRequest(c.Server, id, params, body)
+func (c *Client) ListConnections(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListConnectionsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2715,8 +3486,356 @@ func (c *Client) CreateArtifactPreviewSession(ctx context.Context, id ArtifactId
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetDashboardSnapshot(ctx context.Context, params *GetDashboardSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetDashboardSnapshotRequest(c.Server, params)
+func (c *Client) CreateConnectionWithBody(ctx context.Context, params *CreateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateConnectionRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateConnection(ctx context.Context, params *CreateConnectionParams, body CreateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateConnectionRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartGitHubDeviceFlowWithBody(ctx context.Context, params *StartGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartGitHubDeviceFlowRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartGitHubDeviceFlow(ctx context.Context, params *StartGitHubDeviceFlowParams, body StartGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartGitHubDeviceFlowRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGitHubDeviceFlowRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RefreshGitHubDeviceCandidates(ctx context.Context, id DeviceFlowId, params *RefreshGitHubDeviceCandidatesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRefreshGitHubDeviceCandidatesRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) FinalizeGitHubDeviceFlowWithBody(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewFinalizeGitHubDeviceFlowRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) FinalizeGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, body FinalizeGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewFinalizeGitHubDeviceFlowRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PollGitHubDeviceFlow(ctx context.Context, id DeviceFlowId, params *PollGitHubDeviceFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPollGitHubDeviceFlowRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetCurrentGitHubManifestFlow(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetCurrentGitHubManifestFlowRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartGitHubManifestFlowWithBody(ctx context.Context, params *StartGitHubManifestFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartGitHubManifestFlowRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StartGitHubManifestFlow(ctx context.Context, params *StartGitHubManifestFlowParams, body StartGitHubManifestFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStartGitHubManifestFlowRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReceiveGitHubManifestCallback(ctx context.Context, params *ReceiveGitHubManifestCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReceiveGitHubManifestCallbackRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReceiveGitHubOAuthCallback(ctx context.Context, params *ReceiveGitHubOAuthCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReceiveGitHubOAuthCallbackRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReceiveGitHubSetupCallback(ctx context.Context, params *ReceiveGitHubSetupCallbackParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReceiveGitHubSetupCallbackRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetGitHubManifestFlow(ctx context.Context, id ManifestFlowId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGitHubManifestFlowRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AuthorizeGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *AuthorizeGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAuthorizeGitHubManifestFlowRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CompleteGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *CompleteGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCompleteGitHubManifestFlowRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ConvertGitHubManifestFlow(ctx context.Context, id ManifestFlowId, params *ConvertGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewConvertGitHubManifestFlowRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetGitHubManifestInstallationURL(ctx context.Context, id ManifestFlowId, params *GetGitHubManifestInstallationURLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGitHubManifestInstallationURLRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetGitHubSetupOptions(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetGitHubSetupOptionsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteConnection(ctx context.Context, id ConnectionId, params *DeleteConnectionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteConnectionRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetConnection(ctx context.Context, id ConnectionId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetConnectionRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateConnectionWithBody(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateConnectionRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateConnection(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, body UpdateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateConnectionRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CheckConnectionHealth(ctx context.Context, id ConnectionId, params *CheckConnectionHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckConnectionHealthRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListConnectionRepositories(ctx context.Context, id ConnectionId, params *ListConnectionRepositoriesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListConnectionRepositoriesRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListConnectionIssues(ctx context.Context, id ConnectionId, repositoryId RepositoryId, params *ListConnectionIssuesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListConnectionIssuesRequest(c.Server, id, repositoryId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PreviewConnectionIssue(ctx context.Context, id ConnectionId, repositoryId RepositoryId, number int, params *PreviewConnectionIssueParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPreviewConnectionIssueRequest(c.Server, id, repositoryId, number, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetDashboardSnapshot(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDashboardSnapshotRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2751,8 +3870,8 @@ func (c *Client) CreateDecree(ctx context.Context, params *CreateDecreeParams, b
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetDecree(ctx context.Context, id DecreeId, params *GetDecreeParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetDecreeRequest(c.Server, id, params)
+func (c *Client) GetDecree(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDecreeRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2775,8 +3894,8 @@ func (c *Client) StreamEvents(ctx context.Context, params *StreamEventsParams, r
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetHealth(ctx context.Context, params *GetHealthParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetHealthRequest(c.Server, params)
+func (c *Client) CaptureExternalSourceWithBody(ctx context.Context, params *CaptureExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCaptureExternalSourceRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2787,8 +3906,92 @@ func (c *Client) GetHealth(ctx context.Context, params *GetHealthParams, reqEdit
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetMetricsRuntime(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetMetricsRuntimeRequest(c.Server, params)
+func (c *Client) CaptureExternalSource(ctx context.Context, params *CaptureExternalSourceParams, body CaptureExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCaptureExternalSourceRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AdoptExternalSourceLink(ctx context.Context, id ExternalLinkId, params *AdoptExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAdoptExternalSourceLinkRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExternalSourceLinkHistory(ctx context.Context, id ExternalLinkId, params *GetExternalSourceLinkHistoryParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExternalSourceLinkHistoryRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RefreshExternalSourceLink(ctx context.Context, id ExternalLinkId, params *RefreshExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRefreshExternalSourceLinkRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExternalSourceSnapshot(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExternalSourceSnapshotRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListExternalSourceSnapshotComments(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListExternalSourceSnapshotCommentsRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHealthRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetMetricsRuntime(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetMetricsRuntimeRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -2847,8 +4050,8 @@ func (c *Client) DeletePlanningSession(ctx context.Context, id PlanningSessionId
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetPlanningSession(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPlanningSessionRequest(c.Server, id, params)
+func (c *Client) GetPlanningSession(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPlanningSessionRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2895,6 +4098,30 @@ func (c *Client) RefreshPlanningSessionContext(ctx context.Context, id PlanningS
 	return c.Client.Do(req)
 }
 
+func (c *Client) AttachPlanningSessionExternalSourceWithBody(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachPlanningSessionExternalSourceRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AttachPlanningSessionExternalSource(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, body AttachPlanningSessionExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttachPlanningSessionExternalSourceRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListPlanningSessionMessages(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListPlanningSessionMessagesRequest(c.Server, id, params)
 	if err != nil {
@@ -2919,8 +4146,8 @@ func (c *Client) ActivatePlanningMessageVariant(ctx context.Context, id Planning
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListPlanningMessageVariantsRequest(c.Server, id, messageId, params)
+func (c *Client) ListPlanningMessageVariants(ctx context.Context, id PlanningSessionId, messageId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPlanningMessageVariantsRequest(c.Server, id, messageId)
 	if err != nil {
 		return nil, err
 	}
@@ -2931,32 +4158,8 @@ func (c *Client) ListPlanningMessageVariants(ctx context.Context, id PlanningSes
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetPlanningSessionPlan(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetPlanningSessionPlanRequest(c.Server, id, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetArtifactPreviewContent(ctx context.Context, token PreviewToken, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetArtifactPreviewContentRequest(c.Server, token)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetArtifactPreviewAssetContent(ctx context.Context, token PreviewToken, assetPath PreviewAssetPath, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetArtifactPreviewAssetContentRequest(c.Server, token, assetPath)
+func (c *Client) GetPlanningSessionPlan(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPlanningSessionPlanRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3003,8 +4206,8 @@ func (c *Client) GetRealmAnalyticsSnapshot(ctx context.Context, params *GetRealm
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRoles(ctx context.Context, params *ListRolesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRolesRequest(c.Server, params)
+func (c *Client) ListRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRolesRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -3063,8 +4266,8 @@ func (c *Client) StreamRunCollectionEvents(ctx context.Context, params *StreamRu
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRun(ctx context.Context, id RunId, params *GetRunParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunRequest(c.Server, id, params)
+func (c *Client) GetRun(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3075,8 +4278,8 @@ func (c *Client) GetRun(ctx context.Context, id RunId, params *GetRunParams, req
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRunAgents(ctx context.Context, id RunId, params *ListRunAgentsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRunAgentsRequest(c.Server, id, params)
+func (c *Client) ListRunAgents(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunAgentsRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3087,8 +4290,8 @@ func (c *Client) ListRunAgents(ctx context.Context, id RunId, params *ListRunAge
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRunArtifacts(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRunArtifactsRequest(c.Server, id, params)
+func (c *Client) ListRunArtifacts(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunArtifactsRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3099,8 +4302,8 @@ func (c *Client) ListRunArtifacts(ctx context.Context, id RunId, params *ListRun
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunArtifactsArchive(ctx context.Context, id RunId, params *GetRunArtifactsArchiveParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunArtifactsArchiveRequest(c.Server, id, params)
+func (c *Client) GetRunArtifactsArchive(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunArtifactsArchiveRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3135,8 +4338,8 @@ func (c *Client) CancelRun(ctx context.Context, id RunId, params *CancelRunParam
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRunExecutions(ctx context.Context, id RunId, params *ListRunExecutionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRunExecutionsRequest(c.Server, id, params)
+func (c *Client) ListRunExecutions(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunExecutionsRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3147,8 +4350,8 @@ func (c *Client) ListRunExecutions(ctx context.Context, id RunId, params *ListRu
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunExecution(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunExecutionRequest(c.Server, id, attemptId, params)
+func (c *Client) GetRunExecution(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunExecutionRequest(c.Server, id, attemptId)
 	if err != nil {
 		return nil, err
 	}
@@ -3159,8 +4362,8 @@ func (c *Client) GetRunExecution(ctx context.Context, id RunId, attemptId Attemp
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunExecutionActivityRequest(c.Server, id, attemptId, params)
+func (c *Client) GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunExecutionActivityRequest(c.Server, id, attemptId)
 	if err != nil {
 		return nil, err
 	}
@@ -3207,8 +4410,8 @@ func (c *Client) ListRunGovernanceDecisions(ctx context.Context, id RunId, param
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunGraph(ctx context.Context, id RunId, params *GetRunGraphParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunGraphRequest(c.Server, id, params)
+func (c *Client) GetRunGraph(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunGraphRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3231,8 +4434,8 @@ func (c *Client) ListRunMailboxMessages(ctx context.Context, id RunId, params *L
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunMailboxMessage(ctx context.Context, id RunId, messageId MessageId, params *GetRunMailboxMessageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunMailboxMessageRequest(c.Server, id, messageId, params)
+func (c *Client) GetRunMailboxMessage(ctx context.Context, id RunId, messageId MessageId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunMailboxMessageRequest(c.Server, id, messageId)
 	if err != nil {
 		return nil, err
 	}
@@ -3279,8 +4482,8 @@ func (c *Client) RetryNode(ctx context.Context, id RunId, nodeKey NodeKey, param
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunPlan(ctx context.Context, id RunId, params *GetRunPlanParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunPlanRequest(c.Server, id, params)
+func (c *Client) GetRunPlan(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunPlanRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3315,8 +4518,8 @@ func (c *Client) CreatePlanApproval(ctx context.Context, id RunId, params *Creat
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRunPlanReviews(ctx context.Context, id RunId, params *ListRunPlanReviewsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRunPlanReviewsRequest(c.Server, id, params)
+func (c *Client) ListRunPlanReviews(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunPlanReviewsRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3387,8 +4590,8 @@ func (c *Client) PublishWorkflow(ctx context.Context, params *PublishWorkflowPar
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetWorkspaceCapabilities(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetWorkspaceCapabilitiesRequest(c.Server, params)
+func (c *Client) GetWorkspaceCapabilities(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWorkspaceCapabilitiesRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -3400,7 +4603,7 @@ func (c *Client) GetWorkspaceCapabilities(ctx context.Context, params *GetWorksp
 }
 
 // NewListAcpAgentsRequest generates requests for ListAcpAgents
-func NewListAcpAgentsRequest(server string, params *ListAcpAgentsParams) (*http.Request, error) {
+func NewListAcpAgentsRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -3423,33 +4626,11 @@ func NewListAcpAgentsRequest(server string, params *ListAcpAgentsParams) (*http.
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetAcpAgentRequest generates requests for GetAcpAgent
-func NewGetAcpAgentRequest(server string, name GetAcpAgentParamsName, params *GetAcpAgentParams) (*http.Request, error) {
+func NewGetAcpAgentRequest(server string, name GetAcpAgentParamsName) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -3477,28 +4658,6 @@ func NewGetAcpAgentRequest(server string, name GetAcpAgentParamsName, params *Ge
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -3545,30 +4704,23 @@ func NewCreateAcpRunRequestWithBody(server string, params *CreateAcpRunParams, c
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -3576,7 +4728,7 @@ func NewCreateAcpRunRequestWithBody(server string, params *CreateAcpRunParams, c
 }
 
 // NewGetAcpRunRequest generates requests for GetAcpRun
-func NewGetAcpRunRequest(server string, runId AcpRunId, params *GetAcpRunParams) (*http.Request, error) {
+func NewGetAcpRunRequest(server string, runId AcpRunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -3606,33 +4758,11 @@ func NewGetAcpRunRequest(server string, runId AcpRunId, params *GetAcpRunParams)
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetAcpRunActivityRequest generates requests for GetAcpRunActivity
-func NewGetAcpRunActivityRequest(server string, runId AcpRunId, params *GetAcpRunActivityParams) (*http.Request, error) {
+func NewGetAcpRunActivityRequest(server string, runId AcpRunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -3660,28 +4790,6 @@ func NewGetAcpRunActivityRequest(server string, runId AcpRunId, params *GetAcpRu
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -3735,30 +4843,23 @@ func NewCancelAcpRunRequestWithBody(server string, runId AcpRunId, params *Cance
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -3798,33 +4899,15 @@ func NewStreamAcpRunEventsRequest(server string, runId AcpRunId, params *StreamA
 
 	if params != nil {
 
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 		if params.LastEventID != nil {
-			var headerParam2 string
+			var headerParam0 string
 
-			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
 			if err != nil {
 				return nil, err
 			}
 
-			req.Header.Set("Last-Event-ID", headerParam2)
+			req.Header.Set("Last-Event-ID", headerParam0)
 		}
 
 	}
@@ -3833,7 +4916,7 @@ func NewStreamAcpRunEventsRequest(server string, runId AcpRunId, params *StreamA
 }
 
 // NewListAgentsRequest generates requests for ListAgents
-func NewListAgentsRequest(server string, params *ListAgentsParams) (*http.Request, error) {
+func NewListAgentsRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -3856,33 +4939,11 @@ func NewListAgentsRequest(server string, params *ListAgentsParams) (*http.Reques
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetArtifactRequest generates requests for GetArtifact
-func NewGetArtifactRequest(server string, id ArtifactId, params *GetArtifactParams) (*http.Request, error) {
+func NewGetArtifactRequest(server string, id ArtifactId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -3912,33 +4973,11 @@ func NewGetArtifactRequest(server string, id ArtifactId, params *GetArtifactPara
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetArtifactContentRequest generates requests for GetArtifactContent
-func NewGetArtifactContentRequest(server string, id ArtifactId, params *GetArtifactContentParams) (*http.Request, error) {
+func NewGetArtifactContentRequest(server string, id ArtifactId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -3963,12 +5002,1259 @@ func NewGetArtifactContentRequest(server string, id ArtifactId, params *GetArtif
 		return nil, err
 	}
 
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateAuthSessionRequest generates requests for CreateAuthSession
+func NewCreateAuthSessionRequest(server string, params *CreateAuthSessionParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/auth/session")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Kingdom-Browser-Bootstrap", runtime.ParamLocationHeader, params.XKingdomBrowserBootstrap)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-Kingdom-Browser-Bootstrap", headerParam0)
+
+		var headerParam1 string
+
+		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "Origin", runtime.ParamLocationHeader, params.Origin)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Origin", headerParam1)
+
+	}
+
+	return req, nil
+}
+
+// NewListConnectionsRequest generates requests for ListConnections
+func NewListConnectionsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateConnectionRequest calls the generic CreateConnection builder with application/json body
+func NewCreateConnectionRequest(server string, params *CreateConnectionParams, body CreateConnectionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateConnectionRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateConnectionRequestWithBody generates requests for CreateConnection with any type of body
+func NewCreateConnectionRequestWithBody(server string, params *CreateConnectionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewStartGitHubDeviceFlowRequest calls the generic StartGitHubDeviceFlow builder with application/json body
+func NewStartGitHubDeviceFlowRequest(server string, params *StartGitHubDeviceFlowParams, body StartGitHubDeviceFlowJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStartGitHubDeviceFlowRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewStartGitHubDeviceFlowRequestWithBody generates requests for StartGitHubDeviceFlow with any type of body
+func NewStartGitHubDeviceFlowRequestWithBody(server string, params *StartGitHubDeviceFlowParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/device-flows")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetGitHubDeviceFlowRequest generates requests for GetGitHubDeviceFlow
+func NewGetGitHubDeviceFlowRequest(server string, id DeviceFlowId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/device-flows/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRefreshGitHubDeviceCandidatesRequest generates requests for RefreshGitHubDeviceCandidates
+func NewRefreshGitHubDeviceCandidatesRequest(server string, id DeviceFlowId, params *RefreshGitHubDeviceCandidatesParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/device-flows/%s/candidates", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewFinalizeGitHubDeviceFlowRequest calls the generic FinalizeGitHubDeviceFlow builder with application/json body
+func NewFinalizeGitHubDeviceFlowRequest(server string, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, body FinalizeGitHubDeviceFlowJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewFinalizeGitHubDeviceFlowRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewFinalizeGitHubDeviceFlowRequestWithBody generates requests for FinalizeGitHubDeviceFlow with any type of body
+func NewFinalizeGitHubDeviceFlowRequestWithBody(server string, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/device-flows/%s/finalize", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPollGitHubDeviceFlowRequest generates requests for PollGitHubDeviceFlow
+func NewPollGitHubDeviceFlowRequest(server string, id DeviceFlowId, params *PollGitHubDeviceFlowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/device-flows/%s/poll", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetCurrentGitHubManifestFlowRequest generates requests for GetCurrentGitHubManifestFlow
+func NewGetCurrentGitHubManifestFlowRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewStartGitHubManifestFlowRequest calls the generic StartGitHubManifestFlow builder with application/json body
+func NewStartGitHubManifestFlowRequest(server string, params *StartGitHubManifestFlowParams, body StartGitHubManifestFlowJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStartGitHubManifestFlowRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewStartGitHubManifestFlowRequestWithBody generates requests for StartGitHubManifestFlow with any type of body
+func NewStartGitHubManifestFlowRequestWithBody(server string, params *StartGitHubManifestFlowParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewReceiveGitHubManifestCallbackRequest generates requests for ReceiveGitHubManifestCallback
+func NewReceiveGitHubManifestCallbackRequest(server string, params *ReceiveGitHubManifestCallbackParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/manifest-callback")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
 	if params != nil {
 		queryValues := queryURL.Query()
 
-		if params.Download != nil {
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "state", runtime.ParamLocationQuery, params.State); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
 
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "download", runtime.ParamLocationQuery, *params.Download); err != nil {
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "code", runtime.ParamLocationQuery, params.Code); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewReceiveGitHubOAuthCallbackRequest generates requests for ReceiveGitHubOAuthCallback
+func NewReceiveGitHubOAuthCallbackRequest(server string, params *ReceiveGitHubOAuthCallbackParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/oauth-callback")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "state", runtime.ParamLocationQuery, params.State); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "code", runtime.ParamLocationQuery, params.Code); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewReceiveGitHubSetupCallbackRequest generates requests for ReceiveGitHubSetupCallback
+func NewReceiveGitHubSetupCallbackRequest(server string, params *ReceiveGitHubSetupCallbackParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/setup-callback")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "state", runtime.ParamLocationQuery, params.State); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "installation_id", runtime.ParamLocationQuery, params.InstallationId); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "setup_action", runtime.ParamLocationQuery, params.SetupAction); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetGitHubManifestFlowRequest generates requests for GetGitHubManifestFlow
+func NewGetGitHubManifestFlowRequest(server string, id ManifestFlowId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewAuthorizeGitHubManifestFlowRequest generates requests for AuthorizeGitHubManifestFlow
+func NewAuthorizeGitHubManifestFlowRequest(server string, id ManifestFlowId, params *AuthorizeGitHubManifestFlowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/%s/authorization", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCompleteGitHubManifestFlowRequest generates requests for CompleteGitHubManifestFlow
+func NewCompleteGitHubManifestFlowRequest(server string, id ManifestFlowId, params *CompleteGitHubManifestFlowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/%s/completion", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewConvertGitHubManifestFlowRequest generates requests for ConvertGitHubManifestFlow
+func NewConvertGitHubManifestFlowRequest(server string, id ManifestFlowId, params *ConvertGitHubManifestFlowParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/%s/conversion", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetGitHubManifestInstallationURLRequest generates requests for GetGitHubManifestInstallationURL
+func NewGetGitHubManifestInstallationURLRequest(server string, id ManifestFlowId, params *GetGitHubManifestInstallationURLParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/manifest-flows/%s/installation", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetGitHubSetupOptionsRequest generates requests for GetGitHubSetupOptions
+func NewGetGitHubSetupOptionsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/github/setup-options")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteConnectionRequest generates requests for DeleteConnection
+func NewDeleteConnectionRequest(server string, id ConnectionId, params *DeleteConnectionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetConnectionRequest generates requests for GetConnection
+func NewGetConnectionRequest(server string, id ConnectionId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewUpdateConnectionRequest calls the generic UpdateConnection builder with application/json body
+func NewUpdateConnectionRequest(server string, id ConnectionId, params *UpdateConnectionParams, body UpdateConnectionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateConnectionRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewUpdateConnectionRequestWithBody generates requests for UpdateConnection with any type of body
+func NewUpdateConnectionRequestWithBody(server string, id ConnectionId, params *UpdateConnectionParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PATCH", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCheckConnectionHealthRequest generates requests for CheckConnectionHealth
+func NewCheckConnectionHealthRequest(server string, id ConnectionId, params *CheckConnectionHealthParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s/health-checks", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListConnectionRepositoriesRequest generates requests for ListConnectionRepositories
+func NewListConnectionRepositoriesRequest(server string, id ConnectionId, params *ListConnectionRepositoriesParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s/repositories", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -3990,44 +6276,11 @@ func NewGetArtifactContentRequest(server string, id ArtifactId, params *GetArtif
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
-// NewCreateArtifactPreviewSessionRequest calls the generic CreateArtifactPreviewSession builder with application/json body
-func NewCreateArtifactPreviewSessionRequest(server string, id ArtifactId, params *CreateArtifactPreviewSessionParams, body CreateArtifactPreviewSessionJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewCreateArtifactPreviewSessionRequestWithBody(server, id, params, "application/json", bodyReader)
-}
-
-// NewCreateArtifactPreviewSessionRequestWithBody generates requests for CreateArtifactPreviewSession with any type of body
-func NewCreateArtifactPreviewSessionRequestWithBody(server string, id ArtifactId, params *CreateArtifactPreviewSessionParams, contentType string, body io.Reader) (*http.Request, error) {
+// NewListConnectionIssuesRequest generates requests for ListConnectionIssues
+func NewListConnectionIssuesRequest(server string, id ConnectionId, repositoryId RepositoryId, params *ListConnectionIssuesParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -4037,12 +6290,19 @@ func NewCreateArtifactPreviewSessionRequestWithBody(server string, id ArtifactId
 		return nil, err
 	}
 
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "repositoryId", runtime.ParamLocationPath, repositoryId)
+	if err != nil {
+		return nil, err
+	}
+
 	serverURL, err := url.Parse(server)
 	if err != nil {
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/artifacts/%s/preview-session", pathParam0)
+	operationPath := fmt.Sprintf("/connections/%s/repositories/%s/issues", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -4052,49 +6312,156 @@ func NewCreateArtifactPreviewSessionRequestWithBody(server string, id ArtifactId
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.State != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "state", runtime.ParamLocationQuery, *params.State); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Search != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "search", runtime.ParamLocationQuery, *params.Search); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Add("Content-Type", contentType)
+	return req, nil
+}
+
+// NewPreviewConnectionIssueRequest generates requests for PreviewConnectionIssue
+func NewPreviewConnectionIssueRequest(server string, id ConnectionId, repositoryId RepositoryId, number int, params *PreviewConnectionIssueParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "repositoryId", runtime.ParamLocationPath, repositoryId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "number", runtime.ParamLocationPath, number)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/connections/%s/repositories/%s/issues/%s/preview", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
 
 	if params != nil {
+		queryValues := queryURL.Query()
 
-		var headerParam0 string
+		if params.IncludeCommentCount != nil {
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "include_comment_count", runtime.ParamLocationQuery, *params.IncludeCommentCount); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		if params.IncludeComments != nil {
 
-		var headerParam1 string
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "include_comments", runtime.ParamLocationQuery, *params.IncludeComments); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
 		}
 
-		req.Header.Set("X-Role-Id", headerParam1)
+		queryURL.RawQuery = queryValues.Encode()
+	}
 
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
-
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
 	}
 
 	return req, nil
 }
 
 // NewGetDashboardSnapshotRequest generates requests for GetDashboardSnapshot
-func NewGetDashboardSnapshotRequest(server string, params *GetDashboardSnapshotParams) (*http.Request, error) {
+func NewGetDashboardSnapshotRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -4115,28 +6482,6 @@ func NewGetDashboardSnapshotRequest(server string, params *GetDashboardSnapshotP
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -4183,30 +6528,23 @@ func NewCreateDecreeRequestWithBody(server string, params *CreateDecreeParams, c
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -4214,7 +6552,7 @@ func NewCreateDecreeRequestWithBody(server string, params *CreateDecreeParams, c
 }
 
 // NewGetDecreeRequest generates requests for GetDecree
-func NewGetDecreeRequest(server string, id DecreeId, params *GetDecreeParams) (*http.Request, error) {
+func NewGetDecreeRequest(server string, id DecreeId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -4242,28 +6580,6 @@ func NewGetDecreeRequest(server string, id DecreeId, params *GetDecreeParams) (*
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -4345,33 +6661,15 @@ func NewStreamEventsRequest(server string, params *StreamEventsParams) (*http.Re
 
 	if params != nil {
 
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 		if params.LastEventID != nil {
-			var headerParam2 string
+			var headerParam0 string
 
-			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
 			if err != nil {
 				return nil, err
 			}
 
-			req.Header.Set("Last-Event-ID", headerParam2)
+			req.Header.Set("Last-Event-ID", headerParam0)
 		}
 
 	}
@@ -4379,8 +6677,334 @@ func NewStreamEventsRequest(server string, params *StreamEventsParams) (*http.Re
 	return req, nil
 }
 
+// NewCaptureExternalSourceRequest calls the generic CaptureExternalSource builder with application/json body
+func NewCaptureExternalSourceRequest(server string, params *CaptureExternalSourceParams, body CaptureExternalSourceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCaptureExternalSourceRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCaptureExternalSourceRequestWithBody generates requests for CaptureExternalSource with any type of body
+func NewCaptureExternalSourceRequestWithBody(server string, params *CaptureExternalSourceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-captures")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewAdoptExternalSourceLinkRequest generates requests for AdoptExternalSourceLink
+func NewAdoptExternalSourceLinkRequest(server string, id ExternalLinkId, params *AdoptExternalSourceLinkParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-links/%s/adoptions", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetExternalSourceLinkHistoryRequest generates requests for GetExternalSourceLinkHistory
+func NewGetExternalSourceLinkHistoryRequest(server string, id ExternalLinkId, params *GetExternalSourceLinkHistoryParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-links/%s/history", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRefreshExternalSourceLinkRequest generates requests for RefreshExternalSourceLink
+func NewRefreshExternalSourceLinkRequest(server string, id ExternalLinkId, params *RefreshExternalSourceLinkParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-links/%s/refreshes", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetExternalSourceSnapshotRequest generates requests for GetExternalSourceSnapshot
+func NewGetExternalSourceSnapshotRequest(server string, id SnapshotId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-snapshots/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListExternalSourceSnapshotCommentsRequest generates requests for ListExternalSourceSnapshotComments
+func NewListExternalSourceSnapshotCommentsRequest(server string, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/external-source-snapshots/%s/comments", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetHealthRequest generates requests for GetHealth
-func NewGetHealthRequest(server string, params *GetHealthParams) (*http.Request, error) {
+func NewGetHealthRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -4403,33 +7027,11 @@ func NewGetHealthRequest(server string, params *GetHealthParams) (*http.Request,
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetMetricsRuntimeRequest generates requests for GetMetricsRuntime
-func NewGetMetricsRuntimeRequest(server string, params *GetMetricsRuntimeParams) (*http.Request, error) {
+func NewGetMetricsRuntimeRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -4450,28 +7052,6 @@ func NewGetMetricsRuntimeRequest(server string, params *GetMetricsRuntimeParams)
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -4523,28 +7103,6 @@ func NewListPlanningSessionsRequest(server string, params *ListPlanningSessionsP
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
@@ -4589,30 +7147,23 @@ func NewCreatePlanningSessionRequestWithBody(server string, params *CreatePlanni
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -4654,30 +7205,23 @@ func NewDeletePlanningSessionRequest(server string, id PlanningSessionId, params
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -4685,7 +7229,7 @@ func NewDeletePlanningSessionRequest(server string, id PlanningSessionId, params
 }
 
 // NewGetPlanningSessionRequest generates requests for GetPlanningSession
-func NewGetPlanningSessionRequest(server string, id PlanningSessionId, params *GetPlanningSessionParams) (*http.Request, error) {
+func NewGetPlanningSessionRequest(server string, id PlanningSessionId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -4713,28 +7257,6 @@ func NewGetPlanningSessionRequest(server string, id PlanningSessionId, params *G
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -4788,30 +7310,23 @@ func NewUpdatePlanningSessionRequestWithBody(server string, id PlanningSessionId
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -4853,30 +7368,94 @@ func NewRefreshPlanningSessionContextRequest(server string, id PlanningSessionId
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewAttachPlanningSessionExternalSourceRequest calls the generic AttachPlanningSessionExternalSource builder with application/json body
+func NewAttachPlanningSessionExternalSourceRequest(server string, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, body AttachPlanningSessionExternalSourceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAttachPlanningSessionExternalSourceRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewAttachPlanningSessionExternalSourceRequestWithBody generates requests for AttachPlanningSessionExternalSource with any type of body
+func NewAttachPlanningSessionExternalSourceRequestWithBody(server string, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/planning-sessions/%s/external-sources", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Role-Id", headerParam1)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam2 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -4952,28 +7531,6 @@ func NewListPlanningSessionMessagesRequest(server string, id PlanningSessionId, 
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
@@ -5019,30 +7576,23 @@ func NewActivatePlanningMessageVariantRequest(server string, id PlanningSessionI
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -5050,7 +7600,7 @@ func NewActivatePlanningMessageVariantRequest(server string, id PlanningSessionI
 }
 
 // NewListPlanningMessageVariantsRequest generates requests for ListPlanningMessageVariants
-func NewListPlanningMessageVariantsRequest(server string, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams) (*http.Request, error) {
+func NewListPlanningMessageVariantsRequest(server string, id PlanningSessionId, messageId string) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5087,33 +7637,11 @@ func NewListPlanningMessageVariantsRequest(server string, id PlanningSessionId, 
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetPlanningSessionPlanRequest generates requests for GetPlanningSessionPlan
-func NewGetPlanningSessionPlanRequest(server string, id PlanningSessionId, params *GetPlanningSessionPlanParams) (*http.Request, error) {
+func NewGetPlanningSessionPlanRequest(server string, id PlanningSessionId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5129,103 +7657,6 @@ func NewGetPlanningSessionPlanRequest(server string, id PlanningSessionId, param
 	}
 
 	operationPath := fmt.Sprintf("/planning-sessions/%s/plan", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
-	return req, nil
-}
-
-// NewGetArtifactPreviewContentRequest generates requests for GetArtifactPreviewContent
-func NewGetArtifactPreviewContentRequest(server string, token PreviewToken) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "token", runtime.ParamLocationPath, token)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/preview/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewGetArtifactPreviewAssetContentRequest generates requests for GetArtifactPreviewAssetContent
-func NewGetArtifactPreviewAssetContentRequest(server string, token PreviewToken, assetPath PreviewAssetPath) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "token", runtime.ParamLocationPath, token)
-	if err != nil {
-		return nil, err
-	}
-
-	var pathParam1 string
-
-	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "assetPath", runtime.ParamLocationPath, assetPath)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/preview/%s/%s", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -5287,28 +7718,6 @@ func NewListProviderModelsRequest(server string, params *ListProviderModelsParam
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -5376,28 +7785,6 @@ func NewGetRealmAnalyticsExecutionDetailSnapshotRequest(server string, params *G
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
@@ -5447,33 +7834,11 @@ func NewGetRealmAnalyticsSnapshotRequest(server string, params *GetRealmAnalytic
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewListRolesRequest generates requests for ListRoles
-func NewListRolesRequest(server string, params *ListRolesParams) (*http.Request, error) {
+func NewListRolesRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -5494,28 +7859,6 @@ func NewListRolesRequest(server string, params *ListRolesParams) (*http.Request,
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -5615,28 +7958,6 @@ func NewListRunsRequest(server string, params *ListRunsParams) (*http.Request, e
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
@@ -5681,30 +8002,23 @@ func NewCreateRunRequestWithBody(server string, params *CreateRunParams, content
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -5775,33 +8089,15 @@ func NewStreamRunCollectionEventsRequest(server string, params *StreamRunCollect
 
 	if params != nil {
 
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 		if params.LastEventID != nil {
-			var headerParam2 string
+			var headerParam0 string
 
-			headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Last-Event-ID", runtime.ParamLocationHeader, *params.LastEventID)
 			if err != nil {
 				return nil, err
 			}
 
-			req.Header.Set("Last-Event-ID", headerParam2)
+			req.Header.Set("Last-Event-ID", headerParam0)
 		}
 
 	}
@@ -5810,7 +8106,7 @@ func NewStreamRunCollectionEventsRequest(server string, params *StreamRunCollect
 }
 
 // NewGetRunRequest generates requests for GetRun
-func NewGetRunRequest(server string, id RunId, params *GetRunParams) (*http.Request, error) {
+func NewGetRunRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5840,33 +8136,11 @@ func NewGetRunRequest(server string, id RunId, params *GetRunParams) (*http.Requ
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewListRunAgentsRequest generates requests for ListRunAgents
-func NewListRunAgentsRequest(server string, id RunId, params *ListRunAgentsParams) (*http.Request, error) {
+func NewListRunAgentsRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5896,33 +8170,11 @@ func NewListRunAgentsRequest(server string, id RunId, params *ListRunAgentsParam
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewListRunArtifactsRequest generates requests for ListRunArtifacts
-func NewListRunArtifactsRequest(server string, id RunId, params *ListRunArtifactsParams) (*http.Request, error) {
+func NewListRunArtifactsRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5952,33 +8204,11 @@ func NewListRunArtifactsRequest(server string, id RunId, params *ListRunArtifact
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetRunArtifactsArchiveRequest generates requests for GetRunArtifactsArchive
-func NewGetRunArtifactsArchiveRequest(server string, id RunId, params *GetRunArtifactsArchiveParams) (*http.Request, error) {
+func NewGetRunArtifactsArchiveRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6006,28 +8236,6 @@ func NewGetRunArtifactsArchiveRequest(server string, id RunId, params *GetRunArt
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -6081,30 +8289,23 @@ func NewCancelRunRequestWithBody(server string, id RunId, params *CancelRunParam
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -6112,7 +8313,7 @@ func NewCancelRunRequestWithBody(server string, id RunId, params *CancelRunParam
 }
 
 // NewListRunExecutionsRequest generates requests for ListRunExecutions
-func NewListRunExecutionsRequest(server string, id RunId, params *ListRunExecutionsParams) (*http.Request, error) {
+func NewListRunExecutionsRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6142,33 +8343,11 @@ func NewListRunExecutionsRequest(server string, id RunId, params *ListRunExecuti
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetRunExecutionRequest generates requests for GetRunExecution
-func NewGetRunExecutionRequest(server string, id RunId, attemptId AttemptId, params *GetRunExecutionParams) (*http.Request, error) {
+func NewGetRunExecutionRequest(server string, id RunId, attemptId AttemptId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6205,33 +8384,11 @@ func NewGetRunExecutionRequest(server string, id RunId, attemptId AttemptId, par
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetRunExecutionActivityRequest generates requests for GetRunExecutionActivity
-func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams) (*http.Request, error) {
+func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId AttemptId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6266,28 +8423,6 @@ func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId Attemp
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -6341,30 +8476,23 @@ func NewCreateFinalApprovalRequestWithBody(server string, id RunId, params *Crea
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -6440,33 +8568,11 @@ func NewListRunGovernanceDecisionsRequest(server string, id RunId, params *ListR
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetRunGraphRequest generates requests for GetRunGraph
-func NewGetRunGraphRequest(server string, id RunId, params *GetRunGraphParams) (*http.Request, error) {
+func NewGetRunGraphRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6494,28 +8600,6 @@ func NewGetRunGraphRequest(server string, id RunId, params *GetRunGraphParams) (
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -6638,33 +8722,11 @@ func NewListRunMailboxMessagesRequest(server string, id RunId, params *ListRunMa
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
 // NewGetRunMailboxMessageRequest generates requests for GetRunMailboxMessage
-func NewGetRunMailboxMessageRequest(server string, id RunId, messageId MessageId, params *GetRunMailboxMessageParams) (*http.Request, error) {
+func NewGetRunMailboxMessageRequest(server string, id RunId, messageId MessageId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6699,28 +8761,6 @@ func NewGetRunMailboxMessageRequest(server string, id RunId, messageId MessageId
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -6768,21 +8808,23 @@ func NewMarkRunMailboxMessageReadRequest(server string, id RunId, messageId Mess
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
 
 	}
 
@@ -6844,30 +8886,23 @@ func NewRetryNodeRequestWithBody(server string, id RunId, nodeKey NodeKey, param
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -6875,7 +8910,7 @@ func NewRetryNodeRequestWithBody(server string, id RunId, nodeKey NodeKey, param
 }
 
 // NewGetRunPlanRequest generates requests for GetRunPlan
-func NewGetRunPlanRequest(server string, id RunId, params *GetRunPlanParams) (*http.Request, error) {
+func NewGetRunPlanRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6903,28 +8938,6 @@ func NewGetRunPlanRequest(server string, id RunId, params *GetRunPlanParams) (*h
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -6978,30 +8991,23 @@ func NewCreatePlanApprovalRequestWithBody(server string, id RunId, params *Creat
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -7009,7 +9015,7 @@ func NewCreatePlanApprovalRequestWithBody(server string, id RunId, params *Creat
 }
 
 // NewListRunPlanReviewsRequest generates requests for ListRunPlanReviews
-func NewListRunPlanReviewsRequest(server string, id RunId, params *ListRunPlanReviewsParams) (*http.Request, error) {
+func NewListRunPlanReviewsRequest(server string, id RunId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -7037,28 +9043,6 @@ func NewListRunPlanReviewsRequest(server string, id RunId, params *ListRunPlanRe
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -7119,30 +9103,23 @@ func NewRerunFromNodeRequestWithBody(server string, id RunId, nodeKey NodeKey, p
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -7218,28 +9195,6 @@ func NewGetRunTimelineRequest(server string, id RunId, params *GetRunTimelinePar
 		return nil, err
 	}
 
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-	}
-
 	return req, nil
 }
 
@@ -7284,30 +9239,23 @@ func NewPublishWorkflowRequestWithBody(server string, params *PublishWorkflowPar
 
 		var headerParam0 string
 
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
 		if err != nil {
 			return nil, err
 		}
 
-		req.Header.Set("X-Actor-Id", headerParam0)
+		req.Header.Set("Idempotency-Key", headerParam0)
 
-		var headerParam1 string
+		if params.XCSRFToken != nil {
+			var headerParam1 string
 
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
 		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
-		var headerParam2 string
-
-		headerParam2, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam2)
 
 	}
 
@@ -7315,7 +9263,7 @@ func NewPublishWorkflowRequestWithBody(server string, params *PublishWorkflowPar
 }
 
 // NewGetWorkspaceCapabilitiesRequest generates requests for GetWorkspaceCapabilities
-func NewGetWorkspaceCapabilitiesRequest(server string, params *GetWorkspaceCapabilitiesParams) (*http.Request, error) {
+func NewGetWorkspaceCapabilitiesRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -7336,28 +9284,6 @@ func NewGetWorkspaceCapabilitiesRequest(server string, params *GetWorkspaceCapab
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor-Id", runtime.ParamLocationHeader, params.XActorId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Actor-Id", headerParam0)
-
-		var headerParam1 string
-
-		headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-Role-Id", runtime.ParamLocationHeader, params.XRoleId)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("X-Role-Id", headerParam1)
-
 	}
 
 	return req, nil
@@ -7407,10 +9333,10 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 	// ListAcpAgentsWithResponse request
-	ListAcpAgentsWithResponse(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error)
+	ListAcpAgentsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error)
 
 	// GetAcpAgentWithResponse request
-	GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error)
+	GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error)
 
 	// CreateAcpRunWithBodyWithResponse request with any body
 	CreateAcpRunWithBodyWithResponse(ctx context.Context, params *CreateAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error)
@@ -7418,10 +9344,10 @@ type ClientWithResponsesInterface interface {
 	CreateAcpRunWithResponse(ctx context.Context, params *CreateAcpRunParams, body CreateAcpRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateAcpRunResponse, error)
 
 	// GetAcpRunWithResponse request
-	GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error)
+	GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error)
 
 	// GetAcpRunActivityWithResponse request
-	GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error)
+	GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error)
 
 	// CancelAcpRunWithBodyWithResponse request with any body
 	CancelAcpRunWithBodyWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error)
@@ -7432,21 +9358,104 @@ type ClientWithResponsesInterface interface {
 	StreamAcpRunEventsWithResponse(ctx context.Context, runId AcpRunId, params *StreamAcpRunEventsParams, reqEditors ...RequestEditorFn) (*StreamAcpRunEventsResponse, error)
 
 	// ListAgentsWithResponse request
-	ListAgentsWithResponse(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error)
+	ListAgentsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error)
 
 	// GetArtifactWithResponse request
-	GetArtifactWithResponse(ctx context.Context, id ArtifactId, params *GetArtifactParams, reqEditors ...RequestEditorFn) (*GetArtifactResponse, error)
+	GetArtifactWithResponse(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*GetArtifactResponse, error)
 
 	// GetArtifactContentWithResponse request
-	GetArtifactContentWithResponse(ctx context.Context, id ArtifactId, params *GetArtifactContentParams, reqEditors ...RequestEditorFn) (*GetArtifactContentResponse, error)
+	GetArtifactContentWithResponse(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*GetArtifactContentResponse, error)
 
-	// CreateArtifactPreviewSessionWithBodyWithResponse request with any body
-	CreateArtifactPreviewSessionWithBodyWithResponse(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateArtifactPreviewSessionResponse, error)
+	// CreateAuthSessionWithResponse request
+	CreateAuthSessionWithResponse(ctx context.Context, params *CreateAuthSessionParams, reqEditors ...RequestEditorFn) (*CreateAuthSessionResponse, error)
 
-	CreateArtifactPreviewSessionWithResponse(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, body CreateArtifactPreviewSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateArtifactPreviewSessionResponse, error)
+	// ListConnectionsWithResponse request
+	ListConnectionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListConnectionsResponse, error)
+
+	// CreateConnectionWithBodyWithResponse request with any body
+	CreateConnectionWithBodyWithResponse(ctx context.Context, params *CreateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateConnectionResponse, error)
+
+	CreateConnectionWithResponse(ctx context.Context, params *CreateConnectionParams, body CreateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateConnectionResponse, error)
+
+	// StartGitHubDeviceFlowWithBodyWithResponse request with any body
+	StartGitHubDeviceFlowWithBodyWithResponse(ctx context.Context, params *StartGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartGitHubDeviceFlowResponse, error)
+
+	StartGitHubDeviceFlowWithResponse(ctx context.Context, params *StartGitHubDeviceFlowParams, body StartGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*StartGitHubDeviceFlowResponse, error)
+
+	// GetGitHubDeviceFlowWithResponse request
+	GetGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, reqEditors ...RequestEditorFn) (*GetGitHubDeviceFlowResponse, error)
+
+	// RefreshGitHubDeviceCandidatesWithResponse request
+	RefreshGitHubDeviceCandidatesWithResponse(ctx context.Context, id DeviceFlowId, params *RefreshGitHubDeviceCandidatesParams, reqEditors ...RequestEditorFn) (*RefreshGitHubDeviceCandidatesResponse, error)
+
+	// FinalizeGitHubDeviceFlowWithBodyWithResponse request with any body
+	FinalizeGitHubDeviceFlowWithBodyWithResponse(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*FinalizeGitHubDeviceFlowResponse, error)
+
+	FinalizeGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, body FinalizeGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*FinalizeGitHubDeviceFlowResponse, error)
+
+	// PollGitHubDeviceFlowWithResponse request
+	PollGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, params *PollGitHubDeviceFlowParams, reqEditors ...RequestEditorFn) (*PollGitHubDeviceFlowResponse, error)
+
+	// GetCurrentGitHubManifestFlowWithResponse request
+	GetCurrentGitHubManifestFlowWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetCurrentGitHubManifestFlowResponse, error)
+
+	// StartGitHubManifestFlowWithBodyWithResponse request with any body
+	StartGitHubManifestFlowWithBodyWithResponse(ctx context.Context, params *StartGitHubManifestFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartGitHubManifestFlowResponse, error)
+
+	StartGitHubManifestFlowWithResponse(ctx context.Context, params *StartGitHubManifestFlowParams, body StartGitHubManifestFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*StartGitHubManifestFlowResponse, error)
+
+	// ReceiveGitHubManifestCallbackWithResponse request
+	ReceiveGitHubManifestCallbackWithResponse(ctx context.Context, params *ReceiveGitHubManifestCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubManifestCallbackResponse, error)
+
+	// ReceiveGitHubOAuthCallbackWithResponse request
+	ReceiveGitHubOAuthCallbackWithResponse(ctx context.Context, params *ReceiveGitHubOAuthCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubOAuthCallbackResponse, error)
+
+	// ReceiveGitHubSetupCallbackWithResponse request
+	ReceiveGitHubSetupCallbackWithResponse(ctx context.Context, params *ReceiveGitHubSetupCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubSetupCallbackResponse, error)
+
+	// GetGitHubManifestFlowWithResponse request
+	GetGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, reqEditors ...RequestEditorFn) (*GetGitHubManifestFlowResponse, error)
+
+	// AuthorizeGitHubManifestFlowWithResponse request
+	AuthorizeGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *AuthorizeGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*AuthorizeGitHubManifestFlowResponse, error)
+
+	// CompleteGitHubManifestFlowWithResponse request
+	CompleteGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *CompleteGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*CompleteGitHubManifestFlowResponse, error)
+
+	// ConvertGitHubManifestFlowWithResponse request
+	ConvertGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *ConvertGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*ConvertGitHubManifestFlowResponse, error)
+
+	// GetGitHubManifestInstallationURLWithResponse request
+	GetGitHubManifestInstallationURLWithResponse(ctx context.Context, id ManifestFlowId, params *GetGitHubManifestInstallationURLParams, reqEditors ...RequestEditorFn) (*GetGitHubManifestInstallationURLResponse, error)
+
+	// GetGitHubSetupOptionsWithResponse request
+	GetGitHubSetupOptionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGitHubSetupOptionsResponse, error)
+
+	// DeleteConnectionWithResponse request
+	DeleteConnectionWithResponse(ctx context.Context, id ConnectionId, params *DeleteConnectionParams, reqEditors ...RequestEditorFn) (*DeleteConnectionResponse, error)
+
+	// GetConnectionWithResponse request
+	GetConnectionWithResponse(ctx context.Context, id ConnectionId, reqEditors ...RequestEditorFn) (*GetConnectionResponse, error)
+
+	// UpdateConnectionWithBodyWithResponse request with any body
+	UpdateConnectionWithBodyWithResponse(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateConnectionResponse, error)
+
+	UpdateConnectionWithResponse(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, body UpdateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateConnectionResponse, error)
+
+	// CheckConnectionHealthWithResponse request
+	CheckConnectionHealthWithResponse(ctx context.Context, id ConnectionId, params *CheckConnectionHealthParams, reqEditors ...RequestEditorFn) (*CheckConnectionHealthResponse, error)
+
+	// ListConnectionRepositoriesWithResponse request
+	ListConnectionRepositoriesWithResponse(ctx context.Context, id ConnectionId, params *ListConnectionRepositoriesParams, reqEditors ...RequestEditorFn) (*ListConnectionRepositoriesResponse, error)
+
+	// ListConnectionIssuesWithResponse request
+	ListConnectionIssuesWithResponse(ctx context.Context, id ConnectionId, repositoryId RepositoryId, params *ListConnectionIssuesParams, reqEditors ...RequestEditorFn) (*ListConnectionIssuesResponse, error)
+
+	// PreviewConnectionIssueWithResponse request
+	PreviewConnectionIssueWithResponse(ctx context.Context, id ConnectionId, repositoryId RepositoryId, number int, params *PreviewConnectionIssueParams, reqEditors ...RequestEditorFn) (*PreviewConnectionIssueResponse, error)
 
 	// GetDashboardSnapshotWithResponse request
-	GetDashboardSnapshotWithResponse(ctx context.Context, params *GetDashboardSnapshotParams, reqEditors ...RequestEditorFn) (*GetDashboardSnapshotResponse, error)
+	GetDashboardSnapshotWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetDashboardSnapshotResponse, error)
 
 	// CreateDecreeWithBodyWithResponse request with any body
 	CreateDecreeWithBodyWithResponse(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error)
@@ -7454,16 +9463,36 @@ type ClientWithResponsesInterface interface {
 	CreateDecreeWithResponse(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error)
 
 	// GetDecreeWithResponse request
-	GetDecreeWithResponse(ctx context.Context, id DecreeId, params *GetDecreeParams, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error)
+	GetDecreeWithResponse(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error)
 
 	// StreamEventsWithResponse request
 	StreamEventsWithResponse(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*StreamEventsResponse, error)
 
+	// CaptureExternalSourceWithBodyWithResponse request with any body
+	CaptureExternalSourceWithBodyWithResponse(ctx context.Context, params *CaptureExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CaptureExternalSourceResponse, error)
+
+	CaptureExternalSourceWithResponse(ctx context.Context, params *CaptureExternalSourceParams, body CaptureExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*CaptureExternalSourceResponse, error)
+
+	// AdoptExternalSourceLinkWithResponse request
+	AdoptExternalSourceLinkWithResponse(ctx context.Context, id ExternalLinkId, params *AdoptExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*AdoptExternalSourceLinkResponse, error)
+
+	// GetExternalSourceLinkHistoryWithResponse request
+	GetExternalSourceLinkHistoryWithResponse(ctx context.Context, id ExternalLinkId, params *GetExternalSourceLinkHistoryParams, reqEditors ...RequestEditorFn) (*GetExternalSourceLinkHistoryResponse, error)
+
+	// RefreshExternalSourceLinkWithResponse request
+	RefreshExternalSourceLinkWithResponse(ctx context.Context, id ExternalLinkId, params *RefreshExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*RefreshExternalSourceLinkResponse, error)
+
+	// GetExternalSourceSnapshotWithResponse request
+	GetExternalSourceSnapshotWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceSnapshotResponse, error)
+
+	// ListExternalSourceSnapshotCommentsWithResponse request
+	ListExternalSourceSnapshotCommentsWithResponse(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*ListExternalSourceSnapshotCommentsResponse, error)
+
 	// GetHealthWithResponse request
-	GetHealthWithResponse(ctx context.Context, params *GetHealthParams, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
+	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
 
 	// GetMetricsRuntimeWithResponse request
-	GetMetricsRuntimeWithResponse(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error)
+	GetMetricsRuntimeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error)
 
 	// ListPlanningSessionsWithResponse request
 	ListPlanningSessionsWithResponse(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionsResponse, error)
@@ -7477,7 +9506,7 @@ type ClientWithResponsesInterface interface {
 	DeletePlanningSessionWithResponse(ctx context.Context, id PlanningSessionId, params *DeletePlanningSessionParams, reqEditors ...RequestEditorFn) (*DeletePlanningSessionResponse, error)
 
 	// GetPlanningSessionWithResponse request
-	GetPlanningSessionWithResponse(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionParams, reqEditors ...RequestEditorFn) (*GetPlanningSessionResponse, error)
+	GetPlanningSessionWithResponse(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*GetPlanningSessionResponse, error)
 
 	// UpdatePlanningSessionWithBodyWithResponse request with any body
 	UpdatePlanningSessionWithBodyWithResponse(ctx context.Context, id PlanningSessionId, params *UpdatePlanningSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdatePlanningSessionResponse, error)
@@ -7487,6 +9516,11 @@ type ClientWithResponsesInterface interface {
 	// RefreshPlanningSessionContextWithResponse request
 	RefreshPlanningSessionContextWithResponse(ctx context.Context, id PlanningSessionId, params *RefreshPlanningSessionContextParams, reqEditors ...RequestEditorFn) (*RefreshPlanningSessionContextResponse, error)
 
+	// AttachPlanningSessionExternalSourceWithBodyWithResponse request with any body
+	AttachPlanningSessionExternalSourceWithBodyWithResponse(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachPlanningSessionExternalSourceResponse, error)
+
+	AttachPlanningSessionExternalSourceWithResponse(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, body AttachPlanningSessionExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*AttachPlanningSessionExternalSourceResponse, error)
+
 	// ListPlanningSessionMessagesWithResponse request
 	ListPlanningSessionMessagesWithResponse(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionMessagesResponse, error)
 
@@ -7494,16 +9528,10 @@ type ClientWithResponsesInterface interface {
 	ActivatePlanningMessageVariantWithResponse(ctx context.Context, id PlanningSessionId, messageId string, params *ActivatePlanningMessageVariantParams, reqEditors ...RequestEditorFn) (*ActivatePlanningMessageVariantResponse, error)
 
 	// ListPlanningMessageVariantsWithResponse request
-	ListPlanningMessageVariantsWithResponse(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*ListPlanningMessageVariantsResponse, error)
+	ListPlanningMessageVariantsWithResponse(ctx context.Context, id PlanningSessionId, messageId string, reqEditors ...RequestEditorFn) (*ListPlanningMessageVariantsResponse, error)
 
 	// GetPlanningSessionPlanWithResponse request
-	GetPlanningSessionPlanWithResponse(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*GetPlanningSessionPlanResponse, error)
-
-	// GetArtifactPreviewContentWithResponse request
-	GetArtifactPreviewContentWithResponse(ctx context.Context, token PreviewToken, reqEditors ...RequestEditorFn) (*GetArtifactPreviewContentResponse, error)
-
-	// GetArtifactPreviewAssetContentWithResponse request
-	GetArtifactPreviewAssetContentWithResponse(ctx context.Context, token PreviewToken, assetPath PreviewAssetPath, reqEditors ...RequestEditorFn) (*GetArtifactPreviewAssetContentResponse, error)
+	GetPlanningSessionPlanWithResponse(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*GetPlanningSessionPlanResponse, error)
 
 	// ListProviderModelsWithResponse request
 	ListProviderModelsWithResponse(ctx context.Context, params *ListProviderModelsParams, reqEditors ...RequestEditorFn) (*ListProviderModelsResponse, error)
@@ -7515,7 +9543,7 @@ type ClientWithResponsesInterface interface {
 	GetRealmAnalyticsSnapshotWithResponse(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*GetRealmAnalyticsSnapshotResponse, error)
 
 	// ListRolesWithResponse request
-	ListRolesWithResponse(ctx context.Context, params *ListRolesParams, reqEditors ...RequestEditorFn) (*ListRolesResponse, error)
+	ListRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRolesResponse, error)
 
 	// ListRunsWithResponse request
 	ListRunsWithResponse(ctx context.Context, params *ListRunsParams, reqEditors ...RequestEditorFn) (*ListRunsResponse, error)
@@ -7529,16 +9557,16 @@ type ClientWithResponsesInterface interface {
 	StreamRunCollectionEventsWithResponse(ctx context.Context, params *StreamRunCollectionEventsParams, reqEditors ...RequestEditorFn) (*StreamRunCollectionEventsResponse, error)
 
 	// GetRunWithResponse request
-	GetRunWithResponse(ctx context.Context, id RunId, params *GetRunParams, reqEditors ...RequestEditorFn) (*GetRunResponse, error)
+	GetRunWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunResponse, error)
 
 	// ListRunAgentsWithResponse request
-	ListRunAgentsWithResponse(ctx context.Context, id RunId, params *ListRunAgentsParams, reqEditors ...RequestEditorFn) (*ListRunAgentsResponse, error)
+	ListRunAgentsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunAgentsResponse, error)
 
 	// ListRunArtifactsWithResponse request
-	ListRunArtifactsWithResponse(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error)
+	ListRunArtifactsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error)
 
 	// GetRunArtifactsArchiveWithResponse request
-	GetRunArtifactsArchiveWithResponse(ctx context.Context, id RunId, params *GetRunArtifactsArchiveParams, reqEditors ...RequestEditorFn) (*GetRunArtifactsArchiveResponse, error)
+	GetRunArtifactsArchiveWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunArtifactsArchiveResponse, error)
 
 	// CancelRunWithBodyWithResponse request with any body
 	CancelRunWithBodyWithResponse(ctx context.Context, id RunId, params *CancelRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CancelRunResponse, error)
@@ -7546,13 +9574,13 @@ type ClientWithResponsesInterface interface {
 	CancelRunWithResponse(ctx context.Context, id RunId, params *CancelRunParams, body CancelRunJSONRequestBody, reqEditors ...RequestEditorFn) (*CancelRunResponse, error)
 
 	// ListRunExecutionsWithResponse request
-	ListRunExecutionsWithResponse(ctx context.Context, id RunId, params *ListRunExecutionsParams, reqEditors ...RequestEditorFn) (*ListRunExecutionsResponse, error)
+	ListRunExecutionsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunExecutionsResponse, error)
 
 	// GetRunExecutionWithResponse request
-	GetRunExecutionWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionParams, reqEditors ...RequestEditorFn) (*GetRunExecutionResponse, error)
+	GetRunExecutionWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionResponse, error)
 
 	// GetRunExecutionActivityWithResponse request
-	GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error)
+	GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error)
 
 	// CreateFinalApprovalWithBodyWithResponse request with any body
 	CreateFinalApprovalWithBodyWithResponse(ctx context.Context, id RunId, params *CreateFinalApprovalParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateFinalApprovalResponse, error)
@@ -7563,13 +9591,13 @@ type ClientWithResponsesInterface interface {
 	ListRunGovernanceDecisionsWithResponse(ctx context.Context, id RunId, params *ListRunGovernanceDecisionsParams, reqEditors ...RequestEditorFn) (*ListRunGovernanceDecisionsResponse, error)
 
 	// GetRunGraphWithResponse request
-	GetRunGraphWithResponse(ctx context.Context, id RunId, params *GetRunGraphParams, reqEditors ...RequestEditorFn) (*GetRunGraphResponse, error)
+	GetRunGraphWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunGraphResponse, error)
 
 	// ListRunMailboxMessagesWithResponse request
 	ListRunMailboxMessagesWithResponse(ctx context.Context, id RunId, params *ListRunMailboxMessagesParams, reqEditors ...RequestEditorFn) (*ListRunMailboxMessagesResponse, error)
 
 	// GetRunMailboxMessageWithResponse request
-	GetRunMailboxMessageWithResponse(ctx context.Context, id RunId, messageId MessageId, params *GetRunMailboxMessageParams, reqEditors ...RequestEditorFn) (*GetRunMailboxMessageResponse, error)
+	GetRunMailboxMessageWithResponse(ctx context.Context, id RunId, messageId MessageId, reqEditors ...RequestEditorFn) (*GetRunMailboxMessageResponse, error)
 
 	// MarkRunMailboxMessageReadWithResponse request
 	MarkRunMailboxMessageReadWithResponse(ctx context.Context, id RunId, messageId MessageId, params *MarkRunMailboxMessageReadParams, reqEditors ...RequestEditorFn) (*MarkRunMailboxMessageReadResponse, error)
@@ -7580,7 +9608,7 @@ type ClientWithResponsesInterface interface {
 	RetryNodeWithResponse(ctx context.Context, id RunId, nodeKey NodeKey, params *RetryNodeParams, body RetryNodeJSONRequestBody, reqEditors ...RequestEditorFn) (*RetryNodeResponse, error)
 
 	// GetRunPlanWithResponse request
-	GetRunPlanWithResponse(ctx context.Context, id RunId, params *GetRunPlanParams, reqEditors ...RequestEditorFn) (*GetRunPlanResponse, error)
+	GetRunPlanWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunPlanResponse, error)
 
 	// CreatePlanApprovalWithBodyWithResponse request with any body
 	CreatePlanApprovalWithBodyWithResponse(ctx context.Context, id RunId, params *CreatePlanApprovalParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreatePlanApprovalResponse, error)
@@ -7588,7 +9616,7 @@ type ClientWithResponsesInterface interface {
 	CreatePlanApprovalWithResponse(ctx context.Context, id RunId, params *CreatePlanApprovalParams, body CreatePlanApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*CreatePlanApprovalResponse, error)
 
 	// ListRunPlanReviewsWithResponse request
-	ListRunPlanReviewsWithResponse(ctx context.Context, id RunId, params *ListRunPlanReviewsParams, reqEditors ...RequestEditorFn) (*ListRunPlanReviewsResponse, error)
+	ListRunPlanReviewsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunPlanReviewsResponse, error)
 
 	// RerunFromNodeWithBodyWithResponse request with any body
 	RerunFromNodeWithBodyWithResponse(ctx context.Context, id RunId, nodeKey NodeKey, params *RerunFromNodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RerunFromNodeResponse, error)
@@ -7604,7 +9632,7 @@ type ClientWithResponsesInterface interface {
 	PublishWorkflowWithResponse(ctx context.Context, params *PublishWorkflowParams, body PublishWorkflowJSONRequestBody, reqEditors ...RequestEditorFn) (*PublishWorkflowResponse, error)
 
 	// GetWorkspaceCapabilitiesWithResponse request
-	GetWorkspaceCapabilitiesWithResponse(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*GetWorkspaceCapabilitiesResponse, error)
+	GetWorkspaceCapabilitiesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetWorkspaceCapabilitiesResponse, error)
 }
 
 type ListAcpAgentsResponse struct {
@@ -7861,18 +9889,19 @@ func (r GetArtifactContentResponse) StatusCode() int {
 	return 0
 }
 
-type CreateArtifactPreviewSessionResponse struct {
+type CreateAuthSessionResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON201      *CreateArtifactPreviewSessionResult
+	JSON200      *AuthSession
+	JSON201      *AuthSession
 	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
+	JSON403      *ForbiddenError
+	JSON429      *ErrorResponse
 	JSONDefault  *ErrorResponse
 }
 
 // Status returns HTTPResponse.Status
-func (r CreateArtifactPreviewSessionResponse) Status() string {
+func (r CreateAuthSessionResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -7880,7 +9909,636 @@ func (r CreateArtifactPreviewSessionResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r CreateArtifactPreviewSessionResponse) StatusCode() int {
+func (r CreateAuthSessionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListConnectionsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ConnectionList
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListConnectionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListConnectionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateConnectionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateConnectionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateConnectionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type StartGitHubDeviceFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *GitHubDeviceFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON429      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r StartGitHubDeviceFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StartGitHubDeviceFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetGitHubDeviceFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubDeviceFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetGitHubDeviceFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetGitHubDeviceFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RefreshGitHubDeviceCandidatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubDeviceFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r RefreshGitHubDeviceCandidatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RefreshGitHubDeviceCandidatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type FinalizeGitHubDeviceFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r FinalizeGitHubDeviceFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r FinalizeGitHubDeviceFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PollGitHubDeviceFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubDeviceFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSON429      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PollGitHubDeviceFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PollGitHubDeviceFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetCurrentGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubManifestFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetCurrentGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetCurrentGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type StartGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *StartGitHubManifestFlowPayload
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r StartGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StartGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ReceiveGitHubManifestCallbackResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ReceiveGitHubManifestCallbackResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReceiveGitHubManifestCallbackResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ReceiveGitHubOAuthCallbackResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ReceiveGitHubOAuthCallbackResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReceiveGitHubOAuthCallbackResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ReceiveGitHubSetupCallbackResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ReceiveGitHubSetupCallbackResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReceiveGitHubSetupCallbackResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubManifestFlowStatus
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type AuthorizeGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubAuthorizationURL
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r AuthorizeGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AuthorizeGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CompleteGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CompleteGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CompleteGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ConvertGitHubManifestFlowResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubInstallationURL
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ConvertGitHubManifestFlowResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ConvertGitHubManifestFlowResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetGitHubManifestInstallationURLResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubInstallationURL
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetGitHubManifestInstallationURLResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetGitHubManifestInstallationURLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetGitHubSetupOptionsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *GitHubSetupOptions
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetGitHubSetupOptionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetGitHubSetupOptionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteConnectionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteConnectionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteConnectionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetConnectionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetConnectionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetConnectionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type UpdateConnectionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateConnectionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateConnectionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CheckConnectionHealthResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *Connection
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CheckConnectionHealthResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CheckConnectionHealthResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListConnectionRepositoriesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RepositoryPage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListConnectionRepositoriesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListConnectionRepositoriesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListConnectionIssuesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuePage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListConnectionIssuesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListConnectionIssuesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PreviewConnectionIssueResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuePreview
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PreviewConnectionIssueResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PreviewConnectionIssueResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -7918,6 +10576,8 @@ type CreateDecreeResponse struct {
 	JSON201      *CreateDecreeResult
 	JSON400      *BadRequestError
 	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSON409      *ConflictError
 	JSONDefault  *ErrorResponse
 }
 
@@ -7981,6 +10641,156 @@ func (r StreamEventsResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r StreamEventsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CaptureExternalSourceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *CaptureResult
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CaptureExternalSourceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CaptureExternalSourceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type AdoptExternalSourceLinkResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ExternalAdoptionResult
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r AdoptExternalSourceLinkResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AdoptExternalSourceLinkResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetExternalSourceLinkHistoryResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExternalHistoryPage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExternalSourceLinkHistoryResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExternalSourceLinkHistoryResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RefreshExternalSourceLinkResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExternalRefreshResult
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r RefreshExternalSourceLinkResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RefreshExternalSourceLinkResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetExternalSourceSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExternalSnapshotResponse
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExternalSourceSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExternalSourceSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListExternalSourceSnapshotCommentsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExternalCommentPage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListExternalSourceSnapshotCommentsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListExternalSourceSnapshotCommentsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -8190,6 +11000,33 @@ func (r RefreshPlanningSessionContextResponse) StatusCode() int {
 	return 0
 }
 
+type AttachPlanningSessionExternalSourceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ExternalProvenanceSummary
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r AttachPlanningSessionExternalSourceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AttachPlanningSessionExternalSourceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListPlanningSessionMessagesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -8288,53 +11125,6 @@ func (r GetPlanningSessionPlanResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetPlanningSessionPlanResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type GetArtifactPreviewContentResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetArtifactPreviewContentResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetArtifactPreviewContentResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type GetArtifactPreviewAssetContentResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON400      *BadRequestError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetArtifactPreviewAssetContentResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetArtifactPreviewAssetContentResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -9082,8 +11872,8 @@ func (r GetWorkspaceCapabilitiesResponse) StatusCode() int {
 }
 
 // ListAcpAgentsWithResponse request returning *ListAcpAgentsResponse
-func (c *ClientWithResponses) ListAcpAgentsWithResponse(ctx context.Context, params *ListAcpAgentsParams, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error) {
-	rsp, err := c.ListAcpAgents(ctx, params, reqEditors...)
+func (c *ClientWithResponses) ListAcpAgentsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAcpAgentsResponse, error) {
+	rsp, err := c.ListAcpAgents(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9091,8 +11881,8 @@ func (c *ClientWithResponses) ListAcpAgentsWithResponse(ctx context.Context, par
 }
 
 // GetAcpAgentWithResponse request returning *GetAcpAgentResponse
-func (c *ClientWithResponses) GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, params *GetAcpAgentParams, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error) {
-	rsp, err := c.GetAcpAgent(ctx, name, params, reqEditors...)
+func (c *ClientWithResponses) GetAcpAgentWithResponse(ctx context.Context, name GetAcpAgentParamsName, reqEditors ...RequestEditorFn) (*GetAcpAgentResponse, error) {
+	rsp, err := c.GetAcpAgent(ctx, name, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9117,8 +11907,8 @@ func (c *ClientWithResponses) CreateAcpRunWithResponse(ctx context.Context, para
 }
 
 // GetAcpRunWithResponse request returning *GetAcpRunResponse
-func (c *ClientWithResponses) GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunParams, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error) {
-	rsp, err := c.GetAcpRun(ctx, runId, params, reqEditors...)
+func (c *ClientWithResponses) GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error) {
+	rsp, err := c.GetAcpRun(ctx, runId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9126,8 +11916,8 @@ func (c *ClientWithResponses) GetAcpRunWithResponse(ctx context.Context, runId A
 }
 
 // GetAcpRunActivityWithResponse request returning *GetAcpRunActivityResponse
-func (c *ClientWithResponses) GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error) {
-	rsp, err := c.GetAcpRunActivity(ctx, runId, params, reqEditors...)
+func (c *ClientWithResponses) GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error) {
+	rsp, err := c.GetAcpRunActivity(ctx, runId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9161,8 +11951,8 @@ func (c *ClientWithResponses) StreamAcpRunEventsWithResponse(ctx context.Context
 }
 
 // ListAgentsWithResponse request returning *ListAgentsResponse
-func (c *ClientWithResponses) ListAgentsWithResponse(ctx context.Context, params *ListAgentsParams, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error) {
-	rsp, err := c.ListAgents(ctx, params, reqEditors...)
+func (c *ClientWithResponses) ListAgentsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error) {
+	rsp, err := c.ListAgents(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9170,8 +11960,8 @@ func (c *ClientWithResponses) ListAgentsWithResponse(ctx context.Context, params
 }
 
 // GetArtifactWithResponse request returning *GetArtifactResponse
-func (c *ClientWithResponses) GetArtifactWithResponse(ctx context.Context, id ArtifactId, params *GetArtifactParams, reqEditors ...RequestEditorFn) (*GetArtifactResponse, error) {
-	rsp, err := c.GetArtifact(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetArtifactWithResponse(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*GetArtifactResponse, error) {
+	rsp, err := c.GetArtifact(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9179,34 +11969,291 @@ func (c *ClientWithResponses) GetArtifactWithResponse(ctx context.Context, id Ar
 }
 
 // GetArtifactContentWithResponse request returning *GetArtifactContentResponse
-func (c *ClientWithResponses) GetArtifactContentWithResponse(ctx context.Context, id ArtifactId, params *GetArtifactContentParams, reqEditors ...RequestEditorFn) (*GetArtifactContentResponse, error) {
-	rsp, err := c.GetArtifactContent(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetArtifactContentWithResponse(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*GetArtifactContentResponse, error) {
+	rsp, err := c.GetArtifactContent(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseGetArtifactContentResponse(rsp)
 }
 
-// CreateArtifactPreviewSessionWithBodyWithResponse request with arbitrary body returning *CreateArtifactPreviewSessionResponse
-func (c *ClientWithResponses) CreateArtifactPreviewSessionWithBodyWithResponse(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateArtifactPreviewSessionResponse, error) {
-	rsp, err := c.CreateArtifactPreviewSessionWithBody(ctx, id, params, contentType, body, reqEditors...)
+// CreateAuthSessionWithResponse request returning *CreateAuthSessionResponse
+func (c *ClientWithResponses) CreateAuthSessionWithResponse(ctx context.Context, params *CreateAuthSessionParams, reqEditors ...RequestEditorFn) (*CreateAuthSessionResponse, error) {
+	rsp, err := c.CreateAuthSession(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseCreateArtifactPreviewSessionResponse(rsp)
+	return ParseCreateAuthSessionResponse(rsp)
 }
 
-func (c *ClientWithResponses) CreateArtifactPreviewSessionWithResponse(ctx context.Context, id ArtifactId, params *CreateArtifactPreviewSessionParams, body CreateArtifactPreviewSessionJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateArtifactPreviewSessionResponse, error) {
-	rsp, err := c.CreateArtifactPreviewSession(ctx, id, params, body, reqEditors...)
+// ListConnectionsWithResponse request returning *ListConnectionsResponse
+func (c *ClientWithResponses) ListConnectionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListConnectionsResponse, error) {
+	rsp, err := c.ListConnections(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseCreateArtifactPreviewSessionResponse(rsp)
+	return ParseListConnectionsResponse(rsp)
+}
+
+// CreateConnectionWithBodyWithResponse request with arbitrary body returning *CreateConnectionResponse
+func (c *ClientWithResponses) CreateConnectionWithBodyWithResponse(ctx context.Context, params *CreateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateConnectionResponse, error) {
+	rsp, err := c.CreateConnectionWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateConnectionResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateConnectionWithResponse(ctx context.Context, params *CreateConnectionParams, body CreateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateConnectionResponse, error) {
+	rsp, err := c.CreateConnection(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateConnectionResponse(rsp)
+}
+
+// StartGitHubDeviceFlowWithBodyWithResponse request with arbitrary body returning *StartGitHubDeviceFlowResponse
+func (c *ClientWithResponses) StartGitHubDeviceFlowWithBodyWithResponse(ctx context.Context, params *StartGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartGitHubDeviceFlowResponse, error) {
+	rsp, err := c.StartGitHubDeviceFlowWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartGitHubDeviceFlowResponse(rsp)
+}
+
+func (c *ClientWithResponses) StartGitHubDeviceFlowWithResponse(ctx context.Context, params *StartGitHubDeviceFlowParams, body StartGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*StartGitHubDeviceFlowResponse, error) {
+	rsp, err := c.StartGitHubDeviceFlow(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartGitHubDeviceFlowResponse(rsp)
+}
+
+// GetGitHubDeviceFlowWithResponse request returning *GetGitHubDeviceFlowResponse
+func (c *ClientWithResponses) GetGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, reqEditors ...RequestEditorFn) (*GetGitHubDeviceFlowResponse, error) {
+	rsp, err := c.GetGitHubDeviceFlow(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetGitHubDeviceFlowResponse(rsp)
+}
+
+// RefreshGitHubDeviceCandidatesWithResponse request returning *RefreshGitHubDeviceCandidatesResponse
+func (c *ClientWithResponses) RefreshGitHubDeviceCandidatesWithResponse(ctx context.Context, id DeviceFlowId, params *RefreshGitHubDeviceCandidatesParams, reqEditors ...RequestEditorFn) (*RefreshGitHubDeviceCandidatesResponse, error) {
+	rsp, err := c.RefreshGitHubDeviceCandidates(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRefreshGitHubDeviceCandidatesResponse(rsp)
+}
+
+// FinalizeGitHubDeviceFlowWithBodyWithResponse request with arbitrary body returning *FinalizeGitHubDeviceFlowResponse
+func (c *ClientWithResponses) FinalizeGitHubDeviceFlowWithBodyWithResponse(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*FinalizeGitHubDeviceFlowResponse, error) {
+	rsp, err := c.FinalizeGitHubDeviceFlowWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFinalizeGitHubDeviceFlowResponse(rsp)
+}
+
+func (c *ClientWithResponses) FinalizeGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, params *FinalizeGitHubDeviceFlowParams, body FinalizeGitHubDeviceFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*FinalizeGitHubDeviceFlowResponse, error) {
+	rsp, err := c.FinalizeGitHubDeviceFlow(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFinalizeGitHubDeviceFlowResponse(rsp)
+}
+
+// PollGitHubDeviceFlowWithResponse request returning *PollGitHubDeviceFlowResponse
+func (c *ClientWithResponses) PollGitHubDeviceFlowWithResponse(ctx context.Context, id DeviceFlowId, params *PollGitHubDeviceFlowParams, reqEditors ...RequestEditorFn) (*PollGitHubDeviceFlowResponse, error) {
+	rsp, err := c.PollGitHubDeviceFlow(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePollGitHubDeviceFlowResponse(rsp)
+}
+
+// GetCurrentGitHubManifestFlowWithResponse request returning *GetCurrentGitHubManifestFlowResponse
+func (c *ClientWithResponses) GetCurrentGitHubManifestFlowWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetCurrentGitHubManifestFlowResponse, error) {
+	rsp, err := c.GetCurrentGitHubManifestFlow(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetCurrentGitHubManifestFlowResponse(rsp)
+}
+
+// StartGitHubManifestFlowWithBodyWithResponse request with arbitrary body returning *StartGitHubManifestFlowResponse
+func (c *ClientWithResponses) StartGitHubManifestFlowWithBodyWithResponse(ctx context.Context, params *StartGitHubManifestFlowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StartGitHubManifestFlowResponse, error) {
+	rsp, err := c.StartGitHubManifestFlowWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartGitHubManifestFlowResponse(rsp)
+}
+
+func (c *ClientWithResponses) StartGitHubManifestFlowWithResponse(ctx context.Context, params *StartGitHubManifestFlowParams, body StartGitHubManifestFlowJSONRequestBody, reqEditors ...RequestEditorFn) (*StartGitHubManifestFlowResponse, error) {
+	rsp, err := c.StartGitHubManifestFlow(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStartGitHubManifestFlowResponse(rsp)
+}
+
+// ReceiveGitHubManifestCallbackWithResponse request returning *ReceiveGitHubManifestCallbackResponse
+func (c *ClientWithResponses) ReceiveGitHubManifestCallbackWithResponse(ctx context.Context, params *ReceiveGitHubManifestCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubManifestCallbackResponse, error) {
+	rsp, err := c.ReceiveGitHubManifestCallback(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReceiveGitHubManifestCallbackResponse(rsp)
+}
+
+// ReceiveGitHubOAuthCallbackWithResponse request returning *ReceiveGitHubOAuthCallbackResponse
+func (c *ClientWithResponses) ReceiveGitHubOAuthCallbackWithResponse(ctx context.Context, params *ReceiveGitHubOAuthCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubOAuthCallbackResponse, error) {
+	rsp, err := c.ReceiveGitHubOAuthCallback(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReceiveGitHubOAuthCallbackResponse(rsp)
+}
+
+// ReceiveGitHubSetupCallbackWithResponse request returning *ReceiveGitHubSetupCallbackResponse
+func (c *ClientWithResponses) ReceiveGitHubSetupCallbackWithResponse(ctx context.Context, params *ReceiveGitHubSetupCallbackParams, reqEditors ...RequestEditorFn) (*ReceiveGitHubSetupCallbackResponse, error) {
+	rsp, err := c.ReceiveGitHubSetupCallback(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReceiveGitHubSetupCallbackResponse(rsp)
+}
+
+// GetGitHubManifestFlowWithResponse request returning *GetGitHubManifestFlowResponse
+func (c *ClientWithResponses) GetGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, reqEditors ...RequestEditorFn) (*GetGitHubManifestFlowResponse, error) {
+	rsp, err := c.GetGitHubManifestFlow(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetGitHubManifestFlowResponse(rsp)
+}
+
+// AuthorizeGitHubManifestFlowWithResponse request returning *AuthorizeGitHubManifestFlowResponse
+func (c *ClientWithResponses) AuthorizeGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *AuthorizeGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*AuthorizeGitHubManifestFlowResponse, error) {
+	rsp, err := c.AuthorizeGitHubManifestFlow(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAuthorizeGitHubManifestFlowResponse(rsp)
+}
+
+// CompleteGitHubManifestFlowWithResponse request returning *CompleteGitHubManifestFlowResponse
+func (c *ClientWithResponses) CompleteGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *CompleteGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*CompleteGitHubManifestFlowResponse, error) {
+	rsp, err := c.CompleteGitHubManifestFlow(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCompleteGitHubManifestFlowResponse(rsp)
+}
+
+// ConvertGitHubManifestFlowWithResponse request returning *ConvertGitHubManifestFlowResponse
+func (c *ClientWithResponses) ConvertGitHubManifestFlowWithResponse(ctx context.Context, id ManifestFlowId, params *ConvertGitHubManifestFlowParams, reqEditors ...RequestEditorFn) (*ConvertGitHubManifestFlowResponse, error) {
+	rsp, err := c.ConvertGitHubManifestFlow(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseConvertGitHubManifestFlowResponse(rsp)
+}
+
+// GetGitHubManifestInstallationURLWithResponse request returning *GetGitHubManifestInstallationURLResponse
+func (c *ClientWithResponses) GetGitHubManifestInstallationURLWithResponse(ctx context.Context, id ManifestFlowId, params *GetGitHubManifestInstallationURLParams, reqEditors ...RequestEditorFn) (*GetGitHubManifestInstallationURLResponse, error) {
+	rsp, err := c.GetGitHubManifestInstallationURL(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetGitHubManifestInstallationURLResponse(rsp)
+}
+
+// GetGitHubSetupOptionsWithResponse request returning *GetGitHubSetupOptionsResponse
+func (c *ClientWithResponses) GetGitHubSetupOptionsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetGitHubSetupOptionsResponse, error) {
+	rsp, err := c.GetGitHubSetupOptions(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetGitHubSetupOptionsResponse(rsp)
+}
+
+// DeleteConnectionWithResponse request returning *DeleteConnectionResponse
+func (c *ClientWithResponses) DeleteConnectionWithResponse(ctx context.Context, id ConnectionId, params *DeleteConnectionParams, reqEditors ...RequestEditorFn) (*DeleteConnectionResponse, error) {
+	rsp, err := c.DeleteConnection(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteConnectionResponse(rsp)
+}
+
+// GetConnectionWithResponse request returning *GetConnectionResponse
+func (c *ClientWithResponses) GetConnectionWithResponse(ctx context.Context, id ConnectionId, reqEditors ...RequestEditorFn) (*GetConnectionResponse, error) {
+	rsp, err := c.GetConnection(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetConnectionResponse(rsp)
+}
+
+// UpdateConnectionWithBodyWithResponse request with arbitrary body returning *UpdateConnectionResponse
+func (c *ClientWithResponses) UpdateConnectionWithBodyWithResponse(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateConnectionResponse, error) {
+	rsp, err := c.UpdateConnectionWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateConnectionResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateConnectionWithResponse(ctx context.Context, id ConnectionId, params *UpdateConnectionParams, body UpdateConnectionJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateConnectionResponse, error) {
+	rsp, err := c.UpdateConnection(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateConnectionResponse(rsp)
+}
+
+// CheckConnectionHealthWithResponse request returning *CheckConnectionHealthResponse
+func (c *ClientWithResponses) CheckConnectionHealthWithResponse(ctx context.Context, id ConnectionId, params *CheckConnectionHealthParams, reqEditors ...RequestEditorFn) (*CheckConnectionHealthResponse, error) {
+	rsp, err := c.CheckConnectionHealth(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCheckConnectionHealthResponse(rsp)
+}
+
+// ListConnectionRepositoriesWithResponse request returning *ListConnectionRepositoriesResponse
+func (c *ClientWithResponses) ListConnectionRepositoriesWithResponse(ctx context.Context, id ConnectionId, params *ListConnectionRepositoriesParams, reqEditors ...RequestEditorFn) (*ListConnectionRepositoriesResponse, error) {
+	rsp, err := c.ListConnectionRepositories(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListConnectionRepositoriesResponse(rsp)
+}
+
+// ListConnectionIssuesWithResponse request returning *ListConnectionIssuesResponse
+func (c *ClientWithResponses) ListConnectionIssuesWithResponse(ctx context.Context, id ConnectionId, repositoryId RepositoryId, params *ListConnectionIssuesParams, reqEditors ...RequestEditorFn) (*ListConnectionIssuesResponse, error) {
+	rsp, err := c.ListConnectionIssues(ctx, id, repositoryId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListConnectionIssuesResponse(rsp)
+}
+
+// PreviewConnectionIssueWithResponse request returning *PreviewConnectionIssueResponse
+func (c *ClientWithResponses) PreviewConnectionIssueWithResponse(ctx context.Context, id ConnectionId, repositoryId RepositoryId, number int, params *PreviewConnectionIssueParams, reqEditors ...RequestEditorFn) (*PreviewConnectionIssueResponse, error) {
+	rsp, err := c.PreviewConnectionIssue(ctx, id, repositoryId, number, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePreviewConnectionIssueResponse(rsp)
 }
 
 // GetDashboardSnapshotWithResponse request returning *GetDashboardSnapshotResponse
-func (c *ClientWithResponses) GetDashboardSnapshotWithResponse(ctx context.Context, params *GetDashboardSnapshotParams, reqEditors ...RequestEditorFn) (*GetDashboardSnapshotResponse, error) {
-	rsp, err := c.GetDashboardSnapshot(ctx, params, reqEditors...)
+func (c *ClientWithResponses) GetDashboardSnapshotWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetDashboardSnapshotResponse, error) {
+	rsp, err := c.GetDashboardSnapshot(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9231,8 +12278,8 @@ func (c *ClientWithResponses) CreateDecreeWithResponse(ctx context.Context, para
 }
 
 // GetDecreeWithResponse request returning *GetDecreeResponse
-func (c *ClientWithResponses) GetDecreeWithResponse(ctx context.Context, id DecreeId, params *GetDecreeParams, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error) {
-	rsp, err := c.GetDecree(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetDecreeWithResponse(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error) {
+	rsp, err := c.GetDecree(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9248,9 +12295,71 @@ func (c *ClientWithResponses) StreamEventsWithResponse(ctx context.Context, para
 	return ParseStreamEventsResponse(rsp)
 }
 
+// CaptureExternalSourceWithBodyWithResponse request with arbitrary body returning *CaptureExternalSourceResponse
+func (c *ClientWithResponses) CaptureExternalSourceWithBodyWithResponse(ctx context.Context, params *CaptureExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CaptureExternalSourceResponse, error) {
+	rsp, err := c.CaptureExternalSourceWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCaptureExternalSourceResponse(rsp)
+}
+
+func (c *ClientWithResponses) CaptureExternalSourceWithResponse(ctx context.Context, params *CaptureExternalSourceParams, body CaptureExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*CaptureExternalSourceResponse, error) {
+	rsp, err := c.CaptureExternalSource(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCaptureExternalSourceResponse(rsp)
+}
+
+// AdoptExternalSourceLinkWithResponse request returning *AdoptExternalSourceLinkResponse
+func (c *ClientWithResponses) AdoptExternalSourceLinkWithResponse(ctx context.Context, id ExternalLinkId, params *AdoptExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*AdoptExternalSourceLinkResponse, error) {
+	rsp, err := c.AdoptExternalSourceLink(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAdoptExternalSourceLinkResponse(rsp)
+}
+
+// GetExternalSourceLinkHistoryWithResponse request returning *GetExternalSourceLinkHistoryResponse
+func (c *ClientWithResponses) GetExternalSourceLinkHistoryWithResponse(ctx context.Context, id ExternalLinkId, params *GetExternalSourceLinkHistoryParams, reqEditors ...RequestEditorFn) (*GetExternalSourceLinkHistoryResponse, error) {
+	rsp, err := c.GetExternalSourceLinkHistory(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExternalSourceLinkHistoryResponse(rsp)
+}
+
+// RefreshExternalSourceLinkWithResponse request returning *RefreshExternalSourceLinkResponse
+func (c *ClientWithResponses) RefreshExternalSourceLinkWithResponse(ctx context.Context, id ExternalLinkId, params *RefreshExternalSourceLinkParams, reqEditors ...RequestEditorFn) (*RefreshExternalSourceLinkResponse, error) {
+	rsp, err := c.RefreshExternalSourceLink(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRefreshExternalSourceLinkResponse(rsp)
+}
+
+// GetExternalSourceSnapshotWithResponse request returning *GetExternalSourceSnapshotResponse
+func (c *ClientWithResponses) GetExternalSourceSnapshotWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceSnapshotResponse, error) {
+	rsp, err := c.GetExternalSourceSnapshot(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExternalSourceSnapshotResponse(rsp)
+}
+
+// ListExternalSourceSnapshotCommentsWithResponse request returning *ListExternalSourceSnapshotCommentsResponse
+func (c *ClientWithResponses) ListExternalSourceSnapshotCommentsWithResponse(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*ListExternalSourceSnapshotCommentsResponse, error) {
+	rsp, err := c.ListExternalSourceSnapshotComments(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListExternalSourceSnapshotCommentsResponse(rsp)
+}
+
 // GetHealthWithResponse request returning *GetHealthResponse
-func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, params *GetHealthParams, reqEditors ...RequestEditorFn) (*GetHealthResponse, error) {
-	rsp, err := c.GetHealth(ctx, params, reqEditors...)
+func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error) {
+	rsp, err := c.GetHealth(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9258,8 +12367,8 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, params 
 }
 
 // GetMetricsRuntimeWithResponse request returning *GetMetricsRuntimeResponse
-func (c *ClientWithResponses) GetMetricsRuntimeWithResponse(ctx context.Context, params *GetMetricsRuntimeParams, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error) {
-	rsp, err := c.GetMetricsRuntime(ctx, params, reqEditors...)
+func (c *ClientWithResponses) GetMetricsRuntimeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error) {
+	rsp, err := c.GetMetricsRuntime(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9302,8 +12411,8 @@ func (c *ClientWithResponses) DeletePlanningSessionWithResponse(ctx context.Cont
 }
 
 // GetPlanningSessionWithResponse request returning *GetPlanningSessionResponse
-func (c *ClientWithResponses) GetPlanningSessionWithResponse(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionParams, reqEditors ...RequestEditorFn) (*GetPlanningSessionResponse, error) {
-	rsp, err := c.GetPlanningSession(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetPlanningSessionWithResponse(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*GetPlanningSessionResponse, error) {
+	rsp, err := c.GetPlanningSession(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9336,6 +12445,23 @@ func (c *ClientWithResponses) RefreshPlanningSessionContextWithResponse(ctx cont
 	return ParseRefreshPlanningSessionContextResponse(rsp)
 }
 
+// AttachPlanningSessionExternalSourceWithBodyWithResponse request with arbitrary body returning *AttachPlanningSessionExternalSourceResponse
+func (c *ClientWithResponses) AttachPlanningSessionExternalSourceWithBodyWithResponse(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttachPlanningSessionExternalSourceResponse, error) {
+	rsp, err := c.AttachPlanningSessionExternalSourceWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttachPlanningSessionExternalSourceResponse(rsp)
+}
+
+func (c *ClientWithResponses) AttachPlanningSessionExternalSourceWithResponse(ctx context.Context, id PlanningSessionId, params *AttachPlanningSessionExternalSourceParams, body AttachPlanningSessionExternalSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*AttachPlanningSessionExternalSourceResponse, error) {
+	rsp, err := c.AttachPlanningSessionExternalSource(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttachPlanningSessionExternalSourceResponse(rsp)
+}
+
 // ListPlanningSessionMessagesWithResponse request returning *ListPlanningSessionMessagesResponse
 func (c *ClientWithResponses) ListPlanningSessionMessagesWithResponse(ctx context.Context, id PlanningSessionId, params *ListPlanningSessionMessagesParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionMessagesResponse, error) {
 	rsp, err := c.ListPlanningSessionMessages(ctx, id, params, reqEditors...)
@@ -9355,8 +12481,8 @@ func (c *ClientWithResponses) ActivatePlanningMessageVariantWithResponse(ctx con
 }
 
 // ListPlanningMessageVariantsWithResponse request returning *ListPlanningMessageVariantsResponse
-func (c *ClientWithResponses) ListPlanningMessageVariantsWithResponse(ctx context.Context, id PlanningSessionId, messageId string, params *ListPlanningMessageVariantsParams, reqEditors ...RequestEditorFn) (*ListPlanningMessageVariantsResponse, error) {
-	rsp, err := c.ListPlanningMessageVariants(ctx, id, messageId, params, reqEditors...)
+func (c *ClientWithResponses) ListPlanningMessageVariantsWithResponse(ctx context.Context, id PlanningSessionId, messageId string, reqEditors ...RequestEditorFn) (*ListPlanningMessageVariantsResponse, error) {
+	rsp, err := c.ListPlanningMessageVariants(ctx, id, messageId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9364,30 +12490,12 @@ func (c *ClientWithResponses) ListPlanningMessageVariantsWithResponse(ctx contex
 }
 
 // GetPlanningSessionPlanWithResponse request returning *GetPlanningSessionPlanResponse
-func (c *ClientWithResponses) GetPlanningSessionPlanWithResponse(ctx context.Context, id PlanningSessionId, params *GetPlanningSessionPlanParams, reqEditors ...RequestEditorFn) (*GetPlanningSessionPlanResponse, error) {
-	rsp, err := c.GetPlanningSessionPlan(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetPlanningSessionPlanWithResponse(ctx context.Context, id PlanningSessionId, reqEditors ...RequestEditorFn) (*GetPlanningSessionPlanResponse, error) {
+	rsp, err := c.GetPlanningSessionPlan(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseGetPlanningSessionPlanResponse(rsp)
-}
-
-// GetArtifactPreviewContentWithResponse request returning *GetArtifactPreviewContentResponse
-func (c *ClientWithResponses) GetArtifactPreviewContentWithResponse(ctx context.Context, token PreviewToken, reqEditors ...RequestEditorFn) (*GetArtifactPreviewContentResponse, error) {
-	rsp, err := c.GetArtifactPreviewContent(ctx, token, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetArtifactPreviewContentResponse(rsp)
-}
-
-// GetArtifactPreviewAssetContentWithResponse request returning *GetArtifactPreviewAssetContentResponse
-func (c *ClientWithResponses) GetArtifactPreviewAssetContentWithResponse(ctx context.Context, token PreviewToken, assetPath PreviewAssetPath, reqEditors ...RequestEditorFn) (*GetArtifactPreviewAssetContentResponse, error) {
-	rsp, err := c.GetArtifactPreviewAssetContent(ctx, token, assetPath, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetArtifactPreviewAssetContentResponse(rsp)
 }
 
 // ListProviderModelsWithResponse request returning *ListProviderModelsResponse
@@ -9418,8 +12526,8 @@ func (c *ClientWithResponses) GetRealmAnalyticsSnapshotWithResponse(ctx context.
 }
 
 // ListRolesWithResponse request returning *ListRolesResponse
-func (c *ClientWithResponses) ListRolesWithResponse(ctx context.Context, params *ListRolesParams, reqEditors ...RequestEditorFn) (*ListRolesResponse, error) {
-	rsp, err := c.ListRoles(ctx, params, reqEditors...)
+func (c *ClientWithResponses) ListRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRolesResponse, error) {
+	rsp, err := c.ListRoles(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9462,8 +12570,8 @@ func (c *ClientWithResponses) StreamRunCollectionEventsWithResponse(ctx context.
 }
 
 // GetRunWithResponse request returning *GetRunResponse
-func (c *ClientWithResponses) GetRunWithResponse(ctx context.Context, id RunId, params *GetRunParams, reqEditors ...RequestEditorFn) (*GetRunResponse, error) {
-	rsp, err := c.GetRun(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetRunWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunResponse, error) {
+	rsp, err := c.GetRun(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9471,8 +12579,8 @@ func (c *ClientWithResponses) GetRunWithResponse(ctx context.Context, id RunId, 
 }
 
 // ListRunAgentsWithResponse request returning *ListRunAgentsResponse
-func (c *ClientWithResponses) ListRunAgentsWithResponse(ctx context.Context, id RunId, params *ListRunAgentsParams, reqEditors ...RequestEditorFn) (*ListRunAgentsResponse, error) {
-	rsp, err := c.ListRunAgents(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) ListRunAgentsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunAgentsResponse, error) {
+	rsp, err := c.ListRunAgents(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9480,8 +12588,8 @@ func (c *ClientWithResponses) ListRunAgentsWithResponse(ctx context.Context, id 
 }
 
 // ListRunArtifactsWithResponse request returning *ListRunArtifactsResponse
-func (c *ClientWithResponses) ListRunArtifactsWithResponse(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error) {
-	rsp, err := c.ListRunArtifacts(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) ListRunArtifactsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error) {
+	rsp, err := c.ListRunArtifacts(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9489,8 +12597,8 @@ func (c *ClientWithResponses) ListRunArtifactsWithResponse(ctx context.Context, 
 }
 
 // GetRunArtifactsArchiveWithResponse request returning *GetRunArtifactsArchiveResponse
-func (c *ClientWithResponses) GetRunArtifactsArchiveWithResponse(ctx context.Context, id RunId, params *GetRunArtifactsArchiveParams, reqEditors ...RequestEditorFn) (*GetRunArtifactsArchiveResponse, error) {
-	rsp, err := c.GetRunArtifactsArchive(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetRunArtifactsArchiveWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunArtifactsArchiveResponse, error) {
+	rsp, err := c.GetRunArtifactsArchive(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9515,8 +12623,8 @@ func (c *ClientWithResponses) CancelRunWithResponse(ctx context.Context, id RunI
 }
 
 // ListRunExecutionsWithResponse request returning *ListRunExecutionsResponse
-func (c *ClientWithResponses) ListRunExecutionsWithResponse(ctx context.Context, id RunId, params *ListRunExecutionsParams, reqEditors ...RequestEditorFn) (*ListRunExecutionsResponse, error) {
-	rsp, err := c.ListRunExecutions(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) ListRunExecutionsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunExecutionsResponse, error) {
+	rsp, err := c.ListRunExecutions(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9524,8 +12632,8 @@ func (c *ClientWithResponses) ListRunExecutionsWithResponse(ctx context.Context,
 }
 
 // GetRunExecutionWithResponse request returning *GetRunExecutionResponse
-func (c *ClientWithResponses) GetRunExecutionWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionParams, reqEditors ...RequestEditorFn) (*GetRunExecutionResponse, error) {
-	rsp, err := c.GetRunExecution(ctx, id, attemptId, params, reqEditors...)
+func (c *ClientWithResponses) GetRunExecutionWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionResponse, error) {
+	rsp, err := c.GetRunExecution(ctx, id, attemptId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9533,8 +12641,8 @@ func (c *ClientWithResponses) GetRunExecutionWithResponse(ctx context.Context, i
 }
 
 // GetRunExecutionActivityWithResponse request returning *GetRunExecutionActivityResponse
-func (c *ClientWithResponses) GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error) {
-	rsp, err := c.GetRunExecutionActivity(ctx, id, attemptId, params, reqEditors...)
+func (c *ClientWithResponses) GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error) {
+	rsp, err := c.GetRunExecutionActivity(ctx, id, attemptId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9568,8 +12676,8 @@ func (c *ClientWithResponses) ListRunGovernanceDecisionsWithResponse(ctx context
 }
 
 // GetRunGraphWithResponse request returning *GetRunGraphResponse
-func (c *ClientWithResponses) GetRunGraphWithResponse(ctx context.Context, id RunId, params *GetRunGraphParams, reqEditors ...RequestEditorFn) (*GetRunGraphResponse, error) {
-	rsp, err := c.GetRunGraph(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetRunGraphWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunGraphResponse, error) {
+	rsp, err := c.GetRunGraph(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9586,8 +12694,8 @@ func (c *ClientWithResponses) ListRunMailboxMessagesWithResponse(ctx context.Con
 }
 
 // GetRunMailboxMessageWithResponse request returning *GetRunMailboxMessageResponse
-func (c *ClientWithResponses) GetRunMailboxMessageWithResponse(ctx context.Context, id RunId, messageId MessageId, params *GetRunMailboxMessageParams, reqEditors ...RequestEditorFn) (*GetRunMailboxMessageResponse, error) {
-	rsp, err := c.GetRunMailboxMessage(ctx, id, messageId, params, reqEditors...)
+func (c *ClientWithResponses) GetRunMailboxMessageWithResponse(ctx context.Context, id RunId, messageId MessageId, reqEditors ...RequestEditorFn) (*GetRunMailboxMessageResponse, error) {
+	rsp, err := c.GetRunMailboxMessage(ctx, id, messageId, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9621,8 +12729,8 @@ func (c *ClientWithResponses) RetryNodeWithResponse(ctx context.Context, id RunI
 }
 
 // GetRunPlanWithResponse request returning *GetRunPlanResponse
-func (c *ClientWithResponses) GetRunPlanWithResponse(ctx context.Context, id RunId, params *GetRunPlanParams, reqEditors ...RequestEditorFn) (*GetRunPlanResponse, error) {
-	rsp, err := c.GetRunPlan(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) GetRunPlanWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunPlanResponse, error) {
+	rsp, err := c.GetRunPlan(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9647,8 +12755,8 @@ func (c *ClientWithResponses) CreatePlanApprovalWithResponse(ctx context.Context
 }
 
 // ListRunPlanReviewsWithResponse request returning *ListRunPlanReviewsResponse
-func (c *ClientWithResponses) ListRunPlanReviewsWithResponse(ctx context.Context, id RunId, params *ListRunPlanReviewsParams, reqEditors ...RequestEditorFn) (*ListRunPlanReviewsResponse, error) {
-	rsp, err := c.ListRunPlanReviews(ctx, id, params, reqEditors...)
+func (c *ClientWithResponses) ListRunPlanReviewsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunPlanReviewsResponse, error) {
+	rsp, err := c.ListRunPlanReviews(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -9699,8 +12807,8 @@ func (c *ClientWithResponses) PublishWorkflowWithResponse(ctx context.Context, p
 }
 
 // GetWorkspaceCapabilitiesWithResponse request returning *GetWorkspaceCapabilitiesResponse
-func (c *ClientWithResponses) GetWorkspaceCapabilitiesWithResponse(ctx context.Context, params *GetWorkspaceCapabilitiesParams, reqEditors ...RequestEditorFn) (*GetWorkspaceCapabilitiesResponse, error) {
-	rsp, err := c.GetWorkspaceCapabilities(ctx, params, reqEditors...)
+func (c *ClientWithResponses) GetWorkspaceCapabilitiesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetWorkspaceCapabilitiesResponse, error) {
+	rsp, err := c.GetWorkspaceCapabilities(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -10205,26 +13313,235 @@ func ParseGetArtifactContentResponse(rsp *http.Response) (*GetArtifactContentRes
 	return response, nil
 }
 
-// ParseCreateArtifactPreviewSessionResponse parses an HTTP response from a CreateArtifactPreviewSessionWithResponse call
-func ParseCreateArtifactPreviewSessionResponse(rsp *http.Response) (*CreateArtifactPreviewSessionResponse, error) {
+// ParseCreateAuthSessionResponse parses an HTTP response from a CreateAuthSessionWithResponse call
+func ParseCreateAuthSessionResponse(rsp *http.Response) (*CreateAuthSessionResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &CreateArtifactPreviewSessionResponse{
+	response := &CreateAuthSessionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AuthSession
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest AuthSession
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ForbiddenError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListConnectionsResponse parses an HTTP response from a ListConnectionsWithResponse call
+func ParseListConnectionsResponse(rsp *http.Response) (*ListConnectionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListConnectionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ConnectionList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateConnectionResponse parses an HTTP response from a CreateConnectionWithResponse call
+func ParseCreateConnectionResponse(rsp *http.Response) (*CreateConnectionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateConnectionResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest CreateArtifactPreviewSessionResult
+		var dest Connection
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStartGitHubDeviceFlowResponse parses an HTTP response from a StartGitHubDeviceFlowWithResponse call
+func ParseStartGitHubDeviceFlowResponse(rsp *http.Response) (*StartGitHubDeviceFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StartGitHubDeviceFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest GitHubDeviceFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetGitHubDeviceFlowResponse parses an HTTP response from a GetGitHubDeviceFlowWithResponse call
+func ParseGetGitHubDeviceFlowResponse(rsp *http.Response) (*GetGitHubDeviceFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetGitHubDeviceFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubDeviceFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
 		var dest BadRequestError
@@ -10246,6 +13563,1007 @@ func ParseCreateArtifactPreviewSessionResponse(rsp *http.Response) (*CreateArtif
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRefreshGitHubDeviceCandidatesResponse parses an HTTP response from a RefreshGitHubDeviceCandidatesWithResponse call
+func ParseRefreshGitHubDeviceCandidatesResponse(rsp *http.Response) (*RefreshGitHubDeviceCandidatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RefreshGitHubDeviceCandidatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubDeviceFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseFinalizeGitHubDeviceFlowResponse parses an HTTP response from a FinalizeGitHubDeviceFlowWithResponse call
+func ParseFinalizeGitHubDeviceFlowResponse(rsp *http.Response) (*FinalizeGitHubDeviceFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &FinalizeGitHubDeviceFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Connection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePollGitHubDeviceFlowResponse parses an HTTP response from a PollGitHubDeviceFlowWithResponse call
+func ParsePollGitHubDeviceFlowResponse(rsp *http.Response) (*PollGitHubDeviceFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PollGitHubDeviceFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubDeviceFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 429:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON429 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetCurrentGitHubManifestFlowResponse parses an HTTP response from a GetCurrentGitHubManifestFlowWithResponse call
+func ParseGetCurrentGitHubManifestFlowResponse(rsp *http.Response) (*GetCurrentGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetCurrentGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubManifestFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStartGitHubManifestFlowResponse parses an HTTP response from a StartGitHubManifestFlowWithResponse call
+func ParseStartGitHubManifestFlowResponse(rsp *http.Response) (*StartGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StartGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest StartGitHubManifestFlowPayload
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReceiveGitHubManifestCallbackResponse parses an HTTP response from a ReceiveGitHubManifestCallbackWithResponse call
+func ParseReceiveGitHubManifestCallbackResponse(rsp *http.Response) (*ReceiveGitHubManifestCallbackResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReceiveGitHubManifestCallbackResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReceiveGitHubOAuthCallbackResponse parses an HTTP response from a ReceiveGitHubOAuthCallbackWithResponse call
+func ParseReceiveGitHubOAuthCallbackResponse(rsp *http.Response) (*ReceiveGitHubOAuthCallbackResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReceiveGitHubOAuthCallbackResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReceiveGitHubSetupCallbackResponse parses an HTTP response from a ReceiveGitHubSetupCallbackWithResponse call
+func ParseReceiveGitHubSetupCallbackResponse(rsp *http.Response) (*ReceiveGitHubSetupCallbackResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReceiveGitHubSetupCallbackResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetGitHubManifestFlowResponse parses an HTTP response from a GetGitHubManifestFlowWithResponse call
+func ParseGetGitHubManifestFlowResponse(rsp *http.Response) (*GetGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubManifestFlowStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAuthorizeGitHubManifestFlowResponse parses an HTTP response from a AuthorizeGitHubManifestFlowWithResponse call
+func ParseAuthorizeGitHubManifestFlowResponse(rsp *http.Response) (*AuthorizeGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AuthorizeGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubAuthorizationURL
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCompleteGitHubManifestFlowResponse parses an HTTP response from a CompleteGitHubManifestFlowWithResponse call
+func ParseCompleteGitHubManifestFlowResponse(rsp *http.Response) (*CompleteGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CompleteGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Connection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseConvertGitHubManifestFlowResponse parses an HTTP response from a ConvertGitHubManifestFlowWithResponse call
+func ParseConvertGitHubManifestFlowResponse(rsp *http.Response) (*ConvertGitHubManifestFlowResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ConvertGitHubManifestFlowResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubInstallationURL
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetGitHubManifestInstallationURLResponse parses an HTTP response from a GetGitHubManifestInstallationURLWithResponse call
+func ParseGetGitHubManifestInstallationURLResponse(rsp *http.Response) (*GetGitHubManifestInstallationURLResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetGitHubManifestInstallationURLResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubInstallationURL
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetGitHubSetupOptionsResponse parses an HTTP response from a GetGitHubSetupOptionsWithResponse call
+func ParseGetGitHubSetupOptionsResponse(rsp *http.Response) (*GetGitHubSetupOptionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetGitHubSetupOptionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest GitHubSetupOptions
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteConnectionResponse parses an HTTP response from a DeleteConnectionWithResponse call
+func ParseDeleteConnectionResponse(rsp *http.Response) (*DeleteConnectionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteConnectionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetConnectionResponse parses an HTTP response from a GetConnectionWithResponse call
+func ParseGetConnectionResponse(rsp *http.Response) (*GetConnectionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetConnectionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Connection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateConnectionResponse parses an HTTP response from a UpdateConnectionWithResponse call
+func ParseUpdateConnectionResponse(rsp *http.Response) (*UpdateConnectionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateConnectionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Connection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCheckConnectionHealthResponse parses an HTTP response from a CheckConnectionHealthWithResponse call
+func ParseCheckConnectionHealthResponse(rsp *http.Response) (*CheckConnectionHealthResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CheckConnectionHealthResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Connection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListConnectionRepositoriesResponse parses an HTTP response from a ListConnectionRepositoriesWithResponse call
+func ParseListConnectionRepositoriesResponse(rsp *http.Response) (*ListConnectionRepositoriesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListConnectionRepositoriesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RepositoryPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListConnectionIssuesResponse parses an HTTP response from a ListConnectionIssuesWithResponse call
+func ParseListConnectionIssuesResponse(rsp *http.Response) (*ListConnectionIssuesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListConnectionIssuesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuePage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePreviewConnectionIssueResponse parses an HTTP response from a PreviewConnectionIssueWithResponse call
+func ParsePreviewConnectionIssueResponse(rsp *http.Response) (*PreviewConnectionIssueResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PreviewConnectionIssueResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuePreview
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
@@ -10341,6 +14659,20 @@ func ParseCreateDecreeResponse(rsp *http.Response) (*CreateDecreeResponse, error
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -10421,6 +14753,288 @@ func ParseStreamEventsResponse(rsp *http.Response) (*StreamEventsResponse, error
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCaptureExternalSourceResponse parses an HTTP response from a CaptureExternalSourceWithResponse call
+func ParseCaptureExternalSourceResponse(rsp *http.Response) (*CaptureExternalSourceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CaptureExternalSourceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CaptureResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAdoptExternalSourceLinkResponse parses an HTTP response from a AdoptExternalSourceLinkWithResponse call
+func ParseAdoptExternalSourceLinkResponse(rsp *http.Response) (*AdoptExternalSourceLinkResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AdoptExternalSourceLinkResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ExternalAdoptionResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExternalSourceLinkHistoryResponse parses an HTTP response from a GetExternalSourceLinkHistoryWithResponse call
+func ParseGetExternalSourceLinkHistoryResponse(rsp *http.Response) (*GetExternalSourceLinkHistoryResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExternalSourceLinkHistoryResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExternalHistoryPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRefreshExternalSourceLinkResponse parses an HTTP response from a RefreshExternalSourceLinkWithResponse call
+func ParseRefreshExternalSourceLinkResponse(rsp *http.Response) (*RefreshExternalSourceLinkResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RefreshExternalSourceLinkResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExternalRefreshResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExternalSourceSnapshotResponse parses an HTTP response from a GetExternalSourceSnapshotWithResponse call
+func ParseGetExternalSourceSnapshotResponse(rsp *http.Response) (*GetExternalSourceSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExternalSourceSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExternalSnapshotResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListExternalSourceSnapshotCommentsResponse parses an HTTP response from a ListExternalSourceSnapshotCommentsWithResponse call
+func ParseListExternalSourceSnapshotCommentsResponse(rsp *http.Response) (*ListExternalSourceSnapshotCommentsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListExternalSourceSnapshotCommentsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExternalCommentPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
 		var dest BadRequestError
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -10844,6 +15458,67 @@ func ParseRefreshPlanningSessionContextResponse(rsp *http.Response) (*RefreshPla
 	return response, nil
 }
 
+// ParseAttachPlanningSessionExternalSourceResponse parses an HTTP response from a AttachPlanningSessionExternalSourceWithResponse call
+func ParseAttachPlanningSessionExternalSourceResponse(rsp *http.Response) (*AttachPlanningSessionExternalSourceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AttachPlanningSessionExternalSourceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ExternalProvenanceSummary
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListPlanningSessionMessagesResponse parses an HTTP response from a ListPlanningSessionMessagesWithResponse call
 func ParseListPlanningSessionMessagesResponse(rsp *http.Response) (*ListPlanningSessionMessagesResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -11040,79 +15715,6 @@ func ParseGetPlanningSessionPlanResponse(rsp *http.Response) (*GetPlanningSessio
 			return nil, err
 		}
 		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetArtifactPreviewContentResponse parses an HTTP response from a GetArtifactPreviewContentWithResponse call
-func ParseGetArtifactPreviewContentResponse(rsp *http.Response) (*GetArtifactPreviewContentResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetArtifactPreviewContentResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetArtifactPreviewAssetContentResponse parses an HTTP response from a GetArtifactPreviewAssetContentWithResponse call
-func ParseGetArtifactPreviewAssetContentResponse(rsp *http.Response) (*GetArtifactPreviewAssetContentResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetArtifactPreviewAssetContentResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFoundError
@@ -12604,218 +17206,308 @@ func ParseGetWorkspaceCapabilitiesResponse(rsp *http.Response) (*GetWorkspaceCap
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
-	"AAAA//+i5UBdr4kBAA==",
+	"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",
+	"GQIA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

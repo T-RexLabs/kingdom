@@ -318,7 +318,7 @@ describe("current plan panel", () => {
         action: "confirm",
 			plan_revision_id: "planrev-1",
       },
-      key: "idem-plan-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 
@@ -463,7 +463,7 @@ describe("current plan panel", () => {
 			plan_revision_id: "planrev-1",
         reason: "Refine the rollout scope.",
       },
-      key: "idem-plan-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 

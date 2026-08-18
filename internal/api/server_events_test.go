@@ -3,12 +3,82 @@ package api
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestServerCookieStreamEndsAtSessionExpiryWithoutPostExpiryDelivery(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	server := handler.(*Server)
+	runID := seedRunViaAPI(t, handler)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	expiresAt := time.Now().Add(150 * time.Millisecond)
+	cookie, _ := seedBrowserSessionForTest(t, server, httpServer.URL, expiresAt)
+	req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/v1/events/stream?run_id="+runID+"&follow=true&poll_ms=200", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(cookie)
+	response, err := httpServer.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	time.Sleep(time.Until(expiresAt) + 20*time.Millisecond)
+	insertStreamTestEvent(t, db, runID, "evt-after-session-expiry")
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Now().Before(expiresAt) {
+		t.Fatal("cookie stream closed before its browser session expired")
+	}
+	if strings.Contains(string(body), "evt-after-session-expiry") {
+		t.Fatalf("cookie stream delivered a post-expiry event: %s", body)
+	}
+}
+
+func TestServerBearerStreamIsNotBoundToBrowserSessionExpiry(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	server := handler.(*Server)
+	runID := seedRunViaAPI(t, handler)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	expiresAt := time.Now().Add(100 * time.Millisecond)
+	cookie, _ := seedBrowserSessionForTest(t, server, httpServer.URL, expiresAt)
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/api/v1/events/stream?run_id="+runID+"&follow=true&poll_ms=200", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticateAPITestRequest(req)
+	req.AddCookie(cookie)
+	response, err := httpServer.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	time.Sleep(time.Until(expiresAt) + 30*time.Millisecond)
+	insertStreamTestEvent(t, db, runID, "evt-after-cookie-expiry-on-bearer")
+	body, err := io.ReadAll(response.Body)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "evt-after-cookie-expiry-on-bearer") {
+		t.Fatalf("bearer stream was shortened by browser session expiry: %s", body)
+	}
+}
 
 func TestServerStreamEventsSupportsLastEventIDResume(t *testing.T) {
 	t.Parallel()
@@ -18,8 +88,7 @@ func TestServerStreamEventsSupportsLastEventIDResume(t *testing.T) {
 	seedTimelineEvents(t, db, runID)
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream?run_id="+runID, nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", "evt-seed-2")
 
 	resumeRes := httptest.NewRecorder()
@@ -46,8 +115,7 @@ func TestServerStreamEventsRejectsUnknownLastEventID(t *testing.T) {
 	seedTimelineEvents(t, db, runID)
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream?run_id="+runID, nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", "evt-missing")
 
 	resumeRes := httptest.NewRecorder()
@@ -69,8 +137,7 @@ func TestServerStreamEventsFollowModeDeliversEventsAfterConnect(t *testing.T) {
 	defer cancel()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream?run_id="+runID+"&follow=true&poll_ms=50", nil).WithContext(ctx)
-	req.Header.Set("X-Actor-Id", "actor-1")
-	req.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(req)
 
 	res := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -125,8 +192,7 @@ func TestServerStreamEventsEnrichesMissingExecutionLineageFromEventRow(t *testin
 	}
 
 	streamReq := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream?run_id="+runID, nil)
-	streamReq.Header.Set("X-Actor-Id", "actor-1")
-	streamReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(streamReq)
 
 	streamRes := httptest.NewRecorder()
 	handler.ServeHTTP(streamRes, streamReq)
@@ -155,8 +221,7 @@ func TestServerStreamRunCollectionEventsSupportsLastEventIDResume(t *testing.T) 
 	insertRunCollectionEvent(t, db, "evt-collection-4", runIDOne, "run.state_changed", `{"run_id":"`+runIDOne+`","display_state":"awaiting_plan_decision"}`, "2026-03-01T12:00:03Z")
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/events/stream", nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", "evt-collection-1")
 
 	resumeRes := httptest.NewRecorder()
@@ -185,8 +250,7 @@ func TestServerStreamRunCollectionEventsFollowModeDeliversEventsAfterConnect(t *
 	defer cancel()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runs/events/stream?follow=true&poll_ms=50", nil).WithContext(ctx)
-	req.Header.Set("X-Actor-Id", "actor-1")
-	req.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(req)
 
 	res := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -223,8 +287,7 @@ func TestServerStreamRunCollectionEventsResumeUsesAuthoritativeCollectionSequenc
 	insertRunCollectionEvent(t, db, "evt-collection-a", runID, "approval.recorded", `{"run_id":"`+runID+`","decision":"approve"}`, "2026-03-01T12:00:00Z")
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/events/stream", nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", "evt-collection-z")
 
 	resumeRes := httptest.NewRecorder()
@@ -246,8 +309,7 @@ func TestServerStreamRunCollectionEventsRejectsUnknownLastEventID(t *testing.T) 
 	handler, _ := newAPIServerForTest(t)
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/runs/events/stream", nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", "evt-collection-missing")
 
 	resumeRes := httptest.NewRecorder()
@@ -268,8 +330,6 @@ func TestServerCreateRunEmitsRunCollectionCreatedEvent(t *testing.T) {
 	streamRes := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/runs/events/stream",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if streamRes.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", streamRes.Code, streamRes.Body.String())
@@ -288,5 +348,13 @@ func insertRunCollectionEvent(t *testing.T, db *sql.DB, eventID string, runID st
 	_, err := db.Exec(`INSERT INTO run_collection_events (event_id, run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)`, eventID, runID, eventType, payload, createdAt)
 	if err != nil {
 		t.Fatalf("insert collection event %s: %v", eventID, err)
+	}
+}
+
+func insertStreamTestEvent(t *testing.T, db *sql.DB, runID, eventID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = ?), 0) + 1, NULL, 'att-stream-auth', 'v1', 'attempt.progress', 1, '{}', 'local-operator', 'allfather', 'api.test', 'internal_error', 'auth stream test', 'corr-stream-auth', 'caus-stream-auth', 'hash-prev', 'hash-entry', '2026-08-15T12:00:00Z')`, eventID, runID, runID)
+	if err != nil {
+		t.Fatalf("insert stream event %s: %v", eventID, err)
 	}
 }

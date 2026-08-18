@@ -44,6 +44,7 @@ vi.mock("./client", () => ({
     }
   },
   apiFetch: (...args: unknown[]) => apiFetchMock(...args),
+  shouldRetryApiQuery: (failureCount: number, _error: unknown, maxRetries: number) => failureCount < maxRetries,
 }));
 
 function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSessionDetail {
@@ -64,6 +65,7 @@ function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSe
     project_root: "/tmp/project",
     model_selection: { model: "github-copilot/gpt-5.4" },
     ...overrides,
+    external_sources: overrides.external_sources ?? [],
   };
 }
 
@@ -109,12 +111,7 @@ afterEach(() => {
 });
 
 describe("useUpdatePlanningSessionTitle — same-slice ordering", () => {
-  it("older PATCH response cannot overwrite newer PATCH response in the cache", async () => {
-    // Two title PATCHes in flight concurrently. The older one
-    // resolves SECOND (network-out-of-order). Without supersede
-    // protection, its onSuccess would clobber the newer one's
-    // applied state. With supersede, the older response is treated
-    // as a no-op and the cache stays at the newer value.
+  it("serializes PATCHes so the newer response is canonical and applied last", async () => {
 
     // Pre-seed the detail cache so applyPlanningSessionFields has a
     // live entry to patch.
@@ -139,19 +136,24 @@ describe("useUpdatePlanningSessionTitle — same-slice ordering", () => {
       wrapper: makeWrapper(qc),
     });
 
-    // Fire two concurrent mutates.
+    // Queue two rapid edits. Only the first request is dispatched until it
+    // settles, preventing canonical server writes from landing out of order.
     act(() => {
       result.current.mutate({ title: "older", key: "k1" });
       result.current.mutate({ title: "newer", key: "k2" });
     });
 
-    // Wait for both apiFetch calls to have happened (deferred
-    // Promises bound).
+    await waitFor(() => {
+      expect(pending).toHaveLength(1);
+    });
+
+    await act(async () => {
+      pending[0].resolve(buildDetail({ title: "older" }));
+    });
+
     await waitFor(() => {
       expect(pending).toHaveLength(2);
     });
-
-    // Resolve the NEWER one first (latest-applied semantic).
     await act(async () => {
       pending[1].resolve(buildDetail({ title: "newer" }));
     });
@@ -159,41 +161,18 @@ describe("useUpdatePlanningSessionTitle — same-slice ordering", () => {
     await waitFor(() => {
       expect(qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"))?.title).toBe("newer");
     });
-
-    // Now resolve the older request. Its response carries the older
-    // title. Without supersede, this would clobber the cache back to
-    // "older". With supersede, it's a no-op.
-    await act(async () => {
-      pending[0].resolve(buildDetail({ title: "older" }));
-    });
-
-    // Cache must still hold the newer value.
-    expect(qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"))?.title).toBe("newer");
   });
 
-  it("aborted PATCH does not surface AbortError on the hook's error slot", async () => {
-    // The transport-level abort fires AbortError from fetch. The
-    // sliced mutation must catch AbortError and resolve with the
-    // SUPERSEDED sentinel so hook.error stays null — otherwise the
-    // inline retry chip would light up on every supersede.
+  it("does not abort a dispatched PATCH when a newer edit queues", async () => {
     qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildDetail({ title: "starting" }));
 
+    let firstSignal: AbortSignal | null = null;
+    let resolveFirst!: (value: PlanningSessionDetail) => void;
     apiFetchMock.mockImplementationOnce(async (_path: string, init: RequestInit | undefined) => {
-      // Block until the signal aborts.
-      await new Promise<void>((_resolve, reject) => {
-        if (init?.signal?.aborted) {
-          const err = new Error("AbortError");
-          err.name = "AbortError";
-          reject(err);
-          return;
-        }
-        init?.signal?.addEventListener("abort", () => {
-          const err = new Error("AbortError");
-          err.name = "AbortError";
-          reject(err);
-        });
+      firstSignal = init?.signal ?? null;
+      return new Promise<PlanningSessionDetail>((resolve) => {
+        resolveFirst = resolve;
       });
-      return buildDetail({ title: "older" });
     });
     apiFetchMock.mockResolvedValueOnce(buildDetail({ title: "newer" }));
 
@@ -205,14 +184,14 @@ describe("useUpdatePlanningSessionTitle — same-slice ordering", () => {
       result.current.mutate({ title: "older", key: "k1" });
       result.current.mutate({ title: "newer", key: "k2" });
     });
+	await waitFor(() => expect(firstSignal).not.toBeNull());
+	expect((firstSignal as AbortSignal | null)?.aborted).toBe(false);
+	await act(async () => resolveFirst(buildDetail({ title: "older" })));
 
     await waitFor(() => {
       expect(qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"))?.title).toBe("newer");
     });
 
-    // hook.error MUST be null — supersede returned SUPERSEDED, not
-    // threw AbortError. The inline chip would only render if error
-    // is non-null.
     expect(result.current.error).toBeNull();
   });
 
@@ -812,6 +791,53 @@ describe("mailbox query keys", () => {
 		await waitFor(() => {
 			expect(result.current.query.data).toEqual(freshResponse);
 		});
+	});
+
+	it("does not let an older provider-model poll overwrite a forced refresh", async () => {
+		const staleResponse = {
+			catalog_status: "stale",
+			items: [],
+			failure_reason: "command_failed",
+			failure_message: "older cached fallback",
+		};
+		const freshResponse = {
+			catalog_status: "fresh",
+			items: [{
+				id: "github-copilot/gpt-5.4",
+				provider_id: "github-copilot",
+				provider_name: "GitHub Copilot",
+				model_name: "GPT-5.4",
+				thinking_effort_options: [{ value: "medium", label: "Medium" }],
+			}],
+		};
+		let resolvePoll!: (value: typeof staleResponse) => void;
+		let resolveRefresh!: (value: typeof freshResponse) => void;
+		apiFetchMock.mockImplementation((_path: string, options: { params: { refresh: boolean } }) => (
+			options.params.refresh
+				? new Promise<typeof freshResponse>((resolve) => { resolveRefresh = resolve; })
+				: new Promise<typeof staleResponse>((resolve) => { resolvePoll = resolve; })
+		));
+
+		const { result } = renderHook(() => ({
+			query: useProviderModels(),
+			refresh: useRefreshProviderModels(),
+		}), {
+			wrapper: makeWrapper(qc),
+		});
+
+		await waitFor(() => {
+			expect(apiFetchMock).toHaveBeenCalledTimes(1);
+		});
+		act(() => result.current.refresh.mutate());
+		await waitFor(() => {
+			expect(apiFetchMock).toHaveBeenCalledTimes(2);
+		});
+
+		await act(async () => resolveRefresh(freshResponse));
+		expect(qc.getQueryData(providerModelsQueryKey)).toEqual(freshResponse);
+
+		await act(async () => resolvePoll(staleResponse));
+		expect(qc.getQueryData(providerModelsQueryKey)).toEqual(freshResponse);
 	});
 
 });

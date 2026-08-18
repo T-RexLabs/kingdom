@@ -11,6 +11,7 @@ import {
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import type { GovernanceDecision } from "@/api/hooks";
 import { cn } from "@/lib/utils";
+import { governanceDecisionLabel, governanceDecisionStageLabel } from "./governance-decision-labels";
 
 function formatGovernanceTimestamp(iso: string): string {
 	const date = new Date(iso);
@@ -20,17 +21,6 @@ function formatGovernanceTimestamp(iso: string): string {
 
 	const pad = (value: number) => value.toString().padStart(2, "0");
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function decisionLabel(item: GovernanceDecision): string {
-	if (item.stage === "plan") {
-		return item.decision === "needs_rework" ? "Requested Plan Rework" : "Approved Plan";
-	}
-	return item.decision === "needs_rework" ? "Requested Final Rework" : "Confirmed Completion";
-}
-
-function stageLabel(item: GovernanceDecision): string {
-	return item.stage === "plan" ? "Plan" : "Final";
 }
 
 export function GovernanceDecisionHistoryModal({
@@ -63,8 +53,8 @@ export function GovernanceDecisionHistoryModal({
 								<ModalContentCard key={item.decision_id}>
 									<div className="flex flex-wrap items-center justify-between gap-3">
 										<div className="flex flex-wrap items-center gap-2">
-											<Badge>{stageLabel(item)}</Badge>
-											<p className="text-sm font-semibold text-foreground">{decisionLabel(item)}</p>
+											<Badge>{governanceDecisionStageLabel(item)}</Badge>
+											<p className="text-sm font-semibold text-foreground">{governanceDecisionLabel(item)}</p>
 										</div>
 										<span className="text-xs text-foreground-subtle">{formatGovernanceTimestamp(item.created_at)}</span>
 									</div>
@@ -88,12 +78,4 @@ export function GovernanceDecisionHistoryModal({
 			</ModalShell>
 		</ModalDialog>
 	);
-}
-
-export function governanceDecisionLabel(item: GovernanceDecision): string {
-	return decisionLabel(item);
-}
-
-export function governanceDecisionStageLabel(item: GovernanceDecision): string {
-	return stageLabel(item);
 }

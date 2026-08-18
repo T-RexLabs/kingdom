@@ -42,6 +42,8 @@ var rootHelpSections = []rootHelpSection{
 			{"summon"},
 			{"summon", "status"},
 			{"summon", "stop"},
+			{"connections", "github", "key", "provision"},
+			{"connections", "github", "key", "rotate"},
 		},
 	},
 	{
@@ -71,13 +73,22 @@ var rootHelpSections = []rootHelpSection{
 
 var globalHelpFlags = []globalFlagHelp{
 	{syntax: "--server <url>", description: "API base URL (default: http://127.0.0.1:8080)"},
-	{syntax: "--actor-id <id>", description: "actor header value (default: cli-user)"},
-	{syntax: "--role-id <role>", description: "role header value (default: allfather)"},
+	{syntax: "--credential-file <path>", description: "protected local operator credential file (normally discovered from .kingdom)"},
+	{syntax: "--idempotency-key <key>", description: "resume one ambiguous mutation with the exact key reported by kd"},
 	{syntax: "--json", description: "emit JSON output where supported"},
 	{syntax: "--timeout <duration>", description: "request timeout for non-streaming API commands (default: 30s)"},
 }
 
 var helpTopics = []*helpTopic{
+	{
+		path: []string{"connections"}, summary: "Manage local integration credentials.", usage: []string{"kd connections github key provision --connection-id <id> --from <pem>", "kd connections github key rotate --connection-id <id> --from <pem>"}, subcommands: [][]string{{"connections", "github", "key", "provision"}, {"connections", "github", "key", "rotate"}}, includeGlobalFlags: true,
+	},
+	{
+		path: []string{"connections", "github", "key", "provision"}, summary: "Provision a missing GitHub App private key.", usage: []string{"kd connections github key provision --connection-id <id> --from <pem>"}, flags: bindGitHubKeyHelpFlags, flagOrder: []string{"connection-id", "from"}, includeGlobalFlags: true, notes: []string{"Requires a live saved connection and refuses to overwrite an existing key."},
+	},
+	{
+		path: []string{"connections", "github", "key", "rotate"}, summary: "Atomically rotate an existing GitHub App private key.", usage: []string{"kd connections github key rotate --connection-id <id> --from <pem>"}, flags: bindGitHubKeyHelpFlags, flagOrder: []string{"connection-id", "from"}, includeGlobalFlags: true, notes: []string{"Requires a live saved connection and refuses to create a missing key."},
+	},
 	{
 		path:    []string{"init"},
 		summary: "Initialize Kingdom in the current project.",
@@ -105,7 +116,7 @@ var helpTopics = []*helpTopic{
 			bindSummonFlags(flags, &summonOptions{})
 		},
 		flagAliases: [][]string{{"d", "detach"}},
-		notes: []string{"`kd summon` uses `.kingdom/config.yaml` by default and keeps the runtime attached to the current terminal. Use `-d` or `--detach` to start it in the background. Use `--listen` to fully override the listen address for this summon process only, or `--host` and `--port` to override one side of the configured address. `--listen` cannot be combined with `--host` or `--port`."},
+		notes:       []string{"`kd summon` uses `.kingdom/config.yaml` by default and keeps the runtime attached to the current terminal. Use `-d` or `--detach` to start it in the background. Use `--listen` to fully override the listen address for this summon process only, or `--host` and `--port` to override one side of the configured address. `--listen` cannot be combined with `--host` or `--port`."},
 	},
 	{
 		path:    []string{"summon", "status"},
@@ -293,6 +304,11 @@ var helpTopics = []*helpTopic{
 		notes:              []string{"`--reason` is required when `--action` is `rework`."},
 		includeGlobalFlags: true,
 	},
+}
+
+func bindGitHubKeyHelpFlags(flags *flag.FlagSet) {
+	flags.String("connection-id", "", "saved connection id")
+	flags.String("from", "", "RSA PKCS#1 or PKCS#8 PEM file")
 }
 
 func writeCommandHelp(stdout io.Writer, topic []string) {

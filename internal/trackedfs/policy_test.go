@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"kingdom/internal/securefs"
 )
 
 func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
@@ -47,6 +49,42 @@ func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
 	}
 	if tracked[0].RelativePath != "docs/notes.md" || tracked[1].RelativePath != "src/app.js" {
 		t.Fatalf("unexpected tracked files: %#v", tracked)
+	}
+}
+
+func TestWalkTrackedFilesRootUsesPinnedNoFollowTraversal(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	rootPath := filepath.Join(parent, "root")
+	movedPath := filepath.Join(parent, "moved")
+	outside := t.TempDir()
+	if err := os.Mkdir(rootPath, 0o755); err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(rootPath, "inside.txt"), []byte("inside"), 0o644); err != nil {
+		t.Fatalf("write inside file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "outside.txt"), []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	root, err := securefs.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open secure root: %v", err)
+	}
+	defer root.Close()
+	if err := os.Rename(rootPath, movedPath); err != nil {
+		t.Fatalf("move root: %v", err)
+	}
+	if err := os.Symlink(outside, rootPath); err != nil {
+		t.Fatalf("replace root with symlink: %v", err)
+	}
+	files, err := WalkTrackedFilesRoot(root)
+	if err != nil {
+		t.Fatalf("walk pinned root: %v", err)
+	}
+	if len(files) != 1 || files[0].RelativePath != "inside.txt" {
+		t.Fatalf("unexpected pinned-root files: %#v", files)
 	}
 }
 

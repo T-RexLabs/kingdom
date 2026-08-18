@@ -5,21 +5,31 @@ import {
   usePlanningSessionDraft,
   useUpdatePlanningSessionModelSelection,
   useUpdatePlanningSessionTitle,
+  type PlanningSessionDetail,
 } from "@/api/hooks";
+import { apiFetch } from "@/api/client";
+import type { components } from "@/api/schema";
+import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
+import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
+import { isAmbiguousMutationFailure } from "./mutation-recovery";
+import { safeGitHubIssueURL } from "@/features/connections/github-url";
+import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { Feather, FileText, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
+import { ExternalLink, Feather, FileText, Github, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { getPlanningSessionDisplayTitleValue, hasPlaceholderTitle } from "./planning-session-title";
 import { ThinkingEffortField } from "./thinking-effort-field";
 import { PlannerThread } from "./planner-thread";
 import { PlanResultModal } from "./planner-draft-panel";
-import { ProviderModelCatalogNotice, useProviderModelCatalogController } from "./provider-model-catalog-state";
+import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
+import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 import { usePlannerMessagePages } from "./use-planner-message-pages";
 import { isPlannerOperationTerminal } from "./planner-operation-controller";
 import { usePlanningSessionTitleController } from "./use-planning-session-title-controller";
 import { usePlannerSessionController } from "./use-planner-session-controller";
-import { useGlobalFormalize } from "./use-global-formalize";
+import { useGlobalFormalize } from "./global-formalize-context";
 import { usePlannerOperation } from "./use-planner-operation";
 import { usePlanningSessionAutoTitleCatchup } from "./use-planning-session-auto-title-catchup";
 import {
@@ -36,8 +46,18 @@ export function PlanningSessionPage() {
   const queryClient = useQueryClient();
   const sessionQuery = usePlanningSession(sessionId);
   const session = sessionQuery.data;
+  const externalSources = session?.external_sources ?? [];
   const updateTitle = useUpdatePlanningSessionTitle(sessionId);
   const updateModelSelection = useUpdatePlanningSessionModelSelection(sessionId);
+  const recoverableAttachSource = useRecoverableMutation(
+    "planning-attach-source",
+    (intake: IssueSelection["intake"], key) => apiFetch(`/planning-sessions/${sessionId}/external-sources`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify(intake),
+    }),
+    sessionId,
+  );
   // Destructure stable handles up front. The hook object is recreated
   // each render, but `mutate`, `reset`, and `error` are stable across
   // renders (TanStack Query guarantee). Using these in effect deps
@@ -47,13 +67,67 @@ export function PlanningSessionPage() {
     mutate: modelMutate,
     reset: modelReset,
     error: modelError,
+		hasPendingRecovery: modelRecoveryPending,
+		pendingVariables: pendingModelVariables,
+		retryRecovery: retryModelRecovery,
 	} = updateModelSelection;
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
+	const canonicalModel = session?.model_selection.model ?? "";
+	const canonicalThinkingEffort = session?.model_selection.thinking_effort ?? "";
+	const [modelSelectionDraft, setModelSelectionDraft] = useState(() => ({
+		sessionId,
+		canonicalModel,
+		canonicalThinkingEffort,
+		model: canonicalModel,
+		thinkingEffort: canonicalThinkingEffort,
+		editGeneration: 0,
+		acknowledgedAutosave: undefined as
+			| { model: string; thinkingEffort: string; editGeneration: number }
+			| undefined,
+	}));
+	let currentModelSelection = modelSelectionDraft;
+	if (
+		modelSelectionDraft.sessionId !== sessionId
+		|| modelSelectionDraft.canonicalModel !== canonicalModel
+		|| modelSelectionDraft.canonicalThinkingEffort !== canonicalThinkingEffort
+	) {
+		const acknowledgedAutosave = modelSelectionDraft.acknowledgedAutosave;
+		// Only an acknowledged older edit may yield to canonical state without
+		// replacing a newer local edit that is still inside its debounce window.
+		const preserveLaterEdit = modelSelectionDraft.sessionId === sessionId
+			&& acknowledgedAutosave?.model === canonicalModel
+			&& acknowledgedAutosave.thinkingEffort === canonicalThinkingEffort
+			&& modelSelectionDraft.editGeneration > acknowledgedAutosave.editGeneration;
+		currentModelSelection = preserveLaterEdit
+			? {
+				...modelSelectionDraft,
+				canonicalModel,
+				canonicalThinkingEffort,
+				acknowledgedAutosave: undefined,
+			}
+			: {
+				sessionId,
+				canonicalModel,
+				canonicalThinkingEffort,
+				model: canonicalModel,
+				thinkingEffort: canonicalThinkingEffort,
+				editGeneration: 0,
+				acknowledgedAutosave: undefined,
+			};
+		// Record the transition so returning to an earlier canonical value
+		// cannot make a draft from that earlier generation current again.
+		setModelSelectionDraft(currentModelSelection);
+	}
+	const model = currentModelSelection.model;
+	const selectedModel = providerModelCatalog.items.find((item) => item.id === model);
+	const thinkingEffort = model.trim()
+		? normalizeThinkingEffortSelection(selectedModel, currentModelSelection.thinkingEffort, {
+			preserveWhenModelMissing: true,
+		})
+		: currentModelSelection.thinkingEffort;
 	const messagePages = usePlannerMessagePages(sessionId);
   const userMessageCount = messagePages.messages.filter((m) => m.role === "user").length;
-  const [model, setModel] = useState("");
-  const [thinkingEffort, setThinkingEffort] = useState("");
   const [showPlanModal, setShowPlanModal] = useState(false);
   const { activeOperation, activeOperationId, connection, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
@@ -79,6 +153,16 @@ export function PlanningSessionPage() {
   const commitTitle = useCallback(
     async (trimmed: string): Promise<void> => {
       if (!session) return;
+      if (updateTitle.hasPendingRecovery) {
+        try {
+          await updateTitle.retryRecovery();
+          setTitleSaveError(null);
+        } catch (err) {
+          setTitleSaveError({ message: err instanceof Error ? err.message : "Could not save title" });
+          throw err;
+        }
+        return;
+      }
       const previousSession = session;
       // Field-scoped optimistic write via the shared helper. Patches
       // detail + every list slice with only title + title_state.
@@ -145,6 +229,15 @@ export function PlanningSessionPage() {
   const handleCommit = useCallback(async () => {
     if (!session) return;
     const trimmed = titleInput.trim();
+    if (updateTitle.hasPendingRecovery) {
+      try {
+        await commitTitle(trimmed);
+        exitEdit();
+      } catch {
+        // commitTitle keeps the exact recovery request and error visible.
+      }
+      return;
+    }
     if (trimmed === "" || trimmed === session.title) {
       if (titleSaveError) {
         abandonEdit(session.title);
@@ -162,23 +255,7 @@ export function PlanningSessionPage() {
       // titleSaveError. Stay in edit mode so the failed draft is
       // visible — Retry uses the live input, Discard uses abandonEdit.
     }
-  }, [session, titleInput, titleSaveError, commitTitle, exitEdit, abandonEdit]);
-
-  // Reseed local model + thinking-effort state ONLY when the
-  // server-canonical model_selection actually changes (or we navigate
-  // to a different session). Depending on the whole `session` object
-  // would refire on every cache update — including a successful title
-  // save's onSuccess writing the full server response into the cache —
-  // and overwrite the user's in-progress model selection before the
-  // 500ms autosave fires. Narrow string deps mean reference changes
-  // alone don't trigger the reseed.
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    setModel(session.model_selection.model ?? "");
-    setThinkingEffort(session.model_selection.thinking_effort ?? "");
-  }, [sessionId, session?.model_selection.model, session?.model_selection.thinking_effort]);
+  }, [session, titleInput, titleSaveError, updateTitle.hasPendingRecovery, commitTitle, exitEdit, abandonEdit]);
 
   // Re-hydrate activeOperationId from global tracker when returning to this page mid-generation.
   // Only re-hydrate when the session is still processing — once the streamed operation reaches
@@ -194,18 +271,6 @@ export function PlanningSessionPage() {
     }
   }, [globalFormalize, sessionId, activeOperationId, setActiveOperationId, session?.conversation_state]);
 
-	const selectedModel = useMemo(
-		() => providerModelCatalog.items.find((item) => item.id === model),
-		[model, providerModelCatalog.items]
-  );
-
-  useEffect(() => {
-    if (!model.trim()) return;
-    setThinkingEffort((current) =>
-      normalizeThinkingEffortSelection(selectedModel, current, { preserveWhenModelMissing: true })
-    );
-  }, [model, selectedModel]);
-
   const hasModelSelectionChanges =
     Boolean(session) &&
     (model !== (session?.model_selection.model ?? "") ||
@@ -215,6 +280,65 @@ export function PlanningSessionPage() {
   const formalizePending = activeOperation?.kind === "formalize" && !isPlannerOperationTerminal(activeOperation.status);
   const hasPlan = Boolean(session?.current_draft_id);
   const showPlanConsumedForSession = useRef<string>("");
+	const submitModelSelection = useCallback((
+		submittedModel: string,
+		submittedThinkingEffort: string,
+		editGeneration: number,
+	) => {
+		if (modelRecoveryPending) return;
+		const normalizedModel = submittedModel.trim();
+		const normalizedThinkingEffort = submittedThinkingEffort.trim();
+		modelMutate({
+			modelSelection: normalizedModel
+				? {
+					model: normalizedModel,
+					...(normalizedThinkingEffort ? { thinking_effort: normalizedThinkingEffort } : {}),
+				}
+				: undefined,
+			key: newIdempotencyKey("planning-update-model"),
+			editGeneration,
+		}, {
+			onSuccess: (result) => {
+				// Superseded sliced mutations resolve with a symbol, not a response.
+				if (typeof result !== "object" || result === null) return;
+				setModelSelectionDraft((current) => (
+					current.sessionId === sessionId && current.editGeneration > editGeneration
+						? {
+							...current,
+							acknowledgedAutosave: {
+								model: result.model_selection.model ?? "",
+								thinkingEffort: result.model_selection.thinking_effort ?? "",
+								editGeneration,
+							},
+						}
+						: current
+				));
+			},
+		});
+	}, [modelMutate, modelRecoveryPending, sessionId]);
+	const handleModelRecovery = () => {
+		const editGeneration = pendingModelVariables?.editGeneration;
+		void retryModelRecovery().then((result) => {
+			if (typeof result !== "object" || result === null || editGeneration === undefined) return;
+			setModelSelectionDraft((current) => (
+				current.sessionId === sessionId && current.editGeneration > editGeneration
+					? {
+						...current,
+						acknowledgedAutosave: {
+							model: result.model_selection.model ?? "",
+							thinkingEffort: result.model_selection.thinking_effort ?? "",
+							editGeneration,
+						},
+					}
+					: current
+			));
+		}).catch(() => {});
+	};
+
+  const attachSource = async ({ intake }: IssueSelection) => {
+    await recoverableAttachSource.mutateAsync(intake);
+    await sessionQuery.refetch();
+  };
 
   // Auto-open plan modal when arriving via ?show_plan=true (e.g. from notification "View Plan" link)
   useEffect(() => {
@@ -224,7 +348,11 @@ export function PlanningSessionPage() {
     }
     if (hasPlan && showPlanConsumedForSession.current !== sessionId) {
       showPlanConsumedForSession.current = sessionId;
-      setShowPlanModal(true);
+      queueMicrotask(() => {
+        if (showPlanConsumedForSession.current === sessionId) {
+          setShowPlanModal(true);
+        }
+      });
       void navigate({
         to: "/decrees/planning/$sessionId",
         params: { sessionId },
@@ -250,20 +378,12 @@ export function PlanningSessionPage() {
   // 500ms timer. With `session` in deps, rapid SSE traffic could
   // starve the autosave indefinitely.
   useEffect(() => {
-    if (!hasModelSelectionChanges) return;
+    if (!hasModelSelectionChanges || modelRecoveryPending) return;
     const timer = setTimeout(() => {
-      modelMutate({
-        modelSelection: model.trim()
-          ? {
-              model: model.trim(),
-              ...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-            }
-          : undefined,
-        key: newIdempotencyKey("planning-update-model"),
-      });
+		submitModelSelection(model, thinkingEffort, currentModelSelection.editGeneration);
     }, 500);
     return () => clearTimeout(timer);
-  }, [model, thinkingEffort, hasModelSelectionChanges, modelMutate]);
+  }, [model, thinkingEffort, hasModelSelectionChanges, modelRecoveryPending, currentModelSelection.editGeneration, submitModelSelection]);
 
   // When the user reverts the dropdown back to canonical, any prior
   // failure is now meaningless — the chip's Retry would re-send the
@@ -271,10 +391,10 @@ export function PlanningSessionPage() {
   // until the next attempt's onMutate fired. Calling reset() clears
   // the mutation state so future dirty edits start clean.
   useEffect(() => {
-    if (!hasModelSelectionChanges && modelError) {
+    if (!hasModelSelectionChanges && modelError && !modelRecoveryPending) {
       modelReset();
     }
-  }, [hasModelSelectionChanges, modelError, modelReset]);
+  }, [hasModelSelectionChanges, modelError, modelRecoveryPending, modelReset]);
 
   if (sessionQuery.isLoading) {
     return (
@@ -324,6 +444,7 @@ export function PlanningSessionPage() {
                 autoFocus
                 type="text"
                 value={titleInput}
+                disabled={updateTitle.hasPendingRecovery}
                 onChange={(e) => setTitleInput(e.target.value)}
                 // Don't blur-commit while a save error is showing — the
                 // user is mid-recovery and a re-blur would re-fire the
@@ -384,16 +505,18 @@ export function PlanningSessionPage() {
                 >
                   Retry
                 </button>
-                <button
-                  type="button"
-                  className="rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
-                  onClick={() => {
-                    setTitleSaveError(null);
-                    abandonEdit(session.title);
-                  }}
-                >
-                  Discard
-                </button>
+                {!updateTitle.hasPendingRecovery ? (
+                  <button
+                    type="button"
+                    className="rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
+                    onClick={() => {
+                      setTitleSaveError(null);
+                      abandonEdit(session.title);
+                    }}
+                  >
+                    Discard
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -440,14 +563,20 @@ export function PlanningSessionPage() {
                 label="Planner Model"
                 value={model}
 				loading={providerModelCatalog.isLoading}
-                disabled={providerModelCatalog.disableSelection}
+                  disabled={providerModelCatalog.disableSelection || modelRecoveryPending}
                 options={providerModelCatalog.items}
                 triggerPlaceholder={providerModelCatalog.triggerPlaceholder}
                 emptyStateLabel={providerModelCatalog.emptyStateLabel}
                 onChange={(next) => {
-                  setModel(next);
                   const nextModel = providerModelCatalog.items.find((item) => item.id === next);
-                  setThinkingEffort(normalizeThinkingEffortSelection(nextModel, "", { preserveWhenModelMissing: true }));
+                  setModelSelectionDraft({
+                    ...currentModelSelection,
+                    model: next,
+                    thinkingEffort: normalizeThinkingEffortSelection(nextModel, "", {
+                      preserveWhenModelMissing: true,
+                    }),
+					editGeneration: currentModelSelection.editGeneration + 1,
+                  });
                 }}
               />
             </div>
@@ -457,12 +586,18 @@ export function PlanningSessionPage() {
                 label="Thinking Effort"
                 value={thinkingEffort}
                 model={selectedModel}
-                disabled={providerModelCatalog.disableSelection}
-                onChange={setThinkingEffort}
+                disabled={providerModelCatalog.disableSelection || modelRecoveryPending}
+                onChange={(next) => {
+					setModelSelectionDraft({
+						...currentModelSelection,
+						thinkingEffort: next,
+						editGeneration: currentModelSelection.editGeneration + 1,
+					});
+                }}
               />
             </div>
           </div>
-          {hasModelSelectionChanges && modelError ? (
+          {(hasModelSelectionChanges || modelRecoveryPending) && modelError ? (
             <div
               role="alert"
               className="flex w-full items-center gap-2 rounded-md border border-status-failed/30 bg-status-failed/10 px-2 py-1 text-xs text-status-failed"
@@ -473,16 +608,8 @@ export function PlanningSessionPage() {
               <button
                 type="button"
                 className="ml-auto rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
-                onClick={() => {
-                  modelMutate({
-                    modelSelection: model.trim()
-                      ? {
-                          model: model.trim(),
-                          ...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-                        }
-                      : undefined,
-                    key: newIdempotencyKey("planning-update-model"),
-                  });
+                onClick={modelRecoveryPending ? handleModelRecovery : () => {
+				  submitModelSelection(model, thinkingEffort, currentModelSelection.editGeneration);
                 }}
               >
                 Retry
@@ -491,6 +618,21 @@ export function PlanningSessionPage() {
           ) : null}
         </div>
       </div>
+
+      <aside aria-label="Linked GitHub sources" className="mx-4 mt-3 max-h-[min(42vh,28rem)] shrink-0 overflow-y-auto rounded-lg border border-gold/20 bg-gold/[0.03] p-2.5">
+          <div className="mb-2 flex flex-col gap-2 px-1 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">Planning sources</p>
+              <span className="rounded-full border border-gold/20 bg-gold/5 px-2 py-0.5 text-[10px] text-gold">{externalSources.length}</span>
+            </div>
+            <IssuePicker onSelect={attachSource} actionLabel="Add source" triggerLabel={externalSources.length > 0 ? "Add source" : "Add GitHub issue"} compact />
+          </div>
+          {externalSources.length > 0 ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {externalSources.map((source) => <PlanningExternalSourceCard key={source.link_id} source={source} onChanged={() => sessionQuery.refetch()} />)}
+            </div>
+          ) : <p className="px-1 pb-1 text-xs text-foreground-muted">Add a GitHub issue as immutable context for future planner operations.</p>}
+      </aside>
 
       {/* Session-load errors are handled by the early-return shell above. */}
       {createOperation.error ? (
@@ -513,11 +655,109 @@ export function PlanningSessionPage() {
       <PlanResultModal
         open={showPlanModal}
         draft={draftQuery.data ?? null}
-        sessionId={sessionId}
-        contextSnapshotId={session.context_snapshot_id ?? undefined}
+        planningLineage={draftQuery.data ? {
+          planning_session_id: sessionId,
+          planning_draft_id: draftQuery.data.planning_draft_id,
+        } : undefined}
         operation={activeOperation?.kind === "formalize" ? activeOperation : null}
         onClose={() => setShowPlanModal(false)}
       />
     </div>
+  );
+}
+
+type PlanningExternalSource = PlanningSessionDetail["external_sources"][number];
+type ExternalRefreshResult = components["schemas"]["ExternalRefreshResult"];
+
+function PlanningExternalSourceCard({
+  source,
+  onChanged,
+}: {
+  source: PlanningExternalSource;
+  onChanged: () => Promise<unknown>;
+}) {
+  const [busy, setBusy] = useState<"refresh" | "adopt" | "">("");
+  const [error, setError] = useState("");
+  const [refreshResult, setRefreshResult] = useState<ExternalRefreshResult>();
+  const refreshKeyRef = useRef<string | undefined>(undefined);
+  const adoptKeyRef = useRef<string | undefined>(undefined);
+  const activeSnapshotID = source.active_snapshot_id ?? source.used_snapshot_id;
+  const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
+  const sourceStatus = refreshResult?.outcome ?? source.status;
+  const updateAvailable = latestSnapshotID !== activeSnapshotID;
+  const failureGuidance = externalSourceFailureGuidance(sourceStatus);
+  const sourceURL = safeGitHubIssueURL(source.canonical_url, source.repository, source.issue_number);
+
+  const refresh = async () => {
+    setBusy("refresh");
+    setError("");
+    const key = refreshKeyRef.current ?? newIdempotencyKey("external-refresh");
+    refreshKeyRef.current = key;
+    try {
+      const result = await apiFetch<ExternalRefreshResult>(`/external-source-links/${source.link_id}/refreshes`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+      });
+      refreshKeyRef.current = undefined;
+      setRefreshResult(result);
+      await onChanged();
+    } catch (cause) {
+      if (!isAmbiguousMutationFailure(cause)) refreshKeyRef.current = undefined;
+      setError(cause instanceof Error ? cause.message : "Could not refresh GitHub source");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const adopt = async () => {
+    setBusy("adopt");
+    setError("");
+    const key = adoptKeyRef.current ?? newIdempotencyKey("external-adopt");
+    adoptKeyRef.current = key;
+    try {
+      await apiFetch(`/external-source-links/${source.link_id}/adoptions`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+      });
+      adoptKeyRef.current = undefined;
+      setRefreshResult(undefined);
+      await onChanged();
+    } catch (cause) {
+      if (!isAmbiguousMutationFailure(cause)) adoptKeyRef.current = undefined;
+      setError(cause instanceof Error ? cause.message : "Could not adopt the latest GitHub source");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section aria-label={`Linked GitHub source ${source.repository}#${source.issue_number}`} className="min-w-0 space-y-3 rounded-lg border border-gold/25 bg-gold/5 p-3 text-xs">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-medium text-foreground"><Github className="mr-1 inline h-3.5 w-3.5" />{sourceURL ? <a href={sourceURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{source.repository}#{source.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{source.repository}#{source.issue_number}</span>}</p>
+          <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(sourceStatus, updateAvailable)}{updateAvailable ? ". Adopt the update to use it in future planner operations." : "."}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" aria-label={`Refresh ${source.repository}#${source.issue_number}`} disabled={busy !== ""} className="rounded border border-border px-2 py-1 disabled:opacity-50" onClick={() => void refresh()}>
+            {busy === "refresh" ? <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 inline h-3 w-3" />}Refresh
+          </button>
+          {updateAvailable ? (
+            <button type="button" aria-label={`Adopt latest ${source.repository}#${source.issue_number}`} disabled={busy !== ""} className="rounded bg-gold px-2 py-1 font-medium text-black disabled:opacity-50" onClick={() => void adopt()}>
+              {busy === "adopt" ? "Adopting…" : "Adopt latest"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {failureGuidance && !refreshResult ? <p role="status" className="text-status-failed">{failureGuidance}</p> : null}
+      {updateAvailable ? <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} /> : null}
+      {refreshResult ? (
+        <div aria-live="polite" className="space-y-1 border-t border-gold/15 pt-2 text-foreground-muted">
+          <p className="font-medium text-foreground">{refreshResult.message}</p>
+          {refreshResult.retry_at ? <p>Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
+        </div>
+      ) : null}
+      {error ? <p role="alert" className="text-status-failed">{error}</p> : null}
+      <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><dl className="mt-1 space-y-1 font-mono text-[11px]"><div><dt className="inline">Used snapshot: </dt><dd className="inline break-all">{source.used_snapshot_id}</dd></div><div><dt className="inline">Active snapshot: </dt><dd className="inline break-all">{activeSnapshotID}</dd></div><div><dt className="inline">Latest snapshot: </dt><dd className="inline break-all">{latestSnapshotID}</dd></div></dl></details>
+    </section>
   );
 }

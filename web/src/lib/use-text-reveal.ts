@@ -7,6 +7,59 @@ export const DRAIN_DIVISOR = 5;
 export const DRAIN_MIN_SPEED = 10;
 export const THROTTLE_MS = 30;
 
+type RevealMode = "baseline" | "zero";
+
+type RevealState = {
+  cursor: number;
+  displayText: string;
+  isStreamActive: boolean;
+  isStreaming: boolean;
+  mode: RevealMode;
+  targetText: string;
+};
+
+function initialRevealState(targetText: string, isStreaming: boolean, mode: RevealMode): RevealState {
+  const startsAtZero = mode === "zero" && isStreaming;
+  return {
+    cursor: startsAtZero ? 0 : targetText.length,
+    displayText: startsAtZero ? "" : targetText,
+    isStreamActive: isStreaming,
+    isStreaming,
+    mode,
+    targetText,
+  };
+}
+
+function reconcileRevealState(
+  state: RevealState,
+  targetText: string,
+  isStreaming: boolean,
+  mode: RevealMode,
+): RevealState {
+  if (state.targetText === targetText && state.isStreaming === isStreaming && state.mode === mode) {
+    return state;
+  }
+
+  if (isStreaming && !state.isStreaming) {
+    return initialRevealState(targetText, true, mode);
+  }
+
+  if (!isStreaming && !state.isStreaming && !state.isStreamActive) {
+    return initialRevealState(targetText, false, mode);
+  }
+
+  const cursor = Math.min(state.cursor, targetText.length);
+  const hasCaughtUp = cursor >= targetText.length;
+  return {
+    cursor,
+    displayText: state.cursor > targetText.length ? targetText : state.displayText,
+    isStreamActive: isStreaming || !hasCaughtUp,
+    isStreaming,
+    mode,
+    targetText,
+  };
+}
+
 /**
  * Progressively reveals streamed text at a natural typing pace.
  *
@@ -33,124 +86,72 @@ export const THROTTLE_MS = 30;
 export function useTextReveal(
   targetText: string,
   isStreaming: boolean,
-  mode: "baseline" | "zero" = "baseline",
+  mode: RevealMode = "baseline",
 ) {
-  const targetRef = useRef(targetText);
-  const initialLength = mode === "zero" && isStreaming ? 0 : targetText.length;
-  const revealedRef = useRef(initialLength);
-  const rafRef = useRef(0);
-  const streamingRef = useRef(isStreaming);
+  const [revealState, setRevealState] = useState(() => initialRevealState(targetText, isStreaming, mode));
+  const lastRenderRef = useRef(0);
 
-  const [displayText, setDisplayText] = useState(mode === "zero" && isStreaming ? "" : targetText);
-  const [isStreamActive, setIsRevealing] = useState(false);
-
-  // Keep targetRef in sync — the rAF callback reads from it.
-  useEffect(() => {
-    targetRef.current = targetText;
-  });
+  const reconciledState = reconcileRevealState(revealState, targetText, isStreaming, mode);
+  if (reconciledState !== revealState) {
+    setRevealState(reconciledState);
+  }
 
   useEffect(() => {
-    const wasStreaming = streamingRef.current;
-    streamingRef.current = isStreaming;
-
-    if (isStreaming && !wasStreaming) {
-      // Streaming started — capture the already-buffered baseline instantly and
-      // animate only text that arrives after this point.
-      const target = targetRef.current;
-      if (mode === "zero") {
-        revealedRef.current = 0;
-        setDisplayText("");
-      } else {
-        revealedRef.current = target.length;
-        setDisplayText(target);
-      }
-    }
-
-    if (isStreaming) {
-      setIsRevealing(true);
-    }
-
-    if (!isStreaming && revealedRef.current >= targetRef.current.length) {
-      revealedRef.current = targetRef.current.length;
-      setDisplayText(targetRef.current);
-      setIsRevealing(false);
-    }
-  }, [isStreaming, mode]);
-
-  useEffect(() => {
-    let lastRender = 0;
-
-    const advance = (now: number) => {
-      const target = targetRef.current;
-      let current = revealedRef.current;
-
-      if (current > target.length) {
-        revealedRef.current = target.length;
-        current = target.length;
-        setDisplayText(target);
-      }
-
-      if (current >= target.length) {
-        if (!streamingRef.current) {
-          setDisplayText(target);
-          setIsRevealing(false);
-        }
-        rafRef.current = 0;
-        return;
-      }
-
-      if (now - lastRender < THROTTLE_MS) {
-        rafRef.current = requestAnimationFrame(advance);
-        return;
-      }
-      lastRender = now;
-
-      const behind = target.length - current;
-      const speed = streamingRef.current
-        ? behind > CATCHUP_THRESHOLD
-          ? Math.max(BASE_SPEED, Math.ceil(behind / CATCHUP_DIVISOR))
-          : BASE_SPEED
-        : Math.max(DRAIN_MIN_SPEED, Math.ceil(behind / DRAIN_DIVISOR));
-
-      revealedRef.current = Math.min(current + speed, target.length);
-      setDisplayText(target.slice(0, revealedRef.current));
-      setIsRevealing(true);
-      rafRef.current = requestAnimationFrame(advance);
-    };
-
-    const target = targetRef.current;
-    if (revealedRef.current > target.length) {
-      revealedRef.current = target.length;
-      setDisplayText(target);
-    }
-
-    if (revealedRef.current >= target.length) {
-      if (!isStreaming) {
-        setDisplayText(target);
-        setIsRevealing(false);
-      }
+    if (!reconciledState.isStreamActive || reconciledState.cursor >= targetText.length) {
       return;
     }
 
-    if (rafRef.current === 0) {
-      rafRef.current = requestAnimationFrame(advance);
-    }
+    let rafId = 0;
+
+    const advance = (now: number) => {
+      if (now - lastRenderRef.current < THROTTLE_MS) {
+        rafId = requestAnimationFrame(advance);
+        return;
+      }
+      lastRenderRef.current = now;
+
+      setRevealState((current) => {
+        if (
+          current.targetText !== targetText ||
+          current.isStreaming !== isStreaming ||
+          current.mode !== mode
+        ) {
+          return current;
+        }
+
+        const behind = targetText.length - current.cursor;
+        const speed = isStreaming
+          ? behind > CATCHUP_THRESHOLD
+            ? Math.max(BASE_SPEED, Math.ceil(behind / CATCHUP_DIVISOR))
+            : BASE_SPEED
+          : Math.max(DRAIN_MIN_SPEED, Math.ceil(behind / DRAIN_DIVISOR));
+        const cursor = Math.min(current.cursor + speed, targetText.length);
+
+        return {
+          ...current,
+          cursor,
+          displayText: targetText.slice(0, cursor),
+          isStreamActive: isStreaming || cursor < targetText.length,
+        };
+      });
+    };
+
+    rafId = requestAnimationFrame(advance);
 
     return () => {
-      if (rafRef.current !== 0) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = 0;
+      if (rafId !== 0) {
+        cancelAnimationFrame(rafId);
       }
     };
-  }, [targetText, isStreaming]);
+  }, [isStreaming, mode, reconciledState.cursor, reconciledState.isStreamActive, targetText]);
 
-  const safeDisplayText = isStreamActive
-    ? (targetText.startsWith(displayText) ? displayText : targetText)
+  const safeDisplayText = reconciledState.isStreamActive
+    ? (targetText.startsWith(reconciledState.displayText) ? reconciledState.displayText : targetText)
     : targetText;
 
   return {
     displayText: safeDisplayText,
-    isStreamActive,
-    hasCaughtUpToTarget: !isStreamActive || safeDisplayText === targetText,
+    isStreamActive: reconciledState.isStreamActive,
+    hasCaughtUpToTarget: !reconciledState.isStreamActive || safeDisplayText === targetText,
   };
 }

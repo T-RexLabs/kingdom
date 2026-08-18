@@ -6,20 +6,27 @@ import {
   type Role,
   type RunModelSelectionEntry,
   type RunSummary,
+  type DecreeDetail,
 } from "@/api/hooks";
+import { apiFetch } from "@/api/client";
+import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { ModalDialog } from "@/components/ui/modal-dialog";
 import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
+import { safeGitHubIssueURL } from "@/features/connections/github-url";
+import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
+import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
 import { cn, roleTitle } from "@/lib/utils";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
-import { ChevronRight, Scroll, Settings2 } from "lucide-react";
+import { ChevronRight, ExternalLink, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
 
 export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role[] }) {
   const [readOpen, setReadOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { data: decree, isLoading, error } = useDecree(run.decree_id);
+  const { data: decree, isLoading, error, refetch } = useDecree(run.decree_id);
   const providerModelsQuery = useProviderModels({ enabled: settingsOpen });
   const providerModels = providerModelsQuery.data?.items ?? [];
   const decreeTitle = decree?.decree_title?.trim();
@@ -62,8 +69,10 @@ export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role
         open={readOpen}
         title={decreeTitle}
         text={decree?.decree_text}
+        sources={decree?.external_sources}
         isLoading={isLoading}
         hasError={Boolean(error) || !decree}
+        onRefreshed={() => { void refetch(); }}
         onClose={() => setReadOpen(false)}
       />
 
@@ -83,16 +92,20 @@ function DecreeReadDialog({
   open,
   title,
   text,
+  sources,
   isLoading,
   hasError,
   onClose,
+  onRefreshed,
 }: {
   open: boolean;
   title?: string;
   text?: string;
+  sources?: DecreeDetail["external_sources"];
   isLoading: boolean;
   hasError: boolean;
   onClose: () => void;
+  onRefreshed: () => void;
 }) {
   return (
     <ModalDialog
@@ -108,11 +121,74 @@ function DecreeReadDialog({
           ) : hasError ? (
             <p className="text-sm text-foreground-subtle">Decree not available.</p>
           ) : (
-            <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
+            <div>
+              {sources && sources.length > 0 ? (
+                <section aria-label="Issued decree sources" className="mb-4 space-y-2">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">{sources.length} GitHub {sources.length === 1 ? "source" : "sources"}</p>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {sources.map((source) => <IssuedDecreeSourceCard key={source.link_id} source={source} onRefreshed={onRefreshed} />)}
+                  </div>
+                </section>
+              ) : null}
+              <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
+            </div>
           )}
         </div>
       </ModalShell>
     </ModalDialog>
+  );
+}
+
+type IssuedDecreeSource = DecreeDetail["external_sources"][number];
+
+function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeSource; onRefreshed: () => void }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const [refreshResult, setRefreshResult] = useState<components["schemas"]["ExternalRefreshResult"]>();
+  const recoverableRefresh = useRecoverableMutation(
+    "decree-source-refresh",
+    (request: { linkId: string }, key) => apiFetch<components["schemas"]["ExternalRefreshResult"]>(`/external-source-links/${request.linkId}/refreshes`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+    }),
+    source.link_id,
+  );
+  const sourceURL = safeGitHubIssueURL(source.canonical_url, source.repository, source.issue_number);
+  const sourceStatus = refreshResult?.outcome ?? source.status;
+  const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
+  const updateAvailable = latestSnapshotID !== source.used_snapshot_id;
+  const sourceFailureGuidance = externalSourceFailureGuidance(sourceStatus);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      const result = await recoverableRefresh.mutateAsync({ linkId: source.link_id });
+      setRefreshResult(result);
+      onRefreshed();
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "Could not check GitHub source");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <section aria-label={`Issued source ${source.repository}#${source.issue_number}`} className="min-w-0 space-y-2 rounded-md border border-gold/25 bg-gold/5 p-3 text-xs">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-medium text-foreground">Imported from GitHub · {sourceURL ? <a href={sourceURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{source.repository}#{source.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{source.repository}#{source.issue_number}</span>}</p>
+          <p className="mt-1 text-foreground-muted">{externalSourceStatusLabel(sourceStatus, updateAvailable)}{updateAvailable ? ". The issued decree remains unchanged." : "."}</p>
+        </div>
+        <Button type="button" size="sm" variant="ghost" aria-label={`${recoverableRefresh.hasPendingRecovery ? "Retry" : "Check"} GitHub source ${source.repository}#${source.issue_number}`} onClick={refresh} disabled={refreshing}>{refreshing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}{recoverableRefresh.hasPendingRecovery ? "Retry GitHub source check" : "Check GitHub source"}</Button>
+      </div>
+      {sourceFailureGuidance ? <p role="status" className="text-status-failed">{sourceFailureGuidance}</p> : null}
+      {refreshResult ? <p aria-live="polite" className="text-foreground-muted">{refreshResult.message}</p> : null}
+      {updateAvailable ? <ExternalSourceComparison baselineId={source.used_snapshot_id} candidateId={latestSnapshotID} /> : null}
+      {refreshResult?.retry_at ? <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
+      {refreshError ? <p role="alert" className="text-status-failed">{refreshError}</p> : null}
+      <details className="text-foreground-subtle"><summary className="cursor-pointer text-gold">Source details</summary><dl className="mt-1 space-y-1 font-mono text-[11px]"><div><dt className="inline">Issuance snapshot: </dt><dd className="inline break-all">{source.used_snapshot_id}</dd></div><div><dt className="inline">Latest snapshot: </dt><dd className="inline break-all">{latestSnapshotID}</dd></div></dl></details>
+    </section>
   );
 }
 
@@ -347,7 +423,11 @@ function getOrderedRoleOverrides(
       }
       return left.roleName.localeCompare(right.roleName);
     })
-    .map(({ sectionOrder: _sectionOrder, roleOrder: _roleOrder, ...override }) => override);
+    .map((override) => ({
+      roleId: override.roleId,
+      roleName: override.roleName,
+      selection: override.selection,
+    }));
 }
 
 function formatModelSelection(selection: RunModelSelectionEntry | undefined, providerModels: ProviderModel[]): {

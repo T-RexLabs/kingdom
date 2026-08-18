@@ -25,7 +25,36 @@ import (
 
 type mockAgent struct{}
 
+type formalizeContextCaptureAgent struct {
+	*mockAgent
+	contexts chan string
+}
+
+func (a *formalizeContextCaptureAgent) FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
+	a.contexts <- input.ContextSummary
+	return a.mockAgent.FormalizePlanStream(ctx, input, onChunk)
+}
+
 var defaultPlanningServiceTestScript = planningfixture.DefaultServiceScript()
+
+func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessionID string) string {
+	t.Helper()
+	snapshotID := "context_" + sessionID
+	if _, err := store.CreateContextSnapshot(context.Background(), state.CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: snapshotID,
+		PlanningSessionID:         sessionID,
+		SummaryMarkdown:           "test context",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-21T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("create planning context snapshot: %v", err)
+	}
+	if _, err := store.PublishContextSnapshot(context.Background(), sessionID, snapshotID, "2026-04-21T16:00:00Z"); err != nil {
+		t.Fatalf("publish planning context snapshot: %v", err)
+	}
+	return snapshotID
+}
 
 // testSuccessMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
@@ -798,6 +827,7 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_edit_auto_title")
 	// Linear seed chain: opening -> user_2 -> assistant_2 -> user_3 -> assistant_3.
 	seedMessages := []state.AppendPlanningMessageRequest{
 		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:00Z"},
@@ -1177,6 +1207,7 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_recovery_catchup")
 	seedMessages := []state.AppendPlanningMessageRequest{
 		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:00Z"},
 		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-26T09:55:01Z"},
@@ -1410,6 +1441,68 @@ func TestServiceRecoverOperationsRestartsQueuedWork(t *testing.T) {
 	}
 }
 
+func TestRecoveredFormalizeUsesOperationBoundContextSnapshot(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	ctx := context.Background()
+	const sessionID = "ps_bound_context_recovery"
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID: sessionID, Title: "Bound context", TitleState: "custom",
+		LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady,
+		ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"test-model"}`, CreatedAt: "2026-04-21T17:00:00Z", UpdatedAt: "2026-04-21T17:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, state.CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "context-a", PlanningSessionID: sessionID, SummaryMarkdown: "context A", IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: "2026-04-21T17:00:01Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishContextSnapshot(ctx, sessionID, "context-a", "2026-04-21T17:00:01Z"); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.CreateFormalizeBundle(ctx, state.CreatePlanningFormalizeBundleRequest{
+		SessionID:         sessionID,
+		Operation:         state.CreatePlanningOperationRequest{OperationID: "operation-bound", PlanningSessionID: sessionID, Type: state.PlanningOperationTypeFormalize, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{"draft_id":"draft-bound","draft_created_at":"2026-04-21T17:00:02Z"}`, CreatedAt: "2026-04-21T17:00:02Z"},
+		ConversationState: state.PlanningSessionConversationStateProcessing, CurrentOperationID: "operation-bound", UpdatedAt: "2026-04-21T17:00:02Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.PlanningContextSnapshotID == nil || *operation.PlanningContextSnapshotID != "context-a" {
+		t.Fatalf("operation context binding=%v", operation.PlanningContextSnapshotID)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, state.CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "context-b", PlanningSessionID: sessionID, SummaryMarkdown: "context B", IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: "2026-04-21T17:00:03Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishContextSnapshot(ctx, sessionID, "context-b", "2026-04-21T17:00:03Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE planning_operations SET planning_context_snapshot_id='context-b' WHERE operation_id='operation-bound'`); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("operation context binding was mutable: %v", err)
+	}
+
+	agent := &formalizeContextCaptureAgent{mockAgent: &mockAgent{}, contexts: make(chan string, 1)}
+	service := NewService(store, agent, projectRoot, func() string { return "2026-04-21T17:00:04Z" }, deterministicID())
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = service.Close(closeCtx)
+	})
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	awaitOperationTerminal(t, store, operation.OperationID)
+	select {
+	case got := <-agent.contexts:
+		if got != "context A" {
+			t.Fatalf("recovered formalize context=%q, want context A", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("formalize agent did not receive context")
+	}
+}
+
 // TestRefreshContextReturnsAdoptedSnapshot guards the API contract: the
 // returned snapshot must match session.context_snapshot_id, even when a
 // concurrent /context/refresh adopted a newer snapshot before ours.
@@ -1565,6 +1658,7 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_stuck_e2e")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_stuck_e2e",
 		PlanningSessionID:  "ps_stuck_e2e",
@@ -1719,6 +1813,9 @@ func TestFailOperationStaleLeaseDoesNotBumpFailureMetric(t *testing.T) {
 				UpdatedAt:          "2026-04-26T13:00:00Z",
 			}); err != nil {
 				t.Fatalf("create session: %v", err)
+			}
+			if tc.opType != state.PlanningOperationTypeBootstrapContext {
+				bindPlanningContextForTest(t, store, sessionID)
 			}
 			if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 				OperationID:        tc.opID,
@@ -1956,6 +2053,7 @@ func TestFailStuckMetricBumpsExactlyOnceUnderConcurrentFinalize(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_metric_race")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_metric_race",
 		PlanningSessionID:  "ps_metric_race",
@@ -2047,6 +2145,7 @@ func TestRecoveryDoesNotRestartExpiredButNotStuckRunningOperation(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_grace")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_grace",
 		PlanningSessionID:  "ps_grace",
@@ -2129,6 +2228,7 @@ func TestRecoveryFailStuckBootstrapWhileForegroundOpActive(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	// Foreground reply (running, lease still valid) — owns the slot.
+	bindPlanningContextForTest(t, store, "ps_bs_recovery")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_reply_fg",
 		PlanningSessionID:  "ps_bs_recovery",
@@ -2272,6 +2372,7 @@ func TestFinaliseIfStuckBeforeThreshold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_fresh")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_fresh",
 		PlanningSessionID:  "ps_fresh",
@@ -3313,15 +3414,20 @@ func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
 // mid-persist). The "Start was called" invariant is enforced by
 // construction: with admission control, every successful
 // CreateSession completes persist+Start before releaseWrite.
-func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
-	t.Parallel()
-
+func TestServiceCreateSessionRaceWithCloseHasNoOrphans(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeTestFile(t, projectRoot, "README.md", "# Project\n")
 
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T13:00:00Z" }, deterministicID())
+
+	// Occupy the sole in-memory SQLite connection so every caller crosses the
+	// admission gate but cannot persist until shutdown is already waiting.
+	blocker, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	const concurrency = 16
 	results := make(chan error, concurrency)
@@ -3334,17 +3440,32 @@ func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
 			results <- err
 		}()
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		service.writeMu.Lock()
+		active := service.activeWrites
+		service.writeMu.Unlock()
+		if active == concurrency {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d writes reached admission gate", active, concurrency)
+		}
+		time.Sleep(time.Millisecond)
+	}
 
-	// Race Close against the in-flight writes. The exact interleaving
-	// is non-deterministic; the invariant is what we assert on.
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	closeErr := service.Close(closeCtx)
-	if closeErr != nil && !errors.Is(closeErr, context.DeadlineExceeded) {
-		t.Fatalf("close: %v", closeErr)
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- service.Close(closeCtx) }()
+	if err := blocker.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	wg.Wait()
+	if closeErr := <-closeResult; closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
 	close(results)
 
 	// Count outcomes.
@@ -3374,6 +3495,9 @@ func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
 	persistedOps := countPlanningOperations(t, db)
 	if persistedOps != admitted {
 		t.Fatalf("expected %d persisted operations (one bootstrap per admitted session), got %d", admitted, persistedOps)
+	}
+	if starts := int(service.operations.deps.metrics.foregroundStarts.Load()); starts != admitted {
+		t.Fatalf("expected runner.Start for all %d admitted sessions, got %d", admitted, starts)
 	}
 
 	t.Logf("admitted=%d rejected=%d (every persisted row had Start invoked under the gate)", admitted, rejected)

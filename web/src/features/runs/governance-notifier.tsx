@@ -192,9 +192,9 @@ export function GovernanceNotifierMount() {
 	const navigate = useNavigate();
 	const pathname = useRouterState({ select: (state) => state.location.pathname });
 	const activeRunID = activeRunIDFromPath(pathname);
-	const runs = data?.items ?? [];
 
 	useEffect(() => {
+		const runs = data?.items ?? [];
 		const id = notificationId();
 		const allPendingItems = collectPendingGovernanceItems(runs, null);
 		const visibleItems = collectPendingGovernanceItems(runs, activeRunID);
@@ -251,7 +251,7 @@ export function GovernanceNotifierMount() {
 		}
 		writeDismissed(dismissed);
 		removeStaleGovernanceNotifications(notifications, removeNotification, id);
-	}, [runs, activeRunID, notifications, addNotification, updateNotification, removeNotification, navigate]);
+	}, [data?.items, activeRunID, notifications, addNotification, updateNotification, removeNotification, navigate]);
 
 	return null;
 }

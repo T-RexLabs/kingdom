@@ -79,7 +79,7 @@ describe("planning session list", () => {
 
     expect(deleteMutate).toHaveBeenCalledWith({
       value: "session-2",
-      key: "planning-delete-test",
+      key: expect.stringMatching(/^kd1\./),
     });
     expect(navigate).toHaveBeenCalledWith({ to: "/decrees/planning" });
   });

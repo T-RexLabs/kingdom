@@ -38,27 +38,48 @@ func (d runtimeDeps) nextID(prefix string) string {
 	return d.ids(prefix)
 }
 
-func (d runtimeDeps) agentContext(session state.PlanningSession, snapshot state.PlanningContextSnapshot, messages []state.PlanningMessage, forceNewSession bool) AgentContext {
-	return AgentContext{
-		SessionID:       session.PlanningSessionID,
-		Title:           effectiveSessionTitle(session),
-		ProjectRoot:     session.ProjectRoot,
-		ContextSummary:  snapshot.SummaryMarkdown,
-		Messages:        messages,
-		ModelSelection:  decodeModelSelection(session.ModelSelectionJSON),
-		ForceNewSession: forceNewSession,
+func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage, forceNewSession bool) (AgentContext, error) {
+	snapshot, err := d.store.LoadPlanningOperationContextSnapshot(ctx, operation)
+	if err != nil {
+		return AgentContext{}, err
 	}
+	externalContext, snapshotIDs, err := d.store.LoadPlanningOperationExternalContext(ctx, operation.OperationID)
+	if err != nil {
+		return AgentContext{}, err
+	}
+	return AgentContext{
+		SessionID:           session.PlanningSessionID,
+		Title:               effectiveSessionTitle(session),
+		ProjectRoot:         session.ProjectRoot,
+		ContextSummary:      snapshot.SummaryMarkdown,
+		ExternalContext:     externalContext,
+		ExternalSnapshotIDs: snapshotIDs,
+		Messages:            messages,
+		ModelSelection:      decodeModelSelection(session.ModelSelectionJSON),
+		ForceNewSession:     forceNewSession,
+	}, nil
 }
 
-func (d runtimeDeps) titleAgentContext(session state.PlanningSession, messages []state.PlanningMessage) AgentContext {
-	return AgentContext{
-		SessionID:       session.PlanningSessionID,
-		Title:           effectiveSessionTitle(session),
-		ProjectRoot:     session.ProjectRoot,
-		Messages:        messages,
-		ModelSelection:  decodeModelSelection(session.ModelSelectionJSON),
-		ForceNewSession: false,
+func (d runtimeDeps) titleAgentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage) (AgentContext, error) {
+	snapshot, err := d.store.LoadPlanningOperationContextSnapshot(ctx, operation)
+	if err != nil {
+		return AgentContext{}, err
 	}
+	externalContext, snapshotIDs, err := d.store.LoadPlanningOperationExternalContext(ctx, operation.OperationID)
+	if err != nil {
+		return AgentContext{}, err
+	}
+	return AgentContext{
+		SessionID:           session.PlanningSessionID,
+		Title:               effectiveSessionTitle(session),
+		ProjectRoot:         session.ProjectRoot,
+		ContextSummary:      snapshot.SummaryMarkdown,
+		Messages:            messages,
+		ExternalContext:     externalContext,
+		ExternalSnapshotIDs: snapshotIDs,
+		ModelSelection:      decodeModelSelection(session.ModelSelectionJSON),
+		ForceNewSession:     false,
+	}, nil
 }
 
 func (d runtimeDeps) refreshContextSnapshot(ctx context.Context, planningSessionID string) (state.PlanningContextSnapshot, error) {

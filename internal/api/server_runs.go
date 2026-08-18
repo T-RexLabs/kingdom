@@ -982,7 +982,7 @@ func (s *Server) handleListRunAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListRunExecutions(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_run_executions"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_run_executions"); !ok {
 		return
 	}
 
@@ -1008,7 +1008,7 @@ func (s *Server) handleListRunExecutions(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_run_execution"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_execution"); !ok {
 		return
 	}
 
@@ -1053,7 +1053,7 @@ func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
 // stream. The payload shape mirrors the planner's activity endpoint so the same
 // frontend renderer serves both.
 func (s *Server) handleGetRunExecutionActivity(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_run_execution_activity"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_execution_activity"); !ok {
 		return
 	}
 

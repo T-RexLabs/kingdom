@@ -1,6 +1,6 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { PageHeader } from "@/components/page-layout";
-import { buttonVariants } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { PlanningSessionList } from "./planning-session-list";
 
 export function DecreesWorkspaceLayout() {

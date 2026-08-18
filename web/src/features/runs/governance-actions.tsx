@@ -2,10 +2,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  newIdempotencyKey,
   useCreateFinalApproval,
   useRetryNode,
   useRerunFromNode,
+  type CreateFinalApprovalRequest,
   type RunSummary,
   type RunGraphNode,
 } from "@/api/hooks";
@@ -21,6 +21,7 @@ import { statusLabel } from "@/lib/status-system";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { ApprovalDecisionForm } from "./approval-decision-form";
 import { describeManualGovernanceState } from "./manual-governance-state";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 interface GovernanceActionsProps {
   run: RunSummary;
@@ -58,6 +59,11 @@ export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], 
 
 export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?: Ref<HTMLDivElement> }) {
   const approval = useCreateFinalApproval(run.run_id);
+  const recoverableApproval = useRecoverableMutation(
+    "approval",
+    (body: CreateFinalApprovalRequest, key) => approval.mutateAsync({ body, key }),
+    run.run_id,
+  );
   const governanceState = describeManualGovernanceState(run);
 
   const handleConfirm = async (notes: string) => {
@@ -65,17 +71,11 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
       action: "confirm" as const,
       ...(notes !== "" ? { reason: notes } : {}),
     };
-    await approval.mutateAsync({
-      body,
-      key: newIdempotencyKey("approval"),
-    });
+    await recoverableApproval.mutateAsync(body);
   };
 
   const handleRequestRework = async (notes: string) => {
-    await approval.mutateAsync({
-      body: { action: "rework", reason: notes },
-      key: newIdempotencyKey("approval"),
-    });
+    await recoverableApproval.mutateAsync({ action: "rework", reason: notes });
   };
 
   return (
@@ -99,6 +99,7 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
             reworkPendingLabel="Requesting Rework..."
             reworkValidationMessage="Add rework guidance before requesting rework."
             errorMessage={approval.error?.message ?? null}
+            recoveryAction={recoverableApproval.pendingRequest?.action ?? null}
             onConfirm={handleConfirm}
             onRequestRework={handleRequestRework}
           />
@@ -121,6 +122,16 @@ export function NodeActionsCard({
 }) {
   const retry = useRetryNode(runId);
   const rerun = useRerunFromNode(runId);
+  const recoverableRetry = useRecoverableMutation(
+    "retry",
+    (nodeKey: string, key) => retry.mutateAsync({ value: nodeKey, key }),
+    runId,
+  );
+  const recoverableRerun = useRecoverableMutation(
+    "rerun",
+    (nodeKey: string, key) => rerun.mutateAsync({ value: nodeKey, key }),
+    runId,
+  );
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<string>("");
 
@@ -128,10 +139,7 @@ export function NodeActionsCard({
     setPendingAction(`retry-${nodeKey}`);
     setActionFeedback("");
     try {
-      const result = await retry.mutateAsync({
-        value: nodeKey,
-        key: newIdempotencyKey("retry"),
-      });
+      const result = await recoverableRetry.mutateAsync(nodeKey);
       setActionFeedback(`Retry queued for ${result.node_key}. This reruns only the selected node.`);
     } catch {
       // error available via retry.error
@@ -144,10 +152,7 @@ export function NodeActionsCard({
     setPendingAction(`rerun-${nodeKey}`);
     setActionFeedback("");
     try {
-      const result = await rerun.mutateAsync({
-        value: nodeKey,
-        key: newIdempotencyKey("rerun"),
-      });
+      const result = await recoverableRerun.mutateAsync(nodeKey);
       if (result.from_node !== nodeKey) {
         setActionFeedback(`Rerun queued from ${result.from_node}. The original target was promoted to rebuild plan and downstream execution.`);
       } else {
@@ -189,6 +194,9 @@ export function NodeActionsCard({
         {nodes.map((node) => {
           const { executionModeLabel, roleLabel } = nodeExecutionSemantics(node.execution_ownership, node.required_role);
           const reason = node.failure_reason ?? (cancelled ? "" : "Failure reason unavailable.");
+          const recoveryPending = recoverableRetry.hasPendingRecovery || recoverableRerun.hasPendingRecovery;
+          const canRetryRecovery = recoverableRetry.pendingRequest === node.node_id;
+          const canRerunRecovery = recoverableRerun.pendingRequest === node.node_id;
 
           return (
             <div
@@ -211,7 +219,7 @@ export function NodeActionsCard({
                   size="sm"
                   variant="ghost"
                   onClick={() => handleRetry(node.node_id)}
-                  disabled={pendingAction !== null}
+                  disabled={pendingAction !== null || (recoveryPending && !canRetryRecovery)}
                   title="Retry this node"
                 >
                   <RefreshCw
@@ -219,17 +227,17 @@ export function NodeActionsCard({
                       pendingAction === `retry-${node.node_id}` ? "animate-spin" : ""
                     }`}
                   />
-                  Retry
+                  {canRetryRecovery ? "Retry Again" : "Retry"}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
                   onClick={() => handleRerun(node.node_id)}
-                  disabled={pendingAction !== null}
+                  disabled={pendingAction !== null || (recoveryPending && !canRerunRecovery)}
                   title="Rerun from this node"
                 >
                   <Play className="h-3 w-3" />
-                  Rerun
+                  {canRerunRecovery ? "Retry Rerun" : "Rerun"}
                 </Button>
               </div>
             </div>

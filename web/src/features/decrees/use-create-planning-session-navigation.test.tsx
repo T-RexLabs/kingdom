@@ -40,14 +40,14 @@ describe("useCreatePlanningSessionNavigation", () => {
 		idempotencyKeyCounter = 0;
 	});
 
-	it("reuses the same idempotency key when retrying an ambiguous create failure", async () => {
+	it("reuses the same idempotency key when retrying a pending create", async () => {
 		const client = makeClient();
 		const wrapper = makeWrapper(client);
 		const body = { model_selection: { model: "gpt-5.4" } };
 		createMutateAsync
-			.mockRejectedValueOnce(new ApiError(500, {
-				message: "temporary failure",
-				code: "internal_error",
+			.mockRejectedValueOnce(new ApiError(409, {
+				message: "reservation pending",
+				code: "idempotency_pending",
 				retryable: true,
 				category: "core",
 				details: {},
@@ -80,7 +80,7 @@ describe("useCreatePlanningSessionNavigation", () => {
 			}
 		});
 		expect(err).toBeInstanceOf(Error);
-		expect((err as Error).message).toBe("temporary failure");
+		expect((err as Error).message).toBe("reservation pending");
 		await act(async () => {
 			await Promise.resolve();
 		});
@@ -97,20 +97,13 @@ describe("useCreatePlanningSessionNavigation", () => {
 		expect(resetMock).toHaveBeenCalled();
 	});
 
-	it("starts a fresh request when the current form no longer matches the recovery body", async () => {
+	it("does not replace an ambiguous request when the form changes", async () => {
 		const client = makeClient();
 		const wrapper = makeWrapper(client);
 		const originalBody = { model_selection: { model: "gpt-5.4" } };
 		const updatedBody = { model_selection: { model: "gpt-5.4-mini", thinking_effort: "low" } };
 		createMutateAsync
-			.mockRejectedValueOnce(new ApiError(500, {
-				message: "temporary failure",
-				code: "internal_error",
-				retryable: true,
-				category: "core",
-				details: {},
-				correlationId: "test",
-			}))
+			.mockRejectedValueOnce(new TypeError("connection lost"))
 			.mockResolvedValueOnce({
 				session: {
 					planning_session_id: "planning-session-2",
@@ -130,25 +123,21 @@ describe("useCreatePlanningSessionNavigation", () => {
 		const { result } = renderHook(() => useCreatePlanningSessionNavigation(), { wrapper });
 
 		await act(async () => {
-			await expect(result.current.mutateAsync(originalBody)).rejects.toThrow("temporary failure");
+			await expect(result.current.mutateAsync(originalBody)).rejects.toThrow("connection lost");
 		});
 		expect(result.current.hasRecovery).toBe(true);
-		expect(result.current.canRecoverWith(originalBody)).toBe(true);
-		expect(result.current.canRecoverWith(updatedBody)).toBe(false);
 
 		await act(async () => {
 			await result.current.mutateAsync(updatedBody);
 		});
 
 		expect(createMutateAsync).toHaveBeenCalledTimes(2);
-		expect(createMutateAsync.mock.calls[0]?.[0]).toEqual({
-			body: originalBody,
-			key: "planning-session-test-1",
-		});
-		expect(createMutateAsync.mock.calls[1]?.[0]).toEqual({
-			body: updatedBody,
-			key: "planning-session-test-2",
-		});
+  const firstRequest = createMutateAsync.mock.calls[0]?.[0];
+  const secondRequest = createMutateAsync.mock.calls[1]?.[0];
+  expect(firstRequest?.body).toEqual(originalBody);
+  expect(secondRequest?.body).toEqual(originalBody);
+  expect(firstRequest?.key).toMatch(/^kd1\./);
+  expect(secondRequest?.key).toBe(firstRequest?.key);
 		expect(result.current.hasRecovery).toBe(false);
 	});
 });

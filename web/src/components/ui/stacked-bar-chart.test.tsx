@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { StackedBarChart, computeLegendLayout } from "./stacked-bar-chart";
+import { StackedBarChart } from "./stacked-bar-chart";
+import { computeLegendLayout } from "./stacked-bar-chart-layout";
 
 describe("stacked bar chart", () => {
   it("reuses bars, grid lines, and legend items across updates", () => {

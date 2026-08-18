@@ -50,19 +50,19 @@ func (e *WorkerOutputValidationError) Unwrap() error {
 }
 
 type ArtifactRecord struct {
-	ArtifactID   string
-	RunID        string
-	NodeRunID    string
-	AttemptID    string
-	ArtifactKind string
+	ArtifactID     string
+	RunID          string
+	NodeRunID      string
+	AttemptID      string
+	ArtifactKind   string
 	ArtifactAction string
-	Name         string
-	MIME         string
-	Path         string
-	SHA256       string
-	SizeBytes    int64
-	ProducerRole string
-	CreatedAt    string
+	Name           string
+	MIME           string
+	Path           string
+	SHA256         string
+	SizeBytes      int64
+	ProducerRole   string
+	CreatedAt      string
 }
 
 type workerOutputEnvelope struct {
@@ -204,33 +204,32 @@ func (v *WorkerOutputValidator) ListArtifactsByAttempt(ctx context.Context, atte
 func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRequest, artifact workerOutputArtifact, index int) (ArtifactRecord, []byte, error) {
 	action := firstNonEmptyArtifactAction(artifact.Action)
 	artifactPath := strings.TrimSpace(artifact.Path)
+	if err := validateArtifactPathReference(artifactPath); err != nil {
+		return ArtifactRecord{}, nil, &WorkerOutputValidationError{
+			Code:   string(errorcatalog.CodeInvalidOutputSchema),
+			Reason: err.Error(),
+			err:    err,
+		}
+	}
 	raw, hasInlineContent := req.ArtifactContentByPath[artifactPath]
 	if action == "delete" {
 		return ArtifactRecord{
-			ArtifactID:      fmt.Sprintf("%s_artifact_%d", req.AttemptID, index+1),
-			RunID:           req.RunID,
-			NodeRunID:       req.NodeRunID,
-			AttemptID:       req.AttemptID,
-			ArtifactKind:    firstNonEmptyArtifactKind(artifact.Kind),
-			ArtifactAction:  action,
-			Name:            artifact.Name,
-			MIME:            artifact.MIME,
-			Path:            artifactPath,
-			SHA256:          "",
-			SizeBytes:       0,
-			ProducerRole:    req.ProducerRole,
-			CreatedAt:       req.CreatedAt,
+			ArtifactID:     fmt.Sprintf("%s_artifact_%d", req.AttemptID, index+1),
+			RunID:          req.RunID,
+			NodeRunID:      req.NodeRunID,
+			AttemptID:      req.AttemptID,
+			ArtifactKind:   firstNonEmptyArtifactKind(artifact.Kind),
+			ArtifactAction: action,
+			Name:           artifact.Name,
+			MIME:           artifact.MIME,
+			Path:           artifactPath,
+			SHA256:         "",
+			SizeBytes:      0,
+			ProducerRole:   req.ProducerRole,
+			CreatedAt:      req.CreatedAt,
 		}, nil, nil
 	}
-	if hasInlineContent {
-		if err := validateArtifactPathReference(artifactPath); err != nil {
-			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
-				Code:   string(errorcatalog.CodeInvalidOutputSchema),
-				Reason: err.Error(),
-				err:    err,
-			}
-		}
-	} else {
+	if !hasInlineContent {
 		if strings.TrimSpace(req.WorkspacePath) == "" {
 			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
 				Code:   string(errorcatalog.CodeInvalidOutputSchema),
@@ -271,19 +270,19 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 	artifactID := fmt.Sprintf("%s_artifact_%d", req.AttemptID, index+1)
 
 	return ArtifactRecord{
-		ArtifactID:   artifactID,
-		RunID:        req.RunID,
-		NodeRunID:    req.NodeRunID,
-		AttemptID:    req.AttemptID,
-		ArtifactKind: firstNonEmptyArtifactKind(artifact.Kind),
+		ArtifactID:     artifactID,
+		RunID:          req.RunID,
+		NodeRunID:      req.NodeRunID,
+		AttemptID:      req.AttemptID,
+		ArtifactKind:   firstNonEmptyArtifactKind(artifact.Kind),
 		ArtifactAction: action,
-		Name:         artifact.Name,
-		MIME:         artifact.MIME,
-		Path:         artifactPath,
-		SHA256:       calculatedSHA,
-		SizeBytes:    int64(len(raw)),
-		ProducerRole: req.ProducerRole,
-		CreatedAt:    req.CreatedAt,
+		Name:           artifact.Name,
+		MIME:           artifact.MIME,
+		Path:           artifactPath,
+		SHA256:         calculatedSHA,
+		SizeBytes:      int64(len(raw)),
+		ProducerRole:   req.ProducerRole,
+		CreatedAt:      req.CreatedAt,
 	}, raw, nil
 }
 
@@ -321,6 +320,9 @@ func validateArtifactPathReference(artifactPath string) error {
 	if filepath.IsAbs(normalized) {
 		return fmt.Errorf("artifact path must be relative to workspace")
 	}
+	if strings.Contains(normalized, "\\") || hasWindowsDrivePrefix(normalized) {
+		return fmt.Errorf("artifact path must use portable relative path syntax")
+	}
 	clean := filepath.Clean(normalized)
 	if clean == "." || clean == "" {
 		return fmt.Errorf("artifact path is required")
@@ -329,6 +331,10 @@ func validateArtifactPathReference(artifactPath string) error {
 		return fmt.Errorf("artifact path escapes workspace: %q", artifactPath)
 	}
 	return nil
+}
+
+func hasWindowsDrivePrefix(value string) bool {
+	return len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':'
 }
 
 func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {

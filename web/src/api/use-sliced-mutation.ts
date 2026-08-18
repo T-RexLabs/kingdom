@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { shouldRetainMutationRequest } from "@/lib/use-recoverable-mutation";
 
 /**
  * Sentinel returned by superseded mutation invocations. mutationFn
@@ -28,27 +29,41 @@ export type SupersededResult = typeof SUPERSEDED;
 export function useSlicedMutation<TVars, TResponse>(
   mutationFn: (vars: TVars, signal: AbortSignal) => Promise<TResponse>,
   onLatestSuccess: (result: TResponse) => void,
+  identity = "default",
 ) {
-  const abortRef = useRef<AbortController | null>(null);
   const genRef = useRef(0);
+  const queueRef = useRef<Promise<void>>(Promise.resolve());
+  const recoveryRef = useRef<{ identity: string; variables: TVars } | null>(null);
+  const [recoveryVariables, setRecoveryVariables] = useState<{ identity: string; variables: TVars } | null>(null);
 
-  return useMutation<TResponse | SupersededResult, Error, TVars>({
+  const mutation = useMutation<TResponse | SupersededResult, Error, TVars>({
     mutationFn: async (vars: TVars) => {
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
       const myGen = ++genRef.current;
+      const previous = queueRef.current;
+      let release!: () => void;
+      queueRef.current = new Promise<void>((resolve) => { release = resolve; });
+      await previous;
       try {
-        const result = await mutationFn(vars, controller.signal);
-        if (myGen !== genRef.current) {
-          return SUPERSEDED;
+        const recovery = recoveryRef.current?.identity === identity ? recoveryRef.current.variables : null;
+        const attempts = recovery && recovery !== vars ? [recovery, vars] : [vars];
+        let result: TResponse | undefined;
+        for (const attemptedVars of attempts) {
+          try {
+            const controller = new AbortController();
+            result = await mutationFn(attemptedVars, controller.signal);
+            recoveryRef.current = null;
+            setRecoveryVariables(null);
+          } catch (err) {
+            recoveryRef.current = shouldRetainMutationRequest(err) ? { identity, variables: attemptedVars } : null;
+            setRecoveryVariables(recoveryRef.current);
+            if (myGen !== genRef.current) return SUPERSEDED;
+            throw err;
+          }
+          if (myGen !== genRef.current) return SUPERSEDED;
         }
-        return result;
-      } catch (err) {
-        if (myGen !== genRef.current || (err instanceof Error && err.name === "AbortError")) {
-          return SUPERSEDED;
-        }
-        throw err;
+        return result as TResponse;
+      } finally {
+        release();
       }
     },
     onSuccess: (result) => {
@@ -58,4 +73,17 @@ export function useSlicedMutation<TVars, TResponse>(
       onLatestSuccess(result as TResponse);
     },
   });
+
+  const retryRecovery = () => {
+    const recovery = recoveryRef.current;
+    if (!recovery || recovery.identity !== identity) return Promise.reject(new Error("mutation recovery request is not available"));
+    return mutation.mutateAsync(recovery.variables);
+  };
+
+  return {
+    ...mutation,
+    hasPendingRecovery: recoveryVariables?.identity === identity,
+    pendingVariables: recoveryVariables?.identity === identity ? recoveryVariables.variables : null,
+    retryRecovery,
+  };
 }

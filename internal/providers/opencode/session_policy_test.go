@@ -67,3 +67,21 @@ func TestExecutionSessionInlineConfig(t *testing.T) {
 		t.Fatalf("expected execution question deny, got %#v", permission["question"])
 	}
 }
+
+func TestExternalPlannerSessionInlineConfigDeniesEveryTool(t *testing.T) {
+	raw, err := ExternalPlannerSessionInlineConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err = json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	permission := payload["permission"].(map[string]any)
+	if permission["*"] != "deny" {
+		t.Fatalf("wildcard permission=%v", permission["*"])
+	}
+	if permission["external_directory"] != "deny" || permission["question"] != "deny" {
+		t.Fatalf("permission=%v", permission)
+	}
+}

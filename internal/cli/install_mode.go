@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -26,8 +27,12 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/external"
+	githubexternal "kingdom/internal/external/github"
+	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/shutdown"
@@ -123,14 +128,9 @@ type installConfig struct {
 		WorktreeRetention string `yaml:"worktree_retention"`
 	} `yaml:"publish"`
 	Server struct {
-		Listen            string `yaml:"listen"`
-		BasePath          string `yaml:"base_path"`
-		PreviewSessionTTL string `yaml:"preview_session_ttl"`
+		Listen   string `yaml:"listen"`
+		BasePath string `yaml:"base_path"`
 	} `yaml:"server"`
-	Operator struct {
-		ActorID string `yaml:"actor_id"`
-		RoleID  string `yaml:"role_id"`
-	} `yaml:"operator"`
 	Provider struct {
 		Engine          string `yaml:"engine"`
 		Strict          bool   `yaml:"strict"`
@@ -141,6 +141,12 @@ type installConfig struct {
 		AttachURL       string `yaml:"attach_url"`
 		SkipPermissions *bool  `yaml:"skip_permissions"`
 	} `yaml:"provider"`
+	GitHub struct {
+		SharedApp struct {
+			Slug     string `yaml:"slug"`
+			ClientID string `yaml:"client_id"`
+		} `yaml:"shared_app"`
+	} `yaml:"github"`
 }
 
 // summonAPIURL builds the canonical http://<listen><basePath> URL
@@ -449,6 +455,9 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	if err := os.MkdirAll(kingdomHome, 0o755); err != nil {
 		return fmt.Errorf("create kingdom home: %w", err)
 	}
+	if _, err := localauth.EnsureCredential(kingdomHome); err != nil {
+		return err
+	}
 
 	if err := bootstrapassets.WriteScaffold(kingdomHome, absProjectPath, opts.force); err != nil {
 		return fmt.Errorf("write embedded scaffold: %w", err)
@@ -511,7 +520,7 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("remove kingdom home: %w", err)
 	}
 
-	_, err = fmt.Fprintf(stdout, "cleaned kingdom scaffold at %s\n", kingdomHome)
+	_, err = fmt.Fprintf(stdout, "cleaned kingdom scaffold at %s (including local secrets; API access must be reprovisioned and existing browser sessions are invalid)\n", kingdomHome)
 	return err
 }
 
@@ -559,6 +568,17 @@ func validateSummonRoute(args []string) error {
 }
 
 func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
+	return runSummonWithDependencies(ctx, stdout, stderr, args, summonDependencies{})
+}
+
+// summonDependencies is an internal construction seam for deterministic
+// installed-mode validation. Production callers always use the zero value,
+// which preserves fixed GitHub.com egress and exposes no operator switch.
+type summonDependencies struct {
+	externalAdapter external.Adapter
+}
+
+func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string, deps summonDependencies) (err error) {
 	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	readyTimeoutExplicit := false
@@ -646,6 +666,10 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 	if err != nil {
 		return fmt.Errorf("parse publish.worktree_retention: %w", err)
 	}
+	operatorCredential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome))
+	if err != nil {
+		return err
+	}
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
@@ -658,7 +682,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
 		PublishMode:         cfg.Publish.Mode,
 		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
-		WorkspaceFallbacks:  []string{filepath.Join(os.TempDir(), "kingdom-workspaces")},
 		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
 		WorktreeRetention:   worktreeRetention,
 		ProviderSession: opencode.SessionAdapterConfig{
@@ -674,18 +697,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		return fmt.Errorf("bootstrap runtime: %w", err)
 	}
 
-	if err := runtimeInstance.Start(ctx); err != nil {
-		return fmt.Errorf("start runtime: %w", err)
-	}
-	defer func() {
-		_ = runtimeInstance.Close()
-	}()
-
-	previewSessionTTL, err := time.ParseDuration(cfg.Server.PreviewSessionTTL)
-	if err != nil {
-		return fmt.Errorf("parse server.preview_session_ttl: %w", err)
-	}
-
 	// readInstallConfigFromStruct already normalized cfg.Server.BasePath,
 	// so every consumer below reads the canonical form directly. No
 	// local re-normalization, no scattered TrimRight fallbacks.
@@ -693,7 +704,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		DB:                         db,
 		StartupContext:             ctx,
 		BasePath:                   cfg.Server.BasePath,
-		PreviewSessionTTL:          previewSessionTTL,
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
 		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
@@ -701,21 +711,28 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
 		DefaultPublishMode:         cfg.Publish.Mode,
+		OperatorCredential:         operatorCredential,
+		ExternalAdapter:            deps.externalAdapter,
+		GitHubSharedAppSlug:        cfg.GitHub.SharedApp.Slug,
+		GitHubSharedAppClientID:    cfg.GitHub.SharedApp.ClientID,
 	})
 	if err != nil {
 		return fmt.Errorf("build api handler: %w", err)
 	}
+	if err := runtimeInstance.Start(ctx); err != nil {
+		_ = apiHandler.Close(context.Background())
+		return fmt.Errorf("start runtime: %w", err)
+	}
+	defer func() {
+		_ = runtimeInstance.Close()
+	}()
 	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
 		apiHandler,
 		shutdown.CloseFunc(runtimeInstance.GracefulClose),
 	}}
 
-	handler := withSummonAccessLog(api.NewSPAMux(apiHandler, webui.Handler(), cfg.Server.BasePath), stderr)
-	server := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	handler := withSummonAccessLog(api.NewSPAMux(apiHandler, webui.Handler(cfg.Server.BasePath), cfg.Server.BasePath), stderr)
+	server := api.NewHTTPServer(cfg.Server.Listen, handler)
 
 	// Single graceful-path Coordinator owned by runSummon. Both
 	// the awaitSummonTermination graceful callback AND the deferred
@@ -761,6 +778,9 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		// server.Shutdown(...) here that would muddy ownership.
 		return err
 	}
+	if err := ensureWorkflowSeeds(ctx, cfg); err != nil {
+		return fmt.Errorf("ensure workflow seeds: %w", err)
+	}
 	if err := registerSummonInstance(summonInstanceRecord{
 		PID:         os.Getpid(),
 		ConfigPath:  resolvedConfigPath,
@@ -779,10 +799,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 
 	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen)); err != nil {
 		return err
-	}
-
-	if err := ensureWorkflowSeeds(ctx, cfg); err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: workflow seeds unavailable: %v\n", err)
 	}
 
 	signalCh := make(chan os.Signal, 2)
@@ -1543,8 +1559,9 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		}
 
 		apiReq, _ := http.NewRequest(http.MethodGet, apiURL, nil)
-		apiReq.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
-		apiReq.Header.Set("X-Role-Id", cfg.Operator.RoleID)
+		if credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome)); err == nil {
+			apiReq.Header.Set("Authorization", "Bearer "+string(credential))
+		}
 
 		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh, cfg.Server.Listen, startupLogPath)
 		if err != nil {
@@ -1552,7 +1569,17 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		}
 
 		if apiReady {
-			return nil
+			if statePath == "" {
+				return nil
+			}
+			if state, ok, stateErr := loadSummonState(statePath); stateErr == nil && ok {
+				if state.State == summonStatusStateFailed {
+					return fmt.Errorf("summon startup failed: %s", strings.TrimSpace(state.LastError))
+				}
+				if state.State == summonStatusStateRunning {
+					return nil
+				}
+			}
 		}
 
 		time.Sleep(160 * time.Millisecond)
@@ -1927,32 +1954,107 @@ func ensureWorkflowSeeds(ctx context.Context, cfg installConfig) error {
 			return fmt.Errorf("encode workflow seed %q publish payload: %w", seed.Name, err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, summonAPIURL(cfg)+"/workflows/publish", strings.NewReader(string(encoded)))
+		credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome))
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
-		req.Header.Set("X-Role-Id", cfg.Operator.RoleID)
-		req.Header.Set("Idempotency-Key", newIdempotencyKey("summon-seed-workflow"))
-
-		resp, err := client.Do(req)
+		idempotencyKey, err := newIdempotencyKey("summon-seed-workflow")
 		if err != nil {
 			return err
 		}
+		published := false
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, summonAPIURL(cfg)+"/workflows/publish", bytes.NewReader(encoded))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("Authorization", "Bearer "+string(credential))
+			req.Header.Set("Idempotency-Key", idempotencyKey)
 
-		bodyRaw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
-			continue
+			resp, err := client.Do(req)
+			if err != nil {
+				if attempt < 2 {
+					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+						return err
+					}
+					continue
+				}
+				return fmt.Errorf("publish workflow seed %q outcome is ambiguous: %w", seed.Name, err)
+			}
+			bodyRaw, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				if attempt < 2 {
+					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+						return err
+					}
+					continue
+				}
+				return fmt.Errorf("publish workflow seed %q response is ambiguous: %w", seed.Name, readErr)
+			}
+			if resp.StatusCode == http.StatusCreated || workflowSeedAlreadyExists(resp.StatusCode, bodyRaw) {
+				published = true
+				break
+			}
+			if resp.StatusCode == http.StatusConflict && canonicalErrorCode(bodyRaw) == string(errorcatalog.CodeIdempotencyPending) && attempt < 2 {
+				if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("publish workflow seed %q failed: status=%d body=%s", seed.Name, resp.StatusCode, strings.TrimSpace(string(bodyRaw)))
 		}
-
-		return fmt.Errorf("publish workflow seed %q failed: status=%d body=%s", seed.Name, resp.StatusCode, strings.TrimSpace(string(bodyRaw)))
+		if !published {
+			return fmt.Errorf("publish workflow seed %q remained pending", seed.Name)
+		}
 	}
 
 	return nil
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func canonicalErrorCode(body []byte) string {
+	return parseCanonicalError(body).Code
+}
+
+type canonicalErrorSummary struct {
+	Code          string
+	Message       string
+	CorrelationID string
+}
+
+func parseCanonicalError(body []byte) canonicalErrorSummary {
+	var envelope struct {
+		Error struct {
+			Code          string `json:"code"`
+			Message       string `json:"message"`
+			CorrelationID string `json:"correlation_id"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return canonicalErrorSummary{}
+	}
+	return canonicalErrorSummary{Code: envelope.Error.Code, Message: envelope.Error.Message, CorrelationID: envelope.Error.CorrelationID}
+}
+
+func workflowSeedAlreadyExists(status int, body []byte) bool {
+	errorSummary := parseCanonicalError(body)
+	return status == http.StatusConflict &&
+		errorSummary.Code == string(errorcatalog.CodeIdempotencyConflict) &&
+		errorSummary.CorrelationID == "api.publish_workflow" &&
+		errorSummary.Message == "workflow version already exists"
 }
 
 func withSummonAccessLog(next http.Handler, writer io.Writer) http.Handler {
@@ -1969,7 +2071,7 @@ func withSummonAccessLog(next http.Handler, writer io.Writer) http.Handler {
 			writer,
 			"summon http method=%s path=%s status=%d duration_ms=%d remote=%s\n",
 			r.Method,
-			r.URL.RequestURI(),
+			r.URL.EscapedPath(),
 			recorder.status,
 			time.Since(start).Milliseconds(),
 			r.RemoteAddr,
@@ -2008,9 +2110,6 @@ func defaultInstallConfig(kingdomHome string) installConfig {
 	}
 	cfg.Server.Listen = "127.0.0.1:8080"
 	cfg.Server.BasePath = "/api/v1"
-	cfg.Server.PreviewSessionTTL = "30m"
-	cfg.Operator.ActorID = "summon-system"
-	cfg.Operator.RoleID = "allfather"
 	cfg.Provider.Engine = "opencode"
 	cfg.Provider.Strict = true
 	cfg.Provider.GovernanceMode = "autonomous"
@@ -2018,6 +2117,8 @@ func defaultInstallConfig(kingdomHome string) installConfig {
 	cfg.Governance.AutonomousApprovals = boolPtr(true)
 	cfg.Publish.Mode = kingdom.PublishModeDirect
 	cfg.Publish.WorktreeRetention = workspace.DefaultRunWorktreeRetention.String()
+	cfg.GitHub.SharedApp.Slug = githubexternal.OfficialSharedAppSlug
+	cfg.GitHub.SharedApp.ClientID = githubexternal.OfficialSharedAppClientID
 	return cfg
 }
 
@@ -2058,7 +2159,9 @@ func readInstallConfig(path string) (installConfig, error) {
 	}
 
 	var cfg installConfig
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(string(raw)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return installConfig{}, fmt.Errorf("decode summon config: %w", err)
 	}
 	return readInstallConfigFromStruct(cfg)
@@ -2088,25 +2191,22 @@ func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
 	// must all see the canonical form. Normalizing here lets
 	// scattered TrimRight/TrimSpace fallback paths elsewhere be
 	// dropped — there's only one canonical form anywhere.
-	cfg.Server.BasePath = api.NormalizeBasePath(cfg.Server.BasePath)
-	if strings.TrimSpace(cfg.Server.PreviewSessionTTL) == "" {
-		cfg.Server.PreviewSessionTTL = "30m"
+	basePath, err := api.ValidateBasePath(cfg.Server.BasePath)
+	if err != nil {
+		return installConfig{}, fmt.Errorf("config server.base_path: %w", err)
 	}
-	if _, err := time.ParseDuration(cfg.Server.PreviewSessionTTL); err != nil {
-		return installConfig{}, fmt.Errorf("config server.preview_session_ttl must be a valid duration: %w", err)
-	}
-	if strings.TrimSpace(cfg.Operator.ActorID) == "" {
-		cfg.Operator.ActorID = "summon-system"
-	}
-	if strings.TrimSpace(cfg.Operator.RoleID) == "" {
-		cfg.Operator.RoleID = "allfather"
-	}
+	cfg.Server.BasePath = basePath
 	if strings.TrimSpace(cfg.Provider.Engine) == "" {
 		cfg.Provider.Engine = "opencode"
 	}
 
 	if strings.TrimSpace(cfg.Provider.Engine) != "opencode" {
 		return installConfig{}, fmt.Errorf("config provider.engine must be: opencode")
+	}
+	cfg.GitHub.SharedApp.Slug = strings.TrimSpace(cfg.GitHub.SharedApp.Slug)
+	cfg.GitHub.SharedApp.ClientID = strings.TrimSpace(cfg.GitHub.SharedApp.ClientID)
+	if (cfg.GitHub.SharedApp.Slug == "") != (cfg.GitHub.SharedApp.ClientID == "") {
+		return installConfig{}, fmt.Errorf("config github.shared_app.slug and github.shared_app.client_id must both be set or both be blank")
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(cfg.Provider.GovernanceMode))

@@ -63,6 +63,25 @@ func (s *PlanningStore) GetContextSnapshot(ctx context.Context, snapshotID strin
 	return row, nil
 }
 
+// LoadPlanningOperationContextSnapshot resolves only the immutable snapshot
+// selected when provider-backed work was enqueued.
+func (s *PlanningStore) LoadPlanningOperationContextSnapshot(ctx context.Context, operation PlanningOperation) (PlanningContextSnapshot, error) {
+	if operation.Type == PlanningOperationTypeBootstrapContext {
+		return PlanningContextSnapshot{}, fmt.Errorf("bootstrap operations do not have a bound planning context snapshot")
+	}
+	if operation.PlanningContextSnapshotID == nil || strings.TrimSpace(*operation.PlanningContextSnapshotID) == "" {
+		return PlanningContextSnapshot{}, fmt.Errorf("planning operation %q has no bound context snapshot", operation.OperationID)
+	}
+	snapshot, err := s.GetContextSnapshot(ctx, *operation.PlanningContextSnapshotID)
+	if err != nil {
+		return PlanningContextSnapshot{}, err
+	}
+	if snapshot.PlanningSessionID != operation.PlanningSessionID {
+		return PlanningContextSnapshot{}, fmt.Errorf("planning operation %q context snapshot does not belong to its session", operation.OperationID)
+	}
+	return snapshot, nil
+}
+
 func (s *PlanningStore) GetLatestContextSnapshot(ctx context.Context, planningSessionID string) (PlanningContextSnapshot, bool, error) {
 	var row PlanningContextSnapshot
 	err := s.db.QueryRowContext(ctx,

@@ -11,6 +11,7 @@ import { NotFoundPage } from "@/components/error-boundary";
 import { GovernanceNotifierMount } from "@/features/runs/governance-notifier";
 import { isRunDetailTab, type RunDetailTab } from "@/features/runs/run-detail-tabs";
 import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
+import { validateDecreeNewSearch } from "@/features/decrees/decree-route-search";
 
 const rootRoute = createRootRoute({
   component: () => (
@@ -112,26 +113,7 @@ const decreesPlanningSessionRoute = createRoute({
 const decreesNewRoute = createRoute({
   getParentRoute: () => decreesRoute,
   path: "/new",
-  validateSearch: (search: Record<string, unknown>): {
-    planning_session_id?: string;
-    planning_draft_id?: string;
-    planning_context_snapshot_id?: string;
-  } => {
-    const next: {
-      planning_session_id?: string;
-      planning_draft_id?: string;
-      planning_context_snapshot_id?: string;
-    } = {};
-
-    for (const key of ["planning_session_id", "planning_draft_id", "planning_context_snapshot_id"] as const) {
-      const value = search[key];
-      if (typeof value === "string" && value.trim() !== "") {
-        next[key] = value;
-      }
-    }
-
-    return next;
-  },
+  validateSearch: validateDecreeNewSearch,
   component: lazyRouteComponent(
     () => import("@/features/decrees/issue-decree-page"),
     "IssueDecreePage"
@@ -144,6 +126,15 @@ const agentsRoute = createRoute({
   component: lazyRouteComponent(
     () => import("@/features/agents/agents-page"),
     "AgentsPage"
+  ),
+});
+
+const connectionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/connections",
+  component: lazyRouteComponent(
+    () => import("@/features/connections/connections-page"),
+    "ConnectionsPage"
   ),
 });
 
@@ -190,6 +181,7 @@ const routeTree = rootRoute.addChildren([
     decreesNewRoute,
   ]),
   agentsRoute,
+  connectionsRoute,
   realmAnalyticsRoute,
 ]);
 

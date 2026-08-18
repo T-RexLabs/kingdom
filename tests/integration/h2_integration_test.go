@@ -1,9 +1,9 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -16,6 +16,7 @@ import (
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/idempotency"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
@@ -73,26 +74,40 @@ func TestIntegrationTransitionAtomicRollbackOnEventConflict(t *testing.T) {
 	}
 }
 
-func TestIntegrationIdempotencyCreateLookupConflict(t *testing.T) {
+func TestIntegrationIdempotencyReserveFinalizeAndDuplicate(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	store := state.NewIdempotencyStore(db)
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	rawKey, err := idempotency.GenerateWithReader("run-start", now, idempotency.DefaultTTL, bytes.NewReader(make([]byte, 16)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := idempotency.Parse(rawKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	base := state.IdempotencyRecord{
 		ID:              "idem_h2_a",
 		Route:           "/api/v1/runs",
 		ActorID:         "actor_h2",
-		ClientKey:       "client_key_h2",
+		ClientKey:       rawKey,
 		RequestHash:     "hash_a",
 		ResponseStatus:  202,
 		ResponseHeaders: `{"Content-Type":"application/json"}`,
 		ResponseBody:    `{"run_id":"run_h2"}`,
-		CreatedAt:       "2026-03-01T12:00:00Z",
+		CreatedAt:       now.Format(time.RFC3339),
+		UpdatedAt:       now.Format(time.RFC3339),
 	}
-	if err := store.Create(context.Background(), base); err != nil {
-		t.Fatalf("create idempotency record: %v", err)
+	owner, _, err := store.ReserveVersioned(context.Background(), base, key, now)
+	if err != nil || !owner {
+		t.Fatalf("reserve idempotency record: owner=%v err=%v", owner, err)
+	}
+	if err := store.Finalize(context.Background(), base); err != nil {
+		t.Fatalf("finalize idempotency record: %v", err)
 	}
 
 	got, found, err := store.Lookup(context.Background(), base.Route, base.ActorID, base.ClientKey)
@@ -109,13 +124,59 @@ func TestIntegrationIdempotencyCreateLookupConflict(t *testing.T) {
 	conflict := base
 	conflict.ID = "idem_h2_b"
 	conflict.RequestHash = "hash_b"
-	err = store.Create(context.Background(), conflict)
-	if err == nil {
-		t.Fatal("expected idempotency scope conflict")
+	owner, _, err = store.ReserveVersioned(context.Background(), conflict, key, now)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var conflictErr *state.IdempotencyConflictError
-	if !errors.As(err, &conflictErr) {
-		t.Fatalf("expected IdempotencyConflictError, got %T: %v", err, err)
+	if owner {
+		t.Fatal("duplicate idempotency scope took ownership")
+	}
+}
+
+func TestIntegrationExternalPlanningIntakeIsAtomic(t *testing.T) {
+	db := openDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	ctx := context.Background()
+	at := "2026-03-01T12:00:00Z"
+	externalStore := state.NewExternalStore(db)
+	if _, err := externalStore.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-intake", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-intake", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-intake"}); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewPlanningStore(db)
+	bundle := func(sessionID, messageID, operationID, linkID, adoptionID, snapshotID string) state.CreatePlanningSessionBundleRequest {
+		capture := state.CaptureExternalIssueRequest{SourceID: "source-intake", SnapshotID: snapshotID, ConnectionID: "conn-intake", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "untrusted provider body", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{IncludeCommentCount: true}, ProviderUpdatedAt: at, FetchedAt: at}
+		return state.CreatePlanningSessionBundleRequest{
+			Session:            state.CreatePlanningSessionRequest{PlanningSessionID: sessionID, Title: "Private issue", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ActiveLeafMessageID: messageID, ProjectRoot: "/tmp/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
+			OpeningMessage:     state.AppendPlanningMessageRequest{PlanningMessageID: messageID, PlanningSessionID: sessionID, Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "What outcome should this plan achieve?", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
+			BootstrapOperation: state.CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: sessionID, Type: state.PlanningOperationTypeBootstrapContext, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at},
+			ExternalCapture:    &capture, ExternalLinkID: linkID, ExternalAdoptionID: adoptionID, ActorID: "local-operator",
+		}
+	}
+	if _, _, err := store.CreateSessionBundle(ctx, bundle("session-intake", "message-intake", "operation-intake", "link-intake", "adoption-intake", "snapshot-intake")); err != nil {
+		t.Fatalf("create external intake bundle: %v", err)
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_sessions WHERE planning_session_id='session-intake'`); got != 1 {
+		t.Fatalf("planning session count=%d", got)
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM external_source_links WHERE target_id='session-intake'`); got != 1 {
+		t.Fatalf("external link count=%d", got)
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_external_source_adoptions WHERE planning_session_id='session-intake'`); got != 1 {
+		t.Fatalf("external adoption count=%d", got)
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_messages WHERE planning_session_id='session-intake' AND content_markdown LIKE '%untrusted provider body%'`); got != 0 {
+		t.Fatal("external body entered transcript")
+	}
+
+	_, _, err := store.CreateSessionBundle(ctx, bundle("session-rollback", "message-rollback", "operation-rollback", "link-intake", "adoption-rollback", "snapshot-rollback"))
+	if err == nil {
+		t.Fatal("expected duplicate link failure")
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_sessions WHERE planning_session_id='session-rollback'`); got != 0 {
+		t.Fatalf("failed intake left partial planning session: %d", got)
+	}
+	if got := queryInt(t, db, `SELECT COUNT(*) FROM planning_operations WHERE planning_session_id='session-rollback'`); got != 0 {
+		t.Fatalf("failed intake left partial operation: %d", got)
 	}
 }
 

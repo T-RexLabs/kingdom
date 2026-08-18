@@ -10,8 +10,9 @@ import {
   X,
   Keyboard,
   BarChart3,
+  Link2,
 } from "lucide-react";
-import { type ReactNode, useState, useCallback, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useHealth } from "@/api/hooks";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
@@ -22,26 +23,60 @@ const navigation = [
   { name: "Decrees", href: "/decrees", icon: Scroll },
   { name: "Runs", href: "/runs", icon: Play },
   { name: "Agents", href: "/agents", icon: Users },
+  { name: "Connections", href: "/connections", icon: Link2 },
   { name: "Realm Analytics", href: "/realm-analytics", icon: BarChart3 },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const [mobileOpen, setMobileOpen] = useState(false);
   const router = useRouterState();
   const { helpOpen, closeHelp, shortcuts, pendingG } = useKeyboardShortcuts();
 
-  // Close mobile sidebar on route change
-  useEffect(() => {
-    setMobileOpen(false);
-  }, [router.location.pathname]);
-
-  const toggleMobile = useCallback(() => setMobileOpen((v) => !v), []);
-
   return (
     <div className="flex h-screen">
+      <NavigationFrame routeLocation={router.location} />
+
+      {/* Main content */}
+      <main className="flex-1 overflow-auto pt-12 md:pt-0">{children}</main>
+
+      {/* Keyboard shortcuts overlay */}
+      <ShortcutsHelp
+        open={helpOpen}
+        onClose={closeHelp}
+        shortcuts={shortcuts}
+        pendingG={pendingG}
+      />
+
+      {/* Global notification cards */}
+      <NotificationStack />
+    </div>
+  );
+}
+
+function NavigationFrame({ routeLocation }: { routeLocation: object }) {
+  const [mobileOpenLocation, setMobileOpenLocation] = useState<object | null>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const wasMobileOpenRef = useRef(false);
+  const mobileOpen = mobileOpenLocation === routeLocation;
+  const toggleMobile = useCallback(
+    () => setMobileOpenLocation((current) => (current === routeLocation ? null : routeLocation)),
+    [routeLocation],
+  );
+
+  useEffect(() => {
+    const wasMobileOpen = wasMobileOpenRef.current;
+    wasMobileOpenRef.current = mobileOpen;
+    if (wasMobileOpen && !mobileOpen && sidebarRef.current?.contains(document.activeElement)) {
+      toggleRef.current?.focus();
+    }
+  }, [mobileOpen]);
+
+  return (
+    <>
       {/* Mobile header */}
       <div className="fixed top-0 left-0 right-0 z-40 flex h-12 items-center border-b border-border bg-surface px-3 md:hidden">
         <button
+          ref={toggleRef}
           onClick={toggleMobile}
           className="rounded-md p-1.5 text-foreground-muted hover:text-foreground"
           aria-label="Toggle navigation"
@@ -58,34 +93,21 @@ export function AppShell({ children }: { children: ReactNode }) {
       {mobileOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 md:hidden"
-          onClick={() => setMobileOpen(false)}
+          onClick={() => setMobileOpenLocation(null)}
         />
       )}
 
       {/* Sidebar */}
       <aside
-		className={cn(
-			"fixed inset-y-0 left-0 z-50 flex w-56 flex-col border-r border-border bg-surface transition-transform duration-200 md:static md:translate-x-0",
-			mobileOpen ? "translate-x-0" : "-translate-x-full"
-		)}
+        ref={sidebarRef}
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-56 flex-col border-r border-border bg-surface transition-transform duration-200 md:visible md:static md:translate-x-0",
+          mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full",
+        )}
       >
         <SidebarContent />
       </aside>
-
-      {/* Main content */}
-      <main className="flex-1 overflow-auto pt-12 md:pt-0">{children}</main>
-
-      {/* Keyboard shortcuts overlay */}
-      <ShortcutsHelp
-        open={helpOpen}
-        onClose={closeHelp}
-        shortcuts={shortcuts}
-        pendingG={pendingG}
-      />
-
-      {/* Global notification cards */}
-      <NotificationStack />
-    </div>
+    </>
   );
 }
 

@@ -6,16 +6,25 @@ It is an overview, not the canonical API reference. Route-level API truth lives 
 
 ## Authentication Model
 
-All `/api/v1` routes require `X-Actor-Id` and `X-Role-Id` unless explicitly documented otherwise.
+All `/api/v1` routes require the local operator principal unless explicitly documented otherwise. CLI clients send `Authorization: Bearer` using the protected credential file created by `kd init`. Raw bearer values are not accepted as CLI flags.
 
-The main exception is:
+The exceptions are:
 
 - `GET /healthz`, which is an unauthenticated liveness probe
+- `POST /api/v1/auth/session`, which creates or reuses a session only for a direct same-origin loopback browser
+- the three GitHub Manifest/setup/OAuth callback GETs, which consume one-time state authority and redirect to the initiating exact-origin Connections page without requiring the browser cookie
 
-Current web client behavior:
+Browser flow:
 
-- default API headers are `X-Actor-Id: allfather` and `X-Role-Id: king`
-- manual approval mutations override the role header to `allfather`
+- open the runtime through `localhost` or a loopback IP on the host machine
+- the UI transparently creates or reuses an origin-bound, restart-scoped session
+- Kingdom returns an origin-scoped `HttpOnly`, `SameSite=Strict` cookie and an in-memory CSRF token
+- cookie-authenticated requests remain loopback-only, and mutations require the exact session origin plus `X-CSRF-Token`
+- a non-loopback browser receives a stable local-only explanation rather than a login prompt
+
+Actor and authority headers do not exist in the public contract. Identity and fixed allfather authority come only from the verified local principal.
+
+All API request bodies have a 1 MiB transport limit and return the canonical error envelope with HTTP `413` when exceeded. Request reads and idle connections are time-bounded; SSE response writes are not.
 
 ## Web UI Surfaces
 
@@ -37,6 +46,26 @@ What it does not do:
 ### `Decrees` (`/decrees`)
 
 This area has two working modes.
+
+Both creation modes can open the reusable, paginated GitHub issue picker. The picker performs a profile-aware preview, renders selected bounded comment bodies through restricted Markdown, and cancels stale searches. Planning intake can attach the first source at creation and additional unique issues from the active planning page. Each attach fetches before a short atomic capture/link/adoption transaction, affects future operations only, and fabricates no transcript message or context-snapshot movement. Direct issuance first captures an immutable snapshot, prefills editable title/body fields, and links that exact selected snapshot atomically when issued. Pre-issuance refresh exposes a candidate with explicit apply-title, apply-body, and use-snapshot actions; issued decrees provide refresh/field comparison without mutable text.
+
+### `Connections` (`/connections`)
+
+- makes **Connect GitHub** the primary guided device flow when shared App config is enabled; otherwise private Manifest creation remains primary
+- offers private Manifest creation as the clear secondary path and existing-App manual metadata as the tertiary modal
+- resumes restart-scoped setup stages after no-query callback redirects without putting provider secrets or callback values in browser storage
+- renders private Manifest start, conversion, installation, authorization, and completion failures inside the private-App setup surface; ambiguous transport retries reuse the request key, while known terminal failures restart with a new flow and key
+- keeps manual fields to display name, App ID, client ID, and installation ID; verified health discovers the slug
+- treats App/client/installation identity as immutable after creation; PATCH changes only display name or enabled state
+- returns explicit `app_private_key|user_access_token` strategy, App identity, and pinned account identity; shared cards offer **Reconnect** instead of PEM commands
+- explains the exact metadata-read and Issues-read permission allowlist
+- shows redacted credential and health states
+- filters and paginates installation-granted repositories, then discovers issue-only results only after the current key generation passes health validation
+- validates, disables, and removes local connections without deleting historical provenance
+
+External snapshot reads return issue and retention metadata only. Comment bodies use `/external-source-snapshots/{id}/comments` with opaque pagination; link history is likewise paginated. Link coordinates always describe the target's immutable decree-used or planning-active snapshot, even when the provider's current issue locator has moved. Refresh responses are compact, typed summaries with field-change flags and optional safe retry timestamps.
+
+Canonical API errors may include optional `retry_at` date-time metadata for provider rate limits. Connection and picker error states display that reset time without discarding the operator's current selection or form input. Only failed Kingdom local authentication returns `401`; revoked GitHub authorization returns a dependency error with safe `revoked` classification and reconnect guidance, leaving the local browser session signed in.
 
 #### Planning mode
 
@@ -158,11 +187,11 @@ Mailbox semantics:
 - mailbox is a communication and audit surface, not settlement authority
 - response text in mailbox can help operators inspect context, but it does not determine canonical success or settled review/validation outcomes
 
-### Artifacts and Preview
+### Artifacts
 
 - artifact listing and download
 - archive export
-- preview-session creation and preview serving
+- artifact content is always delivered as an attachment and cannot execute under the authenticated Kingdom origin
 
 ### Metrics
 
@@ -215,11 +244,9 @@ Typical checks:
 ```bash
 curl http://127.0.0.1:8080/healthz
 
-curl -H 'X-Actor-Id: allfather' -H 'X-Role-Id: king' \
-  http://127.0.0.1:8080/api/v1/health
-
-curl -H 'X-Actor-Id: allfather' -H 'X-Role-Id: king' \
-  http://127.0.0.1:8080/api/v1/metrics/runtime
+# Use the authenticated kd CLI for protected operator routes; it reads the
+# credential file without exposing a raw-token command-line flag.
+kd summon status
 ```
 
 ## Known UI/API Gaps
@@ -230,3 +257,4 @@ curl -H 'X-Actor-Id: allfather' -H 'X-Role-Id: king' \
 ## Related Docs
 
 - [`docs/how-runs-work.md`](how-runs-work.md)
+- [`docs/github-connections-runbook.md`](github-connections-runbook.md)

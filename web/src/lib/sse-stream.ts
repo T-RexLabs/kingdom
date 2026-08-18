@@ -1,3 +1,5 @@
+import { currentAuthGeneration, signalUnauthorized } from "@/api/client";
+
 /**
  * Long-lived SSE subscription with explicit connection state and exponential
  * backoff. Replaces the silent `while(!aborted) { catch{} sleep 500ms }` loop
@@ -77,6 +79,7 @@ export async function subscribeSSE(args: SubscribeSSEArgs): Promise<void> {
   const sleep = args.sleep ?? defaultSleep;
   let attempt = 0;
   let lastEventId: string | null = null;
+  const authGeneration = currentAuthGeneration();
 
   while (!args.signal.aborted) {
     attempt += 1;
@@ -89,6 +92,7 @@ export async function subscribeSSE(args: SubscribeSSEArgs): Promise<void> {
         headers: args.buildHeaders(lastEventId),
         signal: args.signal,
         cache: "no-store",
+        credentials: "same-origin",
       });
     } catch (err) {
       if (args.signal.aborted) return;
@@ -105,6 +109,11 @@ export async function subscribeSSE(args: SubscribeSSEArgs): Promise<void> {
 
     if (!response.ok || !response.body) {
       const message = `HTTP ${response.status}`;
+      if (response.status === 401) {
+        signalUnauthorized("stream", authGeneration);
+        args.onConnectionChange({ state: "failed", attempt, lastError: message });
+        return;
+      }
       // 404/410 means the resource is gone — no point retrying.
       const fatal = response.status === 404 || response.status === 410;
       if (fatal || !shouldRetry(attempt, cfg)) {

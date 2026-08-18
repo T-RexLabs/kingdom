@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,7 +24,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
 	}
-	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
 
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -33,8 +32,6 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 		body: map[string]any{
 			"model_selection": map[string]any{"model": "gpt-5.4"},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-create-session-acp",
 	})
 	if createRes.Code != http.StatusCreated {
@@ -44,6 +41,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode create session result: %v", err)
 	}
+	awaitAPIPlanningContext(t, db, created.Session.PlanningSessionId)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -56,8 +54,6 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 				"answer_payload":   map[string]any{"text": "Need planner metrics"},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-planning-acp-reply",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -73,8 +69,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 
 	initialReq := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/"+run.RunId.String()+"/events", nil)
-	initialReq.Header.Set("X-Actor-Id", "actor-1")
-	initialReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(initialReq)
 	initialRes := httptest.NewRecorder()
 	handler.ServeHTTP(initialRes, initialReq)
 	if initialRes.Code != http.StatusOK {
@@ -85,8 +80,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 
 	resumeReq := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/"+run.RunId.String()+"/events", nil)
-	resumeReq.Header.Set("X-Actor-Id", "actor-1")
-	resumeReq.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(resumeReq)
 	resumeReq.Header.Set("Last-Event-ID", strings.TrimSpace(strings.Split(initialRes.Body.String(), "\n")[0][4:]))
 	resumeRes := httptest.NewRecorder()
 	handler.ServeHTTP(resumeRes, resumeReq)
@@ -97,8 +91,6 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	metricsRes := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/metrics/runtime",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if metricsRes.Code != http.StatusOK {
 		t.Fatalf("expected metrics 200, got %d (%s)", metricsRes.Code, metricsRes.Body.String())
@@ -126,8 +118,7 @@ func TestSSEReturns404OnUnknownAcpRun(t *testing.T) {
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/00000000-0000-0000-0000-000000000000/events", nil)
-	req.Header.Set("X-Actor-Id", "actor-1")
-	req.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(req)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 
@@ -157,8 +148,6 @@ func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/planning-sessions/planning_session_auto_title_eligible",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected session 200, got %d (%s)", res.Code, res.Body.String())
@@ -193,6 +182,7 @@ func TestWritePlanningOperationEventsEmitsInitialDurableEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
+	bindAPIPlanningContext(t, store, "ps_live")
 	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID:        "op_live",
 		PlanningSessionID:  "ps_live",
@@ -252,6 +242,7 @@ func TestWritePlanningOperationEventsDoesNotReplayPersistedDurableEvent(t *testi
 	}); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
+	bindAPIPlanningContext(t, store, "ps_live_replay")
 	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID:        "op_live_replay",
 		PlanningSessionID:  "ps_live_replay",
@@ -308,6 +299,7 @@ func TestWritePlanningOperationEventsReplaysOnlyEventsAfterLastEventID(t *testin
 	}); err != nil {
 		t.Fatalf("create live session: %v", err)
 	}
+	bindAPIPlanningContext(t, store, "ps_live_resume")
 	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID:        "op_live_resume",
 		PlanningSessionID:  "ps_live_resume",
@@ -341,83 +333,6 @@ func TestWritePlanningOperationEventsReplaysOnlyEventsAfterLastEventID(t *testin
 	}
 }
 
-func TestAcpRunLookupNormalizesLegacyPlannerRunIDs(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
-		t.Fatalf("write project root seed: %v", err)
-	}
-	db := openAPIServerTestDB(t)
-	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_title_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_legacy_acp', 'Legacy ACP', 'custom', 'active', 'ready', NULL, 'po_legacy_acp', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:10:00Z', '2026-04-21T17:10:00Z')`, projectRoot)
-	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_legacy_acp', 'po_legacy_acp', 'ps_legacy_acp', 'reply', 'running', '{}', '', NULL, 0, NULL, NULL, NULL, '', NULL, NULL, NULL, '2026-04-21T17:10:01Z', '2026-04-21T17:10:01Z', NULL)`)
-
-	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{DB: db, ProjectRoot: projectRoot})
-	legacyRunID := acp.PlannerRunID("po_legacy_acp")
-
-	sessionRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/planning-sessions/ps_legacy_acp",
-		actorID: "actor-1",
-		roleID:  "chancellor",
-	})
-	if sessionRes.Code != http.StatusOK {
-		t.Fatalf("expected session 200, got %d (%s)", sessionRes.Code, sessionRes.Body.String())
-	}
-	var session gen.PlanningSessionDetail
-	if err := json.Unmarshal(sessionRes.Body.Bytes(), &session); err != nil {
-		t.Fatalf("decode planning session detail: %v", err)
-	}
-	if session.CurrentRunId == nil || session.CurrentRunId.String() != legacyRunID {
-		t.Fatalf("expected live normalized current_run_id %q, got %+v", legacyRunID, session.CurrentRunId)
-	}
-
-	runRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/acp/runs/" + legacyRunID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
-	})
-	if runRes.Code != http.StatusOK {
-		t.Fatalf("expected acp run 200, got %d (%s)", runRes.Code, runRes.Body.String())
-	}
-	var run gen.AcpRun
-	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode acp run: %v", err)
-	}
-	if run.RunId.String() != legacyRunID {
-		t.Fatalf("expected normalized acp run id %q, got %q", legacyRunID, run.RunId.String())
-	}
-
-	store := state.NewPlanningStore(db)
-	operation, ok, err := store.GetOperation(context.Background(), "po_legacy_acp")
-	if err != nil || !ok {
-		t.Fatalf("get normalized operation: ok=%v err=%v", ok, err)
-	}
-	if operation.AcpRunID != legacyRunID {
-		t.Fatalf("expected stored acp_run_id normalized to %q, got %q", legacyRunID, operation.AcpRunID)
-	}
-
-	mustExecSQL(t, db, `UPDATE planning_operations SET status = 'cancelled', finished_at = '2026-04-21T17:10:09Z' WHERE operation_id = 'po_legacy_acp'`)
-
-	terminalSessionRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/planning-sessions/ps_legacy_acp",
-		actorID: "actor-1",
-		roleID:  "chancellor",
-	})
-	if terminalSessionRes.Code != http.StatusOK {
-		t.Fatalf("expected terminal session 200, got %d (%s)", terminalSessionRes.Code, terminalSessionRes.Body.String())
-	}
-	var terminalSession gen.PlanningSessionDetail
-	if err := json.Unmarshal(terminalSessionRes.Body.Bytes(), &terminalSession); err != nil {
-		t.Fatalf("decode terminal session detail: %v", err)
-	}
-	if terminalSession.CurrentRunId != nil {
-		t.Fatalf("expected terminal current_run_id to be hidden, got %+v", terminalSession.CurrentRunId)
-	}
-}
-
 func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	t.Parallel()
 
@@ -433,8 +348,6 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/acp/runs/" + acp.PlannerRunID("po_run_output"),
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected acp run 200, got %d (%s)", res.Code, res.Body.String())
@@ -476,8 +389,6 @@ func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.
 	res := performJSONRequest(t, handler, requestSpec{
 		method:  http.MethodGet,
 		path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200",
-		actorID: "actor-1",
-		roleID:  "chancellor",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected planning messages 200, got %d (%s)", res.Code, res.Body.String())
@@ -507,8 +418,6 @@ func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.
 		res = performJSONRequest(t, handler, requestSpec{
 			method:  http.MethodGet,
 			path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200&before=" + *page.PreviousCursor,
-			actorID: "actor-1",
-			roleID:  "chancellor",
 		})
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected paged planning messages 200, got %d (%s)", res.Code, res.Body.String())
@@ -532,8 +441,6 @@ func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.
 		res := performJSONRequest(t, handler, requestSpec{
 			method:  http.MethodGet,
 			path:    "/api/v1/acp/runs/" + runID,
-			actorID: "actor-1",
-			roleID:  "chancellor",
 		})
 		if res.Code != http.StatusOK {
 			return fmt.Errorf("get acp run %s: expected 200, got %d (%s)", runID, res.Code, res.Body.String())
