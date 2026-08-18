@@ -760,6 +760,14 @@ export function ConnectionsPage() {
       });
       settleSetupRequest(requestID);
       postManifestToSetupWindow(response.form_action, response.manifest);
+      // Adopting the started flow is what puts this tab in charge: it shows the
+      // stage and starts watching for GitHub's return instead of waiting for a
+      // reload to discover progress the operator already made.
+      setFlow({
+        flow_id: response.flow_id,
+        stage: "awaiting_app_creation",
+        expires_at: response.expires_at,
+      });
     } catch (cause) {
       settleSetupRequest(requestID, cause);
       setManifestError(requestError(cause));

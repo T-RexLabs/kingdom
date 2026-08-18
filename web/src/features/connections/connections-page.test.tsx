@@ -480,6 +480,8 @@ describe("ConnectionsPage", () => {
     expect(submittedForm).toHaveAttribute("target", "kingdom-github-setup");
     expect(opened).toEqual([{ url: "", name: "kingdom-github-setup" }]);
     expect(document.querySelector('form[action^="https://github.com/"]')).toBeNull();
+    // This tab keeps driving: it shows the stage immediately, without a reload.
+    expect(await screen.findByText("Finish creating the private App on GitHub.")).toBeInTheDocument();
   });
 
   it("keeps manual metadata in a secondary modal and shows post-save CLI guidance", async () => {
