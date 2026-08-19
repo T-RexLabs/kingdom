@@ -1,7 +1,24 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render as renderBare, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "./connections-page";
+import { IssuePicker } from "./issue-picker";
+
+// The picker links to this page when nothing is connected; ConnectionsPage
+// itself never touches the router, so a plain anchor is enough here.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+}));
+
+// A fresh client per test. The connections list is one shared cache entry in
+// the app, so a client reused across tests would let one test's list satisfy
+// the next test's query and hide a request that should have been made.
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderBare(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 const connection = (displayName: string, appID = "1") => ({
   connection_id: "conn-1",
@@ -542,6 +559,60 @@ describe("ConnectionsPage", () => {
       client_id: "Iv1",
       installation_id: "2",
     });
+  });
+
+  // The reported bug: add a connection, go to the planner or the decree form,
+  // and the import trigger is still the setup link. Both surfaces read the
+  // shared connections entry, so the fix is that creating one invalidates it.
+  it("stops offering setup on other surfaces as soon as a connection exists", async () => {
+    let listed: Array<ReturnType<typeof connection>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: listed });
+        if (url.endsWith("/manifest-flows")) return new Response(null, { status: 404 });
+        if (url.endsWith("/connections") && init?.method === "POST") {
+          listed = [connection("Manual")];
+          return new Response(JSON.stringify(connection("Manual")), {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    render(
+      <>
+        <ConnectionsPage />
+        <IssuePicker onSelect={vi.fn()} />
+      </>,
+    );
+
+    expect(
+      await screen.findByRole("link", { name: /connect an issue tracker/i }),
+    ).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: /use manual setup/i }));
+    const dialog = await screen.findByRole("dialog", { name: /manual github app setup/i });
+    for (const [label, value] of [
+      ["Display Name", "Manual"],
+      ["App ID", "1"],
+      ["Client ID", "Iv1"],
+      ["Installation ID", "2"],
+    ]) {
+      await user.type(within(dialog).getByLabelText(label), value);
+    }
+    await user.click(within(dialog).getByRole("button", { name: /save connection metadata/i }));
+
+    // No navigation, no reload: the other surface re-reads because the entry it
+    // shares with this page was invalidated.
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: /connect an issue tracker/i })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /import from github issue/i })).toBeInTheDocument();
   });
 
   it("resumes an authorization callback stage and finalizes without query or browser storage", async () => {

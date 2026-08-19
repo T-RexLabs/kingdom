@@ -30,7 +30,9 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { connectionKeys, useConnections } from "@/api/hooks";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { externalSourceFailureGuidance } from "./external-source-status";
 import { shouldRetainMutationRequest, useRecoverableMutation } from "@/lib/use-recoverable-mutation";
@@ -254,8 +256,13 @@ function ManifestHandoffAction({
 }
 
 export function ConnectionsPage() {
-  const [items, setItems] = useState<Connection[]>([]);
-  const [loading, setLoading] = useState(true);
+  // The shared cache is the list. This page manages connections, so it is the
+  // one that invalidates, but it reads the same entry as every other surface
+  // rather than keeping a copy that can fall behind them.
+  const queryClient = useQueryClient();
+  const connections = useConnections();
+  const items = connections.data?.items ?? [];
+  const loading = connections.isPending;
   const [error, setError] = useState<RequestError>();
   const [manifestError, setManifestError] = useState<RequestError>();
   const [manifestFailureStage, setManifestFailureStage] = useState<ManifestFailureStage>();
@@ -349,23 +356,16 @@ export function ConnectionsPage() {
       setupRequestKeys.current.delete(requestID);
   };
 
-  const loadConnections = async () => {
-    const value = await apiFetch<{ items: Connection[] }>("/connections");
-    setItems(value.items);
-  };
+  // Stable so the manifest-flow effect can depend on it without re-running the
+  // flow advance on every render.
+  const reloadConnections = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: connectionKeys.list() }),
+    [queryClient],
+  );
 
   useEffect(() => {
     let active = true;
     void (async () => {
-      try {
-        const connections = await apiFetch<{ items: Connection[] }>(
-          "/connections",
-        );
-        if (!active) return;
-        setItems(connections.items);
-      } catch (cause) {
-        if (active) setError(requestError(cause));
-      }
       try {
         const options = await apiFetch<SetupOptions>(
           "/connections/github/setup-options",
@@ -394,7 +394,6 @@ export function ConnectionsPage() {
         if (active && cause instanceof ApiError && cause.status !== 404)
           setManifestError(requestError(cause));
       }
-      if (active) setLoading(false);
     })();
     return () => {
       active = false;
@@ -484,7 +483,7 @@ export function ConnectionsPage() {
             },
           );
           settleSetupRequest(requestID);
-          await loadConnections();
+          await reloadConnections();
           setFlow({ ...flow, stage: "completed" });
         }
       } catch (cause) {
@@ -505,7 +504,7 @@ export function ConnectionsPage() {
       ].includes(flow.stage)
     )
       void advance();
-  }, [flow, manifestRetryAttempt]);
+  }, [flow, manifestRetryAttempt, reloadConnections]);
 
   // While GitHub holds the setup tab, this tab watches for the stage change the
   // callback produces. Without it the operator would have to reload the page to
@@ -699,7 +698,7 @@ export function ConnectionsPage() {
         },
       );
       settleSetupRequest(requestID);
-      await loadConnections();
+      await reloadConnections();
       setSharedOpen(false);
       setSharedFlow(undefined);
       setSharedReconnectID("");
@@ -832,7 +831,7 @@ export function ConnectionsPage() {
       const created = await createConnection.mutateAsync({ ...manualForm });
       setManualSaved(created);
       setManualForm(emptyForm);
-      await loadConnections();
+      await reloadConnections();
     } catch (cause) {
       setError(requestError(cause));
     } finally {
@@ -848,7 +847,7 @@ export function ConnectionsPage() {
     try {
       await editConnection.mutateAsync({ connectionId: id, displayName: editName });
       setEditingID("");
-      await loadConnections();
+      await reloadConnections();
     } catch (cause) {
       setError(requestError(cause));
     } finally {
@@ -879,7 +878,7 @@ export function ConnectionsPage() {
       if (action === "remove") setRemovalError(requestError(cause));
       else setError(requestError(cause));
     } finally {
-      await loadConnections().catch((cause) => setError(requestError(cause)));
+      await reloadConnections();
       setOperation("");
     }
   };
@@ -897,7 +896,7 @@ export function ConnectionsPage() {
         </div>
       </PageHeader>
       <PageContent className="space-y-5">
-        <ErrorNotice error={error} />
+        <ErrorNotice error={error ?? (connections.error ? requestError(connections.error) : undefined)} />
         <Card className="overflow-hidden border-gold/30 bg-[radial-gradient(circle_at_top_right,hsl(var(--gold)/0.12),transparent_42%)]">
           <CardContent className="p-5 sm:p-7">
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">

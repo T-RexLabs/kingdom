@@ -1,7 +1,7 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
-import { manualRefetchQueryOptions, searchDrivenCollectionQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
+import { manualRefetchQueryOptions, refetchOnMountQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
 import { RUNS_STATE_FILTERS, type RunsStateFilter } from "@/lib/run-filters";
 import type {
   AgentsResponse,
@@ -212,7 +212,7 @@ export function parseRunsCollectionQueryKey(queryKey: readonly unknown[]): RunsC
 
 export function useRuns(options?: RunsQueryOptions) {
   const search = normalizeRunsSearch(options?.search) ?? undefined;
-  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : searchDrivenCollectionQueryOptions;
+  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : refetchOnMountQueryOptions;
   return useQuery({
     // Only unsearched runs collections are stream-owned. Search results rely on
     // fetch-on-open/search semantics because the collection stream cannot
@@ -232,7 +232,7 @@ export function useRuns(options?: RunsQueryOptions) {
 
 export function useInfiniteRuns(options?: InfiniteRunsQueryOptions) {
   const search = normalizeRunsSearch(options?.search) ?? undefined;
-  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : searchDrivenCollectionQueryOptions;
+  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : refetchOnMountQueryOptions;
   return useInfiniteQuery({
     queryKey: infiniteRunsCollectionQueryKey(options),
     queryFn: ({ pageParam, signal }: { pageParam?: string; signal: AbortSignal }) =>
