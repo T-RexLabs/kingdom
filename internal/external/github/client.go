@@ -201,35 +201,66 @@ func (c *Client) acquireRequest(ctx context.Context, connectionID string) (func(
 func (c *Client) Validate(ctx context.Context, conn state.ExternalConnection) (external.ConnectionValidation, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	if conn.CredentialStrategy == "user_access_token" {
-		token, err := c.accessToken(ctx, conn)
-		if err != nil {
-			return external.ConnectionValidation{}, err
-		}
-		candidates, err := c.deviceOAuth.Candidates(ctx, token, conn.ClientID, conn.AppSlug)
-		if err != nil {
-			return external.ConnectionValidation{}, err
-		}
-		for _, candidate := range candidates {
-			if candidate.InstallationID != conn.InstallationID || candidate.AppID != conn.AppID || candidate.ClientID != conn.ClientID || candidate.AppSlug != conn.AppSlug || conn.InstallationAccountID != "" && candidate.AccountID != conn.InstallationAccountID {
-				continue
-			}
-			page, listErr := c.ListRepositories(ctx, conn, "", "")
-			if listErr != nil {
-				return external.ConnectionValidation{}, listErr
-			}
-			for _, repository := range page.Items {
-				if repository.AccountID != candidate.AccountID {
-					return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
-				}
-			}
-			return external.ConnectionValidation{InstallationAccountID: candidate.AccountID, InstallationAccountLogin: candidate.AccountLogin, AppSlug: candidate.AppSlug}, nil
-		}
+	if len(conn.Installations) == 0 {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	if conn.CredentialStrategy == "user_access_token" {
+		return c.validateSharedInstallations(ctx, conn)
 	}
 	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
+	return c.validateAppKeyInstallations(ctx, conn)
+}
+
+// assertRepositoriesBelongToInstallation keeps the account-ownership check at
+// its original strength once a connection covers several accounts: each
+// installation vouches only for its own repositories, so one installation can
+// never legitimise another's.
+func (c *Client) assertRepositoriesBelongToInstallation(ctx context.Context, conn state.ExternalConnection, installationID, accountID string) error {
+	items, _, err := c.installationRepositoryPage(ctx, conn, installationID, 1)
+	if err != nil {
+		return err
+	}
+	for _, repository := range items {
+		if repository.AccountID == "" || repository.AccountID != accountID {
+			return &external.ProviderError{Class: external.FailureAuthentication}
+		}
+	}
+	return nil
+}
+
+func (c *Client) validateSharedInstallations(ctx context.Context, conn state.ExternalConnection) (external.ConnectionValidation, error) {
+	token, err := c.accessToken(ctx, conn, "")
+	if err != nil {
+		return external.ConnectionValidation{}, err
+	}
+	candidates, err := c.deviceOAuth.Candidates(ctx, token, conn.ClientID, conn.AppSlug)
+	if err != nil {
+		return external.ConnectionValidation{}, err
+	}
+	byID := make(map[string]InstallationCandidate, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.InstallationID] = candidate
+	}
+	validated := make([]state.ConnectionInstallation, 0, len(conn.Installations))
+	for _, installation := range conn.Installations {
+		candidate, ok := byID[installation.InstallationID]
+		if !ok || candidate.AppID != conn.AppID || candidate.ClientID != conn.ClientID || candidate.AppSlug != conn.AppSlug {
+			return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
+		}
+		if installation.AccountID != "" && candidate.AccountID != installation.AccountID {
+			return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
+		}
+		if err := c.assertRepositoriesBelongToInstallation(ctx, conn, installation.InstallationID, candidate.AccountID); err != nil {
+			return external.ConnectionValidation{}, err
+		}
+		validated = append(validated, state.ConnectionInstallation{InstallationID: installation.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin})
+	}
+	return external.ConnectionValidation{AppSlug: conn.AppSlug, Installations: validated}, nil
+}
+
+func (c *Client) validateAppKeyInstallations(ctx context.Context, conn state.ExternalConnection) (external.ConnectionValidation, error) {
 	key, _, err := c.keys.Load(conn.ConnectionID)
 	if err != nil {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
@@ -254,57 +285,56 @@ func (c *Client) Validate(ctx context.Context, conn state.ExternalConnection) (e
 	if !allowedPermissions(app.Permissions) || len(app.Events) != 0 {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailurePermissionMismatch}
 	}
-	var installation struct {
-		ID       int64 `json:"id"`
-		AppID    int64 `json:"app_id"`
-		TargetID int64 `json:"target_id"`
-		Account  struct {
-			ID    int64  `json:"id"`
-			Login string `json:"login"`
-		} `json:"account"`
-		SuspendedAt *string           `json:"suspended_at"`
-		Permissions map[string]string `json:"permissions"`
-	}
-	if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/app/installations/"+url.PathEscape(conn.InstallationID), jwt, nil, &installation, ""); err != nil {
-		return external.ConnectionValidation{}, installationAuthenticationError(err)
-	}
-	accountID := strconv.FormatInt(installation.Account.ID, 10)
-	accountLogin := strings.TrimSpace(installation.Account.Login)
-	if strconv.FormatInt(installation.ID, 10) != conn.InstallationID || strconv.FormatInt(installation.AppID, 10) != conn.AppID || installation.TargetID <= 0 || installation.Account.ID != installation.TargetID || accountLogin == "" || installation.SuspendedAt != nil {
-		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
-	}
-	if conn.InstallationAccountID != "" && conn.InstallationAccountID != accountID {
-		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
-	}
-	if !allowedPermissions(installation.Permissions) {
-		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailurePermissionMismatch}
-	}
-	if _, err = c.installationToken(ctx, conn); err != nil {
-		return external.ConnectionValidation{}, err
-	}
-	page, err := c.ListRepositories(ctx, conn, "", "")
-	if err != nil {
-		return external.ConnectionValidation{}, err
-	}
-	for _, repository := range page.Items {
-		if repository.AccountID == "" || repository.AccountID != strconv.FormatInt(installation.Account.ID, 10) {
+	validated := make([]state.ConnectionInstallation, 0, len(conn.Installations))
+	for _, covered := range conn.Installations {
+		var installation struct {
+			ID       int64 `json:"id"`
+			AppID    int64 `json:"app_id"`
+			TargetID int64 `json:"target_id"`
+			Account  struct {
+				ID    int64  `json:"id"`
+				Login string `json:"login"`
+			} `json:"account"`
+			SuspendedAt *string           `json:"suspended_at"`
+			Permissions map[string]string `json:"permissions"`
+		}
+		if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/app/installations/"+url.PathEscape(covered.InstallationID), jwt, nil, &installation, ""); err != nil {
+			return external.ConnectionValidation{}, installationAuthenticationError(err)
+		}
+		accountID := strconv.FormatInt(installation.Account.ID, 10)
+		accountLogin := strings.TrimSpace(installation.Account.Login)
+		if strconv.FormatInt(installation.ID, 10) != covered.InstallationID || strconv.FormatInt(installation.AppID, 10) != conn.AppID || installation.TargetID <= 0 || installation.Account.ID != installation.TargetID || accountLogin == "" || installation.SuspendedAt != nil {
 			return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
 		}
+		if covered.AccountID != "" && covered.AccountID != accountID {
+			return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
+		}
+		if !allowedPermissions(installation.Permissions) {
+			return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailurePermissionMismatch}
+		}
+		if _, err = c.installationToken(ctx, conn, covered.InstallationID); err != nil {
+			return external.ConnectionValidation{}, err
+		}
+		if err := c.assertRepositoriesBelongToInstallation(ctx, conn, covered.InstallationID, accountID); err != nil {
+			return external.ConnectionValidation{}, err
+		}
+		validated = append(validated, state.ConnectionInstallation{InstallationID: covered.InstallationID, AccountID: accountID, AccountLogin: accountLogin})
 	}
-	return external.ConnectionValidation{InstallationAccountID: accountID, InstallationAccountLogin: accountLogin, AppSlug: app.Slug}, nil
+	return external.ConnectionValidation{AppSlug: app.Slug, Installations: validated}, nil
 }
+
 func allowedPermissions(p map[string]string) bool {
 	return len(p) == 2 && p["metadata"] == "read" && p["issues"] == "read"
 }
 
-func (c *Client) installationToken(ctx context.Context, conn state.ExternalConnection) (string, error) {
+func (c *Client) installationToken(ctx context.Context, conn state.ExternalConnection, installationID string) (string, error) {
 	key, fingerprint, err := c.keys.Load(conn.ConnectionID)
 	if err != nil {
 		return "", &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	cacheKey := tokenCacheKey{
 		connectionID: conn.ConnectionID, appID: conn.AppID, clientID: conn.ClientID,
-		installationID: conn.InstallationID, fingerprint: fingerprint,
+		installationID: installationID, fingerprint: fingerprint,
 		credentialGeneration: conn.CredentialGeneration,
 	}
 	c.tokensMu.Lock()
@@ -345,7 +375,7 @@ func (c *Client) installationToken(ctx context.Context, conn state.ExternalConne
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodPost, "/app/installations/"+url.PathEscape(conn.InstallationID)+"/access_tokens", jwt, body, &response, ""); err != nil {
+	if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodPost, "/app/installations/"+url.PathEscape(installationID)+"/access_tokens", jwt, body, &response, ""); err != nil {
 		pending.err = installationAuthenticationError(err)
 		return "", pending.err
 	}
@@ -368,7 +398,10 @@ func (c *Client) installationToken(ctx context.Context, conn state.ExternalConne
 	return pending.token, nil
 }
 
-func (c *Client) accessToken(ctx context.Context, conn state.ExternalConnection) (string, error) {
+// accessToken authenticates for one installation of a connection. A user access
+// token already speaks for every installation the authorizing user can see, so
+// only the App-key strategy needs to know which one.
+func (c *Client) accessToken(ctx context.Context, conn state.ExternalConnection, installationID string) (string, error) {
 	c.strategiesMu.Lock()
 	strategy := conn.CredentialStrategy
 	if strategy == "" {
@@ -377,7 +410,10 @@ func (c *Client) accessToken(ctx context.Context, conn state.ExternalConnection)
 	c.strategies[conn.ConnectionID] = strategy
 	c.strategiesMu.Unlock()
 	if strategy == "app_private_key" {
-		return c.installationToken(ctx, conn)
+		if strings.TrimSpace(installationID) == "" {
+			return "", &external.ProviderError{Class: external.FailureAuthentication}
+		}
+		return c.installationToken(ctx, conn, installationID)
 	}
 	if conn.CredentialStrategy != "user_access_token" || c.userTokens == nil {
 		return "", &external.ProviderError{Class: external.FailureAuthentication}
@@ -430,47 +466,80 @@ func installationAuthenticationError(err error) error {
 	return err
 }
 
-func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnection, search, cursor string) (external.RepositoryPage, error) {
-	ctx, cancel := c.operationContext(ctx)
-	defer cancel()
-	token, err := c.accessToken(ctx, conn)
+// installationRepositoryPage fetches exactly one provider page for one
+// installation. Both the paging walk and validation go through here so they
+// cannot disagree about which endpoint or token an installation uses.
+func (c *Client) installationRepositoryPage(ctx context.Context, conn state.ExternalConnection, installationID string, page int) ([]external.Repository, bool, error) {
+	token, err := c.accessToken(ctx, conn, installationID)
 	if err != nil {
-		return external.RepositoryPage{}, err
+		return nil, false, err
 	}
-	page := decodeCursor(cursor)
 	var response struct {
 		Repositories []githubRepository `json:"repositories"`
 	}
 	path := fmt.Sprintf("/installation/repositories?per_page=100&page=%d", page)
 	if conn.CredentialStrategy == "user_access_token" {
-		path = fmt.Sprintf("/user/installations/%s/repositories?per_page=100&page=%d", url.PathEscape(conn.InstallationID), page)
+		path = fmt.Sprintf("/user/installations/%s/repositories?per_page=100&page=%d", url.PathEscape(installationID), page)
 	}
 	headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, path, token, nil, &response, "")
 	if err != nil {
-		return external.RepositoryPage{}, err
+		return nil, false, err
 	}
 	items, err := normalizeRepositories(response.Repositories)
 	if err != nil {
-		return external.RepositoryPage{}, err
+		return nil, false, err
 	}
+	for i := range items {
+		items[i].InstallationID = installationID
+	}
+	return items, hasNext(headers), nil
+}
+
+// ListRepositories walks the connection's installations in a stable order,
+// returning one provider page at a time. The cursor carries which installation
+// it is on as well as the page within it, so paging cannot repeat or skip a
+// grant when a connection covers several accounts.
+func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnection, search, cursor string) (external.RepositoryPage, error) {
+	ctx, cancel := c.operationContext(ctx)
+	defer cancel()
+	installations := conn.Installations
+	if len(installations) == 0 {
+		return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	index, page := decodeRepositoryCursor(cursor)
 	query := strings.ToLower(strings.TrimSpace(search))
-	if query != "" {
-		filtered := make([]external.Repository, 0, len(items))
-		for _, item := range items {
-			if strings.Contains(strings.ToLower(item.Locator), query) {
-				filtered = append(filtered, item)
+	for index < len(installations) {
+		installation := installations[index]
+		items, more, err := c.installationRepositoryPage(ctx, conn, installation.InstallationID, page)
+		if err != nil {
+			return external.RepositoryPage{}, err
+		}
+		if query != "" {
+			filtered := make([]external.Repository, 0, len(items))
+			for _, item := range items {
+				if strings.Contains(strings.ToLower(item.Locator), query) {
+					filtered = append(filtered, item)
+				}
 			}
+			items = filtered
 		}
-		items = filtered
-	}
-	out := external.RepositoryPage{Items: items}
-	if hasNext(headers) {
-		if page >= 100 {
-			return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureOversizedResponse}
+		out := external.RepositoryPage{Items: items}
+		if more {
+			if page >= 100 {
+				return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureOversizedResponse}
+			}
+			out.NextCursor = encodeRepositoryCursor(index, page+1)
+			return out, nil
 		}
-		out.NextCursor = encodeCursor(page + 1)
+		// This installation is exhausted; hand the next one back as a cursor so
+		// the caller keeps one page per request rather than fanning out here.
+		if index+1 < len(installations) {
+			out.NextCursor = encodeRepositoryCursor(index+1, 1)
+			return out, nil
+		}
+		return out, nil
 	}
-	return out, nil
+	return external.RepositoryPage{}, nil
 }
 
 func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id string) (external.Repository, error) {
@@ -500,7 +569,7 @@ func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, 
 	if err != nil {
 		return external.IssuePage{}, err
 	}
-	token, err := c.accessToken(ctx, conn)
+	token, err := c.accessToken(ctx, conn, repo.InstallationID)
 	if err != nil {
 		return external.IssuePage{}, err
 	}
@@ -576,7 +645,7 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	if err != nil {
 		return external.IssueResult{}, err
 	}
-	token, err := c.accessToken(ctx, req.Connection)
+	token, err := c.accessToken(ctx, req.Connection, repo.InstallationID)
 	if err != nil {
 		return external.IssueResult{}, err
 	}
@@ -616,11 +685,17 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
 		}
 		expectedLocator, expectedNumber = locator, number
+		// repositoryByLocator resolves against every installation the connection
+		// covers, so a transfer is accepted when the destination is still inside
+		// this connection's grant and refused when it has left it. That keeps the
+		// original boundary -- the issue cannot wander somewhere Kingdom was never
+		// given -- while letting it move between accounts the operator connected
+		// together.
 		destination, err = c.repositoryByLocator(ctx, req.Connection, locator)
 		if err != nil {
 			return external.IssueResult{}, err
 		}
-		if repo.AccountID == "" || destination.AccountID == "" || repo.AccountID != destination.AccountID {
+		if repo.AccountID == "" || destination.AccountID == "" || destination.InstallationID == "" {
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureAuthentication}
 		}
 	}
@@ -1048,6 +1123,27 @@ func decodeCursor(v string) int {
 		return 1
 	}
 	return p["page"]
+}
+
+// Repository paging walks the connection's installations as well as the pages
+// within each, so its cursor carries both.
+func encodeRepositoryCursor(index, page int) string {
+	raw, _ := json.Marshal(map[string]int{"installation": index, "page": page})
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+func decodeRepositoryCursor(v string) (index int, page int) {
+	if v == "" {
+		return 0, 1
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(v)
+	if err != nil {
+		return 0, 1
+	}
+	var p map[string]int
+	if json.Unmarshal(raw, &p) != nil || p["page"] < 1 || p["installation"] < 0 {
+		return 0, 1
+	}
+	return p["installation"], p["page"]
 }
 func hasNext(h http.Header) bool { return strings.Contains(h.Get("Link"), `rel="next"`) }
 func transferredIssueCoordinates(v *url.URL) (string, int, error) {

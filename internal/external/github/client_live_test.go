@@ -70,7 +70,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 		Provider:             "github",
 		AppID:                required["KINGDOM_GITHUB_SMOKE_APP_ID"],
 		ClientID:             required["KINGDOM_GITHUB_SMOKE_CLIENT_ID"],
-		InstallationID:       required["KINGDOM_GITHUB_SMOKE_INSTALLATION_ID"],
+		Installations:        []state.ConnectionInstallation{{InstallationID: required["KINGDOM_GITHUB_SMOKE_INSTALLATION_ID"]}},
 		CredentialHandle:     CredentialHandle(connectionID),
 		CredentialGeneration: 1,
 	}
@@ -126,7 +126,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign uninstall request: %v", err)
 	}
-	if _, err = client.doJSON(ctx, connection.ConnectionID, http.MethodDelete, "/app/installations/"+connection.InstallationID, jwt, nil, nil, ""); err != nil {
+	if _, err = client.doJSON(ctx, connection.ConnectionID, http.MethodDelete, "/app/installations/"+connection.Installations[0].InstallationID, jwt, nil, nil, ""); err != nil {
 		t.Fatalf("uninstall controlled GitHub App installation: %v", err)
 	}
 	client.Evict(connection.ConnectionID)

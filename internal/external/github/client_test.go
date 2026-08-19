@@ -184,7 +184,11 @@ func provisionTestKey(t *testing.T) (*KeyStore, string) {
 }
 
 func seedTestToken(client *Client, conn state.ExternalConnection, fingerprint, value string, expires time.Time) {
-	client.tokens[tokenCacheKey{connectionID: conn.ConnectionID, appID: conn.AppID, clientID: conn.ClientID, installationID: conn.InstallationID, fingerprint: fingerprint, credentialGeneration: conn.CredentialGeneration}] = cachedToken{value: value, expires: expires}
+	installationID := ""
+	if len(conn.Installations) > 0 {
+		installationID = conn.Installations[0].InstallationID
+	}
+	client.tokens[tokenCacheKey{connectionID: conn.ConnectionID, appID: conn.AppID, clientID: conn.ClientID, installationID: installationID, fingerprint: fingerprint, credentialGeneration: conn.CredentialGeneration}] = cachedToken{value: value, expires: expires}
 }
 
 func TestFetchIssueRechecksCommentsAfterIssueNotModified(t *testing.T) {
@@ -215,9 +219,9 @@ func TestFetchIssueRechecksCommentsAfterIssueNotModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
 	current := state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: "2026-08-01T00:00:00Z", UpdatedAt: "2026-08-02T00:00:00Z"}
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", CurrentIssue: current, CurrentCommentCount: 1, Profile: state.ExternalImportProfile{IncludeComments: true}, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`})
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", CurrentIssue: current, CurrentCommentCount: 1, Profile: state.ExternalImportProfile{IncludeComments: true}, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,8 +256,8 @@ func TestFetchIssueAlwaysCapturesCommentCountWithoutFetchingBodies(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}})
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,15 +297,15 @@ func TestFetchIssueAcceptsTransferOnlyWithStableIdentityAndAccessibleDestination
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Transferred || result.RepositoryID != "300" || result.NativeID != "100" || result.Issue.IssueNumber != 9 {
 		t.Fatalf("transfer was not safely resolved: %#v", result)
 	}
-	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "different", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
+	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "different", Profile: state.ExternalImportProfile{}, ETag: `"old-version"`})
 	var providerErr *external.ProviderError
 	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureInaccessibleOrMissing {
 		t.Fatalf("identity-changing transfer was accepted: %v", err)
@@ -328,9 +332,9 @@ func TestFetchIssueUsesOneOperationDeadlineAcrossRepositoryPagination(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
 	started := time.Now()
-	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7})
+	_, err = client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7})
 	var providerErr *external.ProviderError
 	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureTimeout {
 		t.Fatalf("expected operation timeout, got %v", err)
@@ -375,11 +379,11 @@ func TestValidateBindsAppClientInstallationAndAccountIdentity(t *testing.T) {
 			}))
 			defer server.Close()
 			client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-			validation, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", InstallationID: "2", InstallationAccountID: tc.savedAccountID, InstallationAccountLogin: tc.savedAccountLogin})
+			validation, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: tc.savedAccountID, AccountLogin: tc.savedAccountLogin}}})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Validate() error=%v wantErr=%v", err, tc.wantErr)
 			}
-			if err == nil && (validation.InstallationAccountID != "10" || validation.InstallationAccountLogin != "octocat") {
+			if err == nil && (validation.Installations[0].AccountID != "10" || validation.Installations[0].AccountLogin != "octocat") {
 				t.Fatalf("Validate() identity=%#v", validation)
 			}
 		})
@@ -403,7 +407,7 @@ func TestValidateMapsMissingSavedInstallationToRevoked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", InstallationID: "2"})
+	_, err = client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
 	var providerErr *external.ProviderError
 	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureAuthentication {
 		t.Fatalf("missing installation error=%v, want authentication/revoked", err)
@@ -445,7 +449,7 @@ func TestValidateRequiresExactAppPermissionsAndNoEvents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", CredentialStrategy: "app_private_key", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom-issues", InstallationID: "2"})
+			_, err = client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", CredentialStrategy: "app_private_key", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom-issues", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
 			if tc.wantClass == "" {
 				if err != nil {
 					t.Fatalf("valid app rejected: %v", err)
@@ -608,8 +612,8 @@ func TestFetchIssuePreservesCommentValidatorSignalWhenIssueChanged(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{IncludeComments: true}, CommentsETag: `"comments-v1"`})
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{IncludeComments: true}, CommentsETag: `"comments-v1"`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,8 +669,8 @@ func TestFetchIssueRecordsBoundedCommentOmissions(t *testing.T) {
 			defer server.Close()
 			baseURL = server.URL
 			client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-			seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-			result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1"}, RepositoryID: "200", IssueNumber: 7, Profile: state.ExternalImportProfile{IncludeComments: true}})
+			seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+			result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, RepositoryID: "200", IssueNumber: 7, Profile: state.ExternalImportProfile{IncludeComments: true}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -742,7 +746,7 @@ func TestFetchIssueConditionallyChecksEveryRetainedCommentPage(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	connection := state.ExternalConnection{ConnectionID: "conn-1"}
+	connection := state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
 	seedTestToken(client, connection, fingerprint, "token", now.Add(time.Hour))
 	first, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: connection, RepositoryID: "200", IssueNumber: 7, Profile: state.ExternalImportProfile{IncludeComments: true}})
 	if err != nil {
@@ -773,8 +777,8 @@ func TestListIssuesFiltersPullRequests(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	page, err := client.ListIssues(context.Background(), state.ExternalConnection{ConnectionID: "conn-1"}, "200", "open", "", "")
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+	page, err := client.ListIssues(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "200", "open", "", "")
 	if err != nil || len(page.Items) != 1 || page.Items[0].NativeID != "2" {
 		t.Fatalf("pull request filtering failed: %#v err=%v", page, err)
 	}
@@ -793,8 +797,8 @@ func TestListRepositoriesFiltersLocatorAndPreservesPagination(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1"}, fingerprint, "token", now.Add(time.Hour))
-	page, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "conn-1"}, "widget", "")
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
+	page, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "widget", "")
 	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "1" || page.NextCursor == "" {
 		t.Fatalf("repository filter failed: %#v err=%v", page, err)
 	}
@@ -981,13 +985,13 @@ func TestInstallationTokenMintingCoalescesPerConnection(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true})
-	conn := state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", InstallationID: "2"}
+	conn := state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			token, err := client.installationToken(context.Background(), conn)
+			token, err := client.installationToken(context.Background(), conn, "2")
 			if err != nil || token != "opaque-token" {
 				t.Errorf("token=%q err=%v", token, err)
 			}
@@ -1009,8 +1013,8 @@ func TestInstallationTokenCacheIsBoundToAppAndInstallationIdentity(t *testing.T)
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", InstallationID: "2"}, fingerprint, "old-installation-token", now.Add(time.Hour))
-	token, err := client.installationToken(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", InstallationID: "3"})
+	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "old-installation-token", now.Add(time.Hour))
+	token, err := client.installationToken(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", Installations: []state.ConnectionInstallation{{InstallationID: "3"}}}, "3")
 	if err != nil || token != "new-installation-token" || mintedPath != "/app/installations/3/access_tokens" {
 		t.Fatalf("identity-changing mint token=%q path=%q err=%v", token, mintedPath, err)
 	}
@@ -1031,10 +1035,10 @@ func TestInstallationTokenMintCannotSurviveConcurrentEviction(t *testing.T) {
 	}))
 	defer server.Close()
 	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	conn := state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", InstallationID: "2", CredentialGeneration: 1}
+	conn := state.ExternalConnection{ConnectionID: "conn-1", AppID: "1", ClientID: "Iv1", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialGeneration: 1}
 	result := make(chan error, 1)
 	go func() {
-		_, err := client.installationToken(context.Background(), conn)
+		_, err := client.installationToken(context.Background(), conn, "2")
 		result <- err
 	}()
 	<-started
@@ -1044,7 +1048,7 @@ func TestInstallationTokenMintCannotSurviveConcurrentEviction(t *testing.T) {
 	if err := <-result; !errors.As(err, &providerErr) || providerErr.Class != external.FailureAuthentication {
 		t.Fatalf("stale mint survived eviction: %v", err)
 	}
-	token, err := client.installationToken(context.Background(), conn)
+	token, err := client.installationToken(context.Background(), conn, "2")
 	if err != nil || token != "token-2" || atomic.LoadInt32(&mints) != 2 {
 		t.Fatalf("fresh mint token=%q mints=%d err=%v", token, mints, err)
 	}
@@ -1171,7 +1175,7 @@ func TestDoJSONKeepsTransportAndAuthenticationRetryBudgetsIndependent(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			token, err := client.accessToken(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token"})
+			token, err := client.accessToken(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token"}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1192,5 +1196,181 @@ func TestDoJSONKeepsTransportAndAuthenticationRetryBudgetsIndependent(t *testing
 				}
 			}
 		})
+	}
+}
+
+// twoInstallationConnection covers @enkiid (installation 10) and @T-RexLabs
+// (installation 11) through one App key.
+func twoInstallationConnection(connectionID string) state.ExternalConnection {
+	return state.ExternalConnection{
+		ConnectionID: connectionID, Provider: "github", AppID: "1", ClientID: "Iv1", CredentialStrategy: "app_private_key",
+		CredentialGeneration: 1,
+		Installations: []state.ConnectionInstallation{
+			{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"},
+			{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs"},
+		},
+	}
+}
+
+func TestRepositoryListingWalksEveryInstallationExactlyOnce(t *testing.T) {
+	now := time.Now().UTC()
+	var minted []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
+			minted = append(minted, id)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"token":"token-%s","expires_at":%q}`, id, now.Add(time.Hour).Format(time.RFC3339))
+		case r.URL.Path == "/installation/repositories":
+			// The installation is implicit in the token, so answer from it.
+			switch r.Header.Get("Authorization") {
+			case "Bearer token-10":
+				if r.URL.Query().Get("page") == "1" {
+					w.Header().Set("Link", `<x>; rel="next"`)
+					_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"repositories":[{"id":201,"full_name":"enkiid/web","html_url":"https://github.com/enkiid/web","owner":{"id":100}}]}`))
+			case "Bearer token-11":
+				_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/infra","html_url":"https://github.com/T-RexLabs/infra","owner":{"id":101}}]}`))
+			default:
+				t.Errorf("unexpected token %q", r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	keys, _ := provisionTestKey(t)
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := twoInstallationConnection("conn-1")
+
+	var seen []string
+	cursor := ""
+	for pages := 0; pages < 10; pages++ {
+		page, err := client.ListRepositories(context.Background(), conn, "", cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, repository := range page.Items {
+			seen = append(seen, repository.Locator+"@"+repository.InstallationID)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	want := []string{"enkiid/api@10", "enkiid/web@10", "T-RexLabs/infra@11"}
+	if strings.Join(seen, ",") != strings.Join(want, ",") {
+		t.Fatalf("walk=%v, want %v with no repeats or omissions", seen, want)
+	}
+	// Each installation is authenticated for in its own right.
+	if len(minted) < 2 || minted[0] != "10" || minted[len(minted)-1] != "11" {
+		t.Fatalf("minted tokens for %v, want one per installation", minted)
+	}
+}
+
+func TestAnIssueIsFetchedWithTheTokenOfTheInstallationThatGrantsItsRepository(t *testing.T) {
+	now := time.Now().UTC()
+	var issueToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"token":"token-%s","expires_at":%q}`, id, now.Add(time.Hour).Format(time.RFC3339))
+		case r.URL.Path == "/installation/repositories":
+			if r.Header.Get("Authorization") == "Bearer token-10" {
+				_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/infra","html_url":"https://github.com/T-RexLabs/infra","owner":{"id":101}}]}`))
+		case r.URL.Path == "/repos/T-RexLabs/infra/issues/7":
+			issueToken = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"id":900,"number":7,"title":"Infra","body":"b","state":"open","html_url":"https://github.com/T-RexLabs/infra/issues/7","comments":0,"created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","repository_url":"https://api.github.com/repos/T-RexLabs/infra"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	keys, _ := provisionTestKey(t)
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := twoInstallationConnection("conn-1")
+	if _, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: conn, RepositoryID: "300", IssueNumber: 7, Profile: state.ExternalImportProfile{}}); err != nil {
+		t.Fatal(err)
+	}
+	if issueToken != "Bearer token-11" {
+		t.Fatalf("issue fetched with %q, want the token of installation 11 which grants T-RexLabs/infra", issueToken)
+	}
+}
+
+func TestValidationRejectsTheWholeConnectionWhenOneInstallationIsSuspended(t *testing.T) {
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app":
+			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
+		case "/app/installations/10":
+			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"enkiid"},"permissions":{"metadata":"read","issues":"read"}}`))
+		case "/app/installations/11":
+			_, _ = w.Write([]byte(`{"id":11,"app_id":1,"target_id":101,"account":{"id":101,"login":"T-RexLabs"},"suspended_at":"2026-08-01T00:00:00Z","permissions":{"metadata":"read","issues":"read"}}`))
+		case "/app/installations/10/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"token":"token-10","expires_at":%q}`, now.Add(time.Hour).Format(time.RFC3339))
+		case "/installation/repositories":
+			_, _ = w.Write([]byte(`{"repositories":[{"id":200,"full_name":"enkiid/api","html_url":"https://github.com/enkiid/api","owner":{"id":100}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	keys, _ := provisionTestKey(t)
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Validate(context.Background(), twoInstallationConnection("conn-1")); err == nil {
+		t.Fatal("a suspended installation must fail the whole connection")
+	}
+}
+
+func TestOneInstallationCannotVouchForAnothersRepositories(t *testing.T) {
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app":
+			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
+		case "/app/installations/10":
+			_, _ = w.Write([]byte(`{"id":10,"app_id":1,"target_id":100,"account":{"id":100,"login":"enkiid"},"permissions":{"metadata":"read","issues":"read"}}`))
+		case "/app/installations/10/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprintf(w, `{"token":"token-10","expires_at":%q}`, now.Add(time.Hour).Format(time.RFC3339))
+		case "/installation/repositories":
+			// Installation 10 returns a repository owned by the connection's OTHER
+			// account. Both accounts are connected, so a set-membership check would
+			// wave this through; a per-installation check must not.
+			_, _ = w.Write([]byte(`{"repositories":[{"id":300,"full_name":"T-RexLabs/infra","html_url":"https://github.com/T-RexLabs/infra","owner":{"id":101}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	keys, _ := provisionTestKey(t)
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := twoInstallationConnection("conn-1")
+	conn.Installations = conn.Installations[:1]
+	if _, err := client.Validate(context.Background(), conn); err == nil {
+		t.Fatal("an installation must only vouch for repositories of its own account")
 	}
 }

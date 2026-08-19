@@ -34,7 +34,11 @@ type Repository struct {
 	ID           string `json:"id"`
 	Locator      string `json:"locator"`
 	CanonicalURL string `json:"canonical_url"`
-	AccountID    string `json:"-"`
+	// AccountID and InstallationID are internal witnesses, never serialized.
+	// InstallationID is what lets a repository be authenticated for without a
+	// second lookup when a connection covers several installations.
+	AccountID      string `json:"-"`
+	InstallationID string `json:"-"`
 }
 type IssueSummary struct {
 	NativeID     string                        `json:"native_id"`
@@ -78,10 +82,12 @@ type IssueResult struct {
 	Transferred                               bool
 }
 
+// ConnectionValidation is the verdict for a whole connection. Every installation
+// it covers must validate, and each carries the account identity its own
+// validation proved.
 type ConnectionValidation struct {
-	InstallationAccountID    string
-	InstallationAccountLogin string
-	AppSlug                  string
+	AppSlug       string
+	Installations []state.ConnectionInstallation
 }
 
 type Adapter interface {

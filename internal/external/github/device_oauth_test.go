@@ -99,7 +99,7 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", InstallationID: "2"}
+	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
 	for range 2 {
@@ -208,7 +208,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
-		_, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", InstallationID: "2"})
+		_, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
 	t.Run("refresh outage after 401", func(t *testing.T) {
@@ -226,7 +226,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
-		_, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", InstallationID: "2"}, "", "")
+		_, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "", "")
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
 	t.Run("proactive refresh rate limit", func(t *testing.T) {
