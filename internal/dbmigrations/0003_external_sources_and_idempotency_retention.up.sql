@@ -19,6 +19,11 @@ CREATE TABLE external_connections (
   row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version > 0),
   credential_generation INTEGER NOT NULL DEFAULT 0 CHECK (credential_generation >= 0),
   validated_generation INTEGER NOT NULL DEFAULT 0 CHECK (validated_generation >= 0),
+  -- Which granted repositories Kingdom reads from. 'all' tracks the installation
+  -- grant with nothing stored, so an untouched connection cannot drift; 'selected'
+  -- narrows to external_connection_included_repositories. Inclusion only ever
+  -- narrows -- it can never widen beyond what GitHub grants.
+  included_repository_mode TEXT NOT NULL DEFAULT 'all' CHECK (included_repository_mode IN ('all', 'selected')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK ((installation_account_id = '') = (installation_account_login = '')),
@@ -30,6 +35,19 @@ CREATE TABLE external_connections (
 CREATE UNIQUE INDEX idx_external_connections_active_installation
 ON external_connections (provider, installation_id)
 WHERE lifecycle <> 'removed';
+
+-- Rows here matter only while included_repository_mode = 'selected'. The native
+-- id is authoritative because locators change on rename and transfer; the
+-- locator is a display cache, and readers prefer the live grant's locator
+-- whenever the repository is still granted.
+CREATE TABLE external_connection_included_repositories (
+  connection_id TEXT NOT NULL,
+  repository_native_id TEXT NOT NULL,
+  repository_locator TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (connection_id, repository_native_id),
+  FOREIGN KEY (connection_id) REFERENCES external_connections(connection_id)
+);
 
 CREATE TRIGGER external_connection_identity_pinned
 BEFORE UPDATE OF installation_account_id ON external_connections
@@ -149,7 +167,7 @@ CREATE INDEX idx_external_links_target ON external_source_links (target_kind, ta
 CREATE TABLE external_source_link_heads (
   link_id TEXT PRIMARY KEY,
   latest_snapshot_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('never_checked', 'unchanged', 'changed', 'inaccessible_or_missing', 'deleted', 'rate_limited', 'connection_disabled', 'service_unavailable', 'revoked', 'permission_mismatch', 'timeout', 'malformed_response', 'oversized_response')),
+  status TEXT NOT NULL CHECK (status IN ('never_checked', 'unchanged', 'changed', 'inaccessible_or_missing', 'deleted', 'rate_limited', 'connection_disabled', 'repository_excluded', 'service_unavailable', 'revoked', 'permission_mismatch', 'timeout', 'malformed_response', 'oversized_response')),
   checked_at TEXT,
   row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version > 0),
   FOREIGN KEY (link_id) REFERENCES external_source_links(link_id),
@@ -178,7 +196,7 @@ CREATE TABLE external_source_observations (
   actor_id TEXT NOT NULL,
   prior_snapshot_id TEXT,
   result_snapshot_id TEXT,
-  outcome_class TEXT NOT NULL CHECK (outcome_class IN ('unchanged', 'changed', 'superseded', 'inaccessible_or_missing', 'deleted', 'rate_limited', 'connection_disabled', 'service_unavailable', 'revoked', 'permission_mismatch', 'timeout', 'malformed_response', 'oversized_response')),
+  outcome_class TEXT NOT NULL CHECK (outcome_class IN ('unchanged', 'changed', 'superseded', 'inaccessible_or_missing', 'deleted', 'rate_limited', 'connection_disabled', 'repository_excluded', 'service_unavailable', 'revoked', 'permission_mismatch', 'timeout', 'malformed_response', 'oversized_response')),
   transfer_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(transfer_json)),
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL,

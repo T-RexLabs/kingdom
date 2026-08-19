@@ -1434,3 +1434,101 @@ func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
 		t.Fatalf("rejected detach wrote %d attachment changes", changes)
 	}
 }
+
+func includedRepositoriesFixture(t *testing.T) (*ExternalStore, context.Context, ExternalConnection) {
+	t.Helper()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-19T10:00:00Z"
+	connection, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-1", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-1", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, ctx, connection
+}
+
+func TestConnectionTracksTheWholeGrantUntilItIsNarrowed(t *testing.T) {
+	store, ctx, connection := includedRepositoriesFixture(t)
+	if connection.IncludedRepositoryMode != "all" {
+		t.Fatalf("new connection mode=%q, want all so it tracks the installation grant", connection.IncludedRepositoryMode)
+	}
+	included, err := store.GetIncludedRepositories(ctx, connection.ConnectionID)
+	if err != nil || len(included) != 0 {
+		t.Fatalf("all-mode connection stores no repositories: included=%#v err=%v", included, err)
+	}
+}
+
+func TestNarrowingAConnectionReplacesTheSetAndIsAudited(t *testing.T) {
+	store, ctx, connection := includedRepositoriesFixture(t)
+	at := "2026-08-19T11:00:00Z"
+	narrowed, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, SetIncludedRepositoriesRequest{
+		Mode:               "selected",
+		Repositories:       []IncludedRepository{{RepositoryNativeID: "200", RepositoryLocator: "octocat/api"}, {RepositoryNativeID: "201", RepositoryLocator: "octocat/web"}},
+		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-narrow",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if narrowed.IncludedRepositoryMode != "selected" || narrowed.RowVersion != connection.RowVersion+1 {
+		t.Fatalf("narrowed=%#v", narrowed)
+	}
+	included, err := store.GetIncludedRepositories(ctx, connection.ConnectionID)
+	if err != nil || len(included) != 2 || included[0].RepositoryLocator != "octocat/api" || included[1].RepositoryNativeID != "201" {
+		t.Fatalf("included=%#v err=%v", included, err)
+	}
+
+	// Replacing the set is a whole-set write, not an append.
+	replaced, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, SetIncludedRepositoriesRequest{
+		Mode:               "selected",
+		Repositories:       []IncludedRepository{{RepositoryNativeID: "202", RepositoryLocator: "octocat/infra"}},
+		ExpectedRowVersion: narrowed.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-replace",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	included, _ = store.GetIncludedRepositories(ctx, connection.ConnectionID)
+	if len(included) != 1 || included[0].RepositoryNativeID != "202" {
+		t.Fatalf("replacement did not replace: %#v", included)
+	}
+
+	// Returning to all drops the narrowing entirely.
+	widened, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, SetIncludedRepositoriesRequest{
+		Mode: "all", ExpectedRowVersion: replaced.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-widen",
+	})
+	if err != nil || widened.IncludedRepositoryMode != "all" {
+		t.Fatalf("widened=%#v err=%v", widened, err)
+	}
+	included, _ = store.GetIncludedRepositories(ctx, connection.ConnectionID)
+	if len(included) != 0 {
+		t.Fatalf("all mode still stores rows: %#v", included)
+	}
+
+	var audited int
+	_ = store.db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events WHERE event_type='connection.included_repositories_changed'`).Scan(&audited)
+	if audited != 3 {
+		t.Fatalf("audit events=%d, want one per change", audited)
+	}
+}
+
+func TestNarrowingRejectsStaleRowVersionAndAnEmptySelection(t *testing.T) {
+	store, ctx, connection := includedRepositoriesFixture(t)
+	at := "2026-08-19T11:00:00Z"
+	if _, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, SetIncludedRepositoriesRequest{
+		Mode: "selected", ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-empty",
+	}); err == nil {
+		t.Fatal("selected mode with no repositories must be rejected")
+	}
+	if _, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, SetIncludedRepositoriesRequest{
+		Mode:               "selected",
+		Repositories:       []IncludedRepository{{RepositoryNativeID: "200", RepositoryLocator: "octocat/api"}},
+		ExpectedRowVersion: connection.RowVersion + 7, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-stale",
+	}); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("stale row version error=%v, want conflict", err)
+	}
+	included, _ := store.GetIncludedRepositories(ctx, connection.ConnectionID)
+	if len(included) != 0 {
+		t.Fatalf("a rejected narrowing must leave nothing behind: %#v", included)
+	}
+}

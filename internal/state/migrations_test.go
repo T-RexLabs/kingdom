@@ -854,9 +854,32 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='external_source_link_heads'`).Scan(&linkHeadsSQL); err != nil {
 		t.Fatalf("read external_source_link_heads schema: %v", err)
 	}
-	for _, status := range []string{"revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response"} {
+	for _, status := range []string{"revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response", "repository_excluded"} {
 		if !strings.Contains(linkHeadsSQL, "'"+status+"'") {
 			t.Fatalf("external_source_link_heads status enum is missing %q", status)
+		}
+	}
+	var observationsSQL string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='external_source_observations'`).Scan(&observationsSQL); err != nil {
+		t.Fatalf("read external_source_observations schema: %v", err)
+	}
+	if !strings.Contains(observationsSQL, "'repository_excluded'") {
+		t.Fatal("external_source_observations outcome_class enum is missing 'repository_excluded'")
+	}
+	// A connection covers its whole installation grant until it is narrowed.
+	if !columnExists(t, db, "external_connections", "included_repository_mode") {
+		t.Fatal("external_connections.included_repository_mode is missing")
+	}
+	var defaultMode string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='external_connections'`).Scan(&defaultMode); err != nil {
+		t.Fatalf("read external_connections schema: %v", err)
+	}
+	if !strings.Contains(defaultMode, "included_repository_mode TEXT NOT NULL DEFAULT 'all'") {
+		t.Fatal("included_repository_mode must default to 'all' so an untouched connection tracks the grant")
+	}
+	for _, column := range []string{"connection_id", "repository_native_id", "repository_locator", "created_at"} {
+		if !columnExists(t, db, "external_connection_included_repositories", column) {
+			t.Fatalf("external_connection_included_repositories.%s is missing", column)
 		}
 	}
 	for _, column := range []string{"event_sequence", "hash_version"} {
