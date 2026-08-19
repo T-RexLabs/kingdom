@@ -35,8 +35,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="flex h-screen">
       <NavigationFrame routeLocation={router.location} />
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto pt-12 md:pt-0">{children}</main>
+      {/* Main content.
+
+          The shell is a fixed viewport: `main` sizes itself to the window and
+          never scrolls. Scrolling belongs to one place inside each page —
+          `PageContent` — so the page header stays pinned and the operator only
+          ever sees a single scrollbar. Every routed page root must therefore be
+          `h-full min-h-0` and manage its own overflow. */}
+      <main className="flex-1 overflow-hidden pt-12 md:pt-0">{children}</main>
 
       {/* Keyboard shortcuts overlay */}
       <ShortcutsHelp

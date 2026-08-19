@@ -119,7 +119,7 @@ export function AgentsPage() {
     || (pendingDecisionRuns?.items.length ?? 0) > 0;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <div className="w-full">
           <h1 className="font-display text-2xl font-bold text-gold">Agent Registry</h1>

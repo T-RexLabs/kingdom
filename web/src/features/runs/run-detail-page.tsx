@@ -689,12 +689,15 @@ export function RunDetailPage() {
 
 	const activeTabId = `run-tab-${activeTab}`;
 	const activePanelId = `run-tabpanel-${activeTab}`;
+	// `relative` for the same reason PageContent carries it: a scroll viewport
+	// must be the containing block for its absolutely positioned descendants,
+	// or they escape the clip and grow the document instead.
 	const managedTabPanelClass = activeTab === "graph" || activeTab === "mailbox"
 		? "flex flex-col overflow-hidden"
-		: "overflow-auto";
+		: "relative overflow-auto";
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <div className="flex w-full items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
