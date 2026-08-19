@@ -44,6 +44,16 @@ Run **Check** after provisioning or rotation. Kingdom validates `GET /app` for e
 
 Only the saved display name can be edited. App ID, client ID, installation ID, and numeric account ID are immutable; account login may follow a verified GitHub rename. Provisioning or rotating a key invalidates prior health and requires a new **Check**.
 
+## Included Repositories
+
+GitHub decides what an installation grants; the connection decides how much of that grant Kingdom reads from. They are separate controls and the UI names them apart: **Included Repositories** on the connection, and **Change What GitHub Grants** for the GitHub page.
+
+A new connection includes everything its installation grants, stored as a mode rather than a copied list, so it follows repositories added on GitHub later without drifting. Setup ends by offering the choice, and a saved connection offers the same editor under **Change**. Both use one component, so the shared App, the private Manifest App, and manual setup all behave identically. A connection that has not passed **Check** cannot list repositories and asks for one instead.
+
+Narrowing only ever subtracts. Every selected repository is proven against the live grant before it is stored, so a connection can never reach beyond what GitHub allows. Discovery, issue listing, issue preview, and capture all refuse an excluded repository, and a repository GitHub stops granting simply stops appearing — there is no reconciler and nothing to repair.
+
+Excluding a repository does not detach what it already produced. Sources captured from it stay attached with their content, provenance, and planning participation intact; refresh reports **Repository Not Included**, makes no provider call, and leaves the source exactly as it was. Including the repository again resumes refreshing.
+
 ## Intake and Refresh
 
 The picker enumerates installation-granted repository IDs, then browses or searches issue-only results. Pull requests returned by GitHub's Issues API are removed. Comment count defaults on; bodies default off. Selected bodies are shown in an accessible paginated preview with raw HTML, remote images, embeds, and unsafe links blocked. Retention is 100 bodies, 32 KiB each, 128 KiB aggregate. A planning session can attach multiple unique issues through **Add GitHub issue** / **Add source** inside the session itself; duplicate attachment to the same session is rejected atomically. **Remove** detaches a source from future planner operations after an inline confirmation. Provenance, refresh history, and operations already bound to that source are unchanged, and the same issue can be added again — which reuses its link and adopts freshly captured content. Planner context uses no more than 64 KiB comments and 128 KiB total external text.

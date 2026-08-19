@@ -1509,8 +1509,8 @@ export function ConnectionsPage() {
                         Choose an Installation
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
-                        One connection is created for the account you select, and
-                        it covers every repository that installation grants.
+                        One connection is created for the account you select.
+                        You choose which of its repositories to include next.
                       </p>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
