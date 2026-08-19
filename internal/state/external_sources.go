@@ -27,7 +27,6 @@ var (
 	ErrExternalConflict                = errors.New("external resource changed concurrently")
 	ErrExternalValidationNeeded        = errors.New("external connection requires a current successful health check")
 	ErrExternalConnectionUnavailable   = errors.New("external connection is disabled")
-	ErrExternalRepositoryExcluded      = errors.New("repository is not included in this connection")
 	ErrExternalSourceAlreadyAttached   = errors.New("external source is already attached to this planning session")
 	ErrExternalSourceNotAttached       = errors.New("external source is not attached to this planning session")
 	ErrExternalDetachUnsupported       = errors.New("only planning session sources can be removed")
@@ -45,40 +44,7 @@ type ExternalConnection struct {
 	CredentialHandle, Lifecycle, HealthClass, FailureClass  string
 	LastCheckedAt, LastSuccessAt                            *string
 	RowVersion, CredentialGeneration, ValidatedGeneration   int
-	IncludedRepositoryMode                                  string
 	CreatedAt, UpdatedAt                                    string
-}
-
-// externalConnectionColumns, connectionColumnList, and connectionScanTargets
-// move as one unit: the order here is the select order and the scan order, so a
-// new column cannot reach one query and miss another.
-var externalConnectionColumns = []string{
-	"connection_id", "provider", "credential_strategy", "display_name", "app_id", "client_id",
-	"app_slug", "installation_id", "installation_account_id", "installation_account_login",
-	"credential_handle", "lifecycle", "health_class", "failure_class",
-	"last_checked_at", "last_success_at", "row_version", "credential_generation",
-	"validated_generation", "included_repository_mode", "created_at", "updated_at",
-}
-
-func connectionColumnList(alias string) string {
-	if alias == "" {
-		return strings.Join(externalConnectionColumns, ",")
-	}
-	qualified := make([]string, 0, len(externalConnectionColumns))
-	for _, column := range externalConnectionColumns {
-		qualified = append(qualified, alias+"."+column)
-	}
-	return strings.Join(qualified, ",")
-}
-
-func connectionScanTargets(r *ExternalConnection, checked, success *sql.NullString) []any {
-	return []any{
-		&r.ConnectionID, &r.Provider, &r.CredentialStrategy, &r.DisplayName, &r.AppID, &r.ClientID,
-		&r.AppSlug, &r.InstallationID, &r.InstallationAccountID, &r.InstallationAccountLogin,
-		&r.CredentialHandle, &r.Lifecycle, &r.HealthClass, &r.FailureClass,
-		checked, success, &r.RowVersion, &r.CredentialGeneration,
-		&r.ValidatedGeneration, &r.IncludedRepositoryMode, &r.CreatedAt, &r.UpdatedAt,
-	}
 }
 
 func (c ExternalConnection) HasCurrentValidation() bool {
@@ -397,7 +363,7 @@ func (s *ExternalStore) CreateConnection(ctx context.Context, req CreateExternal
 	if err != nil {
 		return ExternalConnection{}, err
 	}
-	row := ExternalConnection{ConnectionID: strings.TrimSpace(req.ConnectionID), Provider: "github", CredentialStrategy: req.CredentialStrategy, DisplayName: strings.TrimSpace(req.DisplayName), AppID: strings.TrimSpace(req.AppID), ClientID: strings.TrimSpace(req.ClientID), AppSlug: strings.TrimSpace(req.AppSlug), InstallationID: strings.TrimSpace(req.InstallationID), CredentialHandle: strings.TrimSpace(req.CredentialHandle), Lifecycle: "enabled", HealthClass: "missing_credential", RowVersion: 1, IncludedRepositoryMode: "all", CreatedAt: req.CreatedAt, UpdatedAt: req.CreatedAt}
+	row := ExternalConnection{ConnectionID: strings.TrimSpace(req.ConnectionID), Provider: "github", CredentialStrategy: req.CredentialStrategy, DisplayName: strings.TrimSpace(req.DisplayName), AppID: strings.TrimSpace(req.AppID), ClientID: strings.TrimSpace(req.ClientID), AppSlug: strings.TrimSpace(req.AppSlug), InstallationID: strings.TrimSpace(req.InstallationID), CredentialHandle: strings.TrimSpace(req.CredentialHandle), Lifecycle: "enabled", HealthClass: "missing_credential", RowVersion: 1, CreatedAt: req.CreatedAt, UpdatedAt: req.CreatedAt}
 	_, err = tx.ExecContext(ctx, `INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,credential_handle,lifecycle,health_class,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.ConnectionID, row.Provider, row.CredentialStrategy, row.DisplayName, row.AppID, row.ClientID, row.AppSlug, row.InstallationID, row.CredentialHandle, row.Lifecycle, row.HealthClass, row.CreatedAt, row.UpdatedAt)
 	if err != nil {
 		_ = tx.Rollback()
@@ -430,7 +396,7 @@ func (s *ExternalStore) FinalizeConnection(ctx context.Context, req FinalizeExte
 		ConnectionID: strings.TrimSpace(base.ConnectionID), Provider: "github", CredentialStrategy: base.CredentialStrategy,
 		DisplayName: strings.TrimSpace(base.DisplayName), AppID: strings.TrimSpace(base.AppID), ClientID: strings.TrimSpace(base.ClientID), AppSlug: strings.TrimSpace(base.AppSlug),
 		InstallationID: strings.TrimSpace(base.InstallationID), InstallationAccountID: strings.TrimSpace(req.InstallationAccountID), InstallationAccountLogin: strings.TrimSpace(req.InstallationAccountLogin),
-		CredentialHandle: strings.TrimSpace(base.CredentialHandle), Lifecycle: "enabled", HealthClass: "healthy", IncludedRepositoryMode: "all", RowVersion: 1, CredentialGeneration: 1, ValidatedGeneration: 1,
+		CredentialHandle: strings.TrimSpace(base.CredentialHandle), Lifecycle: "enabled", HealthClass: "healthy", RowVersion: 1, CredentialGeneration: 1, ValidatedGeneration: 1,
 		CreatedAt: base.CreatedAt, UpdatedAt: base.CreatedAt,
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -479,7 +445,7 @@ func (s *ExternalStore) ListConnectionsAwaitingRemovalReconciliation(ctx context
 }
 
 func (s *ExternalStore) listConnections(ctx context.Context, predicate string) ([]ExternalConnection, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+connectionColumnList("")+` FROM external_connections `+predicate+` ORDER BY created_at,connection_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,installation_account_id,installation_account_login,credential_handle,lifecycle,health_class,failure_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at FROM external_connections `+predicate+` ORDER BY created_at,connection_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +454,7 @@ func (s *ExternalStore) listConnections(ctx context.Context, predicate string) (
 	for rows.Next() {
 		var r ExternalConnection
 		var checked, success sql.NullString
-		if err := rows.Scan(connectionScanTargets(&r, &checked, &success)...); err != nil {
+		if err := rows.Scan(&r.ConnectionID, &r.Provider, &r.CredentialStrategy, &r.DisplayName, &r.AppID, &r.ClientID, &r.AppSlug, &r.InstallationID, &r.InstallationAccountID, &r.InstallationAccountLogin, &r.CredentialHandle, &r.Lifecycle, &r.HealthClass, &r.FailureClass, &checked, &success, &r.RowVersion, &r.CredentialGeneration, &r.ValidatedGeneration, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.LastCheckedAt = nullableStringFromSQL(checked)
@@ -501,7 +467,7 @@ func (s *ExternalStore) listConnections(ctx context.Context, predicate string) (
 func (s *ExternalStore) GetConnection(ctx context.Context, id string) (ExternalConnection, error) {
 	var r ExternalConnection
 	var checked, success sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT `+connectionColumnList("")+` FROM external_connections WHERE connection_id=?`, strings.TrimSpace(id)).Scan(connectionScanTargets(&r, &checked, &success)...)
+	err := s.db.QueryRowContext(ctx, `SELECT connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,installation_account_id,installation_account_login,credential_handle,lifecycle,health_class,failure_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at FROM external_connections WHERE connection_id=?`, strings.TrimSpace(id)).Scan(&r.ConnectionID, &r.Provider, &r.CredentialStrategy, &r.DisplayName, &r.AppID, &r.ClientID, &r.AppSlug, &r.InstallationID, &r.InstallationAccountID, &r.InstallationAccountLogin, &r.CredentialHandle, &r.Lifecycle, &r.HealthClass, &r.FailureClass, &checked, &success, &r.RowVersion, &r.CredentialGeneration, &r.ValidatedGeneration, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrExternalNotFound
 	}
@@ -543,7 +509,7 @@ func (s *ExternalStore) UpdateConnection(ctx context.Context, id string, req Upd
 	}
 	var current ExternalConnection
 	var checked, success sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT `+connectionColumnList("")+` FROM external_connections WHERE connection_id=?`, strings.TrimSpace(id)).Scan(connectionScanTargets(&current, &checked, &success)...)
+	err = tx.QueryRowContext(ctx, `SELECT connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,installation_id,installation_account_id,installation_account_login,credential_handle,lifecycle,health_class,failure_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at FROM external_connections WHERE connection_id=?`, strings.TrimSpace(id)).Scan(&current.ConnectionID, &current.Provider, &current.CredentialStrategy, &current.DisplayName, &current.AppID, &current.ClientID, &current.AppSlug, &current.InstallationID, &current.InstallationAccountID, &current.InstallationAccountLogin, &current.CredentialHandle, &current.Lifecycle, &current.HealthClass, &current.FailureClass, &checked, &success, &current.RowVersion, &current.CredentialGeneration, &current.ValidatedGeneration, &current.CreatedAt, &current.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) || current.Lifecycle == "removed" || current.Lifecycle == "removal_pending" {
 		_ = tx.Rollback()
 		return ExternalConnection{}, ErrExternalNotFound
@@ -588,104 +554,6 @@ func (s *ExternalStore) UpdateConnection(ctx context.Context, id string, req Upd
 		return ExternalConnection{}, err
 	}
 	return updated, nil
-}
-
-// IncludedRepository is one entry of a connection's narrowed repository set.
-// RepositoryLocator is a display cache: locators change on rename and transfer,
-// so callers prefer the locator from the live installation grant whenever the
-// repository is still granted.
-type IncludedRepository struct {
-	RepositoryNativeID string
-	RepositoryLocator  string
-}
-
-type SetIncludedRepositoriesRequest struct {
-	Mode                             string
-	Repositories                     []IncludedRepository
-	ExpectedRowVersion               int
-	ActorID, UpdatedAt, AuditEventID string
-}
-
-// GetIncludedRepositories returns the stored narrowing. It is meaningful only
-// while the connection's mode is "selected"; in "all" mode the connection
-// tracks the installation grant and stores nothing.
-func (s *ExternalStore) GetIncludedRepositories(ctx context.Context, connectionID string) ([]IncludedRepository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT repository_native_id,repository_locator FROM external_connection_included_repositories WHERE connection_id=? ORDER BY repository_locator,repository_native_id`, strings.TrimSpace(connectionID))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []IncludedRepository
-	for rows.Next() {
-		var item IncludedRepository
-		if err := rows.Scan(&item.RepositoryNativeID, &item.RepositoryLocator); err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	return out, rows.Err()
-}
-
-// SetIncludedRepositories replaces the narrowing as one transaction. Callers
-// must have already proven every repository is currently granted; the store
-// enforces shape and concurrency, not provider truth.
-func (s *ExternalStore) SetIncludedRepositories(ctx context.Context, connectionID string, req SetIncludedRepositoriesRequest) (ExternalConnection, error) {
-	if req.Mode != "all" && req.Mode != "selected" {
-		return ExternalConnection{}, fmt.Errorf("included repository mode must be all or selected")
-	}
-	if req.Mode == "selected" && len(req.Repositories) == 0 {
-		return ExternalConnection{}, fmt.Errorf("at least one repository is required when narrowing a connection")
-	}
-	if strings.TrimSpace(req.ActorID) == "" || strings.TrimSpace(req.UpdatedAt) == "" || strings.TrimSpace(req.AuditEventID) == "" {
-		return ExternalConnection{}, fmt.Errorf("actor, timestamp, and audit event are required")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ExternalConnection{}, err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET included_repository_mode=?,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND lifecycle<>'removed' AND lifecycle<>'removal_pending'`, req.Mode, req.UpdatedAt, strings.TrimSpace(connectionID), req.ExpectedRowVersion)
-	if err != nil {
-		_ = tx.Rollback()
-		return ExternalConnection{}, err
-	}
-	if n, _ := result.RowsAffected(); n != 1 {
-		_ = tx.Rollback()
-		return ExternalConnection{}, ErrExternalConflict
-	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM external_connection_included_repositories WHERE connection_id=?`, strings.TrimSpace(connectionID)); err != nil {
-		_ = tx.Rollback()
-		return ExternalConnection{}, err
-	}
-	if req.Mode == "selected" {
-		seen := map[string]struct{}{}
-		for _, item := range req.Repositories {
-			nativeID := strings.TrimSpace(item.RepositoryNativeID)
-			if nativeID == "" {
-				_ = tx.Rollback()
-				return ExternalConnection{}, fmt.Errorf("repository id is required")
-			}
-			if _, duplicate := seen[nativeID]; duplicate {
-				continue
-			}
-			seen[nativeID] = struct{}{}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO external_connection_included_repositories (connection_id,repository_native_id,repository_locator,created_at) VALUES (?,?,?,?)`, strings.TrimSpace(connectionID), nativeID, strings.TrimSpace(item.RepositoryLocator), req.UpdatedAt); err != nil {
-				_ = tx.Rollback()
-				return ExternalConnection{}, err
-			}
-		}
-	}
-	locators := make([]string, 0, len(req.Repositories))
-	for _, item := range req.Repositories {
-		locators = append(locators, item.RepositoryLocator)
-	}
-	if err := appendExternalAudit(ctx, tx, req.AuditEventID, strings.TrimSpace(connectionID), "", "connection.included_repositories_changed", req.ActorID, map[string]any{"mode": req.Mode, "repositories": locators}, req.UpdatedAt); err != nil {
-		_ = tx.Rollback()
-		return ExternalConnection{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ExternalConnection{}, err
-	}
-	return s.GetConnection(ctx, connectionID)
 }
 
 func (s *ExternalStore) UpdateConnectionState(ctx context.Context, id, lifecycle, health, failure, checkedAt string, successful bool, installationAccountID, installationAccountLogin string) error {
@@ -1339,17 +1207,17 @@ func (s *ExternalStore) GetRefreshBasis(ctx context.Context, linkID string) (Ext
 			l.latest_snapshot_id,l.status,l.checked_at,l.row_version,l.created_at,
 			src.provider,provenance.normalized_issue_json,l.active_snapshot_id,
 			src.provider_native_id,src.repository_native_id,src.repository_locator,src.issue_number,src.canonical_url,
-			`+connectionColumnList("c")+`
+			c.connection_id,c.provider,c.credential_strategy,c.display_name,c.app_id,c.client_id,c.app_slug,c.installation_id,c.installation_account_id,c.installation_account_login,c.credential_handle,c.lifecycle,c.health_class,c.failure_class,c.last_checked_at,c.last_success_at,c.row_version,c.credential_generation,c.validated_generation,c.created_at,c.updated_at
 		FROM link_view l
 		JOIN external_sources src ON src.source_id=l.source_id
 		JOIN external_source_snapshots provenance ON provenance.snapshot_id=CASE
 			WHEN l.target_kind='planning_session' THEN COALESCE(NULLIF(l.active_snapshot_id,''),l.used_snapshot_id)
 			ELSE l.used_snapshot_id
 		END
-		JOIN external_connections c ON c.connection_id=src.connection_id`, strings.TrimSpace(linkID)).Scan(append([]any{
+		JOIN external_connections c ON c.connection_id=src.connection_id`, strings.TrimSpace(linkID)).Scan(
 		&out.Link.LinkID, &out.Link.TargetKind, &out.Link.TargetID, &out.Link.SourceID, &out.Link.UsedSnapshotID, &out.Link.LatestSnapshotID, &out.Link.Status, &checked, &out.Link.RowVersion, &out.Link.CreatedAt, &out.Link.Provider, &issueJSON, &out.Link.ActiveSnapshotID,
 		&out.ProviderNativeID, &out.FetchRepositoryNativeID, &out.FetchRepository, &out.FetchIssueNumber, &out.FetchCanonicalURL,
-	}, connectionScanTargets(&out.Connection, &connectionChecked, &connectionSuccess)...)...)
+		&out.Connection.ConnectionID, &out.Connection.Provider, &out.Connection.CredentialStrategy, &out.Connection.DisplayName, &out.Connection.AppID, &out.Connection.ClientID, &out.Connection.AppSlug, &out.Connection.InstallationID, &out.Connection.InstallationAccountID, &out.Connection.InstallationAccountLogin, &out.Connection.CredentialHandle, &out.Connection.Lifecycle, &out.Connection.HealthClass, &out.Connection.FailureClass, &connectionChecked, &connectionSuccess, &out.Connection.RowVersion, &out.Connection.CredentialGeneration, &out.Connection.ValidatedGeneration, &out.Connection.CreatedAt, &out.Connection.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, ErrExternalNotFound
 	}
@@ -1437,7 +1305,7 @@ func (s *ExternalStore) ApplyRefresh(ctx context.Context, req ApplyExternalRefre
 	}
 	observationOutcome := req.Outcome
 	switch observationOutcome {
-	case "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "repository_excluded", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response":
+	case "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response":
 	default:
 		if resultSnapshot == currentSnapshot {
 			observationOutcome = "unchanged"
@@ -1447,7 +1315,7 @@ func (s *ExternalStore) ApplyRefresh(ctx context.Context, req ApplyExternalRefre
 	}
 	status := observationOutcome
 	switch status {
-	case "unchanged", "changed", "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "repository_excluded", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response":
+	case "unchanged", "changed", "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response":
 	default:
 		status = "service_unavailable"
 	}

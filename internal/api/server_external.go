@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,85 +133,6 @@ func (s *Server) handleUpdateConnection(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, presentConnection(row, s.githubKeys, s.githubUserTokens))
 }
-
-// maxIncludedRepositories bounds one narrowing request. GitHub's own
-// pre-selection ceiling is 100 repositories; this leaves generous headroom
-// while keeping a single request finite.
-const maxIncludedRepositories = 500
-
-func (s *Server) handleSetIncludedRepositories(w http.ResponseWriter, r *http.Request) {
-	conn, adapter, ok := s.connectionAdapter(w, r)
-	if !ok {
-		return
-	}
-	var req gen.SetIncludedRepositoriesRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
-		s.writeBadRequest(w, err.Error())
-		return
-	}
-	mode := string(req.Mode)
-	requested := map[string]struct{}{}
-	if req.RepositoryIds != nil {
-		for _, id := range *req.RepositoryIds {
-			requested[strings.TrimSpace(id)] = struct{}{}
-		}
-	}
-	if mode == "all" {
-		requested = map[string]struct{}{}
-	}
-	if mode == "selected" && len(requested) == 0 {
-		s.writeBadRequest(w, "select at least one repository, or include all of them")
-		return
-	}
-	if len(requested) > maxIncludedRepositories {
-		s.writeBadRequest(w, "too many repositories in one request")
-		return
-	}
-
-	// A connection may only narrow its installation grant, never widen it, so
-	// every requested repository is proven against the live grant first.
-	resolved := make([]state.IncludedRepository, 0, len(requested))
-	if mode == "selected" {
-		found := make(map[string]struct{}, len(requested))
-		cursor := ""
-		for page := 0; page < 100 && len(found) < len(requested); page++ {
-			granted, err := adapter.ListRepositories(r.Context(), conn, "", cursor)
-			if err != nil {
-				writeExternalError(w, err, "api.set_included_repositories")
-				return
-			}
-			for _, repository := range granted.Items {
-				if _, wanted := requested[repository.ID]; !wanted {
-					continue
-				}
-				if _, already := found[repository.ID]; already {
-					continue
-				}
-				found[repository.ID] = struct{}{}
-				resolved = append(resolved, state.IncludedRepository{RepositoryNativeID: repository.ID, RepositoryLocator: repository.Locator})
-			}
-			if granted.NextCursor == "" {
-				break
-			}
-			cursor = granted.NextCursor
-		}
-		if len(found) != len(requested) {
-			writeExternalError(w, state.ErrExternalRepositoryExcluded, "api.set_included_repositories")
-			return
-		}
-	}
-
-	row, err := s.externalStore.SetIncludedRepositories(r.Context(), conn.ConnectionID, state.SetIncludedRepositoriesRequest{
-		Mode: mode, Repositories: resolved, ExpectedRowVersion: conn.RowVersion,
-		ActorID: authenticatedActorID(r.Context()), UpdatedAt: s.now().UTC().Format(time.RFC3339Nano), AuditEventID: s.idGenerator("external_audit"),
-	})
-	if err != nil {
-		writeExternalError(w, err, "api.set_included_repositories")
-		return
-	}
-	writeJSON(w, http.StatusOK, presentConnection(row, s.githubKeys, s.githubUserTokens))
-}
-
 func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	now := s.now().UTC().Format(time.RFC3339Nano)
@@ -337,56 +257,13 @@ func (s *Server) enabledConnectionAdapter(w http.ResponseWriter, r *http.Request
 	return conn, adapter, true
 }
 
-// includedRepositoryIDs reports the narrowing a connection applies to its
-// installation grant. A connection in "all" mode returns narrowed=false and no
-// set, because it deliberately stores nothing and tracks whatever GitHub grants.
-//
-// The narrowing is applied here in the API layer and never in the provider
-// adapter: connection validation and transfer resolution both call
-// ListRepositories and must keep seeing the true grant.
-func (s *Server) includedRepositoryIDs(ctx context.Context, conn state.ExternalConnection) (map[string]struct{}, bool, error) {
-	if conn.IncludedRepositoryMode != "selected" {
-		return nil, false, nil
-	}
-	included, err := s.externalStore.GetIncludedRepositories(ctx, conn.ConnectionID)
-	if err != nil {
-		return nil, false, err
-	}
-	ids := make(map[string]struct{}, len(included))
-	for _, item := range included {
-		ids[item.RepositoryNativeID] = struct{}{}
-	}
-	return ids, true, nil
-}
-
-// requireIncludedRepository rejects a repository the connection excludes, so an
-// exclusion is real rather than cosmetic.
-func (s *Server) requireIncludedRepository(ctx context.Context, conn state.ExternalConnection, repositoryID string) error {
-	ids, narrowed, err := s.includedRepositoryIDs(ctx, conn)
-	if err != nil || !narrowed {
-		return err
-	}
-	if _, ok := ids[strings.TrimSpace(repositoryID)]; !ok {
-		return state.ErrExternalRepositoryExcluded
-	}
-	return nil
-}
-
 func (s *Server) handleListConnectionRepositories(w http.ResponseWriter, r *http.Request) {
 	conn, adapter, ok := s.connectionAdapter(w, r)
 	if !ok {
 		return
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
-	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-	if scope == "" {
-		scope = "included"
-	}
-	if scope != "included" && scope != "granted" {
-		s.writeBadRequest(w, "scope must be included or granted")
-		return
-	}
-	cursorScope := conn.ConnectionID + "\n" + scope + "\n" + search
+	cursorScope := conn.ConnectionID + "\n" + search
 	providerCursor := ""
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		var decodeErr error
@@ -396,30 +273,12 @@ func (s *Server) handleListConnectionRepositories(w http.ResponseWriter, r *http
 			return
 		}
 	}
-	included, narrowed, err := s.includedRepositoryIDs(r.Context(), conn)
-	if err != nil {
-		writeExternalError(w, err, "api.list_connection_repositories")
-		return
-	}
 	page, err := adapter.ListRepositories(r.Context(), conn, search, providerCursor)
 	if err != nil {
 		writeExternalError(w, err, "api.list_connection_repositories")
 		return
 	}
-	items := make([]map[string]any, 0, len(page.Items))
-	for _, repository := range page.Items {
-		_, isIncluded := included[repository.ID]
-		isIncluded = isIncluded || !narrowed
-		if scope == "included" && !isIncluded {
-			continue
-		}
-		item := map[string]any{"id": repository.ID, "locator": repository.Locator, "canonical_url": repository.CanonicalURL}
-		if scope == "granted" {
-			item["included"] = isIncluded
-		}
-		items = append(items, item)
-	}
-	response := map[string]any{"items": items}
+	response := map[string]any{"items": page.Items}
 	if page.NextCursor != "" {
 		response["next_cursor"] = s.cursors.Encode("connection-repositories", cursorScope, page.NextCursor)
 	}
@@ -431,10 +290,6 @@ func (s *Server) handleListConnectionIssues(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	repositoryID, stateFilter, search := r.PathValue("repositoryId"), r.URL.Query().Get("state"), r.URL.Query().Get("search")
-	if err := s.requireIncludedRepository(r.Context(), conn, repositoryID); err != nil {
-		writeExternalError(w, err, "api.list_connection_issues")
-		return
-	}
 	cursorScope := conn.ConnectionID + "\n" + repositoryID + "\n" + stateFilter + "\n" + search
 	providerCursor := ""
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
@@ -474,10 +329,6 @@ func (s *Server) handlePreviewConnectionIssue(w http.ResponseWriter, r *http.Req
 		s.writeBadRequest(w, "issue number must be positive")
 		return
 	}
-	if err := s.requireIncludedRepository(r.Context(), conn, r.PathValue("repositoryId")); err != nil {
-		writeExternalError(w, err, "api.preview_connection_issue")
-		return
-	}
 	result, err := adapter.FetchIssue(r.Context(), external.IssueRequest{Connection: conn, RepositoryID: r.PathValue("repositoryId"), IssueNumber: number, Profile: importProfileFromQuery(r)})
 	if err != nil {
 		writeExternalError(w, err, "api.preview_connection_issue")
@@ -504,9 +355,6 @@ func (s *Server) fetchCapture(r *http.Request, req gen.ExternalIntake) (state.Ca
 	}
 	if !conn.HasCurrentValidation() {
 		return state.CaptureExternalIssueRequest{}, state.ErrExternalValidationNeeded
-	}
-	if err := s.requireIncludedRepository(r.Context(), conn, req.RepositoryId); err != nil {
-		return state.CaptureExternalIssueRequest{}, err
 	}
 	adapter, ok := s.externalRegistry.Adapter(conn.Provider)
 	if !ok {
@@ -600,22 +448,8 @@ func (s *Server) handleRefreshExternalSourceLink(w http.ResponseWriter, r *http.
 	started := s.now().UTC().Format(time.RFC3339Nano)
 	request := state.ApplyExternalRefreshRequest{Basis: basis, ObservationID: s.idGenerator("external_observation"), AuditEventID: s.idGenerator("external_audit"), AliasID: s.idGenerator("external_alias"), ActorID: authenticatedActorID(r.Context()), StartedAt: started, FinishedAt: started}
 	changes := gen.ExternalRefreshChanges{}
-	excluded := false
-	if basis.Connection.Lifecycle == "enabled" && basis.Connection.HasCurrentValidation() {
-		if err := s.requireIncludedRepository(r.Context(), basis.Connection, basis.FetchRepositoryNativeID); err != nil {
-			if !errors.Is(err, state.ErrExternalRepositoryExcluded) {
-				writeExternalError(w, err, "api.refresh_external_link")
-				return
-			}
-			excluded = true
-		}
-	}
 	if basis.Connection.Lifecycle != "enabled" || !basis.Connection.HasCurrentValidation() {
 		request.Outcome = "connection_disabled"
-	} else if excluded {
-		// The connection no longer includes this repository, so the source keeps
-		// the content it already has and no provider call is made.
-		request.Outcome = "repository_excluded"
 	} else {
 		adapter, ok := s.externalRegistry.Adapter(basis.Connection.Provider)
 		if !ok {
@@ -796,8 +630,6 @@ func refreshMessage(outcome string, v state.ExternalLinkSummary) string {
 		return "The GitHub issue is inaccessible or missing. Check installation repository access."
 	case "deleted":
 		return "The linked GitHub issue was deleted. Historical Kingdom provenance remains available."
-	case "repository_excluded":
-		return "This repository is not included in the GitHub connection, so the source was left as it is. Include the repository to resume refreshing."
 	case "connection_disabled":
 		return "The GitHub connection is disabled. Enable and health-check it before refreshing."
 	case "malformed_response":
@@ -827,10 +659,6 @@ func writeExternalError(w http.ResponseWriter, err error, op string) {
 	if errors.Is(err, state.ErrExternalConnectionUnavailable) {
 		status = http.StatusConflict
 		message = "GitHub connection is disabled; enable and health-check it before use"
-	}
-	if errors.Is(err, state.ErrExternalRepositoryExcluded) {
-		status = http.StatusConflict
-		message = "this repository is not included in the GitHub connection; include it to read from it"
 	}
 	var pe *external.ProviderError
 	var retryAt *time.Time

@@ -8,7 +8,6 @@ import {
   setupWindowBlockedMessage,
 } from "./github-setup-window";
 import { safeGitHubInstallationManageURL } from "./github-url";
-import { IncludedRepositories } from "./included-repositories";
 import type { components } from "@/api/schema";
 import { PageContent, PageHeader } from "@/components/page-layout";
 import { newIdempotencyKey as idem } from "@/lib/idempotency";
@@ -117,7 +116,7 @@ function ManageRepositoriesLink({ connection }: { connection: Connection }) {
       rel="noreferrer"
     >
       <ExternalLink className="h-3.5 w-3.5" />
-      Change What GitHub Grants
+      Manage Repositories on GitHub
     </a>
   );
 }
@@ -300,12 +299,6 @@ export function ConnectionsPage() {
   const [sharedOpen, setSharedOpen] = useState(false);
   const [selectedInstallation, setSelectedInstallation] = useState("");
   const [sharedReconnectID, setSharedReconnectID] = useState("");
-  // Which connection card has its repository editor open, if any.
-  const [repositoriesEditingID, setRepositoriesEditingID] = useState("");
-  // Setup finishes by asking which repositories the new connection should
-  // include. The connection already exists by then, so this is the same
-  // editor the card uses rather than a stage inside a setup flow.
-  const [setupRepositoriesFor, setSetupRepositoriesFor] = useState<Connection | undefined>();
   const [manifestOpen, setManifestOpen] = useState(false);
   // The GitHub URL for the current stage, opened only when the operator asks.
   const [manifestHandoffURL, setManifestHandoffURL] = useState("");
@@ -497,7 +490,7 @@ export function ConnectionsPage() {
           setFlow({ ...flow, stage: "awaiting_authorization" });
         } else if (flow.stage === "authorization_received") {
           setOperation("flow-completion");
-          const connected = await apiFetch<Connection>(
+          await apiFetch<Connection>(
             `/connections/github/manifest-flows/${flow.flow_id}/completion`,
             {
               method: "POST",
@@ -512,7 +505,6 @@ export function ConnectionsPage() {
           settleSetupRequest(requestID);
           await reloadConnections();
           setFlow({ ...flow, stage: "completed" });
-          setSetupRepositoriesFor(connected);
         }
       } catch (cause) {
         settleSetupRequest(requestID, cause);
@@ -712,7 +704,7 @@ export function ConnectionsPage() {
     setOperation("shared-finalize");
     setSharedError(undefined);
     try {
-      const connected = await apiFetch<Connection>(
+      await apiFetch<Connection>(
         `/connections/github/device-flows/${sharedFlow.flow_id}/finalize`,
         {
           method: "POST",
@@ -730,7 +722,6 @@ export function ConnectionsPage() {
       setSharedOpen(false);
       setSharedFlow(undefined);
       setSharedReconnectID("");
-      setSetupRepositoriesFor(connected);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
       setSharedError(requestError(cause));
@@ -1192,27 +1183,6 @@ export function ConnectionsPage() {
                                 : "Private App key"}{" "}
                               / {connection.lifecycle}
                             </p>
-                            <p className="mt-1 text-sm text-foreground-muted">
-                              Included Repositories:{" "}
-                              {connection.included_repository_mode === "selected"
-                                ? "A chosen subset"
-                                : "All the installation grants"}
-                              {mutable && (
-                                <button
-                                  type="button"
-                                  className="ml-2 text-gold underline-offset-2 hover:underline"
-                                  onClick={() =>
-                                    setRepositoriesEditingID(
-                                      repositoriesEditingID === connection.connection_id
-                                        ? ""
-                                        : connection.connection_id,
-                                    )
-                                  }
-                                >
-                                  {repositoriesEditingID === connection.connection_id ? "Close" : "Change"}
-                                </button>
-                              )}
-                            </p>
                             {connection.health_class === "permission_mismatch" && (
                               <p className="mt-2 max-w-2xl text-xs leading-5 text-amber-300">
                                 {externalSourceFailureGuidance(connection.health_class)}
@@ -1290,31 +1260,6 @@ export function ConnectionsPage() {
                             </div>
                           )}
                         </div>
-                        {repositoriesEditingID === connection.connection_id && (
-                          <div className="mt-4 rounded-xl border border-border bg-background/40 p-4">
-                            <h4 className="font-display text-sm font-semibold">Included Repositories</h4>
-                            <p className="mt-1 text-xs text-foreground-muted">
-                              Which of the granted repositories Kingdom reads from. To change what
-                              GitHub grants, use Change What GitHub Grants.
-                            </p>
-                            <div className="mt-3">
-                              {connection.credential_state !== "present" || connection.health_class !== "healthy" ? (
-                                <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">
-                                  Run Check to list repositories.
-                                </p>
-                              ) : (
-                                <IncludedRepositories
-                                  connection={connection}
-                                  doneLabel="Save Repositories"
-                                  onSaved={async () => {
-                                    await queryClient.invalidateQueries({ queryKey: connectionKeys.list() });
-                                  }}
-                                  onDone={() => setRepositoriesEditingID("")}
-                                />
-                              )}
-                            </div>
-                          </div>
-                        )}
                         <details className="group mt-4 rounded-lg border border-border/70 bg-background/40">
                           <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-foreground-muted">
                             Technical Details
@@ -1384,31 +1329,6 @@ export function ConnectionsPage() {
             })}
           </div>
         )}
-
-        {setupRepositoriesFor ? (
-          <Modal
-            open
-            onClose={() => setSetupRepositoriesFor(undefined)}
-            size="lg"
-            title="Choose Included Repositories"
-            description={`Connected to @${setupRepositoriesFor.installation_account_login}. Choose which of its granted repositories Kingdom reads from.`}
-          >
-            <div className="space-y-4">
-              <p className={MODAL_BODY_TEXT_CLASS}>
-                This only decides how much of the installation Kingdom uses. You can change it at
-                any time from the connection.
-              </p>
-              <IncludedRepositories
-                connection={setupRepositoriesFor}
-                doneLabel="Finish"
-                onSaved={async () => {
-                  await reloadConnections();
-                }}
-                onDone={() => setSetupRepositoriesFor(undefined)}
-              />
-            </div>
-          </Modal>
-        ) : null}
 
         {sharedOpen ? (
           <Modal
@@ -1509,8 +1429,8 @@ export function ConnectionsPage() {
                         Choose an Installation
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
-                        One connection is created for the account you select.
-                        You choose which of its repositories to include next.
+                        One connection is created for the account you select, and
+                        it covers every repository that installation grants.
                       </p>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
