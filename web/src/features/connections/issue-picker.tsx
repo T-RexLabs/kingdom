@@ -305,8 +305,6 @@ export function IssuePicker({
       <ModalDialog open={opened} onClose={() => setOpened(false)} ariaLabel="Import from GitHub Issues" panelClassName={cn("w-full min-w-0", modalShellSizeClass("xl"))} overlayClassName="p-2 sm:p-4">
         <ModalShell
           title="Import from GitHub Issues"
-          caption="External Source"
-          description="Private issue content may be sent to your configured model provider."
           onClose={() => setOpened(false)}
           height="workbench"
           bodyClassName="overflow-hidden p-0"
@@ -369,7 +367,11 @@ export function IssuePicker({
             </div>
             <div className="flex min-w-0 flex-col p-4 lg:overflow-hidden sm:p-5">
               {shownIssue ? (
-                <div className="flex min-w-0 flex-1 flex-col">
+                // `min-h-0` keeps this column shrinkable. Without it the flex
+                // item's automatic minimum size pins it to its content height,
+                // the preview below never gets a bounded box to scroll in, and
+                // the overflow is silently clipped by the pane's `overflow-hidden`.
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                   <div className="min-w-0">
                     <p className="break-words font-semibold text-foreground">{shownIssue.title}</p>
                     <p className="mt-1 break-words text-xs text-foreground-muted">{issueURL ? <a href={issueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{shownIssue.repository}#{shownIssue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{shownIssue.repository}#{shownIssue.issue_number}</span>} / updated {new Date(shownIssue.updated_at).toLocaleString()}</p>
@@ -378,7 +380,7 @@ export function IssuePicker({
                     <ToggleRow
                       label="Include Comments"
                       checked={includeComments}
-                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total. The comment count is always imported."
+                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total."
                       onChange={setIncludeComments}
                     />
                   </div>
@@ -388,7 +390,7 @@ export function IssuePicker({
                   <p role="status" className="mt-2 min-h-4 text-xs text-foreground-subtle">
                     {loadingPreview ? "Loading preview..." : preview ? `Previewed ${preview.fetched_comment_count} comment bodies; ${preview.comment_count} comments reported.` : ""}
                   </p>
-                  <div aria-busy={loadingPreview} className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto lg:pr-1">
+                  <div data-testid="issue-preview-body" aria-busy={loadingPreview} className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto lg:pr-1">
                     <div className="min-w-0 rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
                     {includeComments && preview?.profile.include_comments ? <CommentPreview comments={shownComments} allComments={previewComments} page={commentPage} pageCount={commentPageCount} preview={preview} onPageChange={setCommentPage} /> : null}
                     {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}

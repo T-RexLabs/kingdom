@@ -45,7 +45,10 @@ export function ModalShell({
 					<X className="h-4 w-4" />
 				</Button>
 			</div>
-			<div className={cn("min-h-0 flex-1 overflow-y-auto px-5 py-4", bodyClassName)}>{children}</div>
+			{/* `relative` for the same reason PageContent carries it: a scroll
+			    viewport must be the containing block for its absolutely
+			    positioned descendants, or they escape the clip. */}
+			<div className={cn("relative min-h-0 flex-1 overflow-y-auto px-5 py-4", bodyClassName)}>{children}</div>
 			{footer ? <div className="border-t border-border px-5 py-3">{footer}</div> : null}
 		</div>
 	);

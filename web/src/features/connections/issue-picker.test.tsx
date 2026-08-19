@@ -573,4 +573,32 @@ describe("IssuePicker", () => {
     expect(screen.getByRole("status")).toBe(status);
     expect(panel?.className).toContain("h-[min(85vh,44rem)]");
   });
+
+  it("keeps the issue preview scrollable instead of clipping a long body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/connections")) return json({ items: [{ connection_id: "conn", provider: "github", display_name: "App", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "present", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] });
+      if (url.endsWith("/repositories")) return json({ items: [{ id: "repo", locator: "owner/repo", canonical_url: "https://github.com/owner/repo" }] });
+      if (url.includes("/issues/1/preview")) return json({ native_id: "101", repository_id: "repo", issue: issue(1, "First").issue, profile: { include_comments: false }, comment_count: 0, comments: [], fetched_comment_count: 0, fetched_comment_pages: 0, omitted_comment_count: 0, omitted_comment_pages: 0, etag_present: true });
+      if (url.includes("/issues?")) return json({ items: [issue(1, "First")], incomplete_results: false, search_result_cap: 1000 });
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<IssuePicker onSelect={() => undefined} />);
+
+    await user.click(screen.getByRole("button", { name: /import from github issue/i }));
+    await chooseOption(user, "Connection", "App");
+    await chooseOption(user, "GitHub repository", "owner/repo");
+    await user.click(await screen.findByRole("button", { name: /first/i }));
+
+    // The scroller can only bound itself if every flex ancestor between it and
+    // the pane that clips them is shrinkable. Miss one `min-h-0` and the
+    // automatic minimum size pins the column to its content height, so the
+    // body silently overflows the pane instead of scrolling inside it.
+    const scroller = await screen.findByTestId("issue-preview-body");
+    expect(scroller).toHaveClass("min-h-0", "flex-1", "overflow-y-auto");
+    for (let node = scroller.parentElement; node && !node.dataset.testid; node = node.parentElement) {
+      expect(node.className).toMatch(/min-h-0|overflow-hidden/);
+    }
+  });
 });
