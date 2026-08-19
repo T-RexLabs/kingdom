@@ -2,6 +2,7 @@ import { apiFetch } from "@/api/client";
 import { newIdempotencyKey, type PlanningSessionDetail } from "@/api/hooks";
 import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
+import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
 import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
 import { safeGitHubIssueURL } from "@/features/connections/github-url";
@@ -13,17 +14,17 @@ import { isAmbiguousMutationFailure } from "./mutation-recovery";
 
 type PlanningExternalSource = PlanningSessionDetail["external_sources"][number];
 
-// Beyond a handful of sources the list competes with the transcript, so it
-// starts collapsed and summarises itself instead.
-const collapseThreshold = 4;
 type ExternalRefreshResult = components["schemas"]["ExternalRefreshResult"];
 
 /**
  * Linked GitHub issues for a planning session.
  *
- * One row per source, because a session can carry ten of them and the
- * transcript below is the point of the page. Detail — the refresh outcome and
- * the snapshot diff — expands in place for one row at a time.
+ * Sources are session configuration, like the planner model beside them, so
+ * they belong in the settings header rather than floating above the
+ * transcript. The control renders as two flex items of the settings row: a
+ * field-sized disclosure that sits next to Thinking Effort, and — once opened
+ * — a full-width list that wraps onto its own line, where a snapshot diff has
+ * room to be read. Detail expands in place for one row at a time.
  */
 export function PlanningSourcesPanel({
   sources,
@@ -34,65 +35,85 @@ export function PlanningSourcesPanel({
   onAttach: (value: IssueSelection) => Promise<void>;
   onChanged: () => Promise<unknown>;
 }) {
-  const [expanded, setExpanded] = useState(sources.length <= collapseThreshold);
+  const [expanded, setExpanded] = useState(false);
   const [openRow, setOpenRow] = useState("");
   const updateCount = sources.filter(hasUpdate).length;
+  // A source Kingdom can no longer read is not a detail. The list is collapsed
+  // by default, so the trigger has to carry that news itself or a broken
+  // source would go unseen until someone happened to open the list.
+  const failedCount = sources.filter((source) => externalSourceFailureGuidance(source.status)).length;
 
   return (
-    <aside
-      aria-label="Planning Sources"
-      className="mx-4 mt-3 shrink-0 rounded-lg border border-gold/20 bg-gold/[0.03] px-2.5 py-2"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <>
+      <div className="min-w-0 max-w-xs flex-1 basis-52">
+        <span id="planning-sources-label" className={fieldLabelClass}>
+          Planning Sources
+        </span>
         <button
           type="button"
+          id="planning-sources-trigger"
           aria-expanded={expanded}
+          aria-controls="planning-sources-list"
+          // Names itself from the field label plus its own summary, so the
+          // control announces "Planning Sources, 2 linked, 1 update" rather
+          // than a bare count with no idea what is being counted.
+          aria-labelledby="planning-sources-label planning-sources-trigger"
           onClick={() => setExpanded((open) => !open)}
-          className="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left"
+          className={cn(fieldClass, "flex items-center gap-2 text-left hover:border-border/80")}
         >
           <ChevronRight
             className={cn("h-3.5 w-3.5 shrink-0 text-foreground-subtle transition-transform", expanded && "rotate-90")}
           />
-          <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">
-            Planning Sources
+          <span className={cn("truncate", sources.length === 0 && "text-foreground-subtle")}>
+            {sources.length === 0 ? "None linked" : `${sources.length} linked`}
           </span>
-          <span className="rounded-full border border-gold/20 bg-gold/5 px-2 py-0.5 text-[10px] text-gold">
-            {sources.length}
-          </span>
-          {!expanded && updateCount > 0 ? (
-            <span className="truncate text-[10px] text-gold">
-              {updateCount} update{updateCount === 1 ? "" : "s"} available
+          {failedCount > 0 ? (
+            <span className="ml-auto shrink-0 rounded-full border border-status-failed/40 bg-status-failed/10 px-2 py-0.5 text-[10px] text-status-failed">
+              {failedCount} unreadable
+            </span>
+          ) : updateCount > 0 ? (
+            <span className="ml-auto shrink-0 rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
+              {updateCount} update{updateCount === 1 ? "" : "s"}
             </span>
           ) : null}
         </button>
-        <IssuePicker
-          onSelect={onAttach}
-          actionLabel="Add Source"
-          triggerLabel={sources.length > 0 ? "Add Source" : "Add GitHub Issue"}
-          compact
-        />
       </div>
       {expanded ? (
-        sources.length > 0 ? (
-          <ul className="mt-2 divide-y divide-gold/10 border-t border-gold/10">
-            {sources.map((source) => (
-              <li key={source.link_id}>
-                <PlanningSourceRow
-                  source={source}
-                  open={openRow === source.link_id}
-                  onToggle={() => setOpenRow((current) => (current === source.link_id ? "" : source.link_id))}
-                  onChanged={onChanged}
-                />
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-2 border-t border-gold/10 px-1 pt-2 text-xs text-foreground-muted">
-            Add a GitHub issue as immutable context for future planner operations.
-          </p>
-        )
+        <section
+          id="planning-sources-list"
+          aria-label="Planning Sources"
+          className="w-full rounded-lg border border-gold/20 bg-gold/[0.03] px-2.5 py-2"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-foreground-muted">
+              {sources.length === 0
+                ? "Add a GitHub issue as immutable context for future planner operations."
+                : "Future planner operations read these issues exactly as they were adopted."}
+            </p>
+            <IssuePicker
+              onSelect={onAttach}
+              actionLabel="Add Source"
+              triggerLabel={sources.length > 0 ? "Add Source" : "Add GitHub Issue"}
+              compact
+            />
+          </div>
+          {sources.length > 0 ? (
+            <ul className="mt-2 divide-y divide-gold/10 border-t border-gold/10">
+              {sources.map((source) => (
+                <li key={source.link_id}>
+                  <PlanningSourceRow
+                    source={source}
+                    open={openRow === source.link_id}
+                    onToggle={() => setOpenRow((current) => (current === source.link_id ? "" : source.link_id))}
+                    onChanged={onChanged}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
       ) : null}
-    </aside>
+    </>
   );
 }
 

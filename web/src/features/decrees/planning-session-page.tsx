@@ -552,7 +552,7 @@ export function PlanningSessionPage() {
 				retryPending={providerModelCatalogController.retryPending}
               />
             </div>
-            <div className="w-[280px]">
+            <div className="min-w-0 max-w-xs flex-1 basis-52">
               <ModelSelectField
                 id="planning-model"
                 label="Planner Model"
@@ -575,7 +575,7 @@ export function PlanningSessionPage() {
                 }}
               />
             </div>
-            <div className="w-[240px]">
+            <div className="min-w-0 max-w-xs flex-1 basis-52">
               <ThinkingEffortField
                 id="planning-thinking-effort"
                 label="Thinking Effort"
@@ -591,6 +591,11 @@ export function PlanningSessionPage() {
                 }}
               />
             </div>
+            <PlanningSourcesPanel
+              sources={externalSources}
+              onAttach={attachSource}
+              onChanged={() => sessionQuery.refetch()}
+            />
           </div>
           {(hasModelSelectionChanges || modelRecoveryPending) && modelError ? (
             <div
@@ -613,12 +618,6 @@ export function PlanningSessionPage() {
           ) : null}
         </div>
       </div>
-
-      <PlanningSourcesPanel
-        sources={externalSources}
-        onAttach={attachSource}
-        onChanged={() => sessionQuery.refetch()}
-      />
 
       {/* Session-load errors are handled by the early-return shell above. */}
       {createOperation.error ? (

@@ -123,6 +123,15 @@ vi.mock("./global-formalize-context", () => ({
   }),
 }));
 
+/**
+ * Planning sources are a collapsed control in the settings row — the header
+ * stays one row tall on load — so any test that works with the list has to
+ * open it the way an operator would.
+ */
+async function openPlanningSources(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Planning Sources/ }));
+}
+
 describe("PlanningSessionPage", () => {
   beforeEach(() => {
     titleMutateAsync.mockReset();
@@ -258,6 +267,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    await openPlanningSources(user);
     await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
 
     await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
@@ -298,6 +308,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    await openPlanningSources(user);
     await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
@@ -325,6 +336,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    await openPlanningSources(user);
     expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
     // Detail is opt-in per row, so ten sources stay ten short lines.
@@ -401,6 +413,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    await openPlanningSources(user);
     expect(screen.getAllByText(/update available/i)).toHaveLength(2);
     expect(screen.getByRole("link", { name: /open owner\/repo#17 on github/i })).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByRole("link", { name: /open owner\/other#18 on github/i })).toBeInTheDocument();
@@ -441,6 +454,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    await openPlanningSources(user);
     // Removal is confirmed inline; nothing leaves until the operator says so.
     await user.click(screen.getByRole("button", { name: "Remove owner/one#1" }));
     expect(request).toBeUndefined();
@@ -483,8 +497,14 @@ describe("PlanningSessionPage", () => {
       refetch: refetchPlanningSession,
     });
 
+    const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
+    // A source Kingdom can no longer read has to be visible before anything is
+    // expanded, or the operator plans against context that is silently gone.
+    expect(screen.getByRole("button", { name: /^Planning Sources/ })).toHaveTextContent("1 unreadable");
+
+    await openPlanningSources(user);
     expect(screen.getByText(/GitHub App access was revoked/i)).toBeInTheDocument();
     expect(screen.getByText(/run the connection health check/i)).toBeInTheDocument();
     expect(screen.queryByText(/refresh completed/i)).not.toBeInTheDocument();
