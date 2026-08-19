@@ -469,6 +469,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /connections/{id}", s.handleUpdateConnection)
 	mux.HandleFunc("DELETE /connections/{id}", s.handleDeleteConnection)
 	mux.HandleFunc("POST /connections/{id}/health-checks", s.handleConnectionHealthCheck)
+	mux.HandleFunc("GET /connections/{id}/installation-candidates", s.handleListConnectionInstallationCandidates)
+	mux.HandleFunc("PUT /connections/{id}/installations", s.handleSetConnectionInstallations)
 	mux.HandleFunc("GET /connections/{id}/repositories", s.handleListConnectionRepositories)
 	mux.HandleFunc("GET /connections/{id}/repositories/{repositoryId}/issues", s.handleListConnectionIssues)
 	mux.HandleFunc("GET /connections/{id}/repositories/{repositoryId}/issues/{number}/preview", s.handlePreviewConnectionIssue)

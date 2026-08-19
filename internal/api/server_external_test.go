@@ -17,6 +17,20 @@ import (
 	"kingdom/internal/state"
 )
 
+// validatedInstallations echoes back the connection's own installations with an
+// account pinned, which is what a real provider validation produces.
+func validatedInstallations(connection state.ExternalConnection) []state.ConnectionInstallation {
+	out := make([]state.ConnectionInstallation, 0, len(connection.Installations))
+	for i, installation := range connection.Installations {
+		accountID, accountLogin := installation.AccountID, installation.AccountLogin
+		if accountID == "" {
+			accountID, accountLogin = fmt.Sprintf("%d", 10+i), "octocat"
+		}
+		out = append(out, state.ConnectionInstallation{InstallationID: installation.InstallationID, AccountID: accountID, AccountLogin: accountLogin})
+	}
+	return out
+}
+
 type delayedValidationAdapter struct {
 	*externalAPITestAdapter
 	blockedID string
@@ -31,7 +45,7 @@ func (a *delayedValidationAdapter) Validate(ctx context.Context, connection stat
 	close(a.started)
 	select {
 	case <-a.release:
-		return external.ConnectionValidation{InstallationAccountID: "10", InstallationAccountLogin: "octocat"}, nil
+		return external.ConnectionValidation{Installations: validatedInstallations(connection)}, nil
 	case <-ctx.Done():
 		return external.ConnectionValidation{}, ctx.Err()
 	}
@@ -47,6 +61,7 @@ type externalAPITestAdapter struct {
 	calls            int
 	repositorySearch string
 	repositoryCursor string
+	installations    []external.Installation
 }
 
 func TestExternalProviderErrorsExposeOnlySafeRetryTime(t *testing.T) {
@@ -151,7 +166,7 @@ func (a *externalAPITestAdapter) Validate(_ context.Context, connection state.Ex
 	if slug == "" {
 		slug = "verified-app"
 	}
-	return external.ConnectionValidation{InstallationAccountID: "10", InstallationAccountLogin: "octocat", AppSlug: slug}, nil
+	return external.ConnectionValidation{Installations: validatedInstallations(connection), AppSlug: slug}, nil
 }
 
 func TestConnectionHealthPersistsProviderOutageAsUnavailable(t *testing.T) {
@@ -465,7 +480,7 @@ func TestConnectionHealthPersistsInstallationAccountIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.InstallationAccountID != "10" || stored.InstallationAccountLogin != "octocat" || !stored.HasCurrentValidation() {
+	if len(stored.Installations) != 1 || stored.Installations[0].AccountID != "10" || stored.Installations[0].AccountLogin != "octocat" || !stored.HasCurrentValidation() {
 		t.Fatalf("health check did not persist verified identity: %#v", stored)
 	}
 }
@@ -499,11 +514,11 @@ func TestRepositoryFilterIsCursorScoped(t *testing.T) {
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
 	store := state.NewExternalStore(db)
 	at := "2026-08-12T10:00:00Z"
-	connection, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "conn-repositories", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-repositories", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-repositories-create"})
+	connection, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "conn-repositories", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-repositories", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-repositories-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateConnectionState(context.Background(), connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+	if err := store.UpdateConnectionState(context.Background(), connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
 	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-repositories/repositories?search=widget"})
@@ -538,11 +553,11 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-refresh", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-refresh", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-create"})
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-refresh", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-refresh", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
@@ -585,11 +600,11 @@ func TestExternalRefreshPersistsRevokedStatusAndReturnsRecoveryMessage(t *testin
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-revoked", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-revoked", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-revoked-create"})
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-revoked", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-revoked", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-revoked-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
@@ -675,11 +690,11 @@ func TestDelayedHealthCheckDoesNotForkExternalAuditChain(t *testing.T) {
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	for _, id := range []string{"conn-a", "conn-b"} {
-		created, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: id, AppID: id, ClientID: "Iv1", AppSlug: "app", InstallationID: id, CredentialHandle: "github-app:" + id, ActorID: "local-operator", CreatedAt: clock().Format(time.RFC3339Nano), AuditEventID: "audit-create-" + id})
+		created, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: id, AppID: id, ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: id}}, CredentialHandle: "github-app:" + id, ActorID: "local-operator", CreatedAt: clock().Format(time.RFC3339Nano), AuditEventID: "audit-create-" + id})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.UpdateConnectionState(ctx, created.ConnectionID, "enabled", "never_checked", "", clock().Format(time.RFC3339Nano), false, "", ""); err != nil {
+		if err := store.UpdateConnectionState(ctx, created.ConnectionID, "enabled", "never_checked", "", clock().Format(time.RFC3339Nano), false, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "", AccountLogin: ""}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -703,5 +718,106 @@ func TestDelayedHealthCheckDoesNotForkExternalAuditChain(t *testing.T) {
 	}
 	if err := state.NewAuditIntegrityVerifier(db).VerifyOrError(ctx); err != nil {
 		t.Fatalf("valid concurrent audit chain failed verification: %v", err)
+	}
+}
+
+func (a *externalAPITestAdapter) ListInstallations(_ context.Context, _ state.ExternalConnection) ([]external.Installation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]external.Installation(nil), a.installations...), nil
+}
+
+// twoAccountConnectionFixture is a healthy private-App connection covering
+// @enkiid, with @T-RexLabs available to add.
+func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.ExternalStore, state.ExternalConnection) {
+	t.Helper()
+	adapter := &externalAPITestAdapter{installations: []external.Installation{
+		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid", DisplayName: "enkiid", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+		{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs", DisplayName: "T-RexLabs", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	at := "2026-08-19T10:00:00Z"
+	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+		ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: "Kingdom Issues",
+		AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		CredentialHandle: "github-app:" + id, ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-" + id,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.GetConnection(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler, store, current
+}
+
+func TestInstallationCandidatesFlagWhatTheConnectionAlreadyCovers(t *testing.T) {
+	handler, _, _ := twoAccountConnectionFixture(t, "conn-candidates")
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-candidates/installation-candidates"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	connected := map[string]any{}
+	for _, item := range page.Items {
+		connected[item["account_login"].(string)] = item["connected"]
+	}
+	if len(page.Items) != 2 || connected["enkiid"] != true || connected["T-RexLabs"] != false {
+		t.Fatalf("candidates=%#v", page.Items)
+	}
+}
+
+func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
+	handler, store, _ := twoAccountConnectionFixture(t, "conn-add")
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-add/installations", idempotencyKey: "add-second", body: map[string]any{"installation_ids": []string{"10", "11"}}})
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	stored, err := store.GetConnection(context.Background(), "conn-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.InstallationIDs(); len(got) != 2 || got[0] != "10" || got[1] != "11" {
+		t.Fatalf("installations=%v, want both accounts on one connection", got)
+	}
+	// The already-pinned account survives the change untouched.
+	if stored.Installations[0].AccountLogin != "enkiid" || stored.Installations[1].AccountLogin != "T-RexLabs" {
+		t.Fatalf("accounts=%#v", stored.Installations)
+	}
+}
+
+func TestAConnectionCannotCoverAnInstallationItsCredentialCannotSee(t *testing.T) {
+	handler, store, _ := twoAccountConnectionFixture(t, "conn-unseen")
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-unseen/installations", idempotencyKey: "add-unseen", body: map[string]any{"installation_ids": []string{"10", "999"}}})
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	stored, _ := store.GetConnection(context.Background(), "conn-unseen")
+	if len(stored.Installations) != 1 {
+		t.Fatalf("a refused change must leave the set alone: %#v", stored.Installations)
+	}
+}
+
+func TestAnInstallationHeldByAnotherLiveConnectionIsRefused(t *testing.T) {
+	handler, store, _ := twoAccountConnectionFixture(t, "conn-first")
+	at := "2026-08-19T10:00:00Z"
+	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+		ConnectionID: "conn-second", CredentialStrategy: "app_private_key", DisplayName: "Other",
+		AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations:    []state.ConnectionInstallation{{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs"}},
+		CredentialHandle: "github-app:conn-second", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-second",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-first/installations", idempotencyKey: "steal", body: map[string]any{"installation_ids": []string{"10", "11"}}})
+	if res.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s, want a refusal to take another connection's installation", res.Code, res.Body.String())
 	}
 }

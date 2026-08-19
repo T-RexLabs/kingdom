@@ -111,8 +111,8 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 	)
 
 	listRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?unread_only=true&limit=10",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?unread_only=true&limit=10",
 	})
 	if listRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox list, got %d (%s)", listRes.Code, listRes.Body.String())
@@ -170,8 +170,8 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 	}
 
 	filteredRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?message_source=communication&communication_type=instruction_dispatched&limit=10",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?message_source=communication&communication_type=instruction_dispatched&limit=10",
 	})
 	if filteredRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox filtered list, got %d (%s)", filteredRes.Code, filteredRes.Body.String())
@@ -203,56 +203,56 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 		t.Fatalf("expected uppercase drift-warning reason code message to be suppressed from mailbox list")
 	}
 	warningDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_warning",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_warning",
 	})
 	if warningDetailRes.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for suppressed drift-warning mailbox detail, got %d (%s)", warningDetailRes.Code, warningDetailRes.Body.String())
 	}
 
 	upperWarningDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_warning_upper",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_warning_upper",
 	})
 	if upperWarningDetailRes.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for suppressed uppercase drift-warning mailbox detail, got %d (%s)", upperWarningDetailRes.Code, upperWarningDetailRes.Body.String())
 	}
 
 	suppressedPlanDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_plan_suppressed",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_plan_suppressed",
 	})
 	if suppressedPlanDetailRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 for planning response mailbox detail, got %d (%s)", suppressedPlanDetailRes.Code, suppressedPlanDetailRes.Body.String())
 	}
 
 	selfDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_self",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_self",
 	})
 	if selfDetailRes.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for self-contact communication mailbox detail, got %d (%s)", selfDetailRes.Code, selfDetailRes.Body.String())
 	}
 
 	legacyInferredDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_no_source",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_no_source",
 	})
 	if legacyInferredDetailRes.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for msg_comm_ row without explicit message_source, got %d (%s)", legacyInferredDetailRes.Code, legacyInferredDetailRes.Body.String())
 	}
 
 	nonCommDetailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg-mail-1",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg-mail-1",
 	})
 	if nonCommDetailRes.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for mirrored/system mailbox detail, got %d (%s)", nonCommDetailRes.Code, nonCommDetailRes.Body.String())
 	}
 
 	detailRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_3",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg_comm_mail_3",
 	})
 	if detailRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 for communication mailbox detail, got %d (%s)", detailRes.Code, detailRes.Body.String())
@@ -343,8 +343,8 @@ func TestServerRunMailboxMessagesReturnsLatestCommunicationWindow(t *testing.T) 
 	)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?limit=50",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?limit=50",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox list, got %d (%s)", res.Code, res.Body.String())
@@ -442,8 +442,8 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 	)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?limit=10",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?limit=10",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox list, got %d (%s)", res.Code, res.Body.String())
@@ -522,8 +522,8 @@ func TestServerRunMailboxMessageDetailCarriesStructuredVerdictFields(t *testing.
 	)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages/msg-review-cap-detail",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages/msg-review-cap-detail",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox detail, got %d (%s)", res.Code, res.Body.String())
@@ -570,8 +570,8 @@ func TestServerRunMailboxMessagesPreferAutoSucceededReasonOverStaleExplicitRewor
 	)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox messages, got %d (%s)", res.Code, res.Body.String())
@@ -609,8 +609,8 @@ func TestServerRunMailboxMessagesRejectsLimitAboveMax(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?limit=201",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?limit=201",
 	})
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for mailbox limit > 200, got %d (%s)", res.Code, res.Body.String())
@@ -656,8 +656,8 @@ func TestServerRunMailboxMessagesDoesNotDropOlderUserFacingMessagesWhenNewerSyst
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/mailbox/messages?limit=50",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/mailbox/messages?limit=50",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 for mailbox list, got %d (%s)", res.Code, res.Body.String())

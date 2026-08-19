@@ -1337,4 +1337,3 @@ func bindAPIPlanningContext(t *testing.T, store *state.PlanningStore, sessionID 
 		t.Fatal(err)
 	}
 }
-

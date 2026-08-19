@@ -34,10 +34,10 @@ func TestGitHubKeyProvisionRejectsRemovedConnectionBeforeWriting(t *testing.T) {
 	}
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
-	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-removed", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-removed", ActorID: "local-operator", CreatedAt: "2026-08-13T10:00:00Z", AuditEventID: "audit-create"}); err != nil {
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-removed", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-removed", ActorID: "local-operator", CreatedAt: "2026-08-13T10:00:00Z", AuditEventID: "audit-create"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateConnectionState(ctx, "conn-removed", "removed", "removed", "", "2026-08-13T10:01:00Z", false, "", ""); err != nil {
+	if err := store.UpdateConnectionState(ctx, "conn-removed", "removed", "removed", "", "2026-08-13T10:01:00Z", false, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "", AccountLogin: ""}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {

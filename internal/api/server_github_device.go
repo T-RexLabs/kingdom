@@ -17,8 +17,8 @@ type startDeviceFlowRequest struct {
 }
 
 type finalizeDeviceFlowRequest struct {
-	InstallationID string `json:"installation_id"`
-	DisplayName    string `json:"display_name"`
+	InstallationIDs []string `json:"installation_ids"`
+	DisplayName     string   `json:"display_name"`
 }
 
 func (s *Server) handleGitHubSetupOptions(w http.ResponseWriter, _ *http.Request) {
@@ -172,7 +172,14 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 		s.writeBadRequest(w, err.Error())
 		return
 	}
-	input.InstallationID, input.DisplayName = strings.TrimSpace(input.InstallationID), strings.TrimSpace(input.DisplayName)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	for i := range input.InstallationIDs {
+		input.InstallationIDs[i] = strings.TrimSpace(input.InstallationIDs[i])
+	}
+	if input.DisplayName == "" || len(input.InstallationIDs) == 0 {
+		s.writeBadRequest(w, "choose at least one installation and name the connection")
+		return
+	}
 	verification, err := s.deviceFlows.AccessTokenForFinalize(r.PathValue("id"), sessionID, origin)
 	if err != nil {
 		writeDeviceStageError(w, "Choose an available GitHub installation before continuing")
@@ -192,7 +199,7 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 		writeDeviceStageError(w, "GitHub connection flow expired")
 		return
 	}
-	lease, candidate, err := s.deviceFlows.BeginFinalize(r.PathValue("id"), sessionID, origin, input.InstallationID, input.DisplayName, fresh)
+	lease, selected, err := s.deviceFlows.BeginFinalize(r.PathValue("id"), sessionID, origin, input.InstallationIDs, fresh)
 	if err != nil {
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "the selected GitHub installation is no longer available", "api.github_device.finalize", nil)
 		return
@@ -203,7 +210,7 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 	if lease.ReconnectConnectionID != "" {
 		connectionID = lease.ReconnectConnectionID
 		existing, getErr := s.externalStore.GetConnection(r.Context(), connectionID)
-		if getErr != nil || existing.CredentialStrategy != "user_access_token" || existing.AppID != candidate.AppID || existing.ClientID != candidate.ClientID || existing.InstallationID != candidate.InstallationID || existing.InstallationAccountID != candidate.AccountID {
+		if getErr != nil || existing.CredentialStrategy != "user_access_token" || existing.AppID != selected[0].AppID || existing.ClientID != selected[0].ClientID {
 			s.deviceFlows.Fail(lease.FlowID, "The reconnect identity no longer matches. Start again.")
 			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "the reconnect identity does not match the saved connection", "api.github_device.finalize", nil)
 			return
@@ -213,7 +220,7 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 				return err
 			}
 			var updateErr error
-			connection, updateErr = s.externalStore.ReauthorizeSharedConnection(finalizeCtx, existing, candidate.AppSlug, candidate.AccountLogin, authenticatedActorID(r.Context()), s.idGenerator("external_audit"), at)
+			connection, updateErr = s.externalStore.ReauthorizeSharedConnection(finalizeCtx, existing, selected[0].AppSlug, installationsFromCandidates(selected), authenticatedActorID(r.Context()), s.idGenerator("external_audit"), at)
 			return updateErr
 		})
 	} else {
@@ -222,14 +229,14 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 				return err
 			}
 			var finalizeErr error
-			connection, finalizeErr = s.externalStore.FinalizeConnection(finalizeCtx, state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "user_access_token", DisplayName: candidate.DisplayName, AppID: candidate.AppID, ClientID: candidate.ClientID, AppSlug: candidate.AppSlug, InstallationID: candidate.InstallationID, CredentialHandle: githubexternal.UserCredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")}, InstallationAccountID: candidate.AccountID, InstallationAccountLogin: candidate.AccountLogin})
+			connection, finalizeErr = s.externalStore.FinalizeConnection(finalizeCtx, state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "user_access_token", DisplayName: input.DisplayName, AppID: selected[0].AppID, ClientID: selected[0].ClientID, AppSlug: selected[0].AppSlug, Installations: installationsFromCandidates(selected), CredentialHandle: githubexternal.UserCredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")}})
 			return finalizeErr
 		})
 	}
 	if err != nil {
 		s.deviceFlows.Fail(lease.FlowID, "Kingdom could not save the verified connection. Start again.")
 		if isUniqueConstraintError(err) || errors.Is(err, state.ErrExternalConflict) {
-			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "this GitHub installation is already connected", "api.github_device.finalize", nil)
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "one of these GitHub installations is already connected", "api.github_device.finalize", nil)
 			return
 		}
 		s.writeInternalError(w, "finalize shared GitHub connection failed")
@@ -270,4 +277,14 @@ func writeGitHubDeviceError(w http.ResponseWriter, message string, err error) {
 		}
 	}
 	writeCanonicalErrorWithRetryAt(w, status, errorcatalog.CodeDependencyBlocked, message, "api.github_device.github", details, retryAt)
+}
+
+// installationsFromCandidates turns freshly proved candidates into the covered
+// set a connection stores.
+func installationsFromCandidates(candidates []githubexternal.InstallationCandidate) []state.ConnectionInstallation {
+	out := make([]state.ConnectionInstallation, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, state.ConnectionInstallation{InstallationID: candidate.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin})
+	}
+	return out
 }

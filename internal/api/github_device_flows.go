@@ -207,30 +207,43 @@ type deviceFinalizeLease struct {
 	ExpiresAt                     time.Time
 }
 
-func (m *deviceFlowManager) BeginFinalize(id, sessionID, origin, installationID, displayName string, fresh []githubexternal.InstallationCandidate) (deviceFinalizeLease, githubexternal.InstallationCandidate, error) {
+// BeginFinalize consumes the flow for one connection covering every selected
+// installation. The anti-spoof guard is that each requested id appears in the
+// freshly fetched candidate list; the display name is the operator's label for
+// the connection, so it is no longer matched against a candidate.
+func (m *deviceFlowManager) BeginFinalize(id, sessionID, origin string, installationIDs []string, fresh []githubexternal.InstallationCandidate) (deviceFinalizeLease, []githubexternal.InstallationCandidate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	flow, err := m.boundLocked(id, sessionID, origin)
 	if err != nil {
-		if retained := m.flows[id]; retained != nil && retained.SessionID == sessionID && retained.Origin == origin {
-			retained.InFlight = false
-		}
-		return deviceFinalizeLease{}, githubexternal.InstallationCandidate{}, errDeviceFlowStage
+		return deviceFinalizeLease{}, nil, errDeviceFlowStage
 	}
-	if flow.Stage != deviceStageSelecting || !flow.InFlight || flow.Tokens.AccessToken == "" {
-		return deviceFinalizeLease{}, githubexternal.InstallationCandidate{}, errDeviceFlowStage
+	if flow.Stage != deviceStageSelecting || !flow.InFlight || flow.Tokens.AccessToken == "" || len(installationIDs) == 0 {
+		return deviceFinalizeLease{}, nil, errDeviceFlowStage
 	}
+	byID := make(map[string]githubexternal.InstallationCandidate, len(fresh))
 	for _, candidate := range fresh {
-		if candidate.InstallationID == installationID && candidate.DisplayName == displayName {
-			lease := deviceFinalizeLease{FlowID: flow.ID, ReconnectConnectionID: flow.ReconnectConnectionID, Tokens: flow.Tokens, ExpiresAt: flow.ExpiresAt}
-			flow.Tokens = githubexternal.UserTokens{}
-			flow.Candidates = nil
-			flow.Stage = deviceStageFinalizing
-			return lease, candidate, nil
-		}
+		byID[candidate.InstallationID] = candidate
 	}
-	flow.InFlight = false
-	return deviceFinalizeLease{}, githubexternal.InstallationCandidate{}, errDeviceFlowStage
+	selected := make([]githubexternal.InstallationCandidate, 0, len(installationIDs))
+	seen := make(map[string]struct{}, len(installationIDs))
+	for _, installationID := range installationIDs {
+		candidate, ok := byID[installationID]
+		if !ok {
+			flow.InFlight = false
+			return deviceFinalizeLease{}, nil, errDeviceFlowStage
+		}
+		if _, duplicate := seen[installationID]; duplicate {
+			continue
+		}
+		seen[installationID] = struct{}{}
+		selected = append(selected, candidate)
+	}
+	lease := deviceFinalizeLease{FlowID: flow.ID, ReconnectConnectionID: flow.ReconnectConnectionID, Tokens: flow.Tokens, ExpiresAt: flow.ExpiresAt}
+	flow.Tokens = githubexternal.UserTokens{}
+	flow.Candidates = nil
+	flow.Stage = deviceStageFinalizing
+	return lease, selected, nil
 }
 
 func (m *deviceFlowManager) AccessTokenForFinalize(id, sessionID, origin string) (deviceCandidateLease, error) {

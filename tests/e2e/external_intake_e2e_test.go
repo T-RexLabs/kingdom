@@ -18,7 +18,7 @@ type deterministicExternalAdapter struct {
 }
 
 func (a *deterministicExternalAdapter) Validate(context.Context, state.ExternalConnection) (external.ConnectionValidation, error) {
-	return external.ConnectionValidation{InstallationAccountID: "10", InstallationAccountLogin: "octocat"}, nil
+	return external.ConnectionValidation{Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}}, nil
 }
 func (a *deterministicExternalAdapter) ListRepositories(context.Context, state.ExternalConnection, string, string) (external.RepositoryPage, error) {
 	a.mu.Lock()

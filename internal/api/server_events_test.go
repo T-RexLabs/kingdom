@@ -328,8 +328,8 @@ func TestServerCreateRunEmitsRunCollectionCreatedEvent(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 
 	streamRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/events/stream",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/events/stream",
 	})
 	if streamRes.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", streamRes.Code, streamRes.Body.String())

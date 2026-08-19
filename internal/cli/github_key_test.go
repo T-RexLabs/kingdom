@@ -30,12 +30,12 @@ func TestGitHubKeyProvisionRejectsTerminalConnectionsBeforeFilesystemMutation(t 
 			}
 			store := state.NewExternalStore(db)
 			at := "2026-08-13T10:00:00Z"
-			if _, err = store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "terminal-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:terminal-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-create"}); err != nil {
+			if _, err = store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "terminal-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:terminal-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-create"}); err != nil {
 				_ = db.Close()
 				t.Fatal(err)
 			}
 			health := lifecycle
-			if err = store.UpdateConnectionState(context.Background(), "terminal-connection", lifecycle, health, "", at, false, "", ""); err != nil {
+			if err = store.UpdateConnectionState(context.Background(), "terminal-connection", lifecycle, health, "", at, false, nil); err != nil {
 				_ = db.Close()
 				t.Fatal(err)
 			}
@@ -75,7 +75,7 @@ func TestGitHubKeyProvisionRejectsUserTokenStrategyBeforeReadingPEM(t *testing.T
 	}
 	store := state.NewExternalStore(db)
 	at := "2026-08-15T10:00:00Z"
-	_, err = store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: "shared-connection", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", InstallationID: "2", CredentialHandle: "github-user:shared-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-shared"}, InstallationAccountID: "10", InstallationAccountLogin: "octocat"})
+	_, err = store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: "shared-connection", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-user:shared-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-shared"}})
 	if err != nil {
 		t.Fatal(err)
 	}

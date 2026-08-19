@@ -142,11 +142,11 @@ func TestIntegrationExternalPlanningAttachIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	at := "2026-03-01T12:00:00Z"
 	externalStore := state.NewExternalStore(db)
-	connection, err := externalStore.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-intake", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-intake", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-intake"})
+	connection, err := externalStore.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-intake", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-intake", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-intake"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := externalStore.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+	if err := externalStore.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
 	if connection, err = externalStore.GetConnection(ctx, connection.ConnectionID); err != nil {

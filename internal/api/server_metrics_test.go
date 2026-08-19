@@ -26,8 +26,8 @@ func TestServerRuntimeMetricsEndpointReportsRunningAndStaleNodes(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-observe-1', ?, 1, 'nr-observe', 'attempt-observe', 'v1', 'attempt.progress', 1, '{"step":1}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-observe', 'caus-observe', 'prev-observe', 'entry-observe', ?)`, runID, now.Add(-20*time.Minute).Format(time.RFC3339))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/metrics/runtime",
+		method: http.MethodGet,
+		path:   "/api/v1/metrics/runtime",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -155,8 +155,8 @@ func TestServerDashboardSnapshotAggregatesCurrentStatusAndWindowMetrics(t *testi
 	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('dashboard-usage', ?, 'dashboard-node-run', 'dashboard-attempt', 'builder-berserker', 'github-copilot/gpt-5.4-mini', 200, 50, 260, 10, 0, 0, ?)`, runSucceeded, now.Add(-95*time.Minute).Format(time.RFC3339))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/dashboard/snapshot",
+		method: http.MethodGet,
+		path:   "/api/v1/dashboard/snapshot",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -225,8 +225,8 @@ func TestServerDashboardSnapshotTrendUsesExact24HourWindow(t *testing.T) {
 	syncRunActivityAt(t, db, excludedRun, snapshotAt.Add(-24*time.Hour))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/dashboard/snapshot",
+		method: http.MethodGet,
+		path:   "/api/v1/dashboard/snapshot",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -268,8 +268,8 @@ func TestServerDashboardSnapshotUsesSnapshotTimestampForRuntimeStaleCutoff(t *te
 	nowCalls = 0
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/dashboard/snapshot",
+		method: http.MethodGet,
+		path:   "/api/v1/dashboard/snapshot",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -313,8 +313,8 @@ func TestServerRealmAnalyticsSnapshotSupportsWindowScopedAggregates(t *testing.T
 	syncRunActivityAt(t, db, manualRunID, now.Add(-5*time.Minute))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/realm-analytics/snapshot?window_minutes=90",
+		method: http.MethodGet,
+		path:   "/api/v1/realm-analytics/snapshot?window_minutes=90",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -393,8 +393,8 @@ func TestServerRealmAnalyticsExecutionDetailSnapshotSupportsWindowAndSelectedRun
 	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('analytics-usage-b', ?, 'analytics-node-run-b', 'analytics-attempt-b', 'builder-berserker', 'anthropic/opus-4.6', 'high', 80, 20, 110, 5, 2, 0, ?)`, runID, now.Add(-37*time.Minute).Format(time.RFC3339))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=" + runID,
+		method: http.MethodGet,
+		path:   "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -439,8 +439,8 @@ func TestServerRealmAnalyticsExecutionDetailSnapshotReturnsNotFoundForUnknownRun
 	handler, _ := newAPIServerForTest(t)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=run_missing",
+		method: http.MethodGet,
+		path:   "/api/v1/realm-analytics/execution-detail?window_minutes=90&run_id=run_missing",
 	})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d (%s)", res.Code, res.Body.String())

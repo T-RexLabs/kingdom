@@ -393,6 +393,56 @@ paths:
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
+  /connections/{id}/installations:
+    put:
+      tags: [connections]
+      operationId: setConnectionInstallations
+      summary: Choose which App installations this connection covers.
+      description: >-
+        Replaces the set of installations the connection reads from. Every
+        installation is proved against the provider before it is stored, and an
+        installation already held by another live connection is refused.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SetConnectionInstallationsRequest" } } }
+      responses:
+        "200": { description: Updated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/installation-candidates:
+    get:
+      tags: [connections]
+      operationId: listConnectionInstallationCandidates
+      summary: List the App installations this connection could cover.
+      description: >-
+        Lists installations the connection's own credential can see, each
+        flagged with whether the connection already covers it.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: Installation candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 1000
+                    items: { $ref: "#/components/schemas/GitHubInstallationCandidate" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
   /connections/{id}/repositories:
     get:
       tags: [connections]
@@ -2954,7 +3004,7 @@ components:
     Connection:
       type: object
       additionalProperties: false
-      required: [connection_id, provider, credential_strategy, display_name, app_id, client_id, app_slug, installation_id, lifecycle, health_class, credential_state, created_at, updated_at]
+      required: [connection_id, provider, credential_strategy, display_name, app_id, client_id, app_slug, installations, lifecycle, health_class, credential_state, created_at, updated_at]
       properties:
         connection_id: { type: string, minLength: 1 }
         provider: { type: string, enum: [github] }
@@ -2963,9 +3013,10 @@ components:
         app_id: { type: string, minLength: 1 }
         client_id: { type: string, minLength: 1 }
         app_slug: { type: string, pattern: "^(?:|[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?)$" }
-        installation_id: { type: string, minLength: 1 }
-        installation_account_id: { type: string, minLength: 1 }
-        installation_account_login: { type: string, minLength: 1 }
+        installations:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/ConnectionInstallation" }
         lifecycle: { type: string, enum: [enabled, disabled, removal_pending, removed] }
         health_class: { type: string, enum: [missing_credential, never_checked, healthy, permission_mismatch, revoked, suspended, rate_limited, unavailable, disabled, removal_pending, removed] }
         failure_class: { type: string }
@@ -2974,6 +3025,24 @@ components:
         last_success_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    ConnectionInstallation:
+      type: object
+      additionalProperties: false
+      required: [installation_id]
+      properties:
+        installation_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        account_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        account_login: { type: string, minLength: 1, maxLength: 100 }
+    SetConnectionInstallationsRequest:
+      type: object
+      additionalProperties: false
+      required: [installation_ids]
+      properties:
+        installation_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
     ConnectionList:
       type: object
       additionalProperties: false
@@ -2992,6 +3061,7 @@ components:
         client_id: { type: string, minLength: 1, maxLength: 128 }
         app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
         installation_id: { type: string, minLength: 1, maxLength: 64 }
+
     StartGitHubManifestFlowRequest:
       type: object
       additionalProperties: false
@@ -3058,6 +3128,7 @@ components:
         client_id: { type: string, minLength: 1, maxLength: 128 }
         app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
         repository_selection: { type: string, enum: [all, selected] }
+        connected: { type: boolean, description: Whether this connection already covers the installation. }
     GitHubDeviceFlowStatus:
       type: object
       additionalProperties: false
@@ -3077,9 +3148,13 @@ components:
     FinalizeGitHubDeviceFlowRequest:
       type: object
       additionalProperties: false
-      required: [installation_id, display_name]
+      required: [installation_ids, display_name]
       properties:
-        installation_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        installation_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
         display_name: { type: string, minLength: 1, maxLength: 120 }
     UpdateConnectionRequest:
       type: object

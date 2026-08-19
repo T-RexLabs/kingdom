@@ -55,17 +55,18 @@ func TestDeviceFlowManagerEnforcesPacingBindingAndSingleFinalization(t *testing.
 	if err != nil || access.AccessToken != "access-token" || !access.ExpiresAt.Equal(flow.ExpiresAt) {
 		t.Fatalf("finalize access=%#v err=%v", access, err)
 	}
-	if _, _, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, "2", "spoofed", []githubexternal.InstallationCandidate{candidate}); !errors.Is(err, errDeviceFlowStage) {
+	// The client cannot invent an installation the fresh listing does not carry.
+	if _, _, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, []string{"999"}, []githubexternal.InstallationCandidate{candidate}); !errors.Is(err, errDeviceFlowStage) {
 		t.Fatalf("spoofed candidate error=%v", err)
 	}
 	if _, err := manager.AccessTokenForFinalize(flow.ID, flow.SessionID, flow.Origin); err != nil {
 		t.Fatalf("reacquire finalize verification after rejected candidate: %v", err)
 	}
-	finalize, selected, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, "2", "octocat", []githubexternal.InstallationCandidate{candidate})
-	if err != nil || selected.AccountID != "10" || finalize.Tokens.AccessToken != "access-token" {
+	finalize, selected, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, []string{"2"}, []githubexternal.InstallationCandidate{candidate})
+	if err != nil || len(selected) != 1 || selected[0].AccountID != "10" || finalize.Tokens.AccessToken != "access-token" {
 		t.Fatalf("finalize=%#v candidate=%#v err=%v", finalize, selected, err)
 	}
-	if _, _, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, "2", "octocat", []githubexternal.InstallationCandidate{candidate}); !errors.Is(err, errDeviceFlowStage) {
+	if _, _, err := manager.BeginFinalize(flow.ID, flow.SessionID, flow.Origin, []string{"2"}, []githubexternal.InstallationCandidate{candidate}); !errors.Is(err, errDeviceFlowStage) {
 		t.Fatalf("replay finalize error=%v", err)
 	}
 }

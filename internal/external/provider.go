@@ -111,3 +111,18 @@ func (r *Registry) Adapter(provider string) (Adapter, bool) {
 	v, ok := r.adapters[provider]
 	return v, ok
 }
+
+// Installation is one App installation a connection could cover, as the
+// provider reports it.
+type Installation struct {
+	InstallationID, AccountID, AccountLogin, DisplayName string
+	AppID, ClientID, AppSlug                             string
+	RepositorySelection                                  string
+}
+
+// InstallationLister is implemented by adapters that can enumerate the
+// installations a saved connection's own credential reaches, so the covered set
+// can be changed without a fresh authorization.
+type InstallationLister interface {
+	ListInstallations(context.Context, state.ExternalConnection) ([]Installation, error)
+}

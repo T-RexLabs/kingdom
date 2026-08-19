@@ -198,7 +198,7 @@ func TestIdempotencyMiddlewareReplaysSensitiveSetupResponsesOnlyInProcess(t *tes
 		body string
 	}{
 		{name: "lost start response", path: "/connections/github/device-flows", body: `{"connection_id":""}`},
-		{name: "lost finalize response", path: "/connections/github/device-flows/flow-id/finalize", body: `{"installation_id":"2","display_name":"octocat"}`},
+		{name: "lost finalize response", path: "/connections/github/device-flows/flow-id/finalize", body: `{"installation_ids":["2"],"display_name":"octocat"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

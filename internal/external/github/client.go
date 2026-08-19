@@ -1168,3 +1168,46 @@ func transferredIssueCoordinates(v *url.URL) (string, int, error) {
 	}
 	return owner + "/" + repository, number, nil
 }
+
+// ListInstallations enumerates the installations this App key reaches, so a
+// private-App connection can grow past the single installation its manifest run
+// learned about.
+func (c *Client) ListInstallations(ctx context.Context, conn state.ExternalConnection) ([]external.Installation, error) {
+	ctx, cancel := c.operationContext(ctx)
+	defer cancel()
+	if conn.CredentialStrategy == "user_access_token" || c.keys == nil {
+		return nil, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	key, _, err := c.keys.Load(conn.ConnectionID)
+	if err != nil {
+		return nil, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	jwt, err := appJWT(key, conn.AppID, c.now())
+	if err != nil {
+		return nil, err
+	}
+	out := []external.Installation{}
+	for page := 1; page <= setupMaxInstallationPage; page++ {
+		var response []setupInstallation
+		headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, nil, &response, "")
+		if err != nil {
+			return nil, err
+		}
+		for _, installation := range response {
+			expected := SetupInstallation{InstallationID: strconv.FormatInt(installation.ID, 10), AppID: strconv.FormatInt(installation.AppID, 10), ClientID: installation.ClientID, AppSlug: installation.AppSlug}
+			validated, err := validateSetupInstallation(installation, expected)
+			if err != nil || validated.AppID != conn.AppID {
+				continue
+			}
+			out = append(out, external.Installation{
+				InstallationID: validated.InstallationID, AccountID: validated.AccountID, AccountLogin: validated.AccountLogin,
+				DisplayName: validated.AccountLogin, AppID: validated.AppID, ClientID: validated.ClientID, AppSlug: validated.AppSlug,
+				RepositorySelection: validated.RepositorySelection,
+			})
+		}
+		if !hasNext(headers) {
+			break
+		}
+	}
+	return out, nil
+}

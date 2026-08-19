@@ -254,8 +254,10 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 		}
 		var finalizeErr error
 		connection, finalizeErr = s.externalStore.FinalizeConnection(completionCtx, state.FinalizeExternalConnectionRequest{
-			CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: completion.AppName, AppID: completion.AppID, ClientID: completion.ClientID, AppSlug: completion.AppSlug, InstallationID: completion.InstallationID, CredentialHandle: githubexternal.CredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")},
-			InstallationAccountID:           proved.AccountID, InstallationAccountLogin: proved.AccountLogin,
+			// A manifest run only ever learns the one installation GitHub redirects
+			// back with; further installations of the same App are added later
+			// through PUT /connections/{id}/installations.
+			CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: completion.AppName, AppID: completion.AppID, ClientID: completion.ClientID, AppSlug: completion.AppSlug, Installations: []state.ConnectionInstallation{{InstallationID: completion.InstallationID, AccountID: proved.AccountID, AccountLogin: proved.AccountLogin}}, CredentialHandle: githubexternal.CredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")},
 		})
 		return finalizeErr
 	})

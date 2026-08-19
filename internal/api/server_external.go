@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,19 @@ import (
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/state"
 )
+
+func presentInstallations(installations []state.ConnectionInstallation) []gen.ConnectionInstallation {
+	out := make([]gen.ConnectionInstallation, 0, len(installations))
+	for _, installation := range installations {
+		item := gen.ConnectionInstallation{InstallationId: installation.InstallationID}
+		if installation.AccountID != "" {
+			item.AccountId = &installation.AccountID
+			item.AccountLogin = &installation.AccountLogin
+		}
+		out = append(out, item)
+	}
+	return out
+}
 
 func presentConnection(c state.ExternalConnection, keys *githubexternal.KeyStore, userTokens *githubexternal.UserTokenStore) gen.Connection {
 	credentialState := "missing"
@@ -35,13 +49,9 @@ func presentConnection(c state.ExternalConnection, keys *githubexternal.KeyStore
 	}
 	result := gen.Connection{
 		ConnectionId: c.ConnectionID, Provider: gen.ConnectionProvider(c.Provider), CredentialStrategy: gen.ConnectionCredentialStrategy(c.CredentialStrategy), DisplayName: c.DisplayName,
-		AppId: c.AppID, ClientId: c.ClientID, AppSlug: c.AppSlug, InstallationId: c.InstallationID,
+		AppId: c.AppID, ClientId: c.ClientID, AppSlug: c.AppSlug, Installations: presentInstallations(c.Installations),
 		Lifecycle: gen.ConnectionLifecycle(c.Lifecycle), HealthClass: gen.ConnectionHealthClass(c.HealthClass),
 		CredentialState: gen.ConnectionCredentialState(credentialState), CreatedAt: mustParseRFC3339(c.CreatedAt), UpdatedAt: mustParseRFC3339(c.UpdatedAt),
-	}
-	if c.InstallationAccountID != "" {
-		result.InstallationAccountId = &c.InstallationAccountID
-		result.InstallationAccountLogin = &c.InstallationAccountLogin
 	}
 	if c.FailureClass != "" {
 		result.FailureClass = &c.FailureClass
@@ -98,7 +108,7 @@ func (s *Server) handleCreateConnection(w http.ResponseWriter, r *http.Request) 
 	if req.AppSlug != nil {
 		appSlug = *req.AppSlug
 	}
-	row, err := s.externalStore.CreateConnection(r.Context(), state.CreateExternalConnectionRequest{ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: req.DisplayName, AppID: req.AppId, ClientID: req.ClientId, AppSlug: appSlug, InstallationID: req.InstallationId, CredentialHandle: githubexternal.CredentialHandle(id), ActorID: authenticatedActorID(r.Context()), CreatedAt: now, AuditEventID: s.idGenerator("external_audit")})
+	row, err := s.externalStore.CreateConnection(r.Context(), state.CreateExternalConnectionRequest{ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: req.DisplayName, AppID: req.AppId, ClientID: req.ClientId, AppSlug: appSlug, Installations: []state.ConnectionInstallation{{InstallationID: req.InstallationId}}, CredentialHandle: githubexternal.CredentialHandle(id), ActorID: authenticatedActorID(r.Context()), CreatedAt: now, AuditEventID: s.idGenerator("external_audit")})
 	if err != nil {
 		if isUniqueConstraintError(err) {
 			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "connection already exists", "api.create_connection", nil)
@@ -190,7 +200,7 @@ func (s *Server) handleConnectionHealthCheck(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		health, failure, success = providerHealth(err), providerFailure(err), false
 	}
-	if stateErr := s.externalStore.UpdateConnectionStateAuditedVersionIdentity(r.Context(), conn.ConnectionID, conn.Lifecycle, health, failure, now, success, validation.AppSlug, validation.InstallationAccountID, validation.InstallationAccountLogin, authenticatedActorID(r.Context()), s.idGenerator("external_audit"), "connection.health_checked", conn.RowVersion); stateErr != nil {
+	if stateErr := s.externalStore.UpdateConnectionStateAuditedVersionIdentity(r.Context(), conn.ConnectionID, conn.Lifecycle, health, failure, now, success, validation.AppSlug, validation.Installations, authenticatedActorID(r.Context()), s.idGenerator("external_audit"), "connection.health_checked", conn.RowVersion); stateErr != nil {
 		writeExternalError(w, stateErr, "api.connection_health_check")
 		return
 	}
@@ -255,6 +265,144 @@ func (s *Server) enabledConnectionAdapter(w http.ResponseWriter, r *http.Request
 		return conn, nil, false
 	}
 	return conn, adapter, true
+}
+
+// connectionInstallationCandidates lists the installations a saved connection's
+// own credential can see. The source differs by strategy: the shared App's
+// candidate listing filters on Kingdom's client id and slug, so it cannot serve
+// a private App, which enumerates its own installations with an App JWT.
+func (s *Server) connectionInstallationCandidates(ctx context.Context, conn state.ExternalConnection) ([]external.Installation, error) {
+	if conn.CredentialStrategy == "user_access_token" {
+		if s.githubDeviceOAuth == nil || s.githubUserTokens == nil {
+			return nil, state.ErrExternalConnectionUnavailable
+		}
+		tokens, err := s.githubUserTokens.Load(conn.ConnectionID)
+		if err != nil {
+			return nil, state.ErrExternalValidationNeeded
+		}
+		candidates, err := s.githubDeviceOAuth.Candidates(ctx, tokens.AccessToken, conn.ClientID, conn.AppSlug)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]external.Installation, 0, len(candidates))
+		for _, candidate := range candidates {
+			out = append(out, external.Installation{
+				InstallationID: candidate.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin,
+				DisplayName: candidate.DisplayName, AppID: candidate.AppID, ClientID: candidate.ClientID, AppSlug: candidate.AppSlug,
+				RepositorySelection: candidate.RepositorySelection,
+			})
+		}
+		return out, nil
+	}
+	adapter, ok := s.externalRegistry.Adapter(conn.Provider)
+	if !ok {
+		return nil, state.ErrExternalConnectionUnavailable
+	}
+	lister, ok := adapter.(external.InstallationLister)
+	if !ok {
+		return nil, state.ErrExternalConnectionUnavailable
+	}
+	return lister.ListInstallations(ctx, conn)
+}
+
+func (s *Server) handleListConnectionInstallationCandidates(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.externalStore.GetConnection(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeExternalError(w, err, "api.list_connection_installations")
+		return
+	}
+	if conn.Lifecycle != "enabled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "connection is disabled", "api.list_connection_installations", nil)
+		return
+	}
+	candidates, err := s.connectionInstallationCandidates(r.Context(), conn)
+	if err != nil {
+		writeExternalError(w, err, "api.list_connection_installations")
+		return
+	}
+	covered := make(map[string]struct{}, len(conn.Installations))
+	for _, installation := range conn.Installations {
+		covered[installation.InstallationID] = struct{}{}
+	}
+	items := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		_, connected := covered[candidate.InstallationID]
+		item := map[string]any{
+			"installation_id": candidate.InstallationID, "display_name": candidate.DisplayName,
+			"account_id": candidate.AccountID, "account_login": candidate.AccountLogin,
+			"app_id": candidate.AppID, "client_id": candidate.ClientID, "app_slug": candidate.AppSlug,
+			"connected": connected,
+		}
+		if candidate.RepositorySelection != "" {
+			item["repository_selection"] = candidate.RepositorySelection
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleSetConnectionInstallations(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.externalStore.GetConnection(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeExternalError(w, err, "api.set_connection_installations")
+		return
+	}
+	if conn.Lifecycle != "enabled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "connection is disabled", "api.set_connection_installations", nil)
+		return
+	}
+	var req gen.SetConnectionInstallationsRequest
+	if err := decodeStrictJSON(r, &req); err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	requested := map[string]struct{}{}
+	for _, id := range req.InstallationIds {
+		requested[strings.TrimSpace(id)] = struct{}{}
+	}
+	if len(requested) == 0 {
+		s.writeBadRequest(w, "choose at least one installation")
+		return
+	}
+	candidates, err := s.connectionInstallationCandidates(r.Context(), conn)
+	if err != nil {
+		writeExternalError(w, err, "api.set_connection_installations")
+		return
+	}
+	// Every installation is proved against what the credential can actually see,
+	// so a connection can never claim one it was not granted.
+	resolved := make([]state.ConnectionInstallation, 0, len(requested))
+	found := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if _, wanted := requested[candidate.InstallationID]; !wanted {
+			continue
+		}
+		if _, already := found[candidate.InstallationID]; already {
+			continue
+		}
+		found[candidate.InstallationID] = struct{}{}
+		resolved = append(resolved, state.ConnectionInstallation{InstallationID: candidate.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin})
+	}
+	if len(found) != len(requested) {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "an installation is not available to this connection", "api.set_connection_installations", nil)
+		return
+	}
+	row, err := s.externalStore.SetConnectionInstallations(r.Context(), conn.ConnectionID, state.SetConnectionInstallationsRequest{
+		Installations: resolved, ExpectedRowVersion: conn.RowVersion,
+		ActorID: authenticatedActorID(r.Context()), UpdatedAt: s.now().UTC().Format(time.RFC3339Nano), AuditEventID: s.idGenerator("external_audit"),
+	})
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "one of these GitHub installations is already connected", "api.set_connection_installations", nil)
+			return
+		}
+		writeExternalError(w, err, "api.set_connection_installations")
+		return
+	}
+	if adapter, ok := s.externalRegistry.Adapter("github"); ok {
+		adapter.Evict(conn.ConnectionID)
+	}
+	writeJSON(w, http.StatusOK, presentConnection(row, s.githubKeys, s.githubUserTokens))
 }
 
 func (s *Server) handleListConnectionRepositories(w http.ResponseWriter, r *http.Request) {

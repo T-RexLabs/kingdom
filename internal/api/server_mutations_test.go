@@ -98,7 +98,7 @@ func TestCreateDecreeMapsDuplicateDerivedSourceToConflictAtomically(t *testing.T
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-conflict", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-conflict", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-conflict"}); err != nil {
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-conflict", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-conflict", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-conflict"}); err != nil {
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
@@ -1063,7 +1063,7 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-present", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-present", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-present"}); err != nil {
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-present", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-present", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-present"}); err != nil {
 		t.Fatal(err)
 	}
 	for i, suffix := range []string{"a", "b"} {

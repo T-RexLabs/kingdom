@@ -878,7 +878,7 @@ func TestGitHubKeyProvisionRejectsRemovedConnectionBeforeFilesystemMutation(t *t
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "removed-connection", CredentialStrategy: "app_private_key", DisplayName: "Removed", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:removed-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-cli-removed-create"}); err != nil {
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "removed-connection", CredentialStrategy: "app_private_key", DisplayName: "Removed", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:removed-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-cli-removed-create"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateConnectionStateAudited(ctx, "removed-connection", "removal_pending", "removal_pending", "", at, false, "local-operator", "audit-cli-removed-pending", "connection.removal_pending"); err != nil {

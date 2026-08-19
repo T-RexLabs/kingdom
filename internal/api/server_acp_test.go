@@ -88,8 +88,8 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 
 	metricsRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/metrics/runtime",
+		method: http.MethodGet,
+		path:   "/api/v1/metrics/runtime",
 	})
 	if metricsRes.Code != http.StatusOK {
 		t.Fatalf("expected metrics 200, got %d (%s)", metricsRes.Code, metricsRes.Body.String())
@@ -145,8 +145,8 @@ func TestGetPlanningSessionDetailExposesAutoTitleEligibility(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at) VALUES ('planning_message_auto_title_user_3', 'planning_session_auto_title_eligible', 'planning_message_auto_title_assistant_2', 'user', 'Second answer', '{}', '{"text":"Second answer"}', '2026-04-21T17:10:03Z')`)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/planning-sessions/planning_session_auto_title_eligible",
+		method: http.MethodGet,
+		path:   "/api/v1/planning-sessions/planning_session_auto_title_eligible",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected session 200, got %d (%s)", res.Code, res.Body.String())
@@ -345,8 +345,8 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_run_output', ?, 'ps_run_output', 'formalize', 'failed', '{}', '', NULL, 0, NULL, NULL, NULL, 'Partial decree body', 'formalize failed', NULL, NULL, '2026-04-21T17:20:01Z', '2026-04-21T17:20:01Z', '2026-04-21T17:20:09Z')`, acp.PlannerRunID("po_run_output"))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/acp/runs/" + acp.PlannerRunID("po_run_output"),
+		method: http.MethodGet,
+		path:   "/api/v1/acp/runs/" + acp.PlannerRunID("po_run_output"),
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected acp run 200, got %d (%s)", res.Code, res.Body.String())
@@ -386,8 +386,8 @@ func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200",
+		method: http.MethodGet,
+		path:   "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected planning messages 200, got %d (%s)", res.Code, res.Body.String())
@@ -415,8 +415,8 @@ func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.
 			break
 		}
 		res = performJSONRequest(t, handler, requestSpec{
-			method:  http.MethodGet,
-			path:    "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200&before=" + *page.PreviousCursor,
+			method: http.MethodGet,
+			path:   "/api/v1/planning-sessions/" + sessionID + "/messages?limit=200&before=" + *page.PreviousCursor,
 		})
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected paged planning messages 200, got %d (%s)", res.Code, res.Body.String())
@@ -438,8 +438,8 @@ func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.
 	var run gen.AcpRun
 	testutil.Eventually(t, timeout, 10*time.Millisecond, func() error {
 		res := performJSONRequest(t, handler, requestSpec{
-			method:  http.MethodGet,
-			path:    "/api/v1/acp/runs/" + runID,
+			method: http.MethodGet,
+			path:   "/api/v1/acp/runs/" + runID,
 		})
 		if res.Code != http.StatusOK {
 			return fmt.Errorf("get acp run %s: expected 200, got %d (%s)", runID, res.Code, res.Body.String())

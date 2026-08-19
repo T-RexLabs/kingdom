@@ -21,7 +21,7 @@ func (a *installedBrowserExternalAdapter) Validate(context.Context, state.Extern
 	if err := a.failure(); err != nil {
 		return external.ConnectionValidation{}, err
 	}
-	return external.ConnectionValidation{InstallationAccountID: "10", InstallationAccountLogin: "octocat"}, nil
+	return external.ConnectionValidation{Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}}, nil
 }
 
 func (a *installedBrowserExternalAdapter) ListRepositories(context.Context, state.ExternalConnection, string, string) (external.RepositoryPage, error) {
