@@ -8,6 +8,7 @@ import {
   setupWindowBlockedMessage,
 } from "./github-setup-window";
 import { safeGitHubInstallationManageURL } from "./github-url";
+import { InstallationPicker } from "./installation-picker";
 import type { components } from "@/api/schema";
 import { PageContent, PageHeader } from "@/components/page-layout";
 import { newIdempotencyKey as idem } from "@/lib/idempotency";
@@ -40,10 +41,10 @@ import { shouldRetainMutationRequest, useRecoverableMutation } from "@/lib/use-r
 
 type Connection = components["schemas"]["Connection"];
 type FlowStatus = components["schemas"]["GitHubManifestFlowStatus"];
-type ConnectionForm = Pick<
-  Connection,
-  "display_name" | "app_id" | "client_id" | "installation_id"
->;
+type ConnectionInstallation = components["schemas"]["ConnectionInstallation"];
+type ConnectionForm = Pick<Connection, "display_name" | "app_id" | "client_id"> & {
+  installation_id: string;
+};
 type SetupOptions = components["schemas"]["GitHubSetupOptions"];
 type DeviceFlow = components["schemas"]["GitHubDeviceFlowStatus"];
 type RequestError = { message: string; retryAt?: string };
@@ -102,22 +103,39 @@ const manifestFailureCopy: Record<ManifestFailureStage, string> = {
   failed: "This private App setup flow cannot continue.",
 };
 
-function ManageRepositoriesLink({ connection }: { connection: Connection }) {
-  const href = safeGitHubInstallationManageURL(
-    connection.app_slug,
-    connection.installation_account_id ?? "",
-  );
-  if (!href) return null;
+function InstallationList({ connection }: { connection: Connection }) {
+  if (connection.installations.length === 0) {
+    return (
+      <p className="mt-2 text-sm text-foreground-muted">No installations yet.</p>
+    );
+  }
   return (
-    <a
-      className={buttonVariants({ size: "sm", variant: "outline" })}
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-    >
-      <ExternalLink className="h-3.5 w-3.5" />
-      Manage Repositories on GitHub
-    </a>
+    <ul className="mt-2 space-y-1">
+      {connection.installations.map((installation: ConnectionInstallation) => {
+        const href = safeGitHubInstallationManageURL(
+          connection.app_slug,
+          installation.account_id ?? "",
+        );
+        return (
+          <li key={installation.installation_id} className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-medium">
+              @{installation.account_login ?? "Account pending validation"}
+            </span>
+            {href && (
+              <a
+                className="inline-flex items-center gap-1 text-xs text-gold underline-offset-2 hover:underline"
+                href={href}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Manage Repositories on GitHub
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -297,7 +315,12 @@ export function ConnectionsPage() {
   });
   const [sharedFlow, setSharedFlow] = useState<DeviceFlow>();
   const [sharedOpen, setSharedOpen] = useState(false);
-  const [selectedInstallation, setSelectedInstallation] = useState("");
+  const [selectedInstallations, setSelectedInstallations] = useState<Set<string>>(new Set());
+  // Which saved connection has its installation editor open, and what that
+  // editor is offering.
+  const [installationsEditingID, setInstallationsEditingID] = useState("");
+  const [installationCandidates, setInstallationCandidates] = useState<DeviceFlow["candidates"]>([]);
+  const [installationSelection, setInstallationSelection] = useState<Set<string>>(new Set());
   const [sharedReconnectID, setSharedReconnectID] = useState("");
   const [manifestOpen, setManifestOpen] = useState(false);
   // The GitHub URL for the current stage, opened only when the operator asks.
@@ -639,7 +662,7 @@ export function ConnectionsPage() {
     setOperation("shared-start");
     setSharedError(undefined);
     setSharedFlow(undefined);
-    setSelectedInstallation("");
+    setSelectedInstallations(new Set());
     setSharedReconnectID(connectionID || "");
     setSharedOpen(true);
     try {
@@ -694,13 +717,69 @@ export function ConnectionsPage() {
     }
   };
 
+  // The editor asks the connection's own credential what it can see, so adding
+  // an account never needs a fresh authorization.
+  const openInstallationEditor = async (connection: Connection) => {
+    if (installationsEditingID === connection.connection_id) {
+      setInstallationsEditingID("");
+      return;
+    }
+    setInstallationsEditingID(connection.connection_id);
+    setInstallationCandidates([]);
+    setInstallationSelection(
+      new Set(connection.installations.map((item: ConnectionInstallation) => item.installation_id)),
+    );
+    setOperation(`${connection.connection_id}:installations-load`);
+    setError(undefined);
+    try {
+      const page = await apiFetch<{ items: DeviceFlow["candidates"] }>(
+        `/connections/${connection.connection_id}/installation-candidates`,
+      );
+      setInstallationCandidates(page.items);
+    } catch (cause) {
+      setError(requestError(cause));
+    } finally {
+      setOperation("");
+    }
+  };
+
+  const saveInstallations = async (connection: Connection) => {
+    setOperation(`${connection.connection_id}:installations-save`);
+    setError(undefined);
+    try {
+      await apiFetch(`/connections/${connection.connection_id}/installations`, {
+        method: "PUT",
+        headers: { "Idempotency-Key": idem("connection-installations") },
+        body: JSON.stringify({ installation_ids: [...installationSelection].sort() }),
+      });
+      await reloadConnections();
+      setInstallationsEditingID("");
+    } catch (cause) {
+      setError(requestError(cause));
+    } finally {
+      setOperation("");
+    }
+  };
+
+  const toggleInstallation = (setter: typeof setInstallationSelection) => (installationID: string) => {
+    setter((existing) => {
+      const next = new Set(existing);
+      if (next.has(installationID)) next.delete(installationID);
+      else next.add(installationID);
+      return next;
+    });
+  };
+
   const finalizeShared = async () => {
     if (!sharedFlow) return;
-    const candidate = sharedFlow.candidates.find(
-      (item) => item.installation_id === selectedInstallation,
+    const chosen = sharedFlow.candidates.filter((item) =>
+      selectedInstallations.has(item.installation_id),
     );
-    if (!candidate) return;
-    const requestID = `device-finalize:${sharedFlow.flow_id}:${candidate.installation_id}`;
+    if (chosen.length === 0) return;
+    const installationIDs = chosen.map((item) => item.installation_id).sort();
+    // The key follows the whole selection: changing what is ticked after an
+    // ambiguous failure must mint a new key rather than replay the old body.
+    const requestID = `device-finalize:${sharedFlow.flow_id}:${installationIDs.join("+")}`;
     setOperation("shared-finalize");
     setSharedError(undefined);
     try {
@@ -712,8 +791,11 @@ export function ConnectionsPage() {
             "Idempotency-Key": setupRequestKey(requestID, "device-finalize"),
           },
           body: JSON.stringify({
-            installation_id: candidate.installation_id,
-            display_name: candidate.display_name,
+            installation_ids: installationIDs,
+            display_name:
+              chosen.length === 1
+                ? chosen[0].display_name
+                : `${chosen[0].display_name} +${chosen.length - 1}`,
           }),
         },
       );
@@ -1113,9 +1195,6 @@ export function ConnectionsPage() {
               // Tombstones never reach the list at all.
               const removable =
                 mutable || connection.lifecycle === "removal_pending";
-              const account =
-                connection.installation_account_login ||
-                "Account pending validation";
               return (
                 <Card key={connection.connection_id}>
                   <CardContent className="p-5">
@@ -1176,13 +1255,78 @@ export function ConnectionsPage() {
                               </span>
                             </div>
                             <p className="mt-1 text-sm text-foreground-muted">
-                              @{account} /{" "}
                               {connection.credential_strategy ===
                               "user_access_token"
                                 ? "Shared GitHub App"
                                 : "Private App key"}{" "}
                               / {connection.lifecycle}
                             </p>
+                            <div className="mt-3">
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
+                                  Installations
+                                </h4>
+                                {mutable && (
+                                  <button
+                                    type="button"
+                                    className="text-xs text-gold underline-offset-2 hover:underline"
+                                    onClick={() => void openInstallationEditor(connection)}
+                                  >
+                                    {installationsEditingID === connection.connection_id ? "Close" : "Change"}
+                                  </button>
+                                )}
+                              </div>
+                              <InstallationList connection={connection} />
+                              {installationsEditingID === connection.connection_id && (
+                                <div className="mt-3 rounded-xl border border-border bg-background/40 p-4">
+                                  <p className="text-xs text-foreground-muted">
+                                    Kingdom reads every repository these installations grant. Install
+                                    the App on another account on GitHub, then reopen this list.
+                                  </p>
+                                  <div className="mt-3">
+                                    {operation === `${connection.connection_id}:installations-load` ? (
+                                      <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        Loading installations...
+                                      </p>
+                                    ) : installationCandidates.length === 0 ? (
+                                      <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">
+                                        No installations are available to this connection.
+                                      </p>
+                                    ) : (
+                                      <InstallationPicker
+                                        name={`installations-${connection.connection_id}`}
+                                        candidates={installationCandidates}
+                                        selected={installationSelection}
+                                        onToggle={toggleInstallation(setInstallationSelection)}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="mt-3 flex justify-end gap-2">
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setInstallationsEditingID("")}
+                                    >
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      disabled={
+                                        installationSelection.size === 0 ||
+                                        operation === `${connection.connection_id}:installations-save`
+                                      }
+                                      onClick={() => void saveInstallations(connection)}
+                                    >
+                                      {operation === `${connection.connection_id}:installations-save` && (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      )}
+                                      Save Installations
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                             {connection.health_class === "permission_mismatch" && (
                               <p className="mt-2 max-w-2xl text-xs leading-5 text-amber-300">
                                 {externalSourceFailureGuidance(connection.health_class)}
@@ -1231,7 +1375,6 @@ export function ConnectionsPage() {
                                 <ShieldCheck className="h-3.5 w-3.5" />
                                 {checkConnection.pendingRequest === connection.connection_id ? "Retry check" : "Check"}
                               </Button>
-                              <ManageRepositoriesLink connection={connection} />
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1277,9 +1420,11 @@ export function ConnectionsPage() {
                               <dd className="break-all">
                                 {connection.client_id}
                               </dd>
-                              <dt>Installation ID</dt>
+                              <dt>Installation IDs</dt>
                               <dd className="break-all">
-                                {connection.installation_id}
+                                {connection.installations
+                                  .map((installation: ConnectionInstallation) => installation.installation_id)
+                                  .join(", ") || "None"}
                               </dd>
                               <dt>Connection ID</dt>
                               <dd className="break-all">
@@ -1426,58 +1571,45 @@ export function ConnectionsPage() {
                   <div className="space-y-4">
                     <div>
                       <h3 className="font-display text-lg font-semibold">
-                        Choose an Installation
+                        {sharedReconnectID ? "Confirm the Installation" : "Choose Installations"}
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
-                        One connection is created for the account you select, and
-                        it covers every repository that installation grants.
+                        {sharedReconnectID
+                          ? "Reauthorizing keeps this connection covering the same accounts."
+                          : "One connection is created covering every account you tick, and it reads every repository those installations grant."}
                       </p>
                     </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {sharedFlow.candidates.map((candidate) => (
-                        <label
-                          key={candidate.installation_id}
-                          className={`cursor-pointer rounded-xl border p-4 transition ${selectedInstallation === candidate.installation_id ? "border-gold bg-gold/10" : "border-border bg-background/40 hover:border-gold/40"}`}
-                        >
-                          <input
-                            className="sr-only"
-                            type="radio"
-                            name="installation"
-                            value={candidate.installation_id}
-                            checked={
-                              selectedInstallation === candidate.installation_id
-                            }
-                            onChange={() =>
-                              setSelectedInstallation(candidate.installation_id)
-                            }
-                          />
-                          <span className="block font-medium">
-                            @{candidate.account_login}
-                          </span>
-                          <span className="mt-1 block text-xs text-foreground-muted">
-                            {candidate.display_name}
-                          </span>
-                          {candidate.repository_selection && (
-                            <span className="mt-1 block text-xs font-medium text-foreground-muted">
-                              {candidate.repository_selection === "all"
-                                ? "All Repositories"
-                                : "Selected Repositories"}
-                            </span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
+                    <InstallationPicker
+                      name="installation"
+                      candidates={sharedFlow.candidates}
+                      selected={selectedInstallations}
+                      single={!!sharedReconnectID}
+                      onToggle={(installationID: string) =>
+                        setSelectedInstallations((existing) => {
+                          if (sharedReconnectID) return new Set([installationID]);
+                          const next = new Set(existing);
+                          if (next.has(installationID)) next.delete(installationID);
+                          else next.add(installationID);
+                          return next;
+                        })
+                      }
+                    />
+                    <p className="text-xs text-foreground-muted" aria-live="polite">
+                      {selectedInstallations.size} selected
+                    </p>
                     <Button
                       className="w-full"
                       disabled={
-                        !selectedInstallation || operation === "shared-finalize"
+                        selectedInstallations.size === 0 || operation === "shared-finalize"
                       }
                       onClick={() => void finalizeShared()}
                     >
                       {operation === "shared-finalize" && (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       )}
-                      Connect Selected Installation
+                      {sharedReconnectID
+                        ? "Reconnect Selected Installation"
+                        : "Connect Selected Installations"}
                     </Button>
                     <div className="rounded-xl border border-border bg-background/40 p-4">
                       <p className="text-sm text-foreground-muted">

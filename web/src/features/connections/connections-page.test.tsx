@@ -26,11 +26,9 @@ const connection = (displayName: string, appID = "1") => ({
   display_name: displayName,
   app_id: appID,
   client_id: "Iv1",
-  installation_id: "2",
+  installations: [{ installation_id: "2", account_id: "10", account_login: "octocat" }],
   credential_strategy: "app_private_key" as const,
   app_slug: "kingdom-issues",
-  installation_account_id: "10",
-  installation_account_login: "octocat",
   lifecycle: "enabled" as const,
   health_class:
     appID === "1" ? ("healthy" as const) : ("never_checked" as const),
@@ -1387,7 +1385,7 @@ describe("ConnectionsPage", () => {
   });
 
   it("omits the manage repositories link when the installation account is not pinned yet", async () => {
-    const unpinned = { ...connection("Pending Check", "2"), app_slug: "", installation_account_id: "" };
+    const unpinned = { ...connection("Pending Check", "2"), app_slug: "", installations: [{ installation_id: "2" }] };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1408,5 +1406,155 @@ describe("ConnectionsPage", () => {
     expect(
       screen.queryByRole("link", { name: /Manage Repositories on GitHub/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("connects both accounts as one connection", async () => {
+    const candidate = (id: string, login: string) => ({
+      installation_id: id,
+      display_name: login,
+      account_id: id,
+      account_login: login,
+      app_id: "1",
+      client_id: "Iv1",
+      app_slug: "kingdom",
+    });
+    let finalized: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom", install_url: "https://github.com/apps/kingdom/installations/new" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(
+            JSON.stringify({
+              flow_id: "flow-multi-123456789",
+              stage: "selecting_installation",
+              expires_at: "2099-08-15T13:00:00Z",
+              interval_seconds: 5,
+              install_url: "https://github.com/apps/kingdom/installations/new",
+              candidates: [candidate("10", "enkiid"), candidate("11", "T-RexLabs")],
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        if (url.endsWith("/finalize")) {
+          finalized = JSON.parse(String(init?.body));
+          return json(connection("Kingdom Issues"));
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+
+    // Both accounts are tickable at once; neither deselects the other.
+    await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
+    await user.click(screen.getByRole("checkbox", { name: /@T-RexLabs/ }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Connect Selected Installations/ }));
+    await waitFor(() => expect(finalized).toBeDefined());
+    expect(finalized).toMatchObject({ installation_ids: ["10", "11"] });
+  });
+
+  it("keeps reconnect to a single installation", async () => {
+    const shared = {
+      ...connection("Shared"),
+      credential_strategy: "user_access_token" as const,
+      installations: [{ installation_id: "10", account_id: "10", account_login: "enkiid" }],
+    };
+    const candidate = (id: string, login: string) => ({
+      installation_id: id,
+      display_name: login,
+      account_id: id,
+      account_login: login,
+      app_id: "1",
+      client_id: "Iv1",
+      app_slug: "kingdom",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [shared] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(
+            JSON.stringify({
+              flow_id: "flow-recon-123456789",
+              stage: "selecting_installation",
+              expires_at: "2099-08-15T13:00:00Z",
+              interval_seconds: 5,
+              candidates: [candidate("10", "enkiid"), candidate("11", "T-RexLabs")],
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Shared");
+    await user.click(screen.getByRole("button", { name: "Reconnect" }));
+
+    // Reauthorization reproves one connection, so the picker stays single-choice.
+    const first = await screen.findByRole("radio", { name: /@enkiid/ });
+    await user.click(first);
+    await user.click(screen.getByRole("radio", { name: /@T-RexLabs/ }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Reconnect Selected Installation/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("adds a second account to a saved connection", async () => {
+    let saved: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [connection("Kingdom Issues")] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/installation-candidates"))
+          return json({
+            items: [
+              { installation_id: "2", display_name: "octocat", account_id: "10", account_login: "octocat", app_id: "1", client_id: "Iv1", app_slug: "kingdom-issues", connected: true },
+              { installation_id: "11", display_name: "T-RexLabs", account_id: "101", account_login: "T-RexLabs", app_id: "1", client_id: "Iv1", app_slug: "kingdom-issues", connected: false },
+            ],
+          });
+        if (url.endsWith("/installations") && init?.method === "PUT") {
+          saved = JSON.parse(String(init.body));
+          return json(connection("Kingdom Issues"));
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Kingdom Issues");
+    await user.click(screen.getByRole("button", { name: "Change" }));
+
+    // What the connection already covers arrives already ticked.
+    expect(await screen.findByRole("checkbox", { name: /@octocat/ })).toBeChecked();
+    await user.click(screen.getByRole("checkbox", { name: /@T-RexLabs/ }));
+    await user.click(screen.getByRole("button", { name: /Save Installations/ }));
+    await waitFor(() => expect(saved).toBeDefined());
+    expect(saved).toEqual({ installation_ids: ["11", "2"] });
   });
 });

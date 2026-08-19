@@ -343,6 +343,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connections/{id}/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Choose which App installations this connection covers.
+         * @description Replaces the set of installations the connection reads from. Every installation is proved against the provider before it is stored, and an installation already held by another live connection is refused.
+         */
+        put: operations["setConnectionInstallations"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}/installation-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the App installations this connection could cover.
+         * @description Lists installations the connection's own credential can see, each flagged with whether the connection already covers it.
+         */
+        get: operations["listConnectionInstallationCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connections/{id}/repositories": {
         parameters: {
             query?: never;
@@ -1660,9 +1700,7 @@ export interface components {
             app_id: string;
             client_id: string;
             app_slug: string;
-            installation_id: string;
-            installation_account_id?: string;
-            installation_account_login?: string;
+            installations: components["schemas"]["ConnectionInstallation"][];
             /** @enum {string} */
             lifecycle: "enabled" | "disabled" | "removal_pending" | "removed";
             /** @enum {string} */
@@ -1678,6 +1716,14 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ConnectionInstallation: {
+            installation_id: string;
+            account_id?: string;
+            account_login?: string;
+        };
+        SetConnectionInstallationsRequest: {
+            installation_ids: string[];
         };
         ConnectionList: {
             items: components["schemas"]["Connection"][];
@@ -1744,6 +1790,8 @@ export interface components {
             app_slug: string;
             /** @enum {string} */
             repository_selection?: "all" | "selected";
+            /** @description Whether this connection already covers the installation. */
+            connected?: boolean;
         };
         GitHubDeviceFlowStatus: {
             flow_id: string;
@@ -1764,7 +1812,7 @@ export interface components {
             failure?: string;
         };
         FinalizeGitHubDeviceFlowRequest: {
-            installation_id: string;
+            installation_ids: string[];
             display_name: string;
         };
         UpdateConnectionRequest: {
@@ -3761,6 +3809,67 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    setConnectionInstallations: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetConnectionInstallationsRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listConnectionInstallationCandidates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Installation candidates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["GitHubInstallationCandidate"][];
+                    };
                 };
             };
             400: components["responses"]["BadRequestError"];
