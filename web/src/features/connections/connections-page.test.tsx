@@ -1362,7 +1362,7 @@ describe("ConnectionsPage", () => {
     expect(screen.getByText("All Repositories")).toBeInTheDocument();
   });
 
-  it("links a saved connection to its own repository selection on GitHub", async () => {
+  it("links a saved connection to what GitHub grants it", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1379,14 +1379,14 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await screen.findByText("Kingdom Issues");
     expect(
-      screen.getByRole("link", { name: /Manage Repositories on GitHub/ }),
+      screen.getByRole("link", { name: /Change What GitHub Grants/ }),
     ).toHaveAttribute(
       "href",
       "https://github.com/apps/kingdom-issues/installations/new/permissions?suggested_target_id=10",
     );
   });
 
-  it("omits the manage repositories link when the installation account is not pinned yet", async () => {
+  it("omits the GitHub grant link when the installation account is not pinned yet", async () => {
     const unpinned = { ...connection("Pending Check", "2"), app_slug: "", installation_account_id: "" };
     vi.stubGlobal(
       "fetch",
@@ -1406,7 +1406,107 @@ describe("ConnectionsPage", () => {
     // Guard against a vacuous pass: the action row must actually be rendered.
     expect(screen.getByRole("button", { name: "Check" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("link", { name: /Manage Repositories on GitHub/ }),
+      screen.queryByRole("link", { name: /Change What GitHub Grants/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("lets a saved connection be narrowed to several of its granted repositories", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [connection("Kingdom Issues")] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.includes("/repositories?") && url.includes("scope=granted"))
+          return json({
+            items: [
+              { id: "200", locator: "octocat/api", canonical_url: "https://github.com/octocat/api", included: false },
+              { id: "201", locator: "octocat/web", canonical_url: "https://github.com/octocat/web", included: false },
+              { id: "202", locator: "octocat/legacy", canonical_url: "https://github.com/octocat/legacy", included: false },
+            ],
+          });
+        if (url.endsWith("/included-repositories") && init?.method === "PUT") {
+          saved.push(JSON.parse(String(init.body)));
+          return json(connection("Kingdom Issues"));
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Kingdom Issues");
+    await user.click(screen.getByRole("button", { name: "Change" }));
+
+    // The whole grant is the default, so narrowing is an explicit choice.
+    await user.click(await screen.findByRole("radio", { name: /Only Selected Repositories/ }));
+    expect(await screen.findByText("octocat/api")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: /octocat\/api/ }));
+    await user.click(screen.getByRole("checkbox", { name: /octocat\/web/ }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Save Repositories/ }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({ mode: "selected", repository_ids: ["200", "201"] });
+  });
+
+  it("prefills the boxes from what the connection already includes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [{ ...connection("Kingdom Issues"), included_repository_mode: "selected" }] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.includes("/repositories?") && url.includes("scope=granted"))
+          return json({
+            items: [
+              { id: "200", locator: "octocat/api", canonical_url: "https://github.com/octocat/api", included: true },
+              { id: "201", locator: "octocat/web", canonical_url: "https://github.com/octocat/web", included: false },
+            ],
+          });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Kingdom Issues");
+    expect(screen.getByText(/Included Repositories:/)).toHaveTextContent("A chosen subset");
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    expect(await screen.findByRole("checkbox", { name: /octocat\/api/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /octocat\/web/ })).not.toBeChecked();
+  });
+
+  it("asks for a health check before listing repositories it cannot fetch", async () => {
+    const unchecked = { ...connection("Pending Check", "2"), credential_state: "missing" as const };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [unchecked] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Pending Check");
+    await user.click(screen.getByRole("button", { name: "Change" }));
+    expect(await screen.findByText("Run Check to list repositories.")).toBeInTheDocument();
   });
 });
