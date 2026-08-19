@@ -4,7 +4,7 @@ import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
+import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
 import { safeGitHubIssueURL } from "@/features/connections/github-url";
 import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
 import { cn } from "@/lib/utils";
@@ -84,12 +84,14 @@ export function PlanningSourcesPanel({
           aria-label="Planning Sources"
           className="w-full rounded-lg border border-gold/20 bg-gold/[0.03] px-2.5 py-2"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-xs text-foreground-muted">
-              {sources.length === 0
-                ? "Add a GitHub issue as immutable context for future planner operations."
-                : "Future planner operations read these issues exactly as they were adopted."}
-            </p>
+          <div className={cn("flex flex-wrap items-center gap-2", sources.length === 0 ? "justify-between" : "justify-end")}>
+            {/* Only the empty state needs words. Once sources are listed they
+                are their own explanation. */}
+            {sources.length === 0 ? (
+              <p className="text-xs text-foreground-muted">
+                Add a GitHub issue as context for planner operations.
+              </p>
+            ) : null}
             <IssuePicker
               onSelect={onAttach}
               actionLabel="Add Source"
@@ -142,6 +144,9 @@ function PlanningSourceRow({
   const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
   const sourceStatus = refreshResult?.outcome ?? source.status;
   const updateAvailable = latestSnapshotID !== activeSnapshotID;
+  // An update is the only detail a row has to show. Without one there is
+  // nothing behind the disclosure, so the disclosure itself does not exist.
+  const expandable = updateAvailable;
   const failureGuidance = externalSourceFailureGuidance(sourceStatus);
   const sourceURL = safeGitHubIssueURL(source.canonical_url, source.repository, source.issue_number);
   const label = `${source.repository}#${source.issue_number}`;
@@ -184,33 +189,50 @@ function PlanningSourceRow({
 
   // The status is a label from Kingdom's status vocabulary, so it is rendered as
   // one rather than folded into a sentence. A live refresh result speaks for
-  // itself and replaces it.
-  const statusText = refreshResult?.message ?? externalSourceStatusLabel(sourceStatus, updateAvailable);
+  // itself and replaces it, and a source with nothing to report says nothing.
+  const statusText = refreshResult?.message ?? externalSourceStatusNotice(sourceStatus, updateAvailable);
+
+  const identity = (
+    <>
+      <Github className="h-3.5 w-3.5 shrink-0 text-gold" />
+      <span className="truncate text-xs font-medium text-foreground">{label}</span>
+      {statusText ? (
+        <span
+          className={cn(
+            "truncate text-xs",
+            failureGuidance ? "text-status-failed" : updateAvailable ? "text-gold" : "text-foreground-muted",
+          )}
+        >
+          {statusText}
+        </span>
+      ) : null}
+    </>
+  );
 
   return (
     <section aria-label={`Linked GitHub source ${label}`} className="py-1.5">
       <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={`Details for ${label}`}
-          onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-gold/5"
-        >
-          <ChevronRight
-            className={cn("h-3 w-3 shrink-0 text-foreground-subtle transition-transform", open && "rotate-90")}
-          />
-          <Github className="h-3.5 w-3.5 shrink-0 text-gold" />
-          <span className="truncate text-xs font-medium text-foreground">{label}</span>
-          <span
-            className={cn(
-              "truncate text-xs",
-              failureGuidance ? "text-status-failed" : updateAvailable ? "text-gold" : "text-foreground-muted",
-            )}
+        {expandable ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`Details for ${label}`}
+            onClick={onToggle}
+            className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-gold/5"
           >
-            {statusText}
-          </span>
-        </button>
+            <ChevronRight
+              className={cn("h-3 w-3 shrink-0 text-foreground-subtle transition-transform", open && "rotate-90")}
+            />
+            {identity}
+          </button>
+        ) : (
+          // Nothing to open: the row is a line, not a control. The chevron's
+          // width is held so rows stay aligned when one of them gains an update.
+          <div className="flex min-w-0 flex-1 items-center gap-2 px-1 py-0.5">
+            <span aria-hidden="true" className="h-3 w-3 shrink-0" />
+            {identity}
+          </div>
+        )}
         <div className="flex shrink-0 items-center gap-1">
           {sourceURL ? (
             <a
@@ -259,28 +281,35 @@ function PlanningSourceRow({
           </button>
         </div>
       </div>
+      {/* Confirmation is the two buttons. What Remove does to a planning source
+          is plain from the control that opened them, so the row does not
+          re-explain it; the labels name the target for anyone who cannot see
+          which row is asking. */}
       {confirmingRemoval ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs">
-          <span className="text-foreground-muted">
-            Remove {label} from future planner operations? Earlier operations keep it, and you can add it back.
-          </span>
-          <div className="ml-auto flex gap-2">
-            <Button type="button" size="sm" variant="ghost" disabled={busy !== ""} onClick={() => setConfirmingRemoval(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="destructive"
-              disabled={busy !== ""}
-              onClick={() =>
-                void run("detach", "external-detach", `/external-source-links/${source.link_id}/detachments`, "Could not remove the GitHub source")
-              }
-            >
-              {busy === "detach" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-              Remove
-            </Button>
-          </div>
+        <div className="mt-1.5 flex justify-end gap-2 rounded-md border border-border bg-background/60 px-2.5 py-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            aria-label={`Keep ${label}`}
+            disabled={busy !== ""}
+            onClick={() => setConfirmingRemoval(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            aria-label={`Confirm removing ${label}`}
+            disabled={busy !== ""}
+            onClick={() =>
+              void run("detach", "external-detach", `/external-source-links/${source.link_id}/detachments`, "Could not remove the GitHub source")
+            }
+          >
+            {busy === "detach" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Remove
+          </Button>
         </div>
       ) : null}
       {error ? (
@@ -295,23 +324,19 @@ function PlanningSourceRow({
           {failureGuidance}
         </p>
       ) : null}
-      {open ? (
+      {/* Rate-limit timing is not a detail either: a row with no update never
+          opens, and the operator still has to know when retrying is worth it. */}
+      {refreshResult?.retry_at ? (
+        <p className="mt-1.5 px-1 text-xs text-foreground-muted">
+          Retry after {new Date(refreshResult.retry_at).toLocaleString()}.
+        </p>
+      ) : null}
+      {expandable && open ? (
         <div className="mt-1.5 space-y-2 border-l border-gold/20 pl-3 text-xs">
-          {refreshResult?.retry_at ? (
-            <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p>
-          ) : null}
-          {updateAvailable ? (
-            <>
-              <p className="text-foreground-muted">
-                Adopt the update to use it in future planner operations.
-              </p>
-              <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} />
-            </>
-          ) : (
-            <p className="text-foreground-muted">
-              Future planner operations use this issue exactly as it reads now.
-            </p>
-          )}
+          <p className="text-foreground-muted">
+            Adopt the update to use it in future planner operations.
+          </p>
+          <ExternalSourceComparison baselineId={activeSnapshotID} candidateId={latestSnapshotID} />
         </div>
       ) : null}
     </section>

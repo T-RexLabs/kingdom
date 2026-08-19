@@ -15,11 +15,22 @@ export function externalSourceFailureGuidance(status: string): string | undefine
   return failureGuidance[status];
 }
 
+/**
+ * Statuses a linked source has no reason to announce.
+ *
+ * A source that was just captured has not been checked, a check that found
+ * nothing found nothing, and a check another surface already performed is
+ * someone else's news. None of them is an update to adopt or a problem to fix,
+ * so the honest render is silence — saying "Not Checked" or "Up to Date" costs
+ * the operator a read and tells them only that the system is behaving.
+ */
+const QUIET_STATUSES = new Set(["never_checked", "unchanged", "superseded"]);
+
 // Status values are Title Case like the rest of Kingdom's status vocabulary
 // (see status-system.ts); the guidance above is prose and stays sentence case.
+// Only statuses worth announcing live here, so this map and QUIET_STATUSES
+// cannot drift into disagreeing about the same status.
 const statusLabels: Record<string, string> = {
-  never_checked: "Not Checked",
-  unchanged: "Up to Date",
   changed: "Update Available",
   inaccessible_or_missing: "Issue Unavailable",
   deleted: "Issue Deleted",
@@ -31,12 +42,21 @@ const statusLabels: Record<string, string> = {
   timeout: "Check Timed Out",
   malformed_response: "Check Failed",
   oversized_response: "Source Too Large",
-  superseded: "Checked Elsewhere",
 };
 
-export function externalSourceStatusLabel(status: string, updateAvailable = false): string {
+/**
+ * What this source has to say for itself, or `undefined` when it has nothing.
+ *
+ * A source reports its status only when there is an update to adopt or a
+ * problem to fix. Callers render the notice when it exists and render nothing
+ * when it does not.
+ */
+export function externalSourceStatusNotice(status: string, updateAvailable = false): string | undefined {
   if (updateAvailable) {
     return "Update Available";
+  }
+  if (QUIET_STATUSES.has(status)) {
+    return undefined;
   }
   return statusLabels[status] ?? "Check Failed";
 }

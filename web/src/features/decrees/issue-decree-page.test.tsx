@@ -1149,6 +1149,30 @@ describe("issue decree page", () => {
     expect(screen.getByRole("button", { name: "Issue Decree" }).parentElement).toHaveClass("flex-wrap");
   });
 
+  it("leaves nothing behind when the imported source is removed", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/external-source-captures")) return new Response(JSON.stringify({ source_id: "source-1", snapshot_id: "snapshot-direct" }), { status: 201, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<IssueDecreePage />);
+
+    await user.click(screen.getByRole("button", { name: "Mock prefill issue" }));
+    expect(await screen.findByLabelText("Selected GitHub source")).toBeInTheDocument();
+    // A freshly imported source has nothing to report about its own freshness.
+    expect(screen.queryByText(/decree fields remain editable/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Decree Title")).toHaveValue("Issue A"));
+
+    // Removing the source has to take the text it imported with it, or the
+    // next decree silently ships content the operator believes they discarded.
+    await user.click(screen.getByRole("button", { name: "Remove Source" }));
+    expect(screen.queryByLabelText("Selected GitHub source")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Decree Title")).toHaveValue("");
+    expect(screen.getByLabelText("Decree Text")).toHaveValue("");
+  });
+
   it("clears planning lineage when a direct GitHub issue is imported", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

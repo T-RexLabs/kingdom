@@ -339,13 +339,37 @@ describe("PlanningSessionPage", () => {
     await openPlanningSources(user);
     expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
-    // Detail is opt-in per row, so ten sources stay ten short lines.
-    expect(screen.queryByText(/use this issue exactly as it reads now/i)).not.toBeInTheDocument();
+    // A current source has nothing behind a disclosure, so it has no
+    // disclosure — and nothing to say about its own freshness.
+    expect(screen.queryByRole("button", { name: /^Details for / })).not.toBeInTheDocument();
+    expect(screen.queryByText("Not Checked")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
+  });
+
+  it("opens detail only for the source that has an update, one row at a time", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1-next", status: "changed" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    expect(screen.getByRole("button", { name: "Details for owner/one#1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Details for owner/two#2" })).not.toBeInTheDocument();
+    expect(screen.getByText("Update Available")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Details for owner/one#1" }));
-    expect(screen.getAllByText(/use this issue exactly as it reads now/i)).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Details for owner/two#2" }));
-    expect(screen.getAllByText(/use this issue exactly as it reads now/i)).toHaveLength(1);
+    expect(screen.getByLabelText("GitHub source comparison")).toBeInTheDocument();
   });
 
   it("shows changed fields after refresh and keeps adoption explicit", async () => {
@@ -458,9 +482,11 @@ describe("PlanningSessionPage", () => {
     // Removal is confirmed inline; nothing leaves until the operator says so.
     await user.click(screen.getByRole("button", { name: "Remove owner/one#1" }));
     expect(request).toBeUndefined();
-    expect(screen.getByText(/you can add it back/i)).toBeInTheDocument();
+    // The confirmation is the two buttons. It carries no prose, so the labels
+    // are what name the target and separate the ask from the answer.
+    expect(screen.getByRole("button", { name: "Keep owner/one#1" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Remove$/ }));
+    await user.click(screen.getByRole("button", { name: "Confirm removing owner/one#1" }));
     await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
     expect(request?.url).toMatch(/\/external-source-links\/link-1\/detachments$/);
     expect(request?.init?.method).toBe("POST");

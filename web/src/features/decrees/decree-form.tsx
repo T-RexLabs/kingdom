@@ -28,7 +28,6 @@ import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
 import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { externalSourceStatusLabel } from "@/features/connections/external-source-status";
 import { safeGitHubIssueURL } from "@/features/connections/github-url";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import type { DecreePlanningLineageSearch } from "./decree-route-search";
@@ -680,11 +679,20 @@ export function DecreeForm({
     if (applyBody) setText(candidate.issue.body);
   };
 
+  // Removing the source leaves the form as if nothing had been imported. The
+  // plan selector already clears title and text when it drops back to "No
+  // plan"; a half-cleared form carrying text the operator believes they
+  // discarded is worse than an empty one.
+  const clearExternalSource = () => {
+    setOrigin({ kind: "manual" });
+    setTitle("");
+    setText("");
+    setExternalError("");
+  };
+
   const externalIssueURL = origin.kind === "github"
     ? safeGitHubIssueURL(origin.issue.canonical_url, origin.issue.repository, origin.issue.issue_number)
     : null;
-  const externalUpdateAvailable = origin.kind === "github"
-    && Boolean(origin.candidate && origin.candidate.snapshotId !== origin.snapshotId);
 
   return (
     <Card>
@@ -702,11 +710,10 @@ export function DecreeForm({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium text-foreground">Imported from {externalIssueURL ? <a href={externalIssueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{origin.issue.repository}#{origin.issue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{origin.issue.repository}#{origin.issue.issue_number}</span>}</p>
-                    <p className="mt-1 text-foreground-muted"><span className="text-foreground">{externalSourceStatusLabel(externalUpdateAvailable ? "changed" : "unchanged", externalUpdateAvailable)}</span> — decree fields remain editable.</p>
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-2">
                     <Button type="button" variant="ghost" size="sm" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for Updates</Button>
-                    <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={() => { setOrigin({ kind: "manual" }); setExternalError(""); }}>Remove Source</Button>
+                    <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={clearExternalSource}>Remove Source</Button>
                   </div>
                 </div>
                 {origin.candidate?.snapshotId === origin.snapshotId ? <p role="status" className="text-foreground-muted">GitHub is up to date with the selected source.</p> : null}

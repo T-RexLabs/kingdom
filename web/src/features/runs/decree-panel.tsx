@@ -16,7 +16,7 @@ import { ModalDialog } from "@/components/ui/modal-dialog";
 import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
 import { safeGitHubIssueURL } from "@/features/connections/github-url";
-import { externalSourceFailureGuidance, externalSourceStatusLabel } from "@/features/connections/external-source-status";
+import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
 import { cn, roleTitle } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
@@ -158,6 +158,9 @@ function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeS
   const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
   const updateAvailable = latestSnapshotID !== source.used_snapshot_id;
   const sourceFailureGuidance = externalSourceFailureGuidance(sourceStatus);
+  // A source with no update and no problem says nothing; the card still shows
+  // where the decree came from.
+  const statusNotice = externalSourceStatusNotice(sourceStatus, updateAvailable);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -178,7 +181,7 @@ function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeS
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-medium text-foreground">Imported from GitHub · {sourceURL ? <a href={sourceURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{source.repository}#{source.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{source.repository}#{source.issue_number}</span>}</p>
-          <p className="mt-1 text-foreground-muted"><span className="text-foreground">{externalSourceStatusLabel(sourceStatus, updateAvailable)}</span>{updateAvailable ? " — the issued decree remains unchanged." : ""}</p>
+          {statusNotice ? <p className="mt-1 text-foreground-muted"><span className="text-foreground">{statusNotice}</span>{updateAvailable ? " — the issued decree remains unchanged." : ""}</p> : null}
         </div>
         <Button type="button" size="sm" variant="ghost" aria-label={`${recoverableRefresh.hasPendingRecovery ? "Retry" : "Check"} GitHub source ${source.repository}#${source.issue_number}`} onClick={refresh} disabled={refreshing}>{refreshing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}{recoverableRefresh.hasPendingRecovery ? "Retry GitHub source check" : "Check GitHub source"}</Button>
       </div>
