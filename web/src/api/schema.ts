@@ -350,9 +350,29 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List repositories currently granted to the installation. */
+        /** List the repositories this connection includes, or all the installation grants. */
         get: operations["listConnectionRepositories"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connections/{id}/included-repositories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Choose which granted repositories this connection reads from.
+         * @description Narrows the connection to a subset of its installation grant, or returns it to tracking the whole grant. A connection can only ever narrow: every repository is proven against the live grant before it is stored.
+         */
+        put: operations["setIncludedRepositories"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1664,6 +1684,8 @@ export interface components {
             installation_account_id?: string;
             installation_account_login?: string;
             /** @enum {string} */
+            included_repository_mode?: "all" | "selected";
+            /** @enum {string} */
             lifecycle: "enabled" | "disabled" | "removal_pending" | "removed";
             /** @enum {string} */
             health_class: "missing_credential" | "never_checked" | "healthy" | "permission_mismatch" | "revoked" | "suspended" | "rate_limited" | "unavailable" | "disabled" | "removal_pending" | "removed";
@@ -1771,7 +1793,14 @@ export interface components {
             enabled?: boolean;
             display_name?: string;
         };
+        SetIncludedRepositoriesRequest: {
+            /** @enum {string} */
+            mode: "all" | "selected";
+            repository_ids?: string[];
+        };
         Repository: {
+            /** @description Present only when scope=granted. */
+            included?: boolean;
             id: string;
             locator: string;
             /** Format: uri */
@@ -1910,7 +1939,7 @@ export interface components {
         ExternalRefreshResult: {
             link: components["schemas"]["ExternalLink"];
             /** @enum {string} */
-            outcome: "unchanged" | "changed" | "superseded" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
+            outcome: "unchanged" | "changed" | "superseded" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "repository_excluded" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
             snapshot_created: boolean;
             changes: components["schemas"]["ExternalRefreshChanges"];
             /** Format: date-time */
@@ -1956,7 +1985,7 @@ export interface components {
             status: components["schemas"]["ExternalSourceStatus"];
         };
         /** @enum {string} */
-        ExternalSourceStatus: "never_checked" | "unchanged" | "changed" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
+        ExternalSourceStatus: "never_checked" | "unchanged" | "changed" | "inaccessible_or_missing" | "deleted" | "rate_limited" | "connection_disabled" | "repository_excluded" | "service_unavailable" | "revoked" | "permission_mismatch" | "timeout" | "malformed_response" | "oversized_response";
         PlanningLineage: {
             planning_session_id: string;
             planning_draft_id: string;
@@ -3772,6 +3801,10 @@ export interface operations {
         parameters: {
             query?: {
                 cursor?: components["parameters"]["Cursor"];
+                /** @description Filter by owner/name substring. */
+                search?: string;
+                /** @description included returns only the repositories this connection reads from. granted returns every repository the installation grants, each flagged with whether the connection includes it. */
+                scope?: "included" | "granted";
             };
             header?: never;
             path: {
@@ -3781,13 +3814,47 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Installation repositories */
+            /** @description Repositories */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["RepositoryPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    setIncludedRepositories: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ConnectionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetIncludedRepositoriesRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Connection"];
                 };
             };
             400: components["responses"]["BadRequestError"];

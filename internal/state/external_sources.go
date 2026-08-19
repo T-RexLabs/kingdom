@@ -27,6 +27,7 @@ var (
 	ErrExternalConflict                = errors.New("external resource changed concurrently")
 	ErrExternalValidationNeeded        = errors.New("external connection requires a current successful health check")
 	ErrExternalConnectionUnavailable   = errors.New("external connection is disabled")
+	ErrExternalRepositoryExcluded      = errors.New("repository is not included in this connection")
 	ErrExternalSourceAlreadyAttached   = errors.New("external source is already attached to this planning session")
 	ErrExternalSourceNotAttached       = errors.New("external source is not attached to this planning session")
 	ErrExternalDetachUnsupported       = errors.New("only planning session sources can be removed")

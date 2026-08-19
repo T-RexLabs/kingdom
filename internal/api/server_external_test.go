@@ -47,6 +47,7 @@ type externalAPITestAdapter struct {
 	calls            int
 	repositorySearch string
 	repositoryCursor string
+	repositories     []external.Repository
 }
 
 func TestExternalProviderErrorsExposeOnlySafeRetryTime(t *testing.T) {
@@ -207,8 +208,9 @@ func (a *externalAPITestAdapter) ListRepositories(_ context.Context, _ state.Ext
 	a.calls++
 	a.repositorySearch = search
 	a.repositoryCursor = cursor
+	items := append([]external.Repository(nil), a.repositories...)
 	a.mu.Unlock()
-	return external.RepositoryPage{NextCursor: "provider-next"}, nil
+	return external.RepositoryPage{Items: items, NextCursor: "provider-next"}, nil
 }
 func (a *externalAPITestAdapter) ListIssues(context.Context, state.ExternalConnection, string, string, string, string) (external.IssuePage, error) {
 	a.mu.Lock()
@@ -703,5 +705,231 @@ func TestDelayedHealthCheckDoesNotForkExternalAuditChain(t *testing.T) {
 	}
 	if err := state.NewAuditIntegrityVerifier(db).VerifyOrError(ctx); err != nil {
 		t.Fatalf("valid concurrent audit chain failed verification: %v", err)
+	}
+}
+
+// narrowedConnectionFixture builds a healthy connection whose installation
+// grants three repositories, ready to be narrowed.
+func narrowedConnectionFixture(t *testing.T, id string) (http.Handler, *state.ExternalStore, *externalAPITestAdapter, state.ExternalConnection) {
+	t.Helper()
+	adapter := &externalAPITestAdapter{repositories: []external.Repository{
+		{ID: "200", Locator: "octocat/api", CanonicalURL: "https://github.com/octocat/api"},
+		{ID: "201", Locator: "octocat/web", CanonicalURL: "https://github.com/octocat/web"},
+		{ID: "202", Locator: "octocat/legacy", CanonicalURL: "https://github.com/octocat/legacy"},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	at := "2026-08-19T10:00:00Z"
+	if _, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: id, CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:" + id, ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-" + id}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(context.Background(), id, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.GetConnection(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler, store, adapter, current
+}
+
+func TestRepositoryScopeSeparatesWhatIsGrantedFromWhatIsIncluded(t *testing.T) {
+	handler, store, _, connection := narrowedConnectionFixture(t, "conn-scope")
+	if _, err := store.SetIncludedRepositories(context.Background(), connection.ConnectionID, state.SetIncludedRepositoriesRequest{
+		Mode: "selected", Repositories: []state.IncludedRepository{{RepositoryNativeID: "200", RepositoryLocator: "octocat/api"}},
+		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: "2026-08-19T11:00:00Z", AuditEventID: "audit-scope-narrow",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decode := func(res *httptest.ResponseRecorder) []map[string]any {
+		t.Helper()
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode: %v body=%s", err, res.Body.String())
+		}
+		return page.Items
+	}
+
+	// The default scope is what the connection reads from, so the issue picker
+	// narrows without any client change.
+	included := decode(performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-scope/repositories"}))
+	if len(included) != 1 || included[0]["locator"] != "octocat/api" {
+		t.Fatalf("included scope=%#v", included)
+	}
+	if _, present := included[0]["included"]; present {
+		t.Fatal("the included scope should not restate the flag")
+	}
+
+	granted := decode(performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-scope/repositories?scope=granted"}))
+	if len(granted) != 3 {
+		t.Fatalf("granted scope must show the whole grant: %#v", granted)
+	}
+	flags := map[string]any{}
+	for _, item := range granted {
+		flags[item["locator"].(string)] = item["included"]
+	}
+	if flags["octocat/api"] != true || flags["octocat/web"] != false || flags["octocat/legacy"] != false {
+		t.Fatalf("granted flags=%#v", flags)
+	}
+
+	if bad := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-scope/repositories?scope=everything"}); bad.Code != http.StatusBadRequest {
+		t.Fatalf("unknown scope status=%d", bad.Code)
+	}
+}
+
+func TestRepositoryCursorDoesNotReplayAcrossScopes(t *testing.T) {
+	handler, _, _, _ := narrowedConnectionFixture(t, "conn-cursor")
+	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-cursor/repositories?scope=granted"})
+	var page struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil || page.NextCursor == "" {
+		t.Fatalf("decode cursor: %v body=%s", err, first.Body.String())
+	}
+	replayed := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-cursor/repositories?scope=included&cursor=" + page.NextCursor})
+	if replayed.Code != http.StatusBadRequest {
+		t.Fatalf("cross-scope cursor status=%d body=%s", replayed.Code, replayed.Body.String())
+	}
+}
+
+func TestAConnectionCanOnlyNarrowItsGrantNeverWidenIt(t *testing.T) {
+	handler, store, _, _ := narrowedConnectionFixture(t, "conn-narrow")
+
+	ungranted := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-narrow/included-repositories", idempotencyKey: "narrow-ungranted", body: map[string]any{"mode": "selected", "repository_ids": []string{"200", "999"}}})
+	if ungranted.Code != http.StatusConflict {
+		t.Fatalf("widening beyond the grant status=%d body=%s", ungranted.Code, ungranted.Body.String())
+	}
+	stored, _ := store.GetIncludedRepositories(context.Background(), "conn-narrow")
+	if len(stored) != 0 {
+		t.Fatalf("a rejected narrowing stored something: %#v", stored)
+	}
+
+	empty := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-narrow/included-repositories", idempotencyKey: "narrow-empty", body: map[string]any{"mode": "selected", "repository_ids": []string{}}})
+	if empty.Code != http.StatusBadRequest {
+		t.Fatalf("empty selection status=%d body=%s", empty.Code, empty.Body.String())
+	}
+
+	ok := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-narrow/included-repositories", idempotencyKey: "narrow-ok", body: map[string]any{"mode": "selected", "repository_ids": []string{"200", "201"}}})
+	if ok.Code != http.StatusOK {
+		t.Fatalf("narrow status=%d body=%s", ok.Code, ok.Body.String())
+	}
+	stored, _ = store.GetIncludedRepositories(context.Background(), "conn-narrow")
+	if len(stored) != 2 {
+		t.Fatalf("stored=%#v", stored)
+	}
+}
+
+func TestExcludedRepositoryIsRefusedEverywhereItCouldBeRead(t *testing.T) {
+	handler, store, _, connection := narrowedConnectionFixture(t, "conn-refuse")
+	if _, err := store.SetIncludedRepositories(context.Background(), connection.ConnectionID, state.SetIncludedRepositoriesRequest{
+		Mode: "selected", Repositories: []state.IncludedRepository{{RepositoryNativeID: "200", RepositoryLocator: "octocat/api"}},
+		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: "2026-08-19T11:00:00Z", AuditEventID: "audit-refuse-narrow",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		spec requestSpec
+	}{
+		{name: "issue list", spec: requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-refuse/repositories/202/issues"}},
+		{name: "issue preview", spec: requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-refuse/repositories/202/issues/7/preview"}},
+		{name: "capture", spec: requestSpec{method: http.MethodPost, path: "/api/v1/external-source-captures", idempotencyKey: "capture-excluded", body: map[string]any{"connection_id": "conn-refuse", "repository_id": "202", "issue_number": 7}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			res := performJSONRequest(t, handler, test.spec)
+			if res.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+			}
+		})
+	}
+	// The included repository still works, so the guard is a narrowing and not an outage.
+	if allowed := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-refuse/repositories/200/issues"}); allowed.Code != http.StatusOK {
+		t.Fatalf("included repository status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+}
+
+func TestExcludingARepositoryFreezesItsSourceInsteadOfRefreshingIt(t *testing.T) {
+	adapter := &externalAPITestAdapter{repositories: []external.Repository{
+		{ID: "200", Locator: "octocat/api", CanonicalURL: "https://github.com/octocat/api"},
+		{ID: "202", Locator: "octocat/legacy", CanonicalURL: "https://github.com/octocat/legacy"},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-19T10:00:00Z"
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-frozen", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-frozen", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-frozen-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, "10", "octocat"); err != nil {
+		t.Fatal(err)
+	}
+	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "octocat/legacy", IssueNumber: 7, CanonicalURL: "https://github.com/octocat/legacy/issues/7", CreatedAt: at, UpdatedAt: at}
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-frozen", SnapshotID: "snapshot-frozen", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "202", Issue: issue, Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('planning-frozen','Issue','custom','active','ready','/tmp','{}',?,?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO external_source_links (link_id,target_kind,target_id,source_id,used_snapshot_id,created_at) VALUES ('link-frozen','planning_session','planning-frozen',?,?,?)`, snapshot.SourceID, snapshot.SnapshotID, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO external_source_link_heads (link_id,latest_snapshot_id,status,row_version) VALUES ('link-frozen',?,'never_checked',1)`, snapshot.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Narrow the connection so the captured issue's repository is excluded.
+	current, err := store.GetConnection(ctx, connection.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetIncludedRepositories(ctx, connection.ConnectionID, state.SetIncludedRepositoriesRequest{
+		Mode: "selected", Repositories: []state.IncludedRepository{{RepositoryNativeID: "200", RepositoryLocator: "octocat/api"}},
+		ExpectedRowVersion: current.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-frozen-narrow",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A refresh that would otherwise change the issue must not even be attempted.
+	changed := issue
+	changed.Title = "Changed On GitHub"
+	adapter.result = external.IssueResult{RepositoryID: "202", NativeID: "100", Issue: changed, Profile: state.ExternalImportProfile{}}
+	adapter.mu.Lock()
+	callsBefore := adapter.calls
+	adapter.mu.Unlock()
+
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-frozen/refreshes", idempotencyKey: "refresh-frozen"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Outcome         string                    `json:"outcome"`
+		SnapshotCreated bool                      `json:"snapshot_created"`
+		Link            state.ExternalLinkSummary `json:"link"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Outcome != "repository_excluded" {
+		t.Fatalf("outcome=%q, want repository_excluded", payload.Outcome)
+	}
+	if payload.SnapshotCreated || payload.Link.LatestSnapshotID != snapshot.SnapshotID {
+		t.Fatalf("an excluded repository must leave the source exactly as it was: %s", response.Body.String())
+	}
+	adapter.mu.Lock()
+	callsAfter := adapter.calls
+	adapter.mu.Unlock()
+	if callsAfter != callsBefore {
+		t.Fatalf("provider was called %d times for an excluded repository; the source must be frozen, not fetched", callsAfter-callsBefore)
+	}
+	latest, _, err := store.GetSnapshot(ctx, payload.Link.LatestSnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Issue.Title != "Original" {
+		t.Fatalf("frozen source content changed: %q", latest.Issue.Title)
 	}
 }

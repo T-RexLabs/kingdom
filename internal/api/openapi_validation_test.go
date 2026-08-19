@@ -303,7 +303,7 @@ func TestOpenAPIExternalSourceStatusMatchesPersistedEnum(t *testing.T) {
 	if status == nil || status.Value == nil {
 		t.Fatal("expected reusable ExternalSourceStatus schema")
 	}
-	want := []any{"never_checked", "unchanged", "changed", "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response"}
+	want := []any{"never_checked", "unchanged", "changed", "inaccessible_or_missing", "deleted", "rate_limited", "connection_disabled", "repository_excluded", "service_unavailable", "revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response"}
 	if !reflect.DeepEqual(status.Value.Enum, want) {
 		t.Fatalf("ExternalSourceStatus enum=%v, want %v", status.Value.Enum, want)
 	}

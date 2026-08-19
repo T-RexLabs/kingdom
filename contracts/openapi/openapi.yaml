@@ -397,12 +397,42 @@ paths:
     get:
       tags: [connections]
       operationId: listConnectionRepositories
-      summary: List repositories currently granted to the installation.
+      summary: List the repositories this connection includes, or all the installation grants.
       parameters:
         - $ref: "#/components/parameters/ConnectionId"
         - $ref: "#/components/parameters/Cursor"
+        - { name: search, in: query, schema: { type: string, maxLength: 256 }, description: Filter by owner/name substring. }
+        - name: scope
+          in: query
+          schema: { type: string, enum: [included, granted], default: included }
+          description: >-
+            included returns only the repositories this connection reads from.
+            granted returns every repository the installation grants, each
+            flagged with whether the connection includes it.
       responses:
-        "200": { description: Installation repositories, content: { application/json: { schema: { $ref: "#/components/schemas/RepositoryPage" } } } }
+        "200": { description: Repositories, content: { application/json: { schema: { $ref: "#/components/schemas/RepositoryPage" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/included-repositories:
+    put:
+      tags: [connections]
+      operationId: setIncludedRepositories
+      summary: Choose which granted repositories this connection reads from.
+      description: >-
+        Narrows the connection to a subset of its installation grant, or returns
+        it to tracking the whole grant. A connection can only ever narrow: every
+        repository is proven against the live grant before it is stored.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SetIncludedRepositoriesRequest" } } }
+      responses:
+        "200": { description: Updated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
@@ -2966,6 +2996,7 @@ components:
         installation_id: { type: string, minLength: 1 }
         installation_account_id: { type: string, minLength: 1 }
         installation_account_login: { type: string, minLength: 1 }
+        included_repository_mode: { type: string, enum: [all, selected] }
         lifecycle: { type: string, enum: [enabled, disabled, removal_pending, removed] }
         health_class: { type: string, enum: [missing_credential, never_checked, healthy, permission_mismatch, revoked, suspended, rate_limited, unavailable, disabled, removal_pending, removed] }
         failure_class: { type: string }
@@ -3088,11 +3119,22 @@ components:
       properties:
         enabled: { type: boolean }
         display_name: { type: string, minLength: 1, maxLength: 120 }
+    SetIncludedRepositoriesRequest:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [all, selected] }
+        repository_ids:
+          type: array
+          maxItems: 500
+          items: { type: string, minLength: 1, maxLength: 64 }
     Repository:
       type: object
       additionalProperties: false
       required: [id, locator, canonical_url]
       properties:
+        included: { type: boolean, description: Present only when scope=granted. }
         id: { type: string, minLength: 1 }
         locator: { type: string, pattern: "^[^/]+/[^/]+$" }
         canonical_url: { type: string, format: uri }
@@ -3247,7 +3289,7 @@ components:
       required: [link, outcome, snapshot_created, changes, message]
       properties:
         link: { $ref: "#/components/schemas/ExternalLink" }
-        outcome: { type: string, enum: [unchanged, changed, superseded, inaccessible_or_missing, deleted, rate_limited, connection_disabled, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response] }
+        outcome: { type: string, enum: [unchanged, changed, superseded, inaccessible_or_missing, deleted, rate_limited, connection_disabled, repository_excluded, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response] }
         snapshot_created: { type: boolean }
         changes: { $ref: "#/components/schemas/ExternalRefreshChanges" }
         retry_at: { type: string, format: date-time }
@@ -3305,7 +3347,7 @@ components:
 
     ExternalSourceStatus:
       type: string
-      enum: [never_checked, unchanged, changed, inaccessible_or_missing, deleted, rate_limited, connection_disabled, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response]
+      enum: [never_checked, unchanged, changed, inaccessible_or_missing, deleted, rate_limited, connection_disabled, repository_excluded, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response]
 
     PlanningLineage:
       type: object
