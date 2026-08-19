@@ -133,33 +133,18 @@ export function NodeActionsCard({
     runId,
   );
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string>("");
 
-  const handleRetry = async (nodeKey: string) => {
-    setPendingAction(`retry-${nodeKey}`);
-    setActionFeedback("");
+  // Queuing succeeds by removing the node from this list, which unmounts the
+  // card — so a success banner here could only ever flash and vanish. The run
+  // timeline records "Retry queued" and "Rerun queued" durably, which is where
+  // an operator can actually go back and read what happened.
+  const queueAction = async (action: "retry" | "rerun", nodeKey: string) => {
+    setPendingAction(`${action}-${nodeKey}`);
     try {
-      const result = await recoverableRetry.mutateAsync(nodeKey);
-      setActionFeedback(`Retry queued for ${result.node_key}. This reruns only the selected node.`);
+      await (action === "retry" ? recoverableRetry : recoverableRerun).mutateAsync(nodeKey);
     } catch {
-      // error available via retry.error
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const handleRerun = async (nodeKey: string) => {
-    setPendingAction(`rerun-${nodeKey}`);
-    setActionFeedback("");
-    try {
-      const result = await recoverableRerun.mutateAsync(nodeKey);
-      if (result.from_node !== nodeKey) {
-        setActionFeedback(`Rerun queued from ${result.from_node}. The original target was promoted to rebuild plan and downstream execution.`);
-      } else {
-        setActionFeedback(`Rerun queued from ${result.from_node}. This reruns from that node and downstream.`);
-      }
-    } catch {
-      // error available via rerun.error
+      // Failure is the case worth showing, and it is rendered from
+      // retry.error / rerun.error below.
     } finally {
       setPendingAction(null);
     }
@@ -183,11 +168,6 @@ export function NodeActionsCard({
         </p>
       </CardHeader>
       <CardContent className="space-y-2">
-        {actionFeedback && (
-          <div className="rounded-md border border-status-succeeded/30 bg-status-succeeded/10 px-3 py-2 text-sm text-status-succeeded">
-            {actionFeedback}
-          </div>
-        )}
         {(retry.error || rerun.error) && (
           <ErrorBanner
             message={
@@ -222,7 +202,7 @@ export function NodeActionsCard({
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => handleRetry(node.node_id)}
+                  onClick={() => void queueAction("retry", node.node_id)}
                   disabled={pendingAction !== null || (recoveryPending && !canRetryRecovery)}
                   title="Retry this node"
                 >
@@ -236,7 +216,7 @@ export function NodeActionsCard({
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => handleRerun(node.node_id)}
+                  onClick={() => void queueAction("rerun", node.node_id)}
                   disabled={pendingAction !== null || (recoveryPending && !canRerunRecovery)}
                   title="Rerun from this node"
                 >
