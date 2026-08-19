@@ -10,14 +10,26 @@ import {
 export type ProviderModelCatalogState = {
   isLoading: boolean;
   items: ProviderModel[];
-  status: "fresh" | "stale" | "unavailable";
   message: string | null;
-  failureReason: string | null;
   disableSelection: boolean;
   triggerPlaceholder: string;
   emptyStateLabel: string;
 };
 
+/**
+ * What the model selector should show, and whether it should say anything.
+ *
+ * `message` is the notice, and it is set only when the operator cannot choose a
+ * model. A catalog Kingdom failed to refresh is not that: the cached list stays
+ * selectable, every downstream action still works, and the poll behind the
+ * selector recovers on its own within a minute. Announcing that would report a
+ * background chore to someone who lost nothing by it — freshness is Kingdom's
+ * problem, being blocked is the operator's.
+ *
+ * A stale catalog therefore resolves exactly like a fresh one. The server sends
+ * `stale` only alongside cached rows, and the error handling below downgrades an
+ * empty list to `unavailable`, so a stale catalog always has models to offer.
+ */
 export function resolveProviderModelCatalogState(
   response: ProviderModelsResponse | undefined,
   error: unknown,
@@ -27,9 +39,7 @@ export function resolveProviderModelCatalogState(
     return {
       isLoading: true,
       items: [],
-      status: "fresh",
       message: null,
-      failureReason: null,
       disableSelection: true,
       triggerPlaceholder: "Loading models...",
       emptyStateLabel: "Loading models...",
@@ -40,9 +50,7 @@ export function resolveProviderModelCatalogState(
     return {
       isLoading: false,
       items: [],
-      status: "unavailable",
       message: providerModelCatalogErrorMessage(error),
-      failureReason: null,
       disableSelection: true,
       triggerPlaceholder: "Model catalog unavailable",
       emptyStateLabel: "Model catalog unavailable.",
@@ -51,49 +59,26 @@ export function resolveProviderModelCatalogState(
 
   const items = response?.items ?? [];
   let status = response?.catalog_status ?? "fresh";
-  const failureReason = response?.failure_reason ?? null;
   let failureMessage = response?.failure_message ?? null;
   if (error) {
     failureMessage = providerModelCatalogErrorMessage(error);
-    if (items.length > 0) {
-      if (status === "fresh") {
-        status = "stale";
-      }
-    } else {
-      status = "unavailable";
-    }
+    status = items.length > 0 ? "stale" : "unavailable";
   }
   if (status === "unavailable") {
     return {
       isLoading: false,
       items,
-      status,
       message: failureMessage ?? "Model catalog unavailable. Retry after the runtime recovers.",
-      failureReason,
       disableSelection: true,
       triggerPlaceholder: "Model catalog unavailable",
       emptyStateLabel: "Model catalog unavailable.",
-    };
-  }
-  if (status === "stale") {
-    return {
-      isLoading: false,
-      items,
-      status,
-      message: failureMessage ?? "Showing cached models while the live provider catalog refresh is unavailable.",
-      failureReason,
-      disableSelection: items.length === 0,
-      triggerPlaceholder: items.length === 0 ? "No cached models available" : "Select model",
-      emptyStateLabel: items.length === 0 ? "No cached models available." : "No models found.",
     };
   }
   if (items.length === 0) {
     return {
       isLoading: false,
       items,
-      status,
       message: "No models are available for this account.",
-      failureReason,
       disableSelection: true,
       triggerPlaceholder: "No models available",
       emptyStateLabel: "No models available for this account.",
@@ -102,9 +87,7 @@ export function resolveProviderModelCatalogState(
   return {
     isLoading: false,
     items,
-    status,
     message: null,
-    failureReason,
     disableSelection: false,
     triggerPlaceholder: "Select model",
     emptyStateLabel: "No models found.",

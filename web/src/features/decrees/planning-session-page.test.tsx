@@ -1343,7 +1343,7 @@ describe("PlanningSessionPage", () => {
     expect(modelMutate).not.toHaveBeenCalled();
   });
 
-  it("shows stale planner model catalog warning while preserving model selection", () => {
+  it("says nothing about a stale catalog while its models are still selectable", () => {
     mockUseProviderModels.mockReturnValue({
       data: {
         catalog_status: "stale",
@@ -1357,7 +1357,7 @@ describe("PlanningSessionPage", () => {
           },
         ],
         failure_reason: "command_failed",
-        failure_message: "showing cached models",
+        failure_message: "Showing the models Kingdom already had.",
       },
       isLoading: false,
       error: null,
@@ -1366,95 +1366,83 @@ describe("PlanningSessionPage", () => {
 
     render(<PlanningSessionPage />);
 
-    expect(screen.getByText("showing cached models")).toBeInTheDocument();
+    // The planner header is always on screen above the transcript, so a notice
+    // here costs a full row for the life of the session. It has to earn that by
+    // telling the operator something they can act on.
+    expect(screen.queryByText("Showing the models Kingdom already had.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
   });
 
-	it("keeps cached planner models selectable when a background refresh fails", () => {
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "fresh",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-			},
-			isLoading: false,
-			error: new Error("provider model catalog refresh failed"),
-			refetch: vi.fn(),
-		});
+  it("stays silent when a background refresh fails but cached planner models remain", () => {
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "fresh",
+        items: [
+          {
+            id: "github-copilot/gpt-5.4",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "GPT-5.4",
+            thinking_effort_options: [{ value: "medium", label: "Medium" }],
+          },
+        ],
+      },
+      isLoading: false,
+      error: new Error("provider model catalog refresh failed"),
+      refetch: vi.fn(),
+    });
 
-		render(<PlanningSessionPage />);
+    render(<PlanningSessionPage />);
 
-		expect(screen.getByText("provider model catalog refresh failed")).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
-	});
+    expect(screen.queryByText("provider model catalog refresh failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
+  });
 
-	it("uses a live refresh when retrying a stale planner model catalog warning", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-		});
+  it("uses a live refresh when retrying an unreachable planner catalog", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "planner model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
 
-		render(<PlanningSessionPage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<PlanningSessionPage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
-	});
+    expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
+  });
 
-	it("shows retry refresh failures inline while keeping cached planner models selectable", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-			dataUpdatedAt: 1,
-		});
-		refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
-			callbacks?.onError?.(new Error("planner refresh failed"), undefined, undefined);
-		});
+  it("shows a planner retry failure in place of the copy it replaced", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "planner model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      dataUpdatedAt: 1,
+    });
+    refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
+      callbacks?.onError?.(new Error("planner refresh failed"), undefined, undefined);
+    });
 
-		render(<PlanningSessionPage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<PlanningSessionPage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(await screen.findByText("planner refresh failed")).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
-	});
+    expect(await screen.findByText("planner refresh failed")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).toBeDisabled();
+  });
 
   it("concurrent model edit + title save preserves the dirty model selection", async () => {
     // Load-bearing regression test. Before the field-scoped + narrow-

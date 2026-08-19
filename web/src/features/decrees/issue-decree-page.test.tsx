@@ -763,7 +763,7 @@ describe("issue decree page", () => {
     expect(screen.getByRole("combobox", { name: /Global Model/ })).toBeDisabled();
   });
 
-  it("shows stale provider model catalog warning while keeping selection enabled", () => {
+  it("says nothing about a stale catalog while its models are still selectable", () => {
     mockUseProviderModels.mockReturnValue({
       data: {
         catalog_status: "stale",
@@ -778,7 +778,7 @@ describe("issue decree page", () => {
           },
         ],
         failure_reason: "command_failed",
-        failure_message: "showing cached models",
+        failure_message: "Showing the models Kingdom already had.",
       },
       isLoading: false,
       error: null,
@@ -787,11 +787,15 @@ describe("issue decree page", () => {
 
     render(<IssueDecreePage />);
 
-    expect(screen.getByText("showing cached models")).toBeInTheDocument();
+    // A refresh Kingdom failed on its own costs the operator nothing here, and
+    // recovers on the next poll. Interrupting them over it would report a
+    // background chore as a problem.
+    expect(screen.queryByText("Showing the models Kingdom already had.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Global Model/ })).not.toBeDisabled();
   });
 
-  it("keeps cached provider models selectable when a background refresh fails", () => {
+  it("stays silent when a background refresh fails but cached models remain", () => {
     mockUseProviderModels.mockReturnValue({
       data: {
         catalog_status: "fresh",
@@ -813,72 +817,54 @@ describe("issue decree page", () => {
 
     render(<IssueDecreePage />);
 
-    expect(screen.getByText("provider model catalog refresh failed")).toBeInTheDocument();
+    expect(screen.queryByText("provider model catalog refresh failed")).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Global Model/ })).not.toBeDisabled();
   });
 
-	it("uses a live refresh when retrying a stale provider model catalog warning", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.3-codex",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.3-Codex",
-						thinking_effort_default: "medium",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-		});
+  it("uses a live refresh when retrying an unreachable catalog", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "provider model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
 
-		render(<IssueDecreePage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<IssueDecreePage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
-	});
+    expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
+  });
 
-	it("shows retry refresh failures inline while keeping cached models selectable", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.3-codex",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.3-Codex",
-						thinking_effort_default: "medium",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-			dataUpdatedAt: 1,
-		});
-		refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
-			callbacks?.onError?.(new Error("live refresh failed"), undefined, undefined);
-		});
+  it("shows a retry failure in place of the copy it replaced", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "provider model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      dataUpdatedAt: 1,
+    });
+    refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
+      callbacks?.onError?.(new Error("live refresh failed"), undefined, undefined);
+    });
 
-		render(<IssueDecreePage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<IssueDecreePage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(await screen.findByText("live refresh failed")).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: /Global Model/ })).not.toBeDisabled();
-	});
+    expect(await screen.findByText("live refresh failed")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /Global Model/ })).toBeDisabled();
+  });
 
   it("disables decree submission until a global model is selected", async () => {
     const user = userEvent.setup();
