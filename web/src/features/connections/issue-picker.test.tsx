@@ -1,7 +1,21 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssuePicker } from "./issue-picker";
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+}));
+
+// A fresh client per test: connections are cached across the picker's surfaces
+// in the app, so a shared client here would let one test's list satisfy the
+// next test's query and hide a request that should have been made.
+function renderPicker(ui: ReactElement) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 function json(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -63,7 +77,7 @@ describe("IssuePicker", () => {
   it("does not offer a nominally healthy connection whose credential is missing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ items: [{ connection_id: "stale", provider: "github", display_name: "Stale", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "missing", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] })));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     expect(await screen.findByText(/no configured GitHub connection is ready to use/i)).toBeInTheDocument();
   });
@@ -83,7 +97,7 @@ describe("IssuePicker", () => {
     }));
     const onSelect = vi.fn();
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={onSelect} actionLabel="Prefill Decree" />);
+    renderPicker(<IssuePicker onSelect={onSelect} actionLabel="Prefill Decree" />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -122,7 +136,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    const { container } = render(<IssuePicker onSelect={() => undefined} />);
+    const { container } = renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -159,7 +173,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -186,7 +200,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
     await chooseOption(user, "GitHub repository", "owner/repo");
@@ -237,7 +251,7 @@ describe("IssuePicker", () => {
       }),
     );
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -314,7 +328,7 @@ describe("IssuePicker", () => {
         }),
       );
       const user = userEvent.setup();
-      render(<IssuePicker onSelect={() => undefined} />);
+      renderPicker(<IssuePicker onSelect={() => undefined} />);
 
       await user.click(screen.getByRole("button", { name: /import from github issue/i }));
       await chooseOption(user, "Connection", "App");
@@ -385,7 +399,7 @@ describe("IssuePicker", () => {
       }),
     );
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -424,7 +438,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
     await user.click(await screen.findByLabelText("GitHub repository"));
@@ -448,7 +462,7 @@ describe("IssuePicker", () => {
     }));
     const onSelect = vi.fn();
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={onSelect} />);
+    renderPicker(<IssuePicker onSelect={onSelect} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -480,7 +494,7 @@ describe("IssuePicker", () => {
     }));
     const onSelect = vi.fn().mockRejectedValueOnce(new Error("Capture failed")).mockResolvedValueOnce(undefined);
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={onSelect} />);
+    renderPicker(<IssuePicker onSelect={onSelect} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -497,27 +511,48 @@ describe("IssuePicker", () => {
   });
 
   it("distinguishes connection load failure from no configured connection and offers retry", async () => {
-    let attempts = 0;
+    let reachable = false;
     vi.stubGlobal("fetch", vi.fn(async () => {
-      attempts += 1;
-      if (attempts === 1) return new Response(JSON.stringify({ error: { code: "internal_error", message: "Connection service unavailable", retryable: true, category: "core", details: {}, correlation_id: "test", occurred_at: "2026-08-14T10:40:00Z" } }), { status: 503, headers: { "Content-Type": "application/json" } });
-      return json({ items: [] });
+      if (reachable) return json({ items: [] });
+      return new Response(JSON.stringify({ error: { code: "internal_error", message: "Connection service unavailable", retryable: true, category: "core", details: {}, correlation_id: "test", occurred_at: "2026-08-14T10:40:00Z" } }), { status: 503, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
+    // An unreachable list is not an empty list. Readiness is unknown, so the
+    // import stays on offer and the dialog reports what actually went wrong.
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     expect(await screen.findByText(/could not load GitHub connections/i)).toBeInTheDocument();
     expect(screen.queryByText(/no GitHub connection is configured/i)).not.toBeInTheDocument();
+    reachable = true;
     await user.click(screen.getByRole("button", { name: "Retry Connections" }));
     expect(await screen.findByText(/no GitHub connection is configured/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /open connections/i })).toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: /open connections/i })).toHaveAttribute("href", "/connections");
+  });
+
+  it("offers connection setup instead of an import the operator cannot complete", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ items: [] })));
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
+
+    // Nothing is connected, so importing is not a capability Kingdom has yet.
+    // Offering it anyway sends the operator into a dialog that can only tell
+    // them to leave again.
+    expect(await screen.findByRole("link", { name: "Connect an Issue Tracker" })).toHaveAttribute("href", "/connections");
+    expect(screen.queryByRole("button", { name: /import from github issue/i })).not.toBeInTheDocument();
+  });
+
+  it("offers the import once a usable connection exists", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json({ items: [readyConnection] })));
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /import from github issue/i })).toBeEnabled());
+    expect(screen.queryByRole("link", { name: "Connect an Issue Tracker" })).not.toBeInTheDocument();
   });
 
   it("uses a mobile-stacked layout that becomes two panes without fixed-width overflow", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json({ items: [] })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ items: [readyConnection] })));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     const layout = screen.getByTestId("issue-picker-layout");
@@ -546,7 +581,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
 
@@ -584,7 +619,7 @@ describe("IssuePicker", () => {
       throw new Error(`unexpected request ${url}`);
     }));
     const user = userEvent.setup();
-    render(<IssuePicker onSelect={() => undefined} />);
+    renderPicker(<IssuePicker onSelect={() => undefined} />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");

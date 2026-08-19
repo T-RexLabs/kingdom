@@ -1,6 +1,9 @@
 import { ApiError, apiFetch } from "@/api/client";
+import { useConnections } from "@/api/hooks";
 import type { components } from "@/api/schema";
+import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { ModalDialog } from "@/components/ui/modal-dialog";
 import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
@@ -9,8 +12,9 @@ import { SelectField } from "@/components/ui/select-field";
 import { ToggleRow } from "@/components/ui/toggle-row";
 import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { cn } from "@/lib/utils";
-import { ExternalLink, Github, Loader2, Search } from "lucide-react";
+import { ExternalLink, Github, Link2, Loader2, Search } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { isConnectionUsable } from "./connection-readiness";
 import { safeGitHubIssueURL } from "./github-url";
 
 type Connection = components["schemas"]["Connection"];
@@ -45,8 +49,6 @@ export function IssuePicker({
   compact?: boolean;
 }) {
   const [opened, setOpened] = useState(false);
-  const [allConnections, setAllConnections] = useState<Connection[]>([]);
-  const [connections, setConnections] = useState<Connection[]>([]);
   const [connectionId, setConnectionId] = useState("");
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [repositoryId, setRepositoryId] = useState("");
@@ -62,16 +64,12 @@ export function IssuePicker({
   const [preview, setPreview] = useState<IssuePreview>();
   const [includeComments, setIncludeComments] = useState(false);
   const [commentPage, setCommentPage] = useState(0);
-  const [loadingConnections, setLoadingConnections] = useState(false);
-  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
-  const [connectionError, setConnectionError] = useState<Omit<RequestError, "scope">>();
   const [loadingRepositories, setLoadingRepositories] = useState(false);
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [incomplete, setIncomplete] = useState(false);
   const [error, setError] = useState<RequestError>();
-  const [connectionAttempt, setConnectionAttempt] = useState(0);
   const [repositoryAttempt, setRepositoryAttempt] = useState(0);
   const [issueAttempt, setIssueAttempt] = useState(0);
   const [previewAttempt, setPreviewAttempt] = useState(0);
@@ -108,26 +106,22 @@ export function IssuePicker({
     return () => issuePagination.current?.abort();
   }, [opened, connectionId, repositoryId, query, stateFilter, issueAttempt]);
 
+  // The trigger has to know whether importing is possible before it is
+  // clicked, so connections load with the surface rather than with the modal.
+  // Opening it re-reads them: the operator may have just repaired or added one
+  // on the Connections page, and choosing a source they cannot read is a dead
+  // end they only discover several clicks later.
+  const connectionsQuery = useConnections();
+  const refetchConnections = connectionsQuery.refetch;
+  const allConnections = connectionsQuery.data?.items ?? [];
+  const connections = allConnections.filter(isConnectionUsable);
+  const connectionsLoaded = connectionsQuery.isSuccess;
+  const loadingConnections = connectionsQuery.isPending;
+  const connectionError = connectionsQuery.error ? requestError(connectionsQuery.error) : undefined;
+
   useEffect(() => {
-    if (!opened) return;
-    const controller = new AbortController();
-    setLoadingConnections(true);
-    setConnectionsLoaded(false);
-    setConnectionError(undefined);
-    apiFetch<{ items: Connection[] }>("/connections", { signal: controller.signal })
-      .then((value) => {
-        setAllConnections(value.items);
-        setConnections(value.items.filter((item) => item.lifecycle === "enabled" && item.health_class === "healthy" && item.credential_state === "present"));
-        setConnectionsLoaded(true);
-      })
-      .catch((cause) => {
-        if (!controller.signal.aborted) setConnectionError(requestError(cause));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoadingConnections(false);
-      });
-    return () => controller.abort();
-  }, [opened, connectionAttempt]);
+    if (opened) void refetchConnections();
+  }, [opened, refetchConnections]);
 
   useEffect(() => {
     setRepositories([]);
@@ -292,16 +286,13 @@ export function IssuePicker({
 
   return (
     <>
-      <Button
-        type="button"
-        variant="outline"
-        size={compact ? "sm" : "default"}
-        onClick={() => setOpened(true)}
-        className={cn("w-full border-gold/35 bg-gold/5 text-gold hover:bg-gold/10 hover:text-gold sm:w-auto", !compact && "border-dashed")}
-      >
-        <Github className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-        {triggerLabel}
-      </Button>
+      <PickerTrigger
+        label={triggerLabel}
+        compact={compact}
+        needsSetup={connectionsLoaded && allConnections.length === 0}
+        disabled={loadingConnections}
+        onOpen={() => setOpened(true)}
+      />
       <ModalDialog open={opened} onClose={() => setOpened(false)} ariaLabel="Import from GitHub Issues" panelClassName={cn("w-full min-w-0", modalShellSizeClass("xl"))} overlayClassName="p-2 sm:p-4">
         <ModalShell
           title="Import from GitHub Issues"
@@ -320,7 +311,7 @@ export function IssuePicker({
                 connections={connections}
                 connectionId={connectionId}
                 onConnectionChange={setConnectionId}
-                onRetry={() => setConnectionAttempt((value) => value + 1)}
+                onRetry={() => void refetchConnections()}
               />
               {connections.length > 0 ? (
                 <div className="min-w-0">
@@ -405,6 +396,47 @@ export function IssuePicker({
   );
 }
 
+/**
+ * The import trigger, or the step that has to happen before importing exists.
+ *
+ * Offering "Import from GitHub Issue" with nothing connected promises a
+ * capability Kingdom does not have yet, and the operator only finds that out
+ * two clicks deep. With no tracker configured the trigger becomes the setup
+ * step instead. A tracker that is configured but unusable still opens the
+ * dialog: the failure there is specific — disabled, unhealthy, credential
+ * gone — and the dialog names it, which a generic setup link could not.
+ */
+function PickerTrigger({
+  label,
+  compact,
+  needsSetup,
+  disabled,
+  onOpen,
+}: {
+  label: string;
+  compact: boolean;
+  needsSetup: boolean;
+  disabled: boolean;
+  onOpen: () => void;
+}) {
+  const shape = cn("w-full border-gold/35 bg-gold/5 text-gold hover:bg-gold/10 hover:text-gold sm:w-auto", !compact && "border-dashed");
+  const iconClass = compact ? "h-3.5 w-3.5" : "h-4 w-4";
+  if (needsSetup) {
+    return (
+      <Link to="/connections" className={cn(buttonVariants({ variant: "outline", size: compact ? "sm" : "default" }), shape)}>
+        <Link2 className={iconClass} />
+        Connect an Issue Tracker
+      </Link>
+    );
+  }
+  return (
+    <Button type="button" variant="outline" size={compact ? "sm" : "default"} disabled={disabled} onClick={onOpen} className={shape}>
+      <Github className={iconClass} />
+      {label}
+    </Button>
+  );
+}
+
 function ConnectionControls({ loading, loaded, loadError, allConnections, connections, connectionId, onConnectionChange, onRetry }: { loading: boolean; loaded: boolean; loadError?: Omit<RequestError, "scope">; allConnections: Connection[]; connections: Connection[]; connectionId: string; onConnectionChange: (value: string) => void; onRetry: () => void }) {
   if (loading) return <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading connections...</p>;
   if (loadError) return <div role="alert" className="space-y-2 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed"><p>Could not load GitHub connections: {loadError.message}</p><Button type="button" size="sm" variant="outline" onClick={onRetry}>Retry Connections</Button></div>;
@@ -423,7 +455,7 @@ function ConnectionControls({ loading, loaded, loadError, allConnections, connec
 }
 
 function ConnectionEmptyState({ message }: { message: string }) {
-  return <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-foreground-muted"><p>{message}</p><a href="/connections" target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 font-medium text-gold underline">Open Connections<ExternalLink className="h-3 w-3" /></a></div>;
+  return <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-foreground-muted"><p>{message}</p><Link to="/connections" className="mt-2 inline-flex items-center gap-1 font-medium text-gold underline">Open Connections</Link></div>;
 }
 
 function PickerError({ error, onRetry }: { error: RequestError; onRetry: () => void }) {
