@@ -124,7 +124,7 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 
 Kingdom can start planning, attach additional issues to an active planning session, or prefill direct decree issuance from a GitHub App installation through three local setup paths.
 
-1. Fresh `kd init` configuration enables Kingdom's official public GitHub App automatically. Select **Connect GitHub**, enter the displayed device code on GitHub, and choose one verified installation. Authorizing is not installing: the App can be installed on additional accounts at any point in the flow, and a saved connection links straight to its repository selection on GitHub. The App uses device flow and expiring user tokens with exactly **Metadata: read-only** and **Issues: read-only**, and no events.
+1. Fresh `kd init` configuration enables Kingdom's official public GitHub App automatically. Select **Connect GitHub**, enter the displayed device code on GitHub, and tick every account the connection should cover — one connection covers them all and reads every repository they grant. Authorizing is not installing: the App can be installed on additional accounts at any point in the flow, and a saved connection links straight to its repository selection on GitHub. The App uses device flow and expiring user tokens with exactly **Metadata: read-only** and **Issues: read-only**, and no events.
 2. Select **Create a private GitHub App** to use the preserved Manifest path and own a dedicated private App under a personal account or organization.
 3. Select **Use manual setup** for an existing private App.
 

@@ -55,7 +55,8 @@ Artifact content persistence is the system of record. Publishing files into the 
 
 ## External Source Tables
 
-- `external_connections`: immutable non-secret provider/App/installation identity, `app_private_key|user_access_token` strategy, App slug, pinned numeric installation account identity, renameable account login, editable display/lifecycle metadata, opaque credential handle, and credential/validated generation health projection. No token value or expiry is stored here.
+- `external_connection_installations`: the installations a connection covers, keyed by installation ID so at most one live connection holds each, with account identity pinned per installation and rows released on tombstone.
+- `external_connections`: immutable non-secret provider/App identity, `app_private_key|user_access_token` strategy, App slug, editable display/lifecycle metadata, opaque credential handle, and credential/validated generation health projection. No token value or expiry is stored here.
 - `external_sources` and `external_source_aliases`: canonical immutable provider identity plus the mutable current repository locator used for provider fetches. Public historical coordinates are never read from this projection.
 - `external_source_snapshots` and `external_source_snapshot_comments`: immutable normalized versions and bounded retained comments.
 - `external_source_links`: immutable target and exact used snapshot; `external_source_link_heads` is the latest-observed projection. Decree summaries decode the used snapshot, while planning summaries decode the latest explicit adoption.
