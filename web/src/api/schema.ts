@@ -2654,7 +2654,7 @@ export interface components {
         RunGraphNode: {
             node_id: string;
             /** @enum {string} */
-            state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped";
+            state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "rework" | "blocked" | "cancelled" | "skipped";
             required_role: string;
             /** @enum {string} */
             execution_ownership: "provider_backed" | "runtime_owned";

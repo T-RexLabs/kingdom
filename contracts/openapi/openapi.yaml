@@ -4680,7 +4680,12 @@ components:
           minLength: 1
         state:
           type: string
-          enum: [pending, ready, starting, running, succeeded, failed, blocked, cancelled, skipped]
+          # `rework` is an operator-facing projection, not a durable node
+          # status: a review or validation node that asked for changes is
+          # recorded as `failed` with a rework failure code, because the
+          # workflow engine treats it as a loop-back. Reporting that as a
+          # failure reads as a broken step, so the graph reports it as rework.
+          enum: [pending, ready, starting, running, succeeded, failed, rework, blocked, cancelled, skipped]
         required_role:
           type: string
           minLength: 1

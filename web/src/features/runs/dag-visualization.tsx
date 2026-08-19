@@ -35,6 +35,7 @@ const STATUS_LEGEND_ORDER: NodeState[] = [
 	"running",
 	"blocked",
 	"succeeded",
+	"rework",
 	"failed",
 	"cancelled",
 	"skipped",
@@ -513,6 +514,8 @@ function renderDagNode(
 	const roleColor = RUN_ROLE_ACCENT_HEX[node.role] ?? RUN_DETAIL_NEUTRAL_HEX.subtle;
 	const semantics = nodeExecutionSemantics(node.ownership, node.role);
 	const isActive = node.state === "starting" || node.state === "running";
+	// Rework is its own state, so it must not borrow the failure treatment:
+	// the pulsing red border reads as "this step broke" across the whole graph.
 	const isFailed = node.state === "failed";
 	const isSkipped = node.state === "skipped";
 

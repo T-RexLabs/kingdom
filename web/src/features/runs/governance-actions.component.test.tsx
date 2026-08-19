@@ -72,7 +72,7 @@ describe("governance actions visibility", () => {
       />,
     );
 
-    expect(screen.queryByText(/Failed Nodes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nodes to Recover/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rerun" })).not.toBeInTheDocument();
   });
@@ -85,7 +85,7 @@ describe("governance actions visibility", () => {
       />,
     );
 
-    expect(screen.getByText(/Failed Nodes/i)).toBeInTheDocument();
+    expect(screen.getByText(/Nodes to Recover/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
     expect(screen.getByText("Agent-executed")).toBeInTheDocument();

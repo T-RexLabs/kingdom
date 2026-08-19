@@ -168,10 +168,14 @@ export function NodeActionsCard({
   return (
     <Card className="border-status-failed/20">
       <CardHeader className="pb-3">
+        {/* Named for what these nodes have in common — the run stopped and they
+            are where it can be picked up again — because the list can hold a
+            reviewer that asked for rework alongside steps that genuinely broke.
+            Each row's badge names its own state. */}
         <CardTitle className="flex items-center gap-2 text-sm">
           <AlertTriangle className="h-4 w-4 text-status-failed" />
           <span className="text-status-failed">
-            {cancelled ? "Cancelled Run Nodes" : "Failed Nodes"} ({nodes.length})
+            {cancelled ? "Cancelled Run Nodes" : "Nodes to Recover"} ({nodes.length})
           </span>
         </CardTitle>
         <p className="text-xs text-foreground-subtle">

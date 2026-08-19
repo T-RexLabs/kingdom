@@ -803,8 +803,11 @@ func humanizedFailureActorName(nodeID string) string {
 }
 
 func isOwnerFailureReasonCode(reasonCode string) bool {
+	if verdict.IsReworkReasonCode(reasonCode) {
+		return true
+	}
 	switch strings.ToLower(strings.TrimSpace(reasonCode)) {
-	case "execution_review_rework", "validation_gate_rework", "invalid_validation_verdict", "invalid_execution_review_verdict", "provider_empty_output", "provider_incomplete_turn", "execution_not_started":
+	case "invalid_validation_verdict", "invalid_execution_review_verdict", "provider_empty_output", "provider_incomplete_turn", "execution_not_started":
 		return true
 	default:
 		return false

@@ -13,6 +13,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	coreverdict "kingdom/internal/core/verdict"
 	coreworkflow "kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/mailboxview"
@@ -422,10 +423,11 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 		var failureReason sql.NullString
 		var failureReasonText sql.NullString
 		var failureReasonCode sql.NullString
-		item.State = gen.RunGraphNodeStateFailed
 		if err := rows.Scan(&item.NodeId, &item.RequiredRole, &nodeClass, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
 			return nil, fmt.Errorf("scan failed run node for %q: %w", runID, err)
 		}
+		// The query already filters to node_status = 'failed'.
+		item.State = runGraphNodeState(string(gen.RunGraphNodeStateFailed), durableFailureCode, failureReasonCode)
 		item.ExecutionOwnership = runGraphNodeExecutionOwnership(item.NodeId, nodeClass)
 		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode); ok {
 			item.FailureReason = &trimmed
@@ -436,6 +438,27 @@ func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID
 		return nil, fmt.Errorf("iterate failed run nodes for %q: %w", runID, err)
 	}
 	return items, nil
+}
+
+// runGraphNodeState projects a durable node status onto the state the graph
+// reports.
+//
+// A reviewer or validator that asks for changes is durably `failed` — the
+// workflow engine needs a failure to route the loop back — but drawing it as a
+// failed step tells the operator something broke when nothing did. The failure
+// code is what separates the two, so the graph resolves it here and reports
+// rework as its own state. The durable status is untouched.
+func runGraphNodeState(nodeStatus string, failureCodes ...sql.NullString) gen.RunGraphNodeState {
+	state := gen.RunGraphNodeState(nodeStatus)
+	if state != gen.RunGraphNodeStateFailed {
+		return state
+	}
+	for _, code := range failureCodes {
+		if code.Valid && coreverdict.IsReworkReasonCode(code.String) {
+			return gen.RunGraphNodeStateRework
+		}
+	}
+	return state
 }
 
 func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode sql.NullString) (string, bool) {
@@ -1593,9 +1616,11 @@ func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowD
 		var failureReason sql.NullString
 		var failureReasonText sql.NullString
 		var failureReasonCode sql.NullString
-		if err := rows.Scan(&node.NodeId, &node.RequiredRole, &nodeClass, &nodeRunID, &attempt, &node.State, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
+		var nodeStatus string
+		if err := rows.Scan(&node.NodeId, &node.RequiredRole, &nodeClass, &nodeRunID, &attempt, &nodeStatus, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
 			return nil, err
 		}
+		node.State = runGraphNodeState(nodeStatus, durableFailureCode, failureReasonCode)
 		node.ExecutionOwnership = runGraphNodeExecutionOwnership(node.NodeId, nodeClass)
 		if nodeRunID.Valid {
 			node.NodeRunId = &nodeRunID.String

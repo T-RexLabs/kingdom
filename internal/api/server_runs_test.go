@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	coreverdict "kingdom/internal/core/verdict"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
@@ -1544,6 +1545,110 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 		return
 	}
 	t.Fatal("expected delegated_execution_berserker node in graph response")
+}
+
+func TestServerGetRunGraphReportsRequestedReworkAsReworkNotFailed(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name        string
+		nodeID      string
+		role        string
+		failureCode string
+		failureText string
+	}{
+		{"execution review", "execution_review_shieldmaiden", "reviewer-shieldmaiden", coreverdict.ReworkReasonCodeExecutionReview, "review requested rework"},
+		{"validation gate", "validation_gates_qa_scout", "intelligence-qa-scout", coreverdict.ReworkReasonCodeValidationGate, "validation requested rework"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler, db := newAPIServerForTest(t)
+			runID := seedRunWithLinearExecutionWorkflow(t, handler)
+			now := "2026-03-06T10:01:00Z"
+			suffix := strings.ReplaceAll(testCase.name, " ", "-")
+
+			mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, ?, 'Owner', 'busy', NULL, 0, ?, ?)`, "agent-rework-"+suffix, testCase.role, now, now)
+			mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 1,1, 'failed', ?, ?, 1, ?, ?)`, "nr-rework-"+suffix, runID, testCase.nodeID, testCase.role, "agent-rework-"+suffix, now, now)
+			mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', '', NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"attempt-rework-"+suffix, runID, "nr-rework-"+suffix, "session-rework-"+suffix, "ses-rework-"+suffix, now, now, now, testCase.failureCode, testCase.failureText, now, now)
+
+			res := performJSONRequest(t, handler, requestSpec{
+				method: http.MethodGet,
+				path:   "/api/v1/runs/" + runID + "/graph",
+			})
+			if res.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+			}
+
+			var payload gen.RunGraphResponse
+			if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode run graph response: %v", err)
+			}
+
+			for _, node := range payload.Nodes {
+				if node.NodeId != testCase.nodeID {
+					continue
+				}
+				// The durable node status stays `failed` — the engine needs a
+				// failure to route the loop back — but nothing broke, so the
+				// graph must not draw it as a broken step.
+				if node.State != gen.RunGraphNodeStateRework {
+					t.Fatalf("expected rework state for %q, got %q", testCase.nodeID, node.State)
+				}
+				if node.FailureReason == nil || *node.FailureReason != testCase.failureText {
+					t.Fatalf("expected rework reason %q, got %#v", testCase.failureText, node.FailureReason)
+				}
+				var durableStatus string
+				if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = ?`, "nr-rework-"+suffix).Scan(&durableStatus); err != nil {
+					t.Fatalf("read durable node status: %v", err)
+				}
+				if durableStatus != "failed" {
+					t.Fatalf("expected durable node status to stay failed, got %q", durableStatus)
+				}
+				return
+			}
+			t.Fatalf("expected %q node in graph response", testCase.nodeID)
+		})
+	}
+}
+
+func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-06T10:01:00Z"
+
+	// A reviewer whose receipt was unusable really did fail. Only a requested
+	// rework earns the softer state.
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-invalid-verdict', ?, 'nr-invalid-verdict', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-invalid-verdict', 'ses-invalid-verdict', ?, ?, ?, 'invalid_execution_review_verdict', 'execution review response missing required verdict line', ?, ?)`, runID, now, now, now, now, now)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload gen.RunGraphResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run graph response: %v", err)
+	}
+
+	for _, node := range payload.Nodes {
+		if node.NodeId != "execution_review_shieldmaiden" {
+			continue
+		}
+		if node.State != gen.RunGraphNodeStateFailed {
+			t.Fatalf("expected invalid verdict to stay failed, got %q", node.State)
+		}
+		return
+	}
+	t.Fatal("expected execution_review_shieldmaiden node in graph response")
 }
 
 func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {

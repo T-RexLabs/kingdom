@@ -12,6 +12,27 @@ import (
 
 const MaxControlVerdictLines = 12
 
+const (
+	// ReworkReasonCodeExecutionReview and ReworkReasonCodeValidationGate are the
+	// failure codes an owner node writes when it asks for changes instead of
+	// failing. They are the only signal that separates "this step asked for
+	// another pass" from "this step broke", so every surface that draws that
+	// distinction resolves it through IsReworkReasonCode rather than by
+	// spelling the codes out again.
+	ReworkReasonCodeExecutionReview = "execution_review_rework"
+	ReworkReasonCodeValidationGate  = "validation_gate_rework"
+)
+
+// IsReworkReasonCode reports whether a failure code records requested rework.
+func IsReworkReasonCode(reasonCode string) bool {
+	switch strings.ToLower(strings.TrimSpace(reasonCode)) {
+	case ReworkReasonCodeExecutionReview, ReworkReasonCodeValidationGate:
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	ErrMultipleVerdicts    = errors.New("multiple verdict lines")
 	ErrConflictingVerdicts = errors.New("conflicting verdict lines")
@@ -95,10 +116,10 @@ func ParseRequiredNearTop(outputText, ownerLabel, invalidReasonCode string) (str
 func ReceiptDecisionForNode(nodeID, nodeClass, structuredPayloadJSON, finalText string) (ReceiptDecision, bool, error) {
 	switch workflow.ResolveNodeClass(nodeID, nodeClass) {
 	case workflow.NodeClassExecutionReview:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "execution review", "invalid_execution_review_verdict", "execution_review_rework", "review requested rework")
+		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "execution review", "invalid_execution_review_verdict", ReworkReasonCodeExecutionReview, "review requested rework")
 		return decision, true, err
 	case workflow.NodeClassValidationGates:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "validation", "invalid_validation_verdict", "validation_gate_rework", "validation requested rework")
+		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "validation", "invalid_validation_verdict", ReworkReasonCodeValidationGate, "validation requested rework")
 		return decision, true, err
 	default:
 		return ReceiptDecision{}, false, nil
