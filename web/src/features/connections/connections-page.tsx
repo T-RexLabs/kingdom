@@ -25,7 +25,6 @@ import {
   ExternalLink,
   Github,
   KeyRound,
-  Link2,
   Loader2,
   Pencil,
   ShieldCheck,
@@ -888,14 +887,13 @@ export function ConnectionsPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
-        <div>
-          <div className="flex items-center gap-2">
-            <Link2 className="h-5 w-5 text-gold" />
-            <h1 className="font-display text-xl font-semibold">Connections</h1>
+        <div className="flex w-full items-center justify-between">
+          <div>
+            <h1 className="font-display text-2xl font-bold text-gold">Connections</h1>
+            <p className="text-sm text-foreground-muted">
+              External services Kingdom may read from, owned and controlled by you.
+            </p>
           </div>
-          <p className="mt-1 text-xs text-foreground-muted">
-            Private GitHub issue access, owned and controlled by you.
-          </p>
         </div>
       </PageHeader>
       <PageContent className="space-y-5">
@@ -910,19 +908,19 @@ export function ConnectionsPage() {
                   </div>
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gold">
-                      Recommended
+                      Issue Importer
                     </p>
                     <h2 className="font-display text-xl font-semibold">
                       {setupOptions.shared_enabled
-                        ? "Connect GitHub"
+                        ? "GitHub"
                         : "Create a Private GitHub App"}
                     </h2>
                   </div>
                 </div>
                 <p className="mt-4 max-w-2xl text-sm leading-relaxed text-foreground-muted">
                   {setupOptions.shared_enabled
-                    ? "Authorize Kingdom's public GitHub App, then choose one installation. Access remains the intersection of the App installation and your GitHub account."
-                    : "GitHub creates an App owned by your personal account or organization. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
+                    ? "Connect through Kingdom's public GitHub App, create a private App you own, or register one you already have. Whichever route you take, Kingdom requests only repository metadata read and Issues read, with no events and no webhook."
+                    : "GitHub creates an App owned by your personal account or organization, or you register one you already have. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
                 </p>
                 {flow || manifestError ? (
                   <div className="mt-4 space-y-3">
@@ -1106,7 +1104,7 @@ export function ConnectionsPage() {
                       <form onSubmit={saveEdit} className="space-y-4">
                         <div className="flex items-center justify-between">
                           <div>
-                            <h3 className="font-semibold">Edit connection</h3>
+                            <h3 className="font-semibold">Edit Connection</h3>
                             <p className="mt-1 text-xs text-foreground-muted">
                               App, client, and installation identity are
                               immutable.
@@ -1321,7 +1319,6 @@ export function ConnectionsPage() {
           >
             <ModalShell
               title="Connect GitHub"
-              caption="One Secure Connection"
               description="Authorize on GitHub, then choose the installation Kingdom may use."
               onClose={() => setSharedOpen(false)}
               footer={
@@ -1492,7 +1489,6 @@ export function ConnectionsPage() {
           >
             <ModalShell
               title="Create a Private GitHub App"
-              caption="Private App Option"
               description="Create and own a dedicated App for this Kingdom workspace."
               onClose={() => setManifestOpen(false)}
               footer={
@@ -1575,7 +1571,6 @@ export function ConnectionsPage() {
           >
             <ModalShell
               title="Manual GitHub App Setup"
-              caption="Secondary Setup Path"
               description="Save existing App metadata, then provision its private key from the host."
               onClose={() => {
                 if (!createConnection.hasPendingRecovery) setManualOpen(false);

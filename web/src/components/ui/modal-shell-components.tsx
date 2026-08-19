@@ -12,6 +12,14 @@ export function ModalContentSection({ className, ...props }: HTMLAttributes<HTML
 	return <div className={cn("space-y-1 rounded-lg border border-border bg-surface px-3 py-3", className)} {...props} />;
 }
 
+/**
+ * `caption` names the surface the dialog belongs to — "Mailbox", "Royal
+ * Decree", "Remove Connection". It is an orientation label, so it must never
+ * rank or editorialise the choice inside ("Recommended", "Secondary Setup
+ * Path"): the operator reads it before the title, and a ranking there argues
+ * with them instead of telling them where they are. Omit it when the title is
+ * already the whole answer.
+ */
 export function ModalShell({
 	title,
 	caption,
