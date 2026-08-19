@@ -38,7 +38,7 @@ func TestDeviceFlowManagerEnforcesPacingBindingAndSingleFinalization(t *testing.
 	}
 	tokens := githubexternal.UserTokens{AccessToken: "access-token", RefreshToken: "refresh-token", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}
 	candidate := githubexternal.InstallationCandidate{InstallationID: "2", DisplayName: "octocat", AccountID: "10", AccountLogin: "octocat", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"}
-	if err := manager.CompletePoll(flow.ID, githubexternal.DevicePollResult{Status: githubexternal.DevicePollAuthorized, Tokens: tokens}, []githubexternal.InstallationCandidate{candidate}, ""); err != nil {
+	if err := manager.CompletePoll(flow.ID, githubexternal.DevicePollResult{Status: githubexternal.DevicePollAuthorized, Tokens: tokens}, []githubexternal.InstallationCandidate{candidate}); err != nil {
 		t.Fatal(err)
 	}
 	status, err := manager.Status(flow.ID, flow.SessionID, flow.Origin, "kingdom")
@@ -162,5 +162,84 @@ func TestDeviceFlowRetentionEvictsOldestTerminalAndPreservesActive(t *testing.T)
 	}
 	if manager.flows[firstTerminalID] != nil {
 		t.Fatal("oldest terminal device flow was retained")
+	}
+}
+
+func TestDeviceFlowExposesInstallURLWhileChoosingAmongExistingInstallations(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	const wantInstallURL = "https://github.com/apps/kingdom-issue-importer/installations/new"
+	tokens := githubexternal.UserTokens{AccessToken: "access-token", RefreshToken: "refresh-token", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}
+	candidate := githubexternal.InstallationCandidate{InstallationID: "2", DisplayName: "octocat", AccountID: "10", AccountLogin: "octocat", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom-issue-importer", RepositorySelection: "selected"}
+
+	for _, test := range []struct {
+		name       string
+		candidates []githubexternal.InstallationCandidate
+		wantStage  deviceFlowStage
+	}{
+		{name: "no installation yet", candidates: nil, wantStage: deviceStageNeedsInstallation},
+		{name: "already has an installation", candidates: []githubexternal.InstallationCandidate{candidate}, wantStage: deviceStageSelecting},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := newDeviceFlowManager(func() time.Time { return now })
+			flow, err := manager.Create("session-1", "https://kingdom.example", "", now.Add(10*time.Minute), githubexternal.DeviceAuthorization{DeviceCode: "provider-secret", UserCode: "ABCD-EFGH", VerificationURI: "https://github.com/login/device", ExpiresAt: now.Add(15 * time.Minute), Interval: 0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := manager.BeginPoll(flow.ID, flow.SessionID, flow.Origin); err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.CompletePoll(flow.ID, githubexternal.DevicePollResult{Status: githubexternal.DevicePollAuthorized, Tokens: tokens}, test.candidates); err != nil {
+				t.Fatal(err)
+			}
+			status, err := manager.Status(flow.ID, flow.SessionID, flow.Origin, "kingdom-issue-importer")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.Stage != test.wantStage {
+				t.Fatalf("stage=%q, want %q", status.Stage, test.wantStage)
+			}
+			if status.InstallURL != wantInstallURL {
+				t.Fatalf("install_url=%q, want %q so the operator can always install on another account", status.InstallURL, wantInstallURL)
+			}
+		})
+	}
+}
+
+func TestDeviceFlowCandidateRefreshKeepsInstallURLAndRepositoryScope(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	manager := newDeviceFlowManager(func() time.Time { return now })
+	flow, err := manager.Create("session-1", "https://kingdom.example", "", now.Add(10*time.Minute), githubexternal.DeviceAuthorization{DeviceCode: "provider-secret", UserCode: "ABCD-EFGH", VerificationURI: "https://github.com/login/device", ExpiresAt: now.Add(15 * time.Minute), Interval: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.BeginPoll(flow.ID, flow.SessionID, flow.Origin); err != nil {
+		t.Fatal(err)
+	}
+	tokens := githubexternal.UserTokens{AccessToken: "access-token", RefreshToken: "refresh-token", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}
+	first := githubexternal.InstallationCandidate{InstallationID: "2", DisplayName: "octocat", AccountID: "10", AccountLogin: "octocat", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom-issue-importer", RepositorySelection: "selected"}
+	if err := manager.CompletePoll(flow.ID, githubexternal.DevicePollResult{Status: githubexternal.DevicePollAuthorized, Tokens: tokens}, []githubexternal.InstallationCandidate{first}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Installing on a second account mid-flow must be discoverable without repeating authorization.
+	if _, err := manager.BeginCandidateRefresh(flow.ID, flow.SessionID, flow.Origin); err != nil {
+		t.Fatalf("refresh from selecting_installation: %v", err)
+	}
+	second := githubexternal.InstallationCandidate{InstallationID: "3", DisplayName: "acme", AccountID: "11", AccountLogin: "acme", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom-issue-importer", RepositorySelection: "all"}
+	if err := manager.CompleteCandidateRefresh(flow.ID, []githubexternal.InstallationCandidate{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(flow.ID, flow.SessionID, flow.Origin, "kingdom-issue-importer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.Candidates) != 2 {
+		t.Fatalf("candidates=%d, want 2 after installing on another account", len(status.Candidates))
+	}
+	if status.Candidates[0].RepositorySelection != "selected" || status.Candidates[1].RepositorySelection != "all" {
+		t.Fatalf("repository scope not carried to the picker: %#v", status.Candidates)
+	}
+	if status.InstallURL == "" {
+		t.Fatal("install_url missing after refresh; the operator cannot install on a further account")
 	}
 }

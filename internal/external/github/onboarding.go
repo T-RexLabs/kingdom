@@ -52,6 +52,7 @@ type ManifestConversion struct {
 type SetupInstallation struct {
 	InstallationID, AppID, ClientID, AppSlug string
 	AccountID, AccountLogin                  string
+	RepositorySelection                      string
 }
 
 func NewSetupClient(cfg SetupClientConfig) (*SetupClient, error) {
@@ -264,18 +265,30 @@ func (c *SetupClient) ValidatePrivateKeyInstallation(ctx context.Context, raw []
 }
 
 type setupInstallation struct {
-	ID          int64             `json:"id"`
-	AppID       int64             `json:"app_id"`
-	ClientID    string            `json:"client_id"`
-	AppSlug     string            `json:"app_slug"`
-	TargetID    int64             `json:"target_id"`
-	Permissions map[string]string `json:"permissions"`
-	Events      []string          `json:"events"`
-	SuspendedAt *string           `json:"suspended_at"`
-	Account     struct {
+	ID                  int64             `json:"id"`
+	AppID               int64             `json:"app_id"`
+	ClientID            string            `json:"client_id"`
+	AppSlug             string            `json:"app_slug"`
+	TargetID            int64             `json:"target_id"`
+	Permissions         map[string]string `json:"permissions"`
+	Events              []string          `json:"events"`
+	SuspendedAt         *string           `json:"suspended_at"`
+	RepositorySelection string            `json:"repository_selection"`
+	Account             struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
 	} `json:"account"`
+}
+
+// normalizedRepositorySelection admits only the two documented values so an
+// unvalidated provider string never reaches an operator surface. The scope is
+// display-only, so an absent or unrecognized value degrades to no label rather
+// than rejecting an otherwise valid installation.
+func normalizedRepositorySelection(selection string) string {
+	if selection == "all" || selection == "selected" {
+		return selection
+	}
+	return ""
 }
 
 func validateSetupInstallation(in setupInstallation, expected SetupInstallation) (SetupInstallation, error) {
@@ -283,6 +296,7 @@ func validateSetupInstallation(in setupInstallation, expected SetupInstallation)
 	actual := SetupInstallation{
 		InstallationID: strconv.FormatInt(in.ID, 10), AppID: strconv.FormatInt(in.AppID, 10), ClientID: in.ClientID, AppSlug: in.AppSlug,
 		AccountID: strconv.FormatInt(in.Account.ID, 10), AccountLogin: accountLogin,
+		RepositorySelection: normalizedRepositorySelection(in.RepositorySelection),
 	}
 	if actual.InstallationID != expected.InstallationID || actual.AppID != expected.AppID || actual.ClientID != expected.ClientID || actual.AppSlug != expected.AppSlug || in.TargetID <= 0 || in.Account.ID != in.TargetID || accountLogin == "" || len(accountLogin) > 100 || !validText(accountLogin, false) || in.SuspendedAt != nil || !allowedPermissions(in.Permissions) || len(in.Events) != 0 {
 		return SetupInstallation{}, ErrSetupValidation

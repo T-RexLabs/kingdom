@@ -49,13 +49,14 @@ type DevicePollResult struct {
 }
 
 type InstallationCandidate struct {
-	InstallationID string `json:"installation_id"`
-	DisplayName    string `json:"display_name"`
-	AccountID      string `json:"account_id"`
-	AccountLogin   string `json:"account_login"`
-	AppID          string `json:"app_id"`
-	ClientID       string `json:"client_id"`
-	AppSlug        string `json:"app_slug"`
+	InstallationID      string `json:"installation_id"`
+	DisplayName         string `json:"display_name"`
+	AccountID           string `json:"account_id"`
+	AccountLogin        string `json:"account_login"`
+	AppID               string `json:"app_id"`
+	ClientID            string `json:"client_id"`
+	AppSlug             string `json:"app_slug"`
+	RepositorySelection string `json:"repository_selection,omitempty"`
 }
 
 type DeviceOAuthClientConfig struct {
@@ -202,7 +203,7 @@ func (c *DeviceOAuthClient) Candidates(ctx context.Context, accessToken, expecte
 				return nil, &external.ProviderError{Class: external.FailureMalformedResponse}
 			}
 			seen[validated.InstallationID] = struct{}{}
-			candidates = append(candidates, InstallationCandidate{InstallationID: validated.InstallationID, DisplayName: validated.AccountLogin, AccountID: validated.AccountID, AccountLogin: validated.AccountLogin, AppID: validated.AppID, ClientID: validated.ClientID, AppSlug: validated.AppSlug})
+			candidates = append(candidates, InstallationCandidate{InstallationID: validated.InstallationID, DisplayName: validated.AccountLogin, AccountID: validated.AccountID, AccountLogin: validated.AccountLogin, AppID: validated.AppID, ClientID: validated.ClientID, AppSlug: validated.AppSlug, RepositorySelection: validated.RepositorySelection})
 		}
 		if len(response.Installations) < 100 || page*100 >= response.TotalCount {
 			break

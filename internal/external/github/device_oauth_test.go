@@ -39,7 +39,7 @@ func TestDeviceOAuthRequiresExpiringRotatingTokensAndFiltersCandidates(t *testin
 		case "/user":
 			_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
 		case "/user/installations":
-			_, _ = w.Write([]byte(`{"total_count":3,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]},{"id":3,"app_id":1,"client_id":"wrong","app_slug":"kingdom","target_id":11,"account":{"id":11,"login":"spoof"},"permissions":{"metadata":"read","issues":"read"},"events":[]},{"id":4,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":12,"account":{"id":12,"login":"overprivileged"},"permissions":{"metadata":"read","issues":"write"},"events":[]}]}`))
+			_, _ = w.Write([]byte(`{"total_count":3,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"},{"id":3,"app_id":1,"client_id":"wrong","app_slug":"kingdom","target_id":11,"account":{"id":11,"login":"spoof"},"permissions":{"metadata":"read","issues":"read"},"events":[]},{"id":4,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":12,"account":{"id":12,"login":"overprivileged"},"permissions":{"metadata":"read","issues":"write"},"events":[]}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -60,6 +60,9 @@ func TestDeviceOAuthRequiresExpiringRotatingTokensAndFiltersCandidates(t *testin
 	candidates, err := client.Candidates(context.Background(), poll.Tokens.AccessToken, "IvShared", "kingdom")
 	if err != nil || len(candidates) != 1 || candidates[0].InstallationID != "2" {
 		t.Fatalf("candidates=%#v err=%v", candidates, err)
+	}
+	if candidates[0].RepositorySelection != "selected" {
+		t.Fatalf("repository_selection=%q, want %q", candidates[0].RepositorySelection, "selected")
 	}
 	rotated, err := client.Refresh(context.Background(), "IvShared", poll.Tokens.RefreshToken)
 	if err != nil || rotated.AccessToken != "access-rotated" || rotated.RefreshToken != "refresh-rotated" {
@@ -274,4 +277,46 @@ func assertProviderFailureClass(t *testing.T, err error, want external.FailureCl
 
 func serverURL(r *http.Request) string {
 	return "http://" + r.Host
+}
+
+func TestCandidateRepositoryScopeIsAllowlistedButNeverBlocksAnInstallation(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		provided string
+		want     string
+	}{
+		{name: "all", provided: `"repository_selection":"all",`, want: "all"},
+		{name: "selected", provided: `"repository_selection":"selected",`, want: "selected"},
+		{name: "absent", provided: "", want: ""},
+		{name: "unrecognized", provided: `"repository_selection":"everything",`, want: ""},
+		{name: "not a string", provided: `"repository_selection":null,`, want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/user":
+					_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
+				case "/user/installations":
+					_, _ = fmt.Fprintf(w, `{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,%s"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`, test.provided)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			client, err := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidates, err := client.Candidates(context.Background(), "access-token", "IvShared", "kingdom")
+			if err != nil {
+				t.Fatalf("a display-only scope must never fail discovery: %v", err)
+			}
+			if len(candidates) != 1 {
+				t.Fatalf("candidates=%d, want the installation admitted regardless of scope", len(candidates))
+			}
+			if candidates[0].RepositorySelection != test.want {
+				t.Fatalf("repository_selection=%q, want %q", candidates[0].RepositorySelection, test.want)
+			}
+		})
+	}
 }

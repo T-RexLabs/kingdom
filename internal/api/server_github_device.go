@@ -122,7 +122,7 @@ func (s *Server) handlePollGitHubDeviceFlow(w http.ResponseWriter, r *http.Reque
 		writeDeviceStageError(w, "GitHub connection flow expired")
 		return
 	}
-	if err := s.deviceFlows.CompletePoll(lease.FlowID, result, candidates, ""); err != nil {
+	if err := s.deviceFlows.CompletePoll(lease.FlowID, result, candidates); err != nil {
 		s.writeInternalError(w, "complete GitHub authorization poll failed")
 		return
 	}

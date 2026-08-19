@@ -121,7 +121,7 @@ func (m *deviceFlowManager) BeginPoll(id, sessionID, origin string) (devicePollL
 	return devicePollLease{FlowID: flow.ID, DeviceCode: flow.DeviceCode, ExpiresAt: flow.ExpiresAt}, nil, nil
 }
 
-func (m *deviceFlowManager) CompletePoll(id string, result githubexternal.DevicePollResult, candidates []githubexternal.InstallationCandidate, installURL string) error {
+func (m *deviceFlowManager) CompletePoll(id string, result githubexternal.DevicePollResult, candidates []githubexternal.InstallationCandidate) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	flow := m.flows[id]
@@ -164,7 +164,6 @@ func (m *deviceFlowManager) CompletePoll(id string, result githubexternal.Device
 		flow.clearSecrets()
 		m.pruneLocked()
 	}
-	_ = installURL
 	return nil
 }
 
@@ -298,7 +297,9 @@ func statusFromDeviceFlow(flow *githubDeviceFlow, slug string) deviceFlowStatus 
 		retry := flow.RetryAt
 		status.RetryAt = &retry
 	}
-	if flow.Stage == deviceStageNeedsInstallation {
+	// Installing on a further account stays reachable while choosing among existing
+	// installations, not only when the operator has none at all.
+	if flow.Stage == deviceStageNeedsInstallation || flow.Stage == deviceStageSelecting {
 		status.InstallURL = githubexternal.GitHubWebOrigin + "/apps/" + url.PathEscape(slug) + "/installations/new"
 	}
 	return status

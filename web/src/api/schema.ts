@@ -1742,6 +1742,8 @@ export interface components {
             app_id: string;
             client_id: string;
             app_slug: string;
+            /** @enum {string} */
+            repository_selection?: "all" | "selected";
         };
         GitHubDeviceFlowStatus: {
             flow_id: string;
