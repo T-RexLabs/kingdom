@@ -10,3 +10,12 @@ export function safeGitHubIssueURL(raw: string, repository: string, issueNumber:
     return null;
   }
 }
+
+// GitHub's documented entry point for preselecting the account an App is installed
+// on. An already-installed account lands on its repository-selection screen, which
+// is the only place a connection's repository grant can be changed.
+export function safeGitHubInstallationManageURL(appSlug: string, accountID: string): string | null {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(appSlug)) return null;
+  if (!/^[1-9][0-9]{0,31}$/.test(accountID)) return null;
+  return `https://github.com/apps/${appSlug}/installations/new/permissions?suggested_target_id=${accountID}`;
+}

@@ -7,6 +7,7 @@ import {
   postManifestToSetupWindow,
   setupWindowBlockedMessage,
 } from "./github-setup-window";
+import { safeGitHubInstallationManageURL } from "./github-url";
 import type { components } from "@/api/schema";
 import { PageContent, PageHeader } from "@/components/page-layout";
 import { newIdempotencyKey as idem } from "@/lib/idempotency";
@@ -100,6 +101,25 @@ const manifestFailureCopy: Record<ManifestFailureStage, string> = {
   completed: "The private GitHub App connection is ready.",
   failed: "This private App setup flow cannot continue.",
 };
+
+function ManageRepositoriesLink({ connection }: { connection: Connection }) {
+  const href = safeGitHubInstallationManageURL(
+    connection.app_slug,
+    connection.installation_account_id ?? "",
+  );
+  if (!href) return null;
+  return (
+    <a
+      className={buttonVariants({ size: "sm", variant: "outline" })}
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <ExternalLink className="h-3.5 w-3.5" />
+      Manage Repositories on GitHub
+    </a>
+  );
+}
 
 function requestError(cause: unknown): RequestError {
   if (cause instanceof ApiError)
@@ -1211,6 +1231,7 @@ export function ConnectionsPage() {
                                 <ShieldCheck className="h-3.5 w-3.5" />
                                 {checkConnection.pendingRequest === connection.connection_id ? "Retry check" : "Check"}
                               </Button>
+                              <ManageRepositoriesLink connection={connection} />
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -1356,6 +1377,11 @@ export function ConnectionsPage() {
                       Open GitHub
                       <ExternalLink className="h-4 w-4" />
                     </a>
+                    <p className="text-center text-xs text-foreground-muted">
+                      Authorizing lets Kingdom see the installations you already
+                      have. You can install the App on more accounts in the next
+                      step.
+                    </p>
                     <p
                       className="flex items-center justify-center gap-2 text-xs text-foreground-muted"
                       aria-live="polite"
@@ -1403,7 +1429,8 @@ export function ConnectionsPage() {
                         Choose an Installation
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
-                        One connection is created for the account you select.
+                        One connection is created for the account you select, and
+                        it covers every repository that installation grants.
                       </p>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
@@ -1430,6 +1457,13 @@ export function ConnectionsPage() {
                           <span className="mt-1 block text-xs text-foreground-muted">
                             {candidate.display_name}
                           </span>
+                          {candidate.repository_selection && (
+                            <span className="mt-1 block text-xs font-medium text-foreground-muted">
+                              {candidate.repository_selection === "all"
+                                ? "All Repositories"
+                                : "Selected Repositories"}
+                            </span>
+                          )}
                         </label>
                       ))}
                     </div>
@@ -1445,6 +1479,38 @@ export function ConnectionsPage() {
                       )}
                       Connect Selected Installation
                     </Button>
+                    <div className="rounded-xl border border-border bg-background/40 p-4">
+                      <p className="text-sm text-foreground-muted">
+                        Missing an account, or need different repositories?
+                        Install the App on another account or change which
+                        repositories it can see, then refresh this list.
+                      </p>
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                        <a
+                          className={buttonVariants({
+                            variant: "outline",
+                            className: "flex-1",
+                          })}
+                          href={sharedFlow.install_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Install on Another Account
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                        <Button
+                          variant="outline"
+                          className="flex-1"
+                          disabled={operation === "shared-refresh"}
+                          onClick={() => void refreshCandidates()}
+                        >
+                          {operation === "shared-refresh" && (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          )}
+                          Refresh Installations
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div className="rounded-xl border border-border p-6 text-center">

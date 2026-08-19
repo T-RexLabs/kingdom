@@ -1283,4 +1283,130 @@ describe("ConnectionsPage", () => {
       screen.queryByText(/kd connections github key/i),
     ).not.toBeInTheDocument();
   });
+
+  it("keeps installing on another account reachable while choosing among existing installations", async () => {
+    const candidate = (id: string, login: string, scope?: "all" | "selected") => ({
+      installation_id: id,
+      display_name: login,
+      account_id: id,
+      account_login: login,
+      app_id: "1",
+      client_id: "Iv1",
+      app_slug: "kingdom",
+      ...(scope ? { repository_selection: scope } : {}),
+    });
+    let refreshed = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({
+            shared_enabled: true,
+            app_slug: "kingdom",
+            install_url: "https://github.com/apps/kingdom/installations/new",
+          });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(
+            JSON.stringify({
+              flow_id: "flow-choose-123456789",
+              // The operator already has one installation, so the flow lands
+              // straight on the picker and never passes through needs_installation.
+              stage: "selecting_installation",
+              expires_at: "2099-08-15T13:00:00Z",
+              interval_seconds: 5,
+              install_url: "https://github.com/apps/kingdom/installations/new",
+              candidates: [candidate("10", "octocat", "selected")],
+            }),
+            { status: 201, headers: { "Content-Type": "application/json" } },
+          );
+        if (url.endsWith("/device-flows/flow-choose-123456789/candidates")) {
+          refreshed = true;
+          return json({
+            flow_id: "flow-choose-123456789",
+            stage: "selecting_installation",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            install_url: "https://github.com/apps/kingdom/installations/new",
+            candidates: [
+              candidate("10", "octocat", "selected"),
+              candidate("11", "acme", "all"),
+            ],
+          });
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    expect(await screen.findByText("@octocat")).toBeInTheDocument();
+
+    // The reported defect: with one installation present there was no route to
+    // install on a second account and no way to re-list without reauthorizing.
+    const install = screen.getByRole("link", { name: /Install on Another Account/ });
+    expect(install).toHaveAttribute(
+      "href",
+      "https://github.com/apps/kingdom/installations/new",
+    );
+    expect(screen.getByText("Selected Repositories")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Refresh Installations/ }));
+    await waitFor(() => expect(refreshed).toBe(true));
+    expect(await screen.findByText("@acme")).toBeInTheDocument();
+    expect(screen.getByText("All Repositories")).toBeInTheDocument();
+  });
+
+  it("links a saved connection to its own repository selection on GitHub", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [connection("Kingdom Issues")] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    render(<ConnectionsPage />);
+    await screen.findByText("Kingdom Issues");
+    expect(
+      screen.getByRole("link", { name: /Manage Repositories on GitHub/ }),
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/apps/kingdom-issues/installations/new/permissions?suggested_target_id=10",
+    );
+  });
+
+  it("omits the manage repositories link when the installation account is not pinned yet", async () => {
+    const unpinned = { ...connection("Pending Check", "2"), app_slug: "", installation_account_id: "" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [unpinned] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    render(<ConnectionsPage />);
+    await screen.findByText("Pending Check");
+    // Guard against a vacuous pass: the action row must actually be rendered.
+    expect(screen.getByRole("button", { name: "Check" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Manage Repositories on GitHub/ }),
+    ).not.toBeInTheDocument();
+  });
 });
