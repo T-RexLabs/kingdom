@@ -310,6 +310,8 @@ That scaffold includes:
 
 `kd summon` starts the local runtime, API server, and embedded web UI attached to the current terminal. Use `kd summon -d` or `kd summon --detach` to start it in the background. Use `kd summon --listen <host:port>` for a full runtime-only address override, or `kd summon --host <host>` and `kd summon --port <port>` for symmetric partial overrides. By default it listens on `127.0.0.1:8080` and serves the API under `/api/v1`. Standalone and installed servers bound request headers and bodies with 5-second header, 15-second read, and 60-second idle timeouts; response writes remain unbounded so authenticated SSE streams stay connected. Startup validates managed `.kingdom/opencode/` assets read-only; if they are missing or stale, rerun `kd init --force`.
 
+Summons are also recorded machine-wide in `$XDG_CACHE_HOME/kingdom/summon_registry.json` (`~/Library/Caches/kingdom/` on macOS), so `kd` can discover a running instance from any project directory. The file is a cache of live processes, not a source of truth: entries are validated against running PIDs on every read, writes are atomic and serialized across processes, and a registry Kingdom cannot decode is rebuilt on the next summon rather than failing the command. Per-project state stays authoritative in `.kingdom/run/`, so a rebuilt registry never makes a running summon undiscoverable from its own workspace.
+
 Use `kd clean` to remove the local `.kingdom/` scaffold before re-initializing from a clean state.
 
 When the migration baseline changes, `kd clean` followed by `kd init` is the supported reset path for local environments.
@@ -381,6 +383,7 @@ Start here when you want more detail:
 | --- | --- |
 | `kd: command not found` | Ensure `$(go env GOPATH)/bin` is on your `PATH` after `make install` |
 | `summon already running` | Run `kd summon status`, then `kd summon stop` |
+| `kd summon status` reports stopped while a summon is running | Only affects discovery from another project directory; run `kd summon status` from the summon's own workspace, or restart it to re-register in the machine-wide registry |
 | `address already in use` | Free port `8080` or change `server.listen` |
 | `initialize opencode session adapter` | Install `opencode` or set `provider.binary_path` |
 | `model_selection.global.model is required` | Choose a model in the UI or pass `--global-model` |

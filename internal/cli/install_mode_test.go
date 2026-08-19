@@ -68,11 +68,6 @@ func TestReadRunningPIDRemovesInvalidPIDFile(t *testing.T) {
 }
 
 func TestRunSummonStatusDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	registryPath := filepath.Join(t.TempDir(), "summon_registry.json")
-	originalRegistryPathFunc := summonRegistryPathFunc
-	summonRegistryPathFunc = func() (string, error) { return registryPath, nil }
-	t.Cleanup(func() { summonRegistryPathFunc = originalRegistryPathFunc })
-
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start dummy summon process: %v", err)
@@ -208,11 +203,6 @@ func TestRunSummonStatusSurfacesFailedLocalState(t *testing.T) {
 }
 
 func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	registryPath := filepath.Join(t.TempDir(), "summon_registry.json")
-	originalRegistryPathFunc := summonRegistryPathFunc
-	summonRegistryPathFunc = func() (string, error) { return registryPath, nil }
-	t.Cleanup(func() { summonRegistryPathFunc = originalRegistryPathFunc })
-
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start dummy summon process: %v", err)
