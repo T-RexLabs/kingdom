@@ -1055,18 +1055,18 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await user.click(await screen.findByRole("button", { name: /remove/i }));
     expect(
-      await screen.findByRole("dialog", { name: /remove github connection/i }),
+      await screen.findByRole("dialog", { name: /remove me/i }),
     ).toBeInTheDocument();
     expect(deletes).toBe(0);
     await user.click(screen.getByRole("button", { name: /cancel/i }));
     expect(
-      screen.queryByRole("dialog", { name: /remove github connection/i }),
+      screen.queryByRole("dialog", { name: /remove me/i }),
     ).not.toBeInTheDocument();
     expect(deletes).toBe(0);
     await user.click(screen.getByRole("button", { name: /remove/i }));
     await user.click(
       within(
-        screen.getByRole("dialog", { name: /remove github connection/i }),
+        screen.getByRole("dialog", { name: /remove me/i }),
       ).getByRole("button", { name: /remove connection/i }),
     );
     await waitFor(() =>
@@ -1103,7 +1103,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await user.click(await screen.findByRole("button", { name: /remove/i }));
     const dialog = await screen.findByRole("dialog", {
-      name: /remove github connection/i,
+      name: /remove me/i,
     });
     await user.click(
       within(dialog).getByRole("button", { name: /remove connection/i }),

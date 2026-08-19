@@ -22,8 +22,7 @@ import { ApiError } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { ConfirmDialog, MODAL_BODY_TEXT_CLASS } from "@/components/ui/modal-shell";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { cn } from "@/lib/utils";
@@ -1307,32 +1306,23 @@ function CancelRunDialog({
   onConfirm: () => void;
 }) {
 	return (
-		<ModalDialog
+		<ConfirmDialog
 			open={open}
 			onClose={onClose}
-			ariaLabel="Cancel run"
-			panelClassName={cn("w-full", modalShellSizeClass("sm"))}
+			onConfirm={onConfirm}
+			title={runTitle}
+			caption="Cancel Run"
+			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Run" : "Cancel Run"}
+			// The only confirm that overrides the default dismiss verb, because
+			// here "Cancel" is the destructive action's own name.
+			dismissLabel="Keep Run Active"
+			confirmDisabled={isPending}
+			dismissDisabled={isPending || recoveryPending}
 		>
-			<ModalShell
-				title={runTitle}
-				caption="Cancel Run"
-				onClose={onClose}
-				footer={(
-					<div className="flex justify-end gap-2">
-						<Button type="button" variant="ghost" onClick={onClose} disabled={isPending || recoveryPending}>
-							Keep Run Active
-						</Button>
-						<Button type="button" variant="destructive" onClick={onConfirm} disabled={isPending}>
-							{isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Run" : "Cancel Run"}
-						</Button>
-					</div>
-				)}
-			>
-				<p className={MODAL_BODY_TEXT_CLASS}>
-					This stops further loop scheduling for this run. Existing work remains visible in the run timeline,
-					DAG, and mailbox.
-				</p>
-			</ModalShell>
-		</ModalDialog>
+			<p className={MODAL_BODY_TEXT_CLASS}>
+				This stops further loop scheduling for this run. Existing work remains visible in the run timeline,
+				DAG, and mailbox.
+			</p>
+		</ConfirmDialog>
 	);
 }

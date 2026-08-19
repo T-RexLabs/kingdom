@@ -1,16 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
 	MODAL_BODY_TEXT_CLASS,
+	Modal,
 	ModalContentCard,
 	ModalContentSection,
-	ModalShell,
-	modalShellSizeClass,
+	ModalFooter,
 } from "@/components/ui/modal-shell";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import type { GovernanceDecision } from "@/api/hooks";
-import { cn } from "@/lib/utils";
 import { governanceDecisionLabel, governanceDecisionStageLabel } from "./governance-decision-labels";
 
 function formatGovernanceTimestamp(iso: string): string {
@@ -39,9 +37,23 @@ export function GovernanceDecisionHistoryModal({
 	onLoadMore?: () => void;
 }) {
 	return (
-		<ModalDialog open={open} onClose={onClose} ariaLabel="Allfather decision history" panelClassName={cn("w-full", modalShellSizeClass("md"))}>
-			<ModalShell title="Allfather Decision History" caption="Governance History" onClose={onClose}>
-				<div className="space-y-3 pr-1">
+		// Paging belongs in the footer: inside the scrolling body the control
+		// scrolls away exactly when the operator has reached the end and wants it.
+		<Modal
+			open={open}
+			onClose={onClose}
+			size="md"
+			title="Allfather Decision History"
+			caption="Governance History"
+			footer={hasMore ? (
+				<ModalFooter>
+					<Button type="button" variant="outline" onClick={onLoadMore} disabled={isLoadingMore || !onLoadMore}>
+						{isLoadingMore ? "Loading Older Decisions..." : "Load Older Decisions"}
+					</Button>
+				</ModalFooter>
+			) : undefined}
+		>
+				<div className="space-y-3">
 					{items.length === 0 ? (
 						<div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-foreground-subtle">
 							No Allfather decisions recorded yet.
@@ -67,15 +79,7 @@ export function GovernanceDecisionHistoryModal({
 							);
 						})
 					)}
-					{hasMore ? (
-						<div className="flex justify-center pt-1">
-							<Button type="button" variant="outline" onClick={onLoadMore} disabled={isLoadingMore || !onLoadMore}>
-								{isLoadingMore ? "Loading Older Decisions..." : "Load Older Decisions"}
-							</Button>
-						</div>
-					) : null}
 				</div>
-			</ModalShell>
-		</ModalDialog>
+		</Modal>
 	);
 }

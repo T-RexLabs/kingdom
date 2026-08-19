@@ -51,7 +51,7 @@ describe("plan result modal", () => {
 
     await user.click(screen.getByRole("button", { name: "Open plan result" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Generated plan" });
+    const dialog = screen.getByRole("dialog", { name: "Royal decree draft" });
     const contentCard = within(dialog).getByTestId("plan-result-card");
 
     expect(contentCard).toHaveClass("border-border");

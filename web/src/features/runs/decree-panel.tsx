@@ -12,13 +12,12 @@ import { apiFetch } from "@/api/client";
 import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { Modal } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
 import { safeGitHubIssueURL } from "@/features/connections/github-url";
 import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { cn, roleTitle } from "@/lib/utils";
+import { roleTitle } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { ChevronRight, ExternalLink, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
@@ -108,14 +107,17 @@ function DecreeReadDialog({
   onRefreshed: () => void;
 }) {
   return (
-    <ModalDialog
+    // `workbench` because the decree text and its source cards arrive
+    // separately; an auto-height panel would re-centre itself as they land.
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Royal decree"
-      panelClassName={cn("w-full", modalShellSizeClass("lg"))}
+      size="lg"
+      height="workbench"
+      title={title && title !== "" ? title : "Royal Decree"}
+      caption={title && title !== "" ? "Royal Decree" : undefined}
     >
-      <ModalShell title={title && title !== "" ? title : "Royal Decree"} caption="Royal Decree" onClose={onClose}>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div>
           {isLoading ? (
             <p className="text-sm text-foreground-subtle">Loading decree…</p>
           ) : hasError ? (
@@ -134,8 +136,7 @@ function DecreeReadDialog({
             </div>
           )}
         </div>
-      </ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }
 
@@ -217,14 +218,16 @@ function DecreeSettingsDialog({
   const showLimits = !skipReviewAndValidation && (run.run_until_all_approve || maxReviewCycles > 0 || maxValidationCycles > 0);
 
   return (
-    <ModalDialog
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Decree settings"
-      panelClassName={cn("w-full", modalShellSizeClass("md"))}
+      size="lg"
+      height="workbench"
+      title="Decree Settings"
+      caption="Run Configuration"
+      description={run.decree_title}
     >
-			<ModalShell title="Decree Settings" caption="Run Configuration" description={run.decree_title} onClose={onClose}>
-	        <div data-testid="decree-settings-scroll-region" className="min-h-0 flex-1 space-y-6 overflow-y-auto">
+	        <div data-testid="decree-settings-scroll-region" className="space-y-6">
             <SettingsSection title="How It Runs" description="Workflow, approval mode, review flow, and publish target.">
               <SettingsSurface>
                 <SettingRow label="Approval">
@@ -301,8 +304,7 @@ function DecreeSettingsDialog({
               </div>
 	            </SettingsSection>
 	          </div>
-			</ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }
 

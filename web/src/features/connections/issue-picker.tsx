@@ -5,8 +5,7 @@ import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { Modal, ModalFooter } from "@/components/ui/modal-shell";
 import { PopoverListbox } from "@/components/ui/popover-listbox";
 import { SelectField } from "@/components/ui/select-field";
 import { ToggleRow } from "@/components/ui/toggle-row";
@@ -293,14 +292,16 @@ export function IssuePicker({
         disabled={loadingConnections}
         onOpen={() => setOpened(true)}
       />
-      <ModalDialog open={opened} onClose={() => setOpened(false)} ariaLabel="Import from GitHub Issues" panelClassName={cn("w-full min-w-0", modalShellSizeClass("xl"))} overlayClassName="p-2 sm:p-4">
-        <ModalShell
-          title="Import from GitHub Issues"
-          onClose={() => setOpened(false)}
-          height="workbench"
-          bodyClassName="overflow-hidden p-0"
-          footer={<div className="flex flex-wrap justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setOpened(false)}>Cancel</Button><Button type="button" onClick={() => void submit()} disabled={!preview || loadingPreview || submitting}>{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}{actionLabel}</Button></div>}
-        >
+      <Modal
+        open={opened}
+        onClose={() => setOpened(false)}
+        title="Import from GitHub Issues"
+        size="xl"
+        height="workbench"
+        bodyClassName="overflow-hidden p-0"
+        overlayClassName="p-2 sm:p-4"
+        footer={<ModalFooter><Button type="button" variant="ghost" onClick={() => setOpened(false)}>Cancel</Button><Button type="button" onClick={() => void submit()} disabled={!preview || loadingPreview || submitting}>{submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}{actionLabel}</Button></ModalFooter>}
+      >
           <div data-testid="issue-picker-layout" className="grid h-full min-h-0 min-w-0 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:overflow-hidden">
             <div className="flex min-w-0 flex-col gap-4 border-b border-border p-4 lg:overflow-hidden lg:border-b-0 lg:border-r sm:p-5">
               <ConnectionControls
@@ -390,8 +391,7 @@ export function IssuePicker({
               ) : <div className="flex h-full min-h-40 items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">Select an issue to preview its bounded import before continuing.</div>}
             </div>
           </div>
-        </ModalShell>
-      </ModalDialog>
+      </Modal>
     </>
   );
 }

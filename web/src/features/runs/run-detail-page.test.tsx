@@ -1552,7 +1552,7 @@ describe("run detail page", () => {
 
     await user.click(screen.getByTestId("run-cancel-pill"));
 
-    expect(screen.getByRole("dialog", { name: "Cancel run" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Balance Layout" })).toBeInTheDocument();
     expect(cancelMutateAsyncMock).not.toHaveBeenCalled();
     expect(confirmSpy).not.toHaveBeenCalled();
 
@@ -1565,7 +1565,7 @@ describe("run detail page", () => {
     render(<RunDetailPage />);
 
     await user.click(screen.getByTestId("run-cancel-pill"));
-    const dialog = screen.getByRole("dialog", { name: "Cancel run" });
+    const dialog = screen.getByRole("dialog", { name: "Balance Layout" });
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel Run" }));
 
@@ -1573,7 +1573,7 @@ describe("run detail page", () => {
       body: { reason: "manual cancellation from run detail" },
       key: expect.stringMatching(/^kd1\./),
     });
-    expect(screen.queryByRole("dialog", { name: "Cancel run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Balance Layout" })).not.toBeInTheDocument();
   });
 
   it("lets the operator dismiss the cancel dialog without mutating the run", async () => {
@@ -1582,12 +1582,12 @@ describe("run detail page", () => {
     render(<RunDetailPage />);
 
     await user.click(screen.getByTestId("run-cancel-pill"));
-    const dialog = screen.getByRole("dialog", { name: "Cancel run" });
+    const dialog = screen.getByRole("dialog", { name: "Balance Layout" });
 
     await user.click(within(dialog).getByRole("button", { name: "Keep Run Active" }));
 
     expect(cancelMutateAsyncMock).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Cancel run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Balance Layout" })).not.toBeInTheDocument();
   });
 
   it("keeps header metadata in a separate right-side cluster", () => {

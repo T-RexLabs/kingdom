@@ -1,13 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
   MODAL_BODY_TEXT_CLASS,
   MODAL_SUPPORTING_TEXT_CLASS,
+  Modal,
   ModalContentCard,
-  ModalShell,
-  modalShellSizeClass,
+  ModalFooter,
 } from "@/components/ui/modal-shell";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Spinner } from "@/components/ui/spinner";
@@ -36,18 +35,14 @@ export function PlanResultModal({
   if (!open) return null;
 
   return (
-    <ModalDialog
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Generated plan"
-      panelClassName={`w-full ${modalShellSizeClass("lg")}`}
-    >
-			<ModalShell
-				title={draft?.decree_title ?? (isGenerating ? "Generating plan" : "Plan result")}
-				caption="Generated Plan"
-				onClose={onClose}
-				footer={(
-					<div className="flex items-center justify-end gap-3">
+      size="lg"
+      title={draft?.decree_title ?? (isGenerating ? "Generating plan" : "Plan result")}
+      caption="Generated Plan"
+      footer={(
+					<ModalFooter>
 						<Button variant="ghost" onClick={onClose}>
 							Close
 						</Button>
@@ -64,9 +59,9 @@ export function PlanResultModal({
 								<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
 							</Button>
 						)}
-					</div>
-				)}
-			>
+					</ModalFooter>
+      )}
+    >
 	          <ModalContentCard data-testid="plan-result-card">
 	            {generationError ? (
 	              <div className="rounded-lg border border-status-failed/30 bg-status-failed/10 p-4 text-sm text-status-failed">
@@ -98,7 +93,6 @@ export function PlanResultModal({
 	              <MarkdownBlock content={draft.decree_text} className={MODAL_BODY_TEXT_CLASS} />
 	            ) : null}
 	          </ModalContentCard>
-			</ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }

@@ -1,11 +1,3 @@
-export {
-  ModalContentCard,
-  ModalContentSection,
-  ModalShell,
-} from "./modal-shell-components";
-export {
-  MODAL_BODY_TEXT_CLASS,
-  MODAL_LABEL_CLASS,
-  MODAL_SUPPORTING_TEXT_CLASS,
-  modalShellSizeClass,
-} from "./modal-shell-styles";
+export { ConfirmDialog, Modal, ModalFooter } from "./modal";
+export { ModalContentCard, ModalContentSection } from "./modal-shell-components";
+export { MODAL_BODY_TEXT_CLASS, MODAL_SUPPORTING_TEXT_CLASS } from "./modal-shell-styles";

@@ -13,10 +13,10 @@ import { newIdempotencyKey as idem } from "@/lib/idempotency";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent } from "@/components/ui/card";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
-  ModalShell,
-  modalShellSizeClass,
+  ConfirmDialog,
+  Modal,
+  ModalFooter,
   MODAL_BODY_TEXT_CLASS,
 } from "@/components/ui/modal-shell";
 import {
@@ -1310,24 +1310,20 @@ export function ConnectionsPage() {
         )}
 
         {sharedOpen ? (
-          <ModalDialog
+          <Modal
             open
             onClose={() => setSharedOpen(false)}
-            ariaLabel="Connect GitHub"
-            panelClassName={`w-full ${modalShellSizeClass("lg")}`}
+            size="lg"
+            title="Connect GitHub"
+            description="Authorize on GitHub, then choose the installation Kingdom may use."
+            footer={
+              <ModalFooter>
+                <Button variant="ghost" onClick={() => setSharedOpen(false)}>
+                  Close
+                </Button>
+              </ModalFooter>
+            }
           >
-            <ModalShell
-              title="Connect GitHub"
-              description="Authorize on GitHub, then choose the installation Kingdom may use."
-              onClose={() => setSharedOpen(false)}
-              footer={
-                <div className="flex justify-end">
-                  <Button variant="ghost" onClick={() => setSharedOpen(false)}>
-                    Close
-                  </Button>
-                </div>
-              }
-            >
               <div className="space-y-5">
                 <ErrorNotice error={sharedError} />
                 {!sharedFlow || operation === "shared-start" ? (
@@ -1475,23 +1471,18 @@ export function ConnectionsPage() {
                   </div>
                 )}
               </div>
-            </ModalShell>
-          </ModalDialog>
+          </Modal>
         ) : null}
 
         {manifestOpen ? (
-          <ModalDialog
+          <Modal
             open
             onClose={() => setManifestOpen(false)}
-            ariaLabel="Create a Private GitHub App"
-            panelClassName={`w-full ${modalShellSizeClass("sm")}`}
-          >
-            <ModalShell
-              title="Create a Private GitHub App"
-              description="Create and own a dedicated App for this Kingdom workspace."
-              onClose={() => setManifestOpen(false)}
-              footer={
-                <div className="flex flex-wrap justify-end gap-2">
+            size="sm"
+            title="Create a Private GitHub App"
+            description="Create and own a dedicated App for this Kingdom workspace."
+            footer={
+              <ModalFooter>
                   {manifestFlowLive ? (
                     <Button
                       variant="outline"
@@ -1504,12 +1495,12 @@ export function ConnectionsPage() {
                       Abandon Setup
                     </Button>
                   ) : null}
-                  <Button variant="ghost" onClick={() => setManifestOpen(false)}>
-                    Close
-                  </Button>
-                </div>
-              }
-            >
+                <Button variant="ghost" onClick={() => setManifestOpen(false)}>
+                  Close
+                </Button>
+              </ModalFooter>
+            }
+          >
               <div className="space-y-4">
                 <ManifestSetupStatus
                   flow={flow}
@@ -1555,38 +1546,31 @@ export function ConnectionsPage() {
                   Create Private App on GitHub
                 </Button>
               </div>
-            </ModalShell>
-          </ModalDialog>
+          </Modal>
         ) : null}
 
         {manualOpen ? (
-          <ModalDialog
+          <Modal
             open
             onClose={() => {
               if (!createConnection.hasPendingRecovery) setManualOpen(false);
             }}
-            ariaLabel="Manual GitHub App Setup"
-            panelClassName={`w-full ${modalShellSizeClass("lg")}`}
+            size="lg"
+            title="Manual GitHub App Setup"
+            description="Save existing App metadata, then provision its private key from the host."
+            footer={
+              <ModalFooter>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setManualOpen(false)}
+                  disabled={createConnection.hasPendingRecovery}
+                >
+                  Close
+                </Button>
+              </ModalFooter>
+            }
           >
-            <ModalShell
-              title="Manual GitHub App Setup"
-              description="Save existing App metadata, then provision its private key from the host."
-              onClose={() => {
-                if (!createConnection.hasPendingRecovery) setManualOpen(false);
-              }}
-              footer={
-                <div className="flex justify-end">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setManualOpen(false)}
-                    disabled={createConnection.hasPendingRecovery}
-                  >
-                    Close
-                  </Button>
-                </div>
-              }
-            >
               {manualSaved ? (
                 <div className="space-y-4">
                   <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
@@ -1624,65 +1608,40 @@ export function ConnectionsPage() {
                     {operation === "manual-create" && (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     )}
-                    {createConnection.hasPendingRecovery ? "Retry save connection metadata" : "Save connection metadata"}
+                    {createConnection.hasPendingRecovery ? "Retry Save Connection Metadata" : "Save Connection Metadata"}
                   </Button>
                 </form>
               )}
-            </ModalShell>
-          </ModalDialog>
+          </Modal>
         ) : null}
 
         {pendingRemoval ? (
-          <ModalDialog
+          <ConfirmDialog
             open
             onClose={() => {
               if (!removeConnection.hasPendingRecovery) setPendingRemoval(undefined);
             }}
-            ariaLabel="Remove GitHub connection"
-            panelClassName={`w-full ${modalShellSizeClass("sm")}`}
+            onConfirm={() => void mutate(pendingRemoval, "remove")}
+            title={pendingRemoval.display_name}
+            caption="Remove Connection"
+            description={`This tombstones the connection and removes its ${pendingRemoval.credential_strategy === "user_access_token" ? "local user tokens" : "local private key"}.`}
+            confirmLabel={
+              operation === `${pendingRemoval.connection_id}:remove`
+                ? "Removing..."
+                : removeConnection.hasPendingRecovery ? "Retry Remove Connection" : "Remove Connection"
+            }
+            confirmDisabled={operation === `${pendingRemoval.connection_id}:remove`}
+            dismissDisabled={removeConnection.hasPendingRecovery}
           >
-            <ModalShell
-              title={pendingRemoval.display_name}
-              caption="Remove Connection"
-              description={`This tombstones the connection and removes its ${pendingRemoval.credential_strategy === "user_access_token" ? "local user tokens" : "local private key"}.`}
-              onClose={() => {
-                if (!removeConnection.hasPendingRecovery) setPendingRemoval(undefined);
-              }}
-              footer={
-                <div className="flex justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setPendingRemoval(undefined)}
-                    disabled={removeConnection.hasPendingRecovery}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    disabled={
-                      operation === `${pendingRemoval.connection_id}:remove`
-                    }
-                    onClick={() => void mutate(pendingRemoval, "remove")}
-                  >
-                    {operation === `${pendingRemoval.connection_id}:remove`
-                      ? "Removing..."
-                      : removeConnection.hasPendingRecovery ? "Retry remove connection" : "Remove connection"}
-                  </Button>
-                </div>
-              }
-            >
-              <div className="space-y-3">
-                <p className={MODAL_BODY_TEXT_CLASS}>
-                  Historical provenance remains available. This does not
-                  uninstall or revoke the GitHub App; use GitHub as the external
-                  kill switch.
-                </p>
-                <ErrorNotice error={removalError} />
-              </div>
-            </ModalShell>
-          </ModalDialog>
+            <div className="space-y-3">
+              <p className={MODAL_BODY_TEXT_CLASS}>
+                Historical provenance remains available. This does not
+                uninstall or revoke the GitHub App; use GitHub as the external
+                kill switch.
+              </p>
+              <ErrorNotice error={removalError} />
+            </div>
+          </ConfirmDialog>
         ) : null}
       </PageContent>
     </div>

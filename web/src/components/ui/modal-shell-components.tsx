@@ -22,6 +22,7 @@ export function ModalContentSection({ className, ...props }: HTMLAttributes<HTML
  */
 export function ModalShell({
 	title,
+	titleId,
 	caption,
 	description,
 	onClose,
@@ -32,6 +33,7 @@ export function ModalShell({
 	height = "auto",
 }: {
 	title: ReactNode;
+	titleId?: string;
 	caption?: ReactNode;
 	description?: ReactNode;
 	onClose: () => void;
@@ -46,7 +48,7 @@ export function ModalShell({
 			<div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
 				<div className="min-w-0">
 					{caption ? <p className="text-xs uppercase tracking-[0.22em] text-foreground-subtle">{caption}</p> : null}
-					<h3 className={cn("text-lg font-semibold text-foreground", caption ? "mt-2" : "")}>{title}</h3>
+					<h3 id={titleId} className={cn("text-lg font-semibold text-foreground", caption ? "mt-2" : "")}>{title}</h3>
 					{description ? <p className="mt-1 text-sm text-foreground-muted">{description}</p> : null}
 				</div>
 				<Button type="button" variant="ghost" size="icon" aria-label="Close dialog" onClick={onClose}>

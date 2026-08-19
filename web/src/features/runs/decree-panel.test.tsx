@@ -114,11 +114,13 @@ describe("decree panel", () => {
 
     await user.click(screen.getByRole("button", { name: "Read royal decree" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Royal decree" });
+    // The dialog is named by its visible heading, which for an issued
+    // decree is the decree title itself.
+    const dialog = screen.getByRole("dialog", { name: "Royal Landing Page" });
     expect(within(dialog).getByText("Build the new experience.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    expect(screen.queryByRole("dialog", { name: "Royal decree" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Royal Landing Page" })).not.toBeInTheDocument();
   });
 
   it("opens a decree settings modal with structured run configuration", async () => {
@@ -149,7 +151,7 @@ describe("decree panel", () => {
 
     await user.click(screen.getByRole("button", { name: "Open decree settings" }));
 
-	const dialog = screen.getByRole("dialog", { name: "Decree settings" });
+	const dialog = screen.getByRole("dialog", { name: "Decree Settings" });
 	const scrollRegion = within(dialog).getByTestId("decree-settings-scroll-region");
 
 	expect(dialog).toBeInTheDocument();
@@ -157,9 +159,13 @@ describe("decree panel", () => {
 	expect(within(dialog).getByText("Royal Landing Page")).toBeInTheDocument();
     expect(within(dialog).getByText("Workflow, approval mode, review flow, and publish target.")).toBeInTheDocument();
     expect(within(dialog).getByText("Default model selection and any role-specific overrides recorded for this run.")).toBeInTheDocument();
-    expect(scrollRegion).toHaveClass("min-h-0");
-    expect(scrollRegion).toHaveClass("flex-1");
-    expect(scrollRegion).toHaveClass("overflow-y-auto");
+    // The shell body is the one scroller. The settings content used to declare
+    // its own inside it, nesting a scroll container in a scroll container.
+    const modalBody = scrollRegion.parentElement as HTMLElement;
+    expect(modalBody).toHaveClass("min-h-0");
+    expect(modalBody).toHaveClass("flex-1");
+    expect(modalBody).toHaveClass("overflow-y-auto");
+    expect(scrollRegion).not.toHaveClass("overflow-y-auto");
     expect(screen.getByText("Git worktree")).toBeInTheDocument();
     expect(within(dialog).getByText("Default for all agents")).toBeInTheDocument();
     expect(screen.getByText("GitHub Copilot - GPT-5.3-Codex")).toBeInTheDocument();
@@ -175,7 +181,7 @@ describe("decree panel", () => {
 
 	await user.click(screen.getByRole("button", { name: "Close dialog" }));
 
-    expect(screen.queryByRole("dialog", { name: "Decree settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Decree Settings" })).not.toBeInTheDocument();
   });
 
   it("falls back to raw ids and skip-review wording when lookup data is unavailable", async () => {
@@ -232,7 +238,7 @@ describe("decree panel", () => {
 
 	    await user.click(screen.getByRole("button", { name: "Open decree settings" }));
 
-	    const dialog = screen.getByRole("dialog", { name: "Decree settings" });
+	    const dialog = screen.getByRole("dialog", { name: "Decree Settings" });
 	    expect(within(dialog).getByText("Standard review flow")).toBeInTheDocument();
 	    expect(within(dialog).queryByText("my-custom-workflow-v7")).not.toBeInTheDocument();
 	  });

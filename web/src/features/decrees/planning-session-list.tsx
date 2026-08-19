@@ -2,8 +2,7 @@ import { useDeletePlanningSession, usePlanningSessions, type PlanningSessionSumm
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { ConfirmDialog, MODAL_BODY_TEXT_CLASS } from "@/components/ui/modal-shell";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Plus, Sparkles, X } from "lucide-react";
 import { useState } from "react";
@@ -123,35 +122,21 @@ export function PlanningSessionList() {
       </Card>
 
       {pendingDelete ? (
-        <ModalDialog
+        <ConfirmDialog
           open
           onClose={() => {
             if (!recoverableDelete.hasPendingRecovery) setPendingDelete(null);
           }}
-          ariaLabel="Delete planning session"
-          panelClassName={`w-full ${modalShellSizeClass("sm")}`}
+          onConfirm={() => void confirmDelete()}
+          title={displaySessionTitle(pendingDelete)}
+          caption="Delete Session"
+          description="This removes the planning session and its drafts, messages, and saved context snapshots."
+          confirmLabel={deletePlanningSession.isPending ? "Deleting..." : recoverableDelete.hasPendingRecovery ? "Retry Delete Session" : "Delete Session"}
+          confirmDisabled={deletePlanningSession.isPending}
+          dismissDisabled={recoverableDelete.hasPendingRecovery}
         >
-          <ModalShell
-            title={displaySessionTitle(pendingDelete)}
-            caption="Delete Session"
-            description="This removes the planning session and its drafts, messages, and saved context snapshots."
-            onClose={() => {
-              if (!recoverableDelete.hasPendingRecovery) setPendingDelete(null);
-            }}
-            footer={(
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)} disabled={recoverableDelete.hasPendingRecovery}>
-                  Cancel
-                </Button>
-                <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={deletePlanningSession.isPending}>
-                  {deletePlanningSession.isPending ? "Deleting..." : recoverableDelete.hasPendingRecovery ? "Retry Delete Session" : "Delete Session"}
-                </Button>
-              </div>
-            )}
-          >
-            <p className={MODAL_BODY_TEXT_CLASS}>This action cannot be undone.</p>
-          </ModalShell>
-        </ModalDialog>
+          <p className={MODAL_BODY_TEXT_CLASS}>This action cannot be undone.</p>
+        </ConfirmDialog>
       ) : null}
     </>
   );

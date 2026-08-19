@@ -492,7 +492,7 @@ describe("current plan panel", () => {
 
 		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
 
-		expect(screen.getByRole("dialog", { name: "Allfather decision history" })).toBeInTheDocument();
+		expect(screen.getByRole("dialog", { name: "Allfather Decision History" })).toBeInTheDocument();
 		expect(screen.getAllByText("Requested Plan Rework").length).toBeGreaterThan(0);
 	});
 
