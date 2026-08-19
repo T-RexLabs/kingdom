@@ -834,9 +834,20 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 		t.Fatalf("apply consolidated migrations: %v", err)
 	}
 
-	for _, column := range []string{"credential_strategy", "app_slug", "credential_generation", "validated_generation", "installation_account_id", "installation_account_login"} {
+	for _, column := range []string{"credential_strategy", "app_slug", "credential_generation", "validated_generation"} {
 		if !columnExists(t, db, "external_connections", column) {
 			t.Fatalf("external_connections.%s is missing", column)
+		}
+	}
+	// Installation identity is a set the connection covers, not a column on it.
+	for _, column := range []string{"installation_id", "connection_id", "account_id", "account_login"} {
+		if !columnExists(t, db, "external_connection_installations", column) {
+			t.Fatalf("external_connection_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"installation_id", "installation_account_id", "installation_account_login"} {
+		if columnExists(t, db, "external_connections", column) {
+			t.Fatalf("external_connections.%s survived the move to the installations table", column)
 		}
 	}
 	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages"} {

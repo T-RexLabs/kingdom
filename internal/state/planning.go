@@ -27,10 +27,10 @@ const (
 type PlanningOperationType string
 
 const (
-	PlanningOperationTypeReply            PlanningOperationType = "reply"
-	PlanningOperationTypeFormalize        PlanningOperationType = "formalize"
-	PlanningOperationTypeRegenerate       PlanningOperationType = "regenerate"
-	PlanningOperationTypeGenerateTitle    PlanningOperationType = "generate_title"
+	PlanningOperationTypeReply         PlanningOperationType = "reply"
+	PlanningOperationTypeFormalize     PlanningOperationType = "formalize"
+	PlanningOperationTypeRegenerate    PlanningOperationType = "regenerate"
+	PlanningOperationTypeGenerateTitle PlanningOperationType = "generate_title"
 )
 
 type PlanningOperationStatus string
@@ -407,7 +407,6 @@ type FinalizeGenerateTitleAbortRequest struct {
 	ProviderSettlement *FinalizePlanningProviderSettlementRequest
 	TerminalEvent      *AppendPlanningOperationEventRequest
 }
-
 
 type PlanningStore struct {
 	db *sql.DB

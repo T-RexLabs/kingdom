@@ -7,9 +7,6 @@ CREATE TABLE external_connections (
   app_id TEXT NOT NULL,
   client_id TEXT NOT NULL,
   app_slug TEXT NOT NULL,
-  installation_id TEXT NOT NULL,
-  installation_account_id TEXT NOT NULL DEFAULT '',
-  installation_account_login TEXT NOT NULL DEFAULT '',
   credential_handle TEXT NOT NULL,
   lifecycle TEXT NOT NULL CHECK (lifecycle IN ('enabled', 'disabled', 'removal_pending', 'removed')),
   health_class TEXT NOT NULL CHECK (health_class IN ('missing_credential', 'never_checked', 'healthy', 'permission_mismatch', 'revoked', 'suspended', 'rate_limited', 'unavailable', 'disabled', 'removal_pending', 'removed')),
@@ -21,29 +18,45 @@ CREATE TABLE external_connections (
   validated_generation INTEGER NOT NULL DEFAULT 0 CHECK (validated_generation >= 0),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK ((installation_account_id = '') = (installation_account_login = '')),
   CHECK (validated_generation <= credential_generation),
   CHECK (credential_strategy <> 'user_access_token' OR length(trim(app_slug)) > 0),
-  CHECK (health_class <> 'healthy' OR (length(trim(app_slug)) > 0 AND length(trim(installation_account_id)) > 0 AND length(trim(installation_account_login)) > 0))
+  CHECK (health_class <> 'healthy' OR length(trim(app_slug)) > 0)
 );
 
-CREATE UNIQUE INDEX idx_external_connections_active_installation
-ON external_connections (provider, installation_id)
-WHERE lifecycle <> 'removed';
+-- A connection is one App credential covering the installations that credential
+-- reaches. installation_id is the primary key rather than a unique index on the
+-- parent, so at most one live connection can hold a given installation; rows are
+-- deleted when a connection is tombstoned, leaving the installation free to be
+-- connected again while the audit stream keeps the removal provenance.
+CREATE TABLE external_connection_installations (
+  installation_id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  account_id TEXT NOT NULL DEFAULT '',
+  account_login TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  CHECK ((account_id = '') = (account_login = '')),
+  FOREIGN KEY (connection_id) REFERENCES external_connections(connection_id)
+);
 
-CREATE TRIGGER external_connection_identity_pinned
-BEFORE UPDATE OF installation_account_id ON external_connections
-WHEN OLD.installation_account_id <> ''
-  AND NEW.installation_account_id <> OLD.installation_account_id
-BEGIN SELECT RAISE(ABORT, 'external installation account identity is immutable'); END;
+CREATE INDEX idx_external_connection_installations_connection
+ON external_connection_installations (connection_id);
+
+-- Account identity pins on first successful validation, matching how a manual
+-- connection is created before its account is known. account_login is
+-- deliberately absent so a verified GitHub rename can still flow through.
+CREATE TRIGGER external_connection_installation_identity_pinned
+BEFORE UPDATE OF installation_id, connection_id, account_id ON external_connection_installations
+WHEN NEW.installation_id <> OLD.installation_id
+  OR NEW.connection_id <> OLD.connection_id
+  OR (OLD.account_id <> '' AND NEW.account_id <> OLD.account_id)
+BEGIN SELECT RAISE(ABORT, 'external installation identity is immutable'); END;
 
 CREATE TRIGGER external_connection_app_identity_pinned
-BEFORE UPDATE OF provider, credential_strategy, app_id, client_id, installation_id, credential_handle ON external_connections
+BEFORE UPDATE OF provider, credential_strategy, app_id, client_id, credential_handle ON external_connections
 WHEN NEW.provider <> OLD.provider
   OR NEW.credential_strategy <> OLD.credential_strategy
   OR NEW.app_id <> OLD.app_id
   OR NEW.client_id <> OLD.client_id
-  OR NEW.installation_id <> OLD.installation_id
   OR NEW.credential_handle <> OLD.credential_handle
 BEGIN SELECT RAISE(ABORT, 'external App and installation identity is immutable'); END;
 

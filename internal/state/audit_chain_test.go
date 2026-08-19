@@ -235,7 +235,7 @@ func TestAuditChainVerifiesAndDetectsExternalIntegrationTampering(t *testing.T) 
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewExternalStore(db)
 	ctx := context.Background()
-	_, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-audit", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-1"})
+	_, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestAuditChainDetectsExternalSequenceVersionAndHeadTampering(t *testing.T) 
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			store := NewExternalStore(db)
 			ctx := context.Background()
-			if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit-tamper", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", InstallationID: "2", CredentialHandle: "github-app:conn-audit-tamper", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-tamper"}); err != nil {
+			if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit-tamper", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit-tamper", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-tamper"}); err != nil {
 				t.Fatal(err)
 			}
 			test.tamper(t, db)
