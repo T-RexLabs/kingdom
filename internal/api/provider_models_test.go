@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -181,5 +183,66 @@ func TestOpenCodeProviderModelCatalogSnapshotReturnsStaleCacheOnFetchFailure(t *
 	}
 	if snapshot.FailureReason != ProviderModelCatalogFailureReasonTimeout {
 		t.Fatalf("expected timeout failure reason, got %q", snapshot.FailureReason)
+	}
+	// The message reaches the model selector verbatim, so it has to read as
+	// operator guidance rather than as the Go error that caused it.
+	if strings.Contains(snapshot.FailureMessage, "context deadline exceeded") {
+		t.Fatalf("expected operator guidance, got raw error text: %q", snapshot.FailureMessage)
+	}
+	if !strings.Contains(snapshot.FailureMessage, "already had") {
+		t.Fatalf("expected the message to say cached models are still in use, got %q", snapshot.FailureMessage)
+	}
+}
+
+func TestOpenCodeProviderModelCatalogSnapshotExplainsUnavailableWithoutRawError(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		execError error
+		reason    ProviderModelCatalogFailureReason
+	}{
+		{"timeout", context.DeadlineExceeded, ProviderModelCatalogFailureReasonTimeout},
+		{"binary missing", exec.ErrNotFound, ProviderModelCatalogFailureReasonBinaryMissing},
+		{"command failed", errors.New("exit status 1"), ProviderModelCatalogFailureReasonCommandFailed},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			catalog := &openCodeProviderModelCatalog{
+				binaryPath:   "opencode",
+				now:          time.Now,
+				ttl:          60 * time.Second,
+				fetchTimeout: 25 * time.Millisecond,
+				execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+					if errors.Is(testCase.execError, context.DeadlineExceeded) {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return nil, testCase.execError
+				},
+			}
+
+			snapshot, err := catalog.Snapshot(context.Background(), true)
+			if err != nil {
+				t.Fatalf("snapshot provider models: %v", err)
+			}
+			if snapshot.Status != ProviderModelCatalogStatusUnavailable {
+				t.Fatalf("expected unavailable status, got %q", snapshot.Status)
+			}
+			if snapshot.FailureReason != testCase.reason {
+				t.Fatalf("expected %q failure reason, got %q", testCase.reason, snapshot.FailureReason)
+			}
+			if snapshot.FailureMessage == "" {
+				t.Fatal("expected an operator-facing failure message")
+			}
+			// Raw causes are diagnostics, not operator copy. They must not be
+			// what the model selector shows.
+			for _, leak := range []string{"context deadline exceeded", "executable file not found", "exit status"} {
+				if strings.Contains(snapshot.FailureMessage, leak) {
+					t.Fatalf("expected operator guidance, got raw error text %q in %q", leak, snapshot.FailureMessage)
+				}
+			}
+		})
 	}
 }

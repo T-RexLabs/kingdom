@@ -155,20 +155,21 @@ func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh boo
 		rows, fetchErr := c.fetch(ctx, refresh)
 		if fetchErr != nil {
 			unavailableErr := classifyProviderModelCatalogError(fetchErr)
-			if len(cachedRows) > 0 && !cachedAt.IsZero() {
+			servingCachedModels := len(cachedRows) > 0 && !cachedAt.IsZero()
+			if servingCachedModels {
 				return ProviderModelCatalogSnapshot{
 					Items:          cachedRows,
 					Status:         ProviderModelCatalogStatusStale,
 					LastSuccessAt:  &cachedAt,
 					FailureReason:  unavailableErr.reason,
-					FailureMessage: unavailableErr.Error(),
+					FailureMessage: operatorCatalogFailureMessage(unavailableErr.reason, true),
 				}, nil
 			}
 			return ProviderModelCatalogSnapshot{
 				Items:          []gen.ProviderModel{},
 				Status:         ProviderModelCatalogStatusUnavailable,
 				FailureReason:  unavailableErr.reason,
-				FailureMessage: unavailableErr.Error(),
+				FailureMessage: operatorCatalogFailureMessage(unavailableErr.reason, false),
 				UnavailableErr: unavailableErr,
 			}, nil
 		}
@@ -217,6 +218,41 @@ func (c *openCodeProviderModelCatalog) fetch(ctx context.Context, refresh bool) 
 		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: parseErr}
 	}
 	return rows, nil
+}
+
+// operatorCatalogFailureMessage turns a catalog failure into something an
+// operator can act on.
+//
+// `FailureMessage` reaches the model selector verbatim, so it must never carry
+// a Go error string: "timeout: context deadline exceeded" tells the operator
+// nothing about what Kingdom was doing or whether their work is affected. The
+// two outcomes differ enough to deserve different words — with a cached list
+// the planner keeps working and the refresh is the only casualty, without one
+// no model can be chosen at all. The underlying error stays in FailureReason
+// for programmatic callers and in the process log for diagnosis.
+func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, servingCachedModels bool) string {
+	if servingCachedModels {
+		switch reason {
+		case ProviderModelCatalogFailureReasonTimeout:
+			return "Showing the models Kingdom already had. The refresh from OpenCode timed out."
+		case ProviderModelCatalogFailureReasonBinaryMissing:
+			return "Showing the models Kingdom already had. The opencode binary is no longer on PATH."
+		case ProviderModelCatalogFailureReasonParseFailed:
+			return "Showing the models Kingdom already had. Kingdom could not read the model list OpenCode returned."
+		default:
+			return "Showing the models Kingdom already had. The refresh from OpenCode did not complete."
+		}
+	}
+	switch reason {
+	case ProviderModelCatalogFailureReasonTimeout:
+		return "OpenCode did not return a model list in time. Retry once it responds."
+	case ProviderModelCatalogFailureReasonBinaryMissing:
+		return "Kingdom could not find the opencode binary on PATH. Install or configure OpenCode, then retry."
+	case ProviderModelCatalogFailureReasonParseFailed:
+		return "Kingdom could not read the model list OpenCode returned. Check the installed OpenCode version, then retry."
+	default:
+		return "Kingdom could not list OpenCode models. Check the OpenCode installation, then retry."
+	}
 }
 
 func classifyProviderModelCatalogError(err error) *providerModelCatalogUnavailableError {
