@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { intersectAllObservers } from "@/test/setup";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssuePicker } from "./issue-picker";
@@ -73,6 +74,14 @@ const chooseOption = async (
   await user.click(await screen.findByRole("option", { name: optionLabel }));
 };
 
+// The repository list loads the next page when its end scrolls into view.
+// jsdom has no layout, so the observer is driven deliberately instead.
+async function scrollRepositoriesToEnd() {
+	await act(async () => {
+		intersectAllObservers();
+	});
+}
+
 describe("IssuePicker", () => {
   it("does not offer a nominally healthy connection whose credential is missing", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json({ items: [{ connection_id: "stale", provider: "github", display_name: "Stale", app_id: "1", client_id: "Iv1", installation_id: "2", lifecycle: "enabled", health_class: "healthy", credential_state: "missing", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" }] })));
@@ -102,7 +111,7 @@ describe("IssuePicker", () => {
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
     await user.click(await screen.findByLabelText("GitHub repository"));
-    await user.click(await screen.findByRole("button", { name: /load more repositories/i }));
+    await scrollRepositoriesToEnd();
     await user.click(await screen.findByRole("option", { name: "owner/repo" }));
     await screen.findByText("First");
     await user.click(screen.getByRole("button", { name: /load more issues/i }));
@@ -256,7 +265,7 @@ describe("IssuePicker", () => {
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
     await user.click(await screen.findByLabelText("GitHub repository"));
-    await user.click(await screen.findByRole("button", { name: /load more repositories/i }));
+    await scrollRepositoriesToEnd();
     await user.type(await screen.findByLabelText("Filter owner/name"), "fresh");
     await waitFor(() => expect(staleSignal?.aborted).toBe(true));
     await act(async () => {
@@ -277,7 +286,7 @@ describe("IssuePicker", () => {
 
     expect(await screen.findByRole("option", { name: "owner/fresh" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "owner/stale" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /load more repositories/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/loading more repositories/i)).not.toBeInTheDocument();
   });
 
   it.each(["search", "state", "repository"] as const)(
@@ -444,7 +453,7 @@ describe("IssuePicker", () => {
     await user.click(await screen.findByLabelText("GitHub repository"));
     await user.type(await screen.findByLabelText("Filter owner/name"), "widget");
     await screen.findByRole("option", { name: "owner/widget-one" });
-    await user.click(screen.getByRole("button", { name: /load more repositories/i }));
+    await scrollRepositoriesToEnd();
     await screen.findByRole("option", { name: "owner/widget-two" });
     expect(requests.some((url) => url.includes("search=widget") && url.includes("cursor=next"))).toBe(true);
   });

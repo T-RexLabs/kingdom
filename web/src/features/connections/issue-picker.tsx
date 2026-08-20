@@ -329,8 +329,9 @@ export function IssuePicker({
                     onSelect={setRepositoryId}
                     search={{ value: repositoryQuery, onChange: setRepositoryQuery, placeholder: "Filter owner/name" }}
                     minWidth={280}
-                    emptyState={<p className="px-3 py-2 text-xs text-foreground-subtle">{loadingRepositories ? "Loading repositories..." : "No repositories match."}</p>}
-                    footer={repositoryCursor ? <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => void loadMoreRepositories()} disabled={loadingRepositories}>{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Repositories</Button> : undefined}
+                    onReachEnd={() => void loadMoreRepositories()}
+                    emptyState={<p className="px-3 py-2 text-xs text-foreground-subtle">{loadingRepositories ? "Loading repositories..." : repositoryCursor ? "No repositories match the pages loaded so far. Keep scrolling to load more." : "No repositories match."}</p>}
+                    footer={repositoryCursor ? <p role="status" className="flex items-center justify-center gap-2 py-1 text-xs text-foreground-subtle">{loadingRepositories ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Loading more repositories...</p> : undefined}
                   />
                 </div>
               ) : null}

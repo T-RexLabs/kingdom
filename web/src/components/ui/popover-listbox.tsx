@@ -13,7 +13,7 @@ import {
   useRole,
   useTypeahead,
 } from "@floating-ui/react";
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { isElementInsideModal, popoverZIndexForOwner, resolveOverlayContainer } from "@/lib/overlay-system";
 
 /**
@@ -74,6 +74,13 @@ export interface PopoverListboxProps {
   emptyState?: React.ReactNode;
   footer?: React.ReactNode;
 
+  /**
+   * Called when the option list is scrolled to its end. Lets a consumer whose
+   * options arrive a page at a time keep filling as the operator scrolls,
+   * rather than making them ask for each page.
+   */
+  onReachEnd?: () => void;
+
   /** Lower bound on the panel width; defaults to 160px. */
   minWidth?: number;
   /** Upper bound on panel height (px); defaults to 320 (with autoflip). */
@@ -104,6 +111,7 @@ export function PopoverListbox({
   groupBy = false,
   emptyState,
   footer,
+  onReachEnd,
   minWidth = 160,
   maxHeight = 320,
   panelClassName,
@@ -209,6 +217,33 @@ export function PopoverListbox({
     refs.setFloating(node);
   }, [refs]);
 
+  const [listRoot, setListRoot] = useState<HTMLDivElement | null>(null);
+  const [endSentinel, setEndSentinel] = useState<HTMLDivElement | null>(null);
+  // `onReachEnd` fires from an observer rather than a scroll handler so it also
+  // fires when the loaded options do not fill the panel — the case where the
+  // operator has nothing to scroll and would otherwise be stuck looking at a
+  // short list with more behind it.
+  const reachEndRef = useRef(onReachEnd);
+  useEffect(() => {
+    reachEndRef.current = onReachEnd;
+  }, [onReachEnd]);
+  useEffect(() => {
+    if (!listRoot || !endSentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) reachEndRef.current?.();
+      },
+      { root: listRoot },
+    );
+    observer.observe(endSentinel);
+    return () => observer.disconnect();
+    // Re-observing on every change in length matters: an observer only reports
+    // changes in intersection, so a sentinel that is still visible after a page
+    // loads would never fire again and the list would stall one page in. A
+    // fresh observer re-reports the current state, and the consumer's own
+    // guard — no cursor, or a load already in flight — is what ends the chain.
+  }, [listRoot, endSentinel, items.length]);
+
   const triggerProps = getReferenceProps({
     id: triggerId,
     type: "button",
@@ -262,6 +297,7 @@ export function PopoverListbox({
                 />
               ) : null}
               <div
+                ref={setListRoot}
                 id={listboxId}
                 role="listbox"
                 aria-labelledby={triggerId}
@@ -293,6 +329,7 @@ export function PopoverListbox({
                           />
                         ),
                     )}
+                {onReachEnd ? <div ref={setEndSentinel} aria-hidden="true" className="h-px" /> : null}
               </div>
               {footer ? <div className="border-t border-border p-2">{footer}</div> : null}
             </div>
