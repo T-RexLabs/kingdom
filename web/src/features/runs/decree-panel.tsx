@@ -14,13 +14,13 @@ import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
-import { safeGitHubIssueURL } from "@/features/connections/github-url";
+import { ExternalSourceCoordinate, ExternalSourceStrip } from "@/features/connections/external-source-strip";
 import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
 import { roleTitle } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
-import { ChevronRight, ExternalLink, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
+import { ChevronRight, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
 
 export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role[] }) {
   const [readOpen, setReadOpen] = useState(false);
@@ -154,7 +154,6 @@ function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeS
     }),
     source.link_id,
   );
-  const sourceURL = safeGitHubIssueURL(source.canonical_url, source.repository, source.issue_number);
   const sourceStatus = refreshResult?.outcome ?? source.status;
   const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
   const updateAvailable = latestSnapshotID !== source.used_snapshot_id;
@@ -178,20 +177,20 @@ function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeS
   };
 
   return (
-    <section aria-label={`Issued source ${source.repository}#${source.issue_number}`} className="min-w-0 space-y-2 rounded-md border border-gold/25 bg-gold/5 p-3 text-xs">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="font-medium text-foreground">Imported from GitHub · {sourceURL ? <a href={sourceURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{source.repository}#{source.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{source.repository}#{source.issue_number}</span>}</p>
-          {statusNotice ? <p className="mt-1 text-foreground-muted"><span className="text-foreground">{statusNotice}</span>{updateAvailable ? " — the issued decree remains unchanged." : ""}</p> : null}
-        </div>
+    <ExternalSourceStrip
+      label={`Issued source ${source.repository}#${source.issue_number}`}
+      identity={<>Imported from GitHub · <ExternalSourceCoordinate canonicalURL={source.canonical_url} repository={source.repository} issueNumber={source.issue_number} /></>}
+      actions={
         <Button type="button" size="sm" variant="ghost" aria-label={`${recoverableRefresh.hasPendingRecovery ? "Retry" : "Check"} GitHub source ${source.repository}#${source.issue_number}`} onClick={refresh} disabled={refreshing}>{refreshing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}{recoverableRefresh.hasPendingRecovery ? "Retry GitHub source check" : "Check GitHub source"}</Button>
-      </div>
+      }
+    >
+      {statusNotice ? <p className="text-foreground-muted"><span className="text-foreground">{statusNotice}</span>{updateAvailable ? " — the issued decree remains unchanged." : ""}</p> : null}
       {sourceFailureGuidance ? <p role="status" className="text-status-failed">{sourceFailureGuidance}</p> : null}
       {refreshResult ? <p aria-live="polite" className="text-foreground-muted">{refreshResult.message}</p> : null}
       {updateAvailable ? <ExternalSourceComparison baselineId={source.used_snapshot_id} candidateId={latestSnapshotID} /> : null}
       {refreshResult?.retry_at ? <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
       {refreshError ? <p role="alert" className="text-status-failed">{refreshError}</p> : null}
-    </section>
+    </ExternalSourceStrip>
   );
 }
 

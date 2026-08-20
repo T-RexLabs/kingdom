@@ -17,7 +17,7 @@ import {
   type RunSummary,
   type Role,
 } from "@/api/hooks";
-import { ChevronDown, ChevronUp, CircleAlert, ExternalLink, Loader2, Play, RefreshCw, Scroll, Send, X } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleAlert, Loader2, Play, RefreshCw, Scroll, Send, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SelectField } from "@/components/ui/select-field";
 import { ModelSelectField } from "./model-select-field";
@@ -28,7 +28,7 @@ import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
 import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 import { IssuePicker, type IssueSelection } from "@/features/connections/issue-picker";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { safeGitHubIssueURL } from "@/features/connections/github-url";
+import { ExternalSourceCoordinate, ExternalSourceStrip } from "@/features/connections/external-source-strip";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import type { DecreePlanningLineageSearch } from "./decree-route-search";
 import { isAmbiguousMutationFailure } from "./mutation-recovery";
@@ -690,10 +690,6 @@ export function DecreeForm({
     setExternalError("");
   };
 
-  const externalIssueURL = origin.kind === "github"
-    ? safeGitHubIssueURL(origin.issue.canonical_url, origin.issue.repository, origin.issue.issue_number)
-    : null;
-
   return (
     <Card>
       <CardHeader>
@@ -706,16 +702,16 @@ export function DecreeForm({
           <form onSubmit={issueAndRun} className="space-y-4">
             {!decreeLocked ? <IssuePicker actionLabel="Prefill Decree" onSelect={prefillExternalIssue} /> : null}
             {origin.kind === "github" ? (
-              <section aria-label="Selected GitHub source" className="space-y-3 rounded-lg border border-gold/25 bg-gold/5 p-3 text-xs">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-medium text-foreground">Imported from {externalIssueURL ? <a href={externalIssueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{origin.issue.repository}#{origin.issue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{origin.issue.repository}#{origin.issue.issue_number}</span>}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-x-3 gap-y-2">
+              <ExternalSourceStrip
+                label="Selected GitHub source"
+                identity={<>Imported from <ExternalSourceCoordinate canonicalURL={origin.issue.canonical_url} repository={origin.issue.repository} issueNumber={origin.issue.issue_number} /></>}
+                actions={
+                  <>
                     <Button type="button" variant="ghost" size="sm" disabled={externalBusy || decreeLocked} onClick={() => void refreshExternalCandidate()}>{externalBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}Check for Updates</Button>
                     <Button type="button" variant="ghost" size="sm" disabled={decreeLocked} onClick={clearExternalSource}>Remove Source</Button>
-                  </div>
-                </div>
+                  </>
+                }
+              >
                 {origin.candidate?.snapshotId === origin.snapshotId ? <p role="status" className="text-foreground-muted">GitHub is up to date with the selected source.</p> : null}
                 {origin.candidate && origin.candidate.snapshotId !== origin.snapshotId ? (
                   <div className="border-t border-gold/15 pt-3">
@@ -729,7 +725,7 @@ export function DecreeForm({
                     </div>
                   </div>
                 ) : null}
-              </section>
+              </ExternalSourceStrip>
             ) : null}
             {externalError ? <p role="alert" className="text-xs text-status-failed">{externalError}</p> : null}
             <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(12rem,15rem)_auto] md:items-end">
