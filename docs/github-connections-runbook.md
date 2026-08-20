@@ -66,7 +66,7 @@ Ordinary SQLite backups retain source history but exclude `.kingdom/secrets`. Af
 
 ## Private Content Disclosure
 
-Selected private issue text and retained comments may be sent to the configured model provider. Kingdom frames this material as untrusted external evidence, keeps it out of transcript messages, and denies all OpenCode tools for provider operations carrying external content.
+Selected private issue text and retained comments may be sent to the configured model provider. Kingdom frames this material as untrusted external evidence and keeps it out of transcript messages. Attaching an issue does not restrict the planner: it keeps the workspace-inspection and research tools it needs to understand the issue, and the planner profile grants no shell, no writes, and no subagents in any session. Weigh that when importing from a repository you do not control — the text was written by whoever filed the issue, and it reaches a model that can read your project and fetch URLs.
 
 Use `make test-opencode-security-smoke` on a host licensed for **GitHub Copilot - GPT-5.4 Mini** to run the opt-in adversarial planner canary. The ordinary suite remains deterministic and proves the same wildcard denial at the provider-request boundary.
 
