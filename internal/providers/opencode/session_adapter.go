@@ -436,6 +436,43 @@ func accumulateTokenUsage(total *TokenUsage, delta TokenUsage) {
 	total.CacheWriteTokens += delta.CacheWriteTokens
 }
 
+// WarmRuntime resolves this adapter's agent against the real managed OpenCode
+// database and config directory, so the work OpenCode does exactly once per
+// installation is done before an operator is waiting on it.
+//
+// The first `opencode run` against a fresh workspace is the moment OpenCode
+// creates and migrates its database, loads the config overlay, and resolves the
+// agent profile — seconds of startup charged to whoever sent the first planner
+// message. Strict startup validation cannot pay it, because that deliberately
+// runs against a throwaway database copy so validation can never write to
+// Kingdom's own. `debug agent` resolves configuration and opens the database
+// without creating a session, which is precisely the warm needed and nothing
+// more.
+//
+// Taking the database startup gate matters: this opens the same database an
+// execution run might be opening, and the gate is what keeps two processes off
+// the WAL pragma at once.
+func (a *SessionAdapter) WarmRuntime(ctx context.Context) error {
+	agent := strings.TrimSpace(a.agent)
+	if agent == "" {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, a.binaryPath, "debug", "agent", agent)
+	if a.workDir != "" {
+		cmd.Dir = a.workDir
+	}
+	cmd.Env = opencodeProcessEnvironment(opencodeCommandEnvironment(ExecuteRequest{}, a.configDir, a.databasePath, a.inlineConfigContent))
+	release, err := opencodeDatabaseStartupGates.acquire(ctx, a.databasePath)
+	if err != nil {
+		return fmt.Errorf("wait for opencode database startup: %w", err)
+	}
+	defer release()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("resolve opencode agent %q: %w: %s", agent, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteRequest, sessionID, prompt string) (startedOpencodeRun, error) {
 	// `--thinking` makes `opencode run --format json` emit `reasoning` parts on
 	// the event stream. Without it the stream carries only text/tool/step parts

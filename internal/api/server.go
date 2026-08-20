@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,6 +82,7 @@ type Server struct {
 	autonomousApprovalsDefault bool
 	providerEngine             string
 	providerModelCatalog       ProviderModelCatalog
+	plannerRuntimeWarmer       providerRuntimeWarmer
 	projectRoot                string
 	defaultPublishMode         string
 
@@ -130,6 +132,49 @@ func (s *Server) Close(ctx context.Context) error {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
 	return closeErr
+}
+
+// providerModelCatalogTTL is how long a listed model catalog stays fresh
+// before a read schedules a background revalidation. It is deliberately far
+// longer than a page's poll interval: the catalog only changes when the
+// operator changes their OpenCode installation, and every expiry costs a
+// subprocess.
+const providerModelCatalogTTL = 10 * time.Minute
+
+// Warm pays this process's one-time provider costs up front, so the first
+// operator to arrive does not.
+//
+// Two costs used to land on whoever opened the planner first: listing models
+// spawns `opencode models --verbose`, and the first planner turn is when
+// OpenCode's managed database is created and migrated and the planner agent
+// profile is first resolved. Both are done once here instead, during summon,
+// where a few seconds cost nobody anything.
+//
+// Warming is best-effort by construction. A failure here means the operator
+// pays the cost lazily exactly as they used to, and the real diagnosis reaches
+// them through the model catalog notice — so it must never fail startup, and
+// it must never gate readiness.
+func (s *Server) Warm(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	if s.providerModelCatalog != nil {
+		if _, err := s.providerModelCatalog.Snapshot(ctx, false); err != nil {
+			log.Printf("kingdom: warm provider model catalog: %v", err)
+		}
+	}
+	if s.plannerRuntimeWarmer != nil {
+		if err := s.plannerRuntimeWarmer.WarmRuntime(ctx); err != nil {
+			log.Printf("kingdom: warm planner provider runtime: %v", err)
+		}
+	}
+}
+
+// providerRuntimeWarmer is the provider-side half of Warm. It stays an
+// interface so an injected planner agent (tests, alternate engines) simply has
+// nothing to warm rather than needing a stub.
+type providerRuntimeWarmer interface {
+	WarmRuntime(ctx context.Context) error
 }
 
 // ForceClose is the hard-stop shutdown path used when summon is escalated
@@ -380,6 +425,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if adapterErr != nil {
 			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
 		}
+		s.plannerRuntimeWarmer = plannerAdapter
 		plannerAgent = planning.NewOpenCodeAgent(plannerAdapter, idGenerator)
 	}
 	s.planningService = planning.NewService(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
@@ -406,7 +452,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("recover planning operations: %w", err)
 	}
 	if s.providerModelCatalog == nil {
-		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, 60*time.Second)
+		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
 	}
 
 	if err := state.EnsureCanonicalRoles(startupCtx, cfg.DB, now()); err != nil {

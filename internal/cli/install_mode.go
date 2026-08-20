@@ -56,9 +56,13 @@ const (
 	strictSummonReadyTimeoutPad = 30 * time.Second
 
 	summonGracefulShutdownTimeout = 10 * time.Second
-	summonStopWaitTimeout         = 12 * time.Second
-	summonStopPollInterval        = 120 * time.Millisecond
-	summonStopSettleGrace         = 1200 * time.Millisecond
+	// summonProviderWarmTimeout bounds the post-listen provider warm. Warming
+	// is an optimisation, so it gets a generous ceiling and then gives up
+	// rather than holding a goroutine against a wedged provider.
+	summonProviderWarmTimeout = 60 * time.Second
+	summonStopWaitTimeout     = 12 * time.Second
+	summonStopPollInterval    = 120 * time.Millisecond
+	summonStopSettleGrace     = 1200 * time.Millisecond
 )
 
 var sqliteConnectionPragmas = []string{
@@ -375,6 +379,19 @@ func startupPhaseLabel(phase kingdom.StartupPhase) string {
 		return "ready"
 	default:
 		return ""
+	}
+}
+
+// warmSummonProviderSurfaces performs the post-listen provider warm and
+// reports how long it took, so an operator watching summon can see the cost
+// being paid here instead of in their first planner session.
+func warmSummonProviderSurfaces(ctx context.Context, handler *api.Server, stderr io.Writer) {
+	warmCtx, cancel := context.WithTimeout(ctx, summonProviderWarmTimeout)
+	defer cancel()
+	started := time.Now()
+	handler.Warm(warmCtx)
+	if stderr != nil {
+		_, _ = fmt.Fprintf(stderr, "summon: provider surfaces warmed in %s\n", time.Since(started).Round(time.Millisecond))
 	}
 }
 
@@ -755,6 +772,16 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	go func() {
 		errCh <- server.ListenAndServe()
 	}()
+
+	// Warm the provider surfaces the first operator would otherwise wait on:
+	// listing OpenCode models, and OpenCode's own one-time database and agent
+	// resolution. It runs beside the listener rather than before it, because
+	// readiness must not wait on OpenCode — a slow or broken provider has to
+	// leave the operator with a running Kingdom that can explain itself, not
+	// with a summon that hangs. For the same reason it reports through the log
+	// and never through the startup tracker, whose phases are a gate on
+	// readiness and are already past.
+	go warmSummonProviderSurfaces(ctx, apiHandler, stderr)
 
 	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh, ""); err != nil {
 		// The deferred safety-net above owns shutdown. Returning
