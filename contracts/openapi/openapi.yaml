@@ -447,10 +447,11 @@ paths:
     get:
       tags: [connections]
       operationId: listConnectionRepositories
-      summary: List repositories currently granted to the installation.
+      summary: List repositories currently granted across the connection's installations.
       parameters:
         - $ref: "#/components/parameters/ConnectionId"
         - $ref: "#/components/parameters/Cursor"
+        - { name: search, in: query, required: false, schema: { type: string, maxLength: 256 } }
       responses:
         "200": { description: Installation repositories, content: { application/json: { schema: { $ref: "#/components/schemas/RepositoryPage" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }

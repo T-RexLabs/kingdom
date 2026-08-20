@@ -54,27 +54,51 @@ type tokenCacheKey struct {
 	credentialGeneration                                       int
 }
 type Client struct {
-	http             *http.Client
-	keys             *KeyStore
-	userTokens       *UserTokenStore
-	deviceOAuth      *DeviceOAuthClient
-	sharedClientID   string
-	now              func() time.Time
-	base             string
-	tokensMu         sync.Mutex
-	tokens           map[tokenCacheKey]cachedToken
-	mintMu           sync.Mutex
-	mints            map[tokenCacheKey]*tokenMint
-	epochs           map[string]uint64
-	gateMu           sync.Mutex
-	gates            map[string]chan struct{}
-	global           chan struct{}
-	retryDelay       func(int) time.Duration
-	operationTimeout time.Duration
-	strategiesMu     sync.RWMutex
-	strategies       map[string]string
-	userRefreshMu    sync.Mutex
-	userRefreshLocks map[string]*sync.Mutex
+	http              *http.Client
+	keys              *KeyStore
+	userTokens        *UserTokenStore
+	deviceOAuth       *DeviceOAuthClient
+	sharedClientID    string
+	now               func() time.Time
+	base              string
+	tokensMu          sync.Mutex
+	tokens            map[tokenCacheKey]cachedToken
+	mintMu            sync.Mutex
+	mints             map[tokenCacheKey]*tokenMint
+	epochs            map[string]uint64
+	gateMu            sync.Mutex
+	gates             map[string]chan struct{}
+	global            chan struct{}
+	retryDelay        func(int) time.Duration
+	operationTimeout  time.Duration
+	strategiesMu      sync.RWMutex
+	strategies        map[string]string
+	userRefreshMu     sync.Mutex
+	userRefreshLocks  map[string]*sync.Mutex
+	repositoryIndexMu sync.Mutex
+	repositoryIndex   map[string]*connectionRepositoryIndex
+}
+
+const (
+	// repositoryPageSize is how many repositories one Kingdom page holds. It
+	// matches the provider page size, so the common connection returns
+	// everything it grants in a single request.
+	repositoryPageSize = 100
+	// repositoryRequestBudget caps how many provider requests one Kingdom page
+	// may spend. It is what keeps a connection covering many installations —
+	// or a narrow filter that matches nothing early — from turning one operator
+	// request into an unbounded walk. The cursor still reaches every grant.
+	repositoryRequestBudget = 5
+	// maxIndexedRepositories bounds what one connection may remember, so the
+	// index stays an accelerator and never an unbounded cache.
+	maxIndexedRepositories = 2000
+)
+
+// connectionRepositoryIndex remembers which installation granted a repository,
+// scoped to the connection row version it was learned from.
+type connectionRepositoryIndex struct {
+	rowVersion int
+	byID       map[string]external.Repository
 }
 
 type tokenMint struct {
@@ -496,9 +520,22 @@ func (c *Client) installationRepositoryPage(ctx context.Context, conn state.Exte
 }
 
 // ListRepositories walks the connection's installations in a stable order,
-// returning one provider page at a time. The cursor carries which installation
-// it is on as well as the page within it, so paging cannot repeat or skip a
-// grant when a connection covers several accounts.
+// accumulating a Kingdom page rather than handing back whatever one provider
+// page happened to hold. The cursor carries which installation it is on as well
+// as the page within it, so paging cannot repeat or skip a grant when a
+// connection covers several accounts.
+//
+// One provider page per request was a leaked implementation detail with two
+// operator-visible costs. A connection covering several accounts that each
+// grant one repository produced a picker showing one row at a time, and because
+// an exhausted installation was handed back as a cursor without being fetched,
+// asking for more could add nothing at all. Filtering was worse: the search ran
+// over that single page, so a filter could report no matches while a later
+// installation held them.
+//
+// Accumulation is bounded by both a page size and a provider-request budget, so
+// a connection with many installations cannot turn one request into an
+// unbounded fan-out. The cursor still reaches every grant.
 func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnection, search, cursor string) (external.RepositoryPage, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
@@ -508,41 +545,100 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 	}
 	index, page := decodeRepositoryCursor(cursor)
 	query := strings.ToLower(strings.TrimSpace(search))
-	for index < len(installations) {
+
+	out := external.RepositoryPage{Items: make([]external.Repository, 0, repositoryPageSize)}
+	// A repository belongs to exactly one account, so seeing an ID twice across
+	// the pages of one Kingdom page means the listing shifted under the walk —
+	// a grant added or removed mid-request. That is a benign race, not a
+	// malformed response, so it is absorbed rather than failed.
+	seen := make(map[string]struct{}, repositoryPageSize)
+	for requests := 0; index < len(installations); {
+		if requests >= repositoryRequestBudget || len(out.Items) >= repositoryPageSize {
+			out.NextCursor = encodeRepositoryCursor(index, page)
+			return out, nil
+		}
 		installation := installations[index]
 		items, more, err := c.installationRepositoryPage(ctx, conn, installation.InstallationID, page)
 		if err != nil {
 			return external.RepositoryPage{}, err
 		}
-		if query != "" {
-			filtered := make([]external.Repository, 0, len(items))
-			for _, item := range items {
-				if strings.Contains(strings.ToLower(item.Locator), query) {
-					filtered = append(filtered, item)
-				}
+		requests++
+		c.rememberRepositories(conn, items)
+		for _, item := range items {
+			if _, duplicate := seen[item.ID]; duplicate {
+				continue
 			}
-			items = filtered
+			seen[item.ID] = struct{}{}
+			if query == "" || strings.Contains(strings.ToLower(item.Locator), query) {
+				out.Items = append(out.Items, item)
+			}
 		}
-		out := external.RepositoryPage{Items: items}
 		if more {
 			if page >= 100 {
 				return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureOversizedResponse}
 			}
-			out.NextCursor = encodeRepositoryCursor(index, page+1)
-			return out, nil
+			page++
+			continue
 		}
-		// This installation is exhausted; hand the next one back as a cursor so
-		// the caller keeps one page per request rather than fanning out here.
-		if index+1 < len(installations) {
-			out.NextCursor = encodeRepositoryCursor(index+1, 1)
-			return out, nil
-		}
-		return out, nil
+		index++
+		page = 1
 	}
-	return external.RepositoryPage{}, nil
+	return out, nil
 }
 
+// rememberRepositories records where each repository came from, so resolving an
+// ID back to its locator and installation does not have to re-walk the whole
+// connection.
+func (c *Client) rememberRepositories(conn state.ExternalConnection, items []external.Repository) {
+	if len(items) == 0 {
+		return
+	}
+	c.repositoryIndexMu.Lock()
+	defer c.repositoryIndexMu.Unlock()
+	if c.repositoryIndex == nil {
+		c.repositoryIndex = map[string]*connectionRepositoryIndex{}
+	}
+	index := c.repositoryIndex[conn.ConnectionID]
+	// A connection whose row has moved on may have had a grant added or taken
+	// away, so what the old generation knew is no longer something to trust.
+	if index == nil || index.rowVersion != conn.RowVersion {
+		index = &connectionRepositoryIndex{rowVersion: conn.RowVersion, byID: map[string]external.Repository{}}
+		c.repositoryIndex[conn.ConnectionID] = index
+	}
+	if len(index.byID) >= maxIndexedRepositories {
+		return
+	}
+	for _, item := range items {
+		index.byID[item.ID] = item
+	}
+}
+
+// indexedRepository returns a remembered repository for this connection at this
+// row version, if one was seen.
+func (c *Client) indexedRepository(conn state.ExternalConnection, id string) (external.Repository, bool) {
+	c.repositoryIndexMu.Lock()
+	defer c.repositoryIndexMu.Unlock()
+	index := c.repositoryIndex[conn.ConnectionID]
+	if index == nil || index.rowVersion != conn.RowVersion {
+		return external.Repository{}, false
+	}
+	item, ok := index.byID[id]
+	return item, ok
+}
+
+// repository resolves a repository ID back to the locator and installation that
+// grants it.
+//
+// Every issue listing and every preview goes through here, and the fallback is
+// a walk of the connection's entire grant. Remembering what the picker's own
+// repository listing already learned turns that walk into a map read for the
+// path an operator actually takes — select a repository, then read its issues —
+// while leaving the walk in place for cold callers such as a refresh after
+// restart.
 func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id string) (external.Repository, error) {
+	if item, ok := c.indexedRepository(conn, id); ok {
+		return item, nil
+	}
 	cursor := ""
 	for pages := 0; pages < 100; pages++ {
 		p, err := c.ListRepositories(ctx, conn, "", cursor)

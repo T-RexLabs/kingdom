@@ -1374,3 +1374,144 @@ func TestOneInstallationCannotVouchForAnothersRepositories(t *testing.T) {
 		t.Fatal("an installation must only vouch for repositories of its own account")
 	}
 }
+
+// A connection covering several accounts that each grant one repository used to
+// hand the picker one row at a time, because a request returned one provider
+// page of one installation. Worse, an exhausted installation was handed back as
+// a cursor without being fetched, so asking for more could add nothing at all.
+func TestListRepositoriesAggregatesAcrossInstallations(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/installation/repositories" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		// Each installation grants exactly one repository, which is the shape
+		// that produced the one-row picker.
+		switch r.Header.Get("Authorization") {
+		case "Bearer token-2":
+			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"enkiid/personal","html_url":"https://github.com/enkiid/personal","owner":{"id":10}}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"repositories":[{"id":2,"full_name":"T-RexLabs/kingdom","html_url":"https://github.com/T-RexLabs/kingdom","owner":{"id":20}}]}`))
+		}
+	}))
+	defer server.Close()
+
+	conn := multiInstallationTestConnection()
+	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	page, err := client.ListRepositories(context.Background(), conn, "", "")
+	if err != nil {
+		t.Fatalf("list repositories: %v", err)
+	}
+	if len(page.Items) != 2 {
+		t.Fatalf("expected both installations' grants in one page, got %#v", page.Items)
+	}
+	if page.NextCursor != "" {
+		t.Fatalf("expected an exhausted walk to end, got cursor %q", page.NextCursor)
+	}
+}
+
+// Filtering ran over a single provider page, so a filter could report no
+// matches while a later installation held them.
+func TestListRepositoriesFiltersAcrossInstallations(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/installation/repositories" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.Header.Get("Authorization") {
+		case "Bearer token-2":
+			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"enkiid/personal","html_url":"https://github.com/enkiid/personal","owner":{"id":10}}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"repositories":[{"id":2,"full_name":"T-RexLabs/kingdom","html_url":"https://github.com/T-RexLabs/kingdom","owner":{"id":20}}]}`))
+		}
+	}))
+	defer server.Close()
+
+	conn := multiInstallationTestConnection()
+	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	page, err := client.ListRepositories(context.Background(), conn, "kingdom", "")
+	if err != nil {
+		t.Fatalf("list repositories: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Locator != "T-RexLabs/kingdom" {
+		t.Fatalf("expected the match held by the second installation, got %#v", page.Items)
+	}
+}
+
+// Resolving a repository ID is on the path of every issue listing and preview.
+// Aggregation made the fallback walk more expensive, so the listing the picker
+// already performed has to be what answers it.
+func TestRepositoryResolvesFromTheListingIndex(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	var listings atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/installation/repositories" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		listings.Add(1)
+		_, _ = w.Write([]byte(`{"repositories":[{"id":2,"full_name":"T-RexLabs/kingdom","html_url":"https://github.com/T-RexLabs/kingdom","owner":{"id":20}}]}`))
+	}))
+	defer server.Close()
+
+	conn := multiInstallationTestConnection()
+	client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	if _, err := client.ListRepositories(context.Background(), conn, "", ""); err != nil {
+		t.Fatalf("list repositories: %v", err)
+	}
+	before := listings.Load()
+
+	repo, err := client.repository(context.Background(), conn, "2")
+	if err != nil {
+		t.Fatalf("resolve repository: %v", err)
+	}
+	if repo.Locator != "T-RexLabs/kingdom" || repo.InstallationID == "" {
+		t.Fatalf("expected the remembered grant, got %#v", repo)
+	}
+	if listings.Load() != before {
+		t.Fatalf("expected the remembered listing to answer without another walk, got %d extra requests", listings.Load()-before)
+	}
+
+	// A connection row that has moved on may have gained or lost a grant, so
+	// what the old generation knew is no longer something to trust.
+	moved := conn
+	moved.RowVersion = conn.RowVersion + 1
+	if _, ok := client.indexedRepository(moved, "2"); ok {
+		t.Fatal("expected a newer connection row version to invalidate the index")
+	}
+}
+
+func multiInstallationTestConnection() state.ExternalConnection {
+	return state.ExternalConnection{
+		ConnectionID: "conn-1",
+		RowVersion:   1,
+		Installations: []state.ConnectionInstallation{
+			{InstallationID: "2"},
+			{InstallationID: "3"},
+		},
+	}
+}
+
+func seedInstallationTestTokens(client *Client, conn state.ExternalConnection, fingerprint string, expires time.Time) {
+	for _, installation := range conn.Installations {
+		client.tokens[tokenCacheKey{
+			connectionID:         conn.ConnectionID,
+			appID:                conn.AppID,
+			clientID:             conn.ClientID,
+			installationID:       installation.InstallationID,
+			fingerprint:          fingerprint,
+			credentialGeneration: conn.CredentialGeneration,
+		}] = cachedToken{value: "token-" + installation.InstallationID, expires: expires}
+	}
+}

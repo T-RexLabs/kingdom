@@ -390,7 +390,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List repositories currently granted to the installation. */
+        /** List repositories currently granted across the connection's installations. */
         get: operations["listConnectionRepositories"];
         put?: never;
         post?: never;
@@ -3881,6 +3881,7 @@ export interface operations {
         parameters: {
             query?: {
                 cursor?: components["parameters"]["Cursor"];
+                search?: string;
             };
             header?: never;
             path: {
