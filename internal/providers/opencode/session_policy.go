@@ -21,18 +21,17 @@ type sessionServerConfig struct {
 	MDNS bool `json:"mdns"`
 }
 
+// A note for anyone reaching for a broader denial here: OpenCode does not
+// enforce a `"*"` wildcard in this permission block. Kingdom shipped
+// `permission: {"*": "deny"}` for planner turns carrying linked issue text and
+// believed it removed every tool; measured against a live provider it removed
+// none — `list`, `glob`, `grep`, and `webfetch` all still ran. What is actually
+// enforced is the agent profile's `tools:` block, which is why the planner
+// genuinely has no shell and cannot write. Deny a capability there, not here,
+// and verify it against a real provider before claiming it.
 func PlannerSessionInlineConfig() (string, error) {
 	config := hardenedSessionInlineConfig()
 	config.Permission = map[string]permissionAction{"external_directory": permissionActionDeny}
-	return marshalSessionInlineConfig(config)
-}
-
-// ExternalPlannerSessionInlineConfig denies every tool. Linked issue text is
-// attacker-controlled and must never be able to induce file, shell, network,
-// subagent, skill, or custom-tool access.
-func ExternalPlannerSessionInlineConfig() (string, error) {
-	config := hardenedSessionInlineConfig()
-	config.Permission = map[string]permissionAction{"*": permissionActionDeny, "external_directory": permissionActionDeny, "question": permissionActionDeny}
 	return marshalSessionInlineConfig(config)
 }
 

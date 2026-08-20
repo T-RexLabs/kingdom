@@ -94,37 +94,37 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	if providerInvocation != nil && strings.TrimSpace(providerInvocation.LogicalSessionID) != "" {
 		sessionID = strings.TrimSpace(providerInvocation.LogicalSessionID)
 	}
-	inlineConfigContent := ""
+	// A linked issue is the subject the operator wants to work through, not a
+	// hostile payload, and understanding one needs the planner's ordinary
+	// capabilities: reading the repository, researching references, and talking
+	// it over. Turns carrying external context therefore run under the same
+	// session policy as every other planner turn — no per-turn override here.
+	//
+	// The binding check stays: external text without its immutable snapshot
+	// bindings (or the reverse) means the operation was assembled wrong, and
+	// that fails closed regardless of policy.
 	hasExternalContext := strings.TrimSpace(input.ExternalContext) != ""
 	hasExternalSnapshots := len(input.ExternalSnapshotIDs) > 0
 	if hasExternalContext != hasExternalSnapshots {
 		return ProviderExecutionMetadata{}, fmt.Errorf("external planner context requires matching immutable snapshot bindings")
 	}
-	if hasExternalSnapshots {
-		var configErr error
-		inlineConfigContent, configErr = opencode.ExternalPlannerSessionInlineConfig()
-		if configErr != nil {
-			return ProviderExecutionMetadata{}, fmt.Errorf("build external planner policy: %w", configErr)
-		}
-	}
 
 	resp, err := a.adapter.Execute(ctx, opencode.ExecuteRequest{
-		SessionID:           sessionID,
-		AttemptID:           attemptID,
-		RunID:               "planner-" + input.SessionID,
-		NodeRunID:           attemptID,
-		Model:               input.ModelSelection.Model,
-		Agent:               "planner",
-		ForceNewSession:     forceNew,
-		WorkspacePath:       input.ProjectRoot,
-		ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
-		InlineConfigContent: inlineConfigContent,
-		Prompt:              prompt,
-		OccurredAt:          time.Now().UTC().Format(time.RFC3339),
-		OnProgress:          onChunk,
-		ProviderSessionID:   providerSessionIDForInvocation(providerInvocation),
-		InvocationID:        invocationIDForPlanner(providerInvocation),
-		InvocationIssuedAt:  invocationIssuedAtForPlanner(providerInvocation),
+		SessionID:          sessionID,
+		AttemptID:          attemptID,
+		RunID:              "planner-" + input.SessionID,
+		NodeRunID:          attemptID,
+		Model:              input.ModelSelection.Model,
+		Agent:              "planner",
+		ForceNewSession:    forceNew,
+		WorkspacePath:      input.ProjectRoot,
+		ConfigDir:          bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
+		Prompt:             prompt,
+		OccurredAt:         time.Now().UTC().Format(time.RFC3339),
+		OnProgress:         onChunk,
+		ProviderSessionID:  providerSessionIDForInvocation(providerInvocation),
+		InvocationID:       invocationIDForPlanner(providerInvocation),
+		InvocationIssuedAt: invocationIssuedAtForPlanner(providerInvocation),
 		OnProviderSession: func(providerSessionID string) {
 			if providerInvocation != nil && providerInvocation.OnProviderSession != nil {
 				providerInvocation.OnProviderSession(providerSessionID)
