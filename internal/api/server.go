@@ -523,6 +523,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /external-source-captures", s.handleCaptureExternalSource)
 	mux.HandleFunc("GET /external-source-snapshots/{id}", s.handleGetExternalSourceSnapshot)
 	mux.HandleFunc("GET /external-source-snapshots/{id}/comments", s.handleGetExternalSourceSnapshotComments)
+	mux.HandleFunc("GET /external-source-snapshots/{id}/decree-text", s.handleGetExternalSourceDecreeText)
 	mux.HandleFunc("GET /external-source-links/{id}/history", s.handleGetExternalSourceLinkHistory)
 	mux.HandleFunc("POST /external-source-links/{id}/refreshes", s.handleRefreshExternalSourceLink)
 	mux.HandleFunc("POST /external-source-links/{id}/adoptions", s.handleAdoptExternalSourceLink)

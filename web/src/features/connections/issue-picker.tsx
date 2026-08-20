@@ -366,6 +366,18 @@ export function IssuePicker({
                     {loadingIssues && issues.length === 0 ? <p className="flex items-center gap-2 p-3 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading issues...</p> : issues.length === 0 ? <p className="p-3 text-xs text-foreground-muted">No issues found. Pull requests are excluded.</p> : issues.map((item) => <button type="button" key={`${item.native_id}-${item.issue.issue_number}`} onClick={() => setSelected(item)} className={cn("w-full min-w-0 p-3 text-left hover:bg-surface-raised", selected?.native_id === item.native_id && "bg-gold/10")}><span className="text-xs text-foreground-subtle">#{item.issue.issue_number} / {item.issue.state}</span><p className="break-words text-sm font-medium">{item.issue.title}</p></button>)}
                   </div>
                   {issueCursor ? <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreIssues()} disabled={loadingIssues}>{loadingIssues ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Issues</Button> : null}
+                  {/* Whether comments come along changes what the import is
+                      worth, and it changes the decree text the operator ends up
+                      with. Behind the preview it was a choice they only found
+                      after picking an issue — if at all. */}
+                  <div className="shrink-0 rounded-lg border border-border bg-background/40 px-3">
+                    <ToggleRow
+                      label="Include Comments"
+                      checked={includeComments}
+                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total."
+                      onChange={setIncludeComments}
+                    />
+                  </div>
                 </>
               ) : null}
               {error && (error.scope === "repositories" || error.scope === "issues") ? <PickerError error={error} onRetry={() => error.scope === "repositories" ? setRepositoryAttempt((value) => value + 1) : setIssueAttempt((value) => value + 1)} /> : null}
@@ -380,14 +392,6 @@ export function IssuePicker({
                   <div className="min-w-0">
                     <p className="break-words font-semibold text-foreground">{shownIssue.title}</p>
                     <p className="mt-1 break-words text-xs text-foreground-muted">{issueURL ? <a href={issueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{shownIssue.repository}#{shownIssue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{shownIssue.repository}#{shownIssue.issue_number}</span>} / updated {new Date(shownIssue.updated_at).toLocaleString()}</p>
-                  </div>
-                  <div className="mt-4 rounded-lg border border-border bg-background/40 px-3">
-                    <ToggleRow
-                      label="Include Comments"
-                      checked={includeComments}
-                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total."
-                      onChange={setIncludeComments}
-                    />
                   </div>
                   {/* Always occupies one line: the preview refetches on every
                       toggle flip, and a status row that mounts and unmounts

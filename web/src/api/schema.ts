@@ -471,6 +471,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/external-source-snapshots/{id}/decree-text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Render a captured issue as decree text, including retained comments when the import selected them. */
+        get: operations["getExternalSourceDecreeText"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/external-source-links/{id}/refreshes": {
         parameters: {
             query?: never;
@@ -1901,6 +1918,10 @@ export interface components {
         CaptureResult: {
             source_id: string;
             snapshot_id: string;
+        };
+        /** @description The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence. */
+        ExternalDecreeText: {
+            markdown: string;
         };
         /** @description Immutable normalized snapshot metadata. Comment bodies are available only through the paginated comments route. */
         ExternalSnapshotResponse: {
@@ -4016,6 +4037,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExternalSnapshotResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getExternalSourceDecreeText: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Decree text for the snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalDecreeText"];
                 };
             };
             400: components["responses"]["BadRequestError"];

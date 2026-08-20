@@ -90,6 +90,8 @@ function ErrorBanner({ message }: { message: string }) {
 type CapturedExternalSource = {
   snapshotId: string;
   issue: components["schemas"]["NormalizedIssue"];
+  /** The issue body plus its imported comments, as Kingdom renders it. */
+  decreeText: string;
 };
 
 type DecreeOrigin =
@@ -99,6 +101,7 @@ type DecreeOrigin =
       kind: "github";
       snapshotId: string;
       issue: components["schemas"]["NormalizedIssue"];
+      decreeText: string;
       intake: components["schemas"]["ExternalIntake"];
       candidate?: CapturedExternalSource;
     };
@@ -178,10 +181,17 @@ export function DecreeForm({
     }),
   );
 
+  // The decree text is rendered from the snapshot rather than copied from the
+  // issue body, so an import that selected comments carries them. Kingdom
+  // renders it: the bounds that make it safe are enforced at capture, and the
+  // planner already answers the same question about the same snapshot.
   const captureExternalSnapshot = async (intake: components["schemas"]["ExternalIntake"]) => {
     const { captured, intake: capturedIntake } = await recoverableExternalCapture.mutateAsync(intake);
-    const snapshot = await apiFetch<components["schemas"]["ExternalSnapshotResponse"]>(`/external-source-snapshots/${captured.snapshot_id}`);
-    return { snapshotId: captured.snapshot_id, issue: snapshot.issue, intake: capturedIntake };
+    const [snapshot, decreeText] = await Promise.all([
+      apiFetch<components["schemas"]["ExternalSnapshotResponse"]>(`/external-source-snapshots/${captured.snapshot_id}`),
+      apiFetch<components["schemas"]["ExternalDecreeText"]>(`/external-source-snapshots/${captured.snapshot_id}/decree-text`),
+    ]);
+    return { snapshotId: captured.snapshot_id, issue: snapshot.issue, decreeText: decreeText.markdown, intake: capturedIntake };
   };
 
   const prefillExternalIssue = async (selection: IssueSelection) => {
@@ -189,9 +199,9 @@ export function DecreeForm({
     setExternalError("");
     try {
       const captured = await captureExternalSnapshot(selection.intake);
-      setOrigin({ kind: "github", snapshotId: captured.snapshotId, issue: captured.issue, intake: captured.intake });
+      setOrigin({ kind: "github", snapshotId: captured.snapshotId, issue: captured.issue, decreeText: captured.decreeText, intake: captured.intake });
       setTitle(captured.issue.title);
-      setText(captured.issue.body);
+      setText(captured.decreeText);
     } catch (error) {
       setExternalError(error instanceof Error ? error.message : "Could not capture GitHub issue");
       throw error;
@@ -673,10 +683,11 @@ export function DecreeForm({
       kind: "github",
       snapshotId: candidate.snapshotId,
       issue: candidate.issue,
+      decreeText: candidate.decreeText,
       intake: origin.intake,
     });
     if (applyTitle) setTitle(candidate.issue.title);
-    if (applyBody) setText(candidate.issue.body);
+    if (applyBody) setText(candidate.decreeText);
   };
 
   // Removing the source leaves the form as if nothing had been imported. The

@@ -522,6 +522,19 @@ paths:
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
+  /external-source-snapshots/{id}/decree-text:
+    get:
+      tags: [external-sources]
+      operationId: getExternalSourceDecreeText
+      summary: Render a captured issue as decree text, including retained comments when the import selected them.
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      responses:
+        "200": { description: Decree text for the snapshot., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalDecreeText" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
   /external-source-links/{id}/refreshes:
     post:
       tags: [external-sources]
@@ -3262,6 +3275,14 @@ components:
       properties:
         source_id: { type: string, minLength: 1 }
         snapshot_id: { type: string, minLength: 1 }
+    ExternalDecreeText:
+      type: object
+      additionalProperties: false
+      description: The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence.
+      required: [markdown]
+      properties:
+        markdown: { type: string }
+
     ExternalSnapshotResponse:
       type: object
       additionalProperties: false
