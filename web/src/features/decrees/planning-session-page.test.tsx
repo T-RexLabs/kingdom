@@ -91,7 +91,15 @@ vi.mock("@/features/connections/external-source-comparison", () => ({
 }));
 
 vi.mock("@/features/connections/issue-picker", () => ({
-  IssuePicker: ({ onSelect, triggerLabel }: { onSelect: (selection: unknown) => Promise<void>; triggerLabel: string }) => (
+  IssuePicker: ({ onSelect, triggerLabel, onOpenChange }: { onSelect: (selection: unknown) => Promise<void>; triggerLabel: string; onOpenChange?: (open: boolean) => void }) => (
+    <>
+    <button
+      type="button"
+      data-testid="open-import-dialog"
+      onClick={() => onOpenChange?.(true)}
+    >
+      Open Import Dialog
+    </button>
     <button
       type="button"
       onClick={() => {
@@ -108,6 +116,7 @@ vi.mock("@/features/connections/issue-picker", () => ({
     >
       {triggerLabel}
     </button>
+    </>
   ),
 }));
 
@@ -319,7 +328,7 @@ describe("PlanningSessionPage", () => {
     expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
   });
 
-  it("lists every source as one row and expands one at a time", async () => {
+  it("lists every source as one row and says nothing about a current one", async () => {
     const base = mockUsePlanningSession().data;
     mockUsePlanningSession.mockReturnValue({
       data: {
@@ -339,14 +348,14 @@ describe("PlanningSessionPage", () => {
     await openPlanningSources(user);
     expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
-    // A current source has nothing behind a disclosure, so it has no
-    // disclosure — and nothing to say about its own freshness.
-    expect(screen.queryByRole("button", { name: /^Details for / })).not.toBeInTheDocument();
+    // A current source has no update to review, and nothing to say about its
+    // own freshness.
+    expect(screen.queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
     expect(screen.queryByText("Not Checked")).not.toBeInTheDocument();
     expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
   });
 
-  it("opens detail only for the source that has an update, one row at a time", async () => {
+  it("offers an update review only for the source that has one", async () => {
     const base = mockUsePlanningSession().data;
     mockUsePlanningSession.mockReturnValue({
       data: {
@@ -364,15 +373,21 @@ describe("PlanningSessionPage", () => {
     render(<PlanningSessionPage />);
 
     await openPlanningSources(user);
-    expect(screen.getByRole("button", { name: "Details for owner/one#1" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Details for owner/two#2" })).not.toBeInTheDocument();
+    const changed = screen.getByRole("region", { name: "Linked GitHub source owner/one#1" });
+    const unchanged = screen.getByRole("region", { name: "Linked GitHub source owner/two#2" });
+    expect(within(changed).getByRole("button", { name: "Review Update" })).toBeInTheDocument();
+    expect(within(unchanged).queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
     expect(screen.getByText("Update Available")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Details for owner/one#1" }));
-    expect(screen.getByLabelText("GitHub source comparison")).toBeInTheDocument();
+    // A diff needs room a popover does not have, so reviewing opens where it
+    // can be read — and that is also where adopting happens.
+    await user.click(within(changed).getByRole("button", { name: "Review Update" }));
+    const review = await screen.findByRole("dialog", { name: "Review Source Update" });
+    expect(within(review).getByLabelText("GitHub source comparison")).toBeInTheDocument();
+    expect(within(review).getByRole("button", { name: "Adopt Update" })).toBeInTheDocument();
   });
 
-  it("shows changed fields after refresh and keeps adoption explicit", async () => {
+  it("shows changed fields after refresh and keeps each source's own baseline", async () => {
     mockUsePlanningSession.mockReturnValue({
       data: {
         planning_session_id: "planning-session-1",
@@ -443,19 +458,94 @@ describe("PlanningSessionPage", () => {
     expect(screen.getByRole("link", { name: /open owner\/other#18 on github/i })).toBeInTheDocument();
     const firstSource = screen.getByRole("region", { name: "Linked GitHub source owner/repo#17" });
     const secondSource = screen.getByRole("region", { name: "Linked GitHub source owner/other#18" });
-    expect(within(firstSource).getByRole("button", { name: /adopt latest/i })).toBeInTheDocument();
-    expect(within(secondSource).getByRole("button", { name: /adopt latest/i })).toBeInTheDocument();
 
-    // The diff belongs to the row's detail, and each source keeps its own baseline.
-    await user.click(within(firstSource).getByRole("button", { name: "Details for owner/repo#17" }));
-    expect(within(firstSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-used");
-    await user.click(within(secondSource).getByRole("button", { name: "Details for owner/other#18" }));
-    expect(within(secondSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-other-active");
+    // Each source reviews against its own baseline: the used snapshot until an
+    // adoption exists, the adopted one after.
+    await user.click(within(firstSource).getByRole("button", { name: "Review Update" }));
+    expect(within(await screen.findByRole("dialog", { name: "Review Source Update" })).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-used");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(within(secondSource).getByRole("button", { name: "Review Update" }));
+    expect(within(await screen.findByRole("dialog", { name: "Review Source Update" })).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-other-active");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     await user.click(within(firstSource).getByRole("button", { name: /^refresh /i }));
 
     expect(await within(firstSource).findByText("A newer GitHub issue version is available.")).toBeInTheDocument();
     expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists every source as one row and expands one at a time", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
+    // A current source has nothing behind a disclosure, so it has no
+    // disclosure — and nothing to say about its own freshness.
+    expect(screen.queryByRole("button", { name: /^Details for / })).not.toBeInTheDocument();
+    expect(screen.queryByText("Not Checked")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
+  });
+
+  it("offers an update review only for the source that has one", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1-next", status: "changed" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    const changed = screen.getByRole("region", { name: "Linked GitHub source owner/one#1" });
+    const unchanged = screen.getByRole("region", { name: "Linked GitHub source owner/two#2" });
+    expect(within(changed).getByRole("button", { name: "Review Update" })).toBeInTheDocument();
+    expect(within(unchanged).queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
+    expect(screen.getByText("Update Available")).toBeInTheDocument();
+
+    // A diff needs room a popover does not have, so reviewing opens where it
+    // can be read — and that is also where adopting happens.
+    await user.click(within(changed).getByRole("button", { name: "Review Update" }));
+    const review = await screen.findByRole("dialog", { name: "Review Source Update" });
+    expect(within(review).getByLabelText("GitHub source comparison")).toBeInTheDocument();
+    expect(within(review).getByRole("button", { name: "Adopt Update" })).toBeInTheDocument();
+  });
+
+  it("keeps the sources panel open while the import dialog is open", async () => {
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    await user.click(screen.getByTestId("open-import-dialog"));
+
+    // The import dialog opens over the panel. Left dismissable, the first press
+    // that reached the dialog would close the list the operator is coming back
+    // to with their new source.
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Add GitHub Issue" })).toBeInTheDocument();
   });
 
   it("removes a source only after confirmation and detaches it on the server", async () => {

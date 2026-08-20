@@ -12,7 +12,7 @@ import { ToggleRow } from "@/components/ui/toggle-row";
 import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
 import { cn } from "@/lib/utils";
 import { ExternalLink, Github, Link2, Loader2, Search } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { isConnectionUsable } from "./connection-readiness";
 import { safeGitHubIssueURL } from "./github-url";
 
@@ -41,13 +41,20 @@ export function IssuePicker({
   actionLabel = "Use Issue",
   triggerLabel = "Import from GitHub Issue",
   compact = false,
+  onOpenChange,
 }: {
   onSelect: (value: IssueSelection) => void | Promise<void>;
   actionLabel?: string;
   triggerLabel?: string;
   compact?: boolean;
+  /**
+   * Reports whether the import dialog is open. A surface that hosts this
+   * trigger and can itself be dismissed — a popover — needs to know, or opening
+   * the dialog would dismiss the thing the operator came back to.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [opened, setOpened] = useState(false);
+  const [opened, setOpenedState] = useState(false);
   const [connectionId, setConnectionId] = useState("");
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [repositoryId, setRepositoryId] = useState("");
@@ -76,6 +83,11 @@ export function IssuePicker({
   const issuePagination = useRef<AbortController | undefined>(undefined);
   const repositoryGeneration = useRef(0);
   const issueGeneration = useRef(0);
+
+  const setOpened = useCallback((next: boolean) => {
+    setOpenedState(next);
+    onOpenChange?.(next);
+  }, [onOpenChange]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedRepositoryQuery(repositoryQuery.trim()), 300);
