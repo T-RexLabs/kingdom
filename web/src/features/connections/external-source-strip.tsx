@@ -33,7 +33,11 @@ export function ExternalSourceStrip({
         <p className="min-w-0 font-medium text-foreground">{identity}</p>
         {actions ? <div className="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-1">{actions}</div> : null}
       </div>
-      {children ? <div className="space-y-2 pb-1.5">{children}</div> : null}
+      {/* `children` is an array of conditionals, so it is truthy even when every
+          one of them renders nothing. `empty:hidden` is what actually keeps a
+          strip with only its header from carrying the padding meant for
+          content below it. */}
+      <div className="space-y-2 pb-1.5 empty:hidden">{children}</div>
     </section>
   );
 }
