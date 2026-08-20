@@ -418,12 +418,16 @@ function fetchProviderModels(refresh: boolean, signal?: AbortSignal) {
 	});
 }
 
+// The model catalog does not poll. Listing models spawns an OpenCode
+// subprocess, and a one-minute poll against a one-minute server cache meant an
+// open planner tab guaranteed one spawn a minute forever. The catalog only
+// changes when the operator changes their OpenCode installation, which is what
+// the explicit Retry control is for; the server keeps its own cache warm.
 export function useProviderModels(options?: RunDetailQueryOptions) {
   return useQuery({
 	queryKey: providerModelsQueryKey,
 	queryFn: ({ signal }) => fetchProviderModels(false, signal),
 	enabled: options?.enabled ?? true,
-	refetchInterval: 60_000,
   });
 }
 
