@@ -21,6 +21,7 @@ import (
 
 const (
 	idempotencyKeyHeader             = "Idempotency-Key"
+	idempotencyFinalizeTimeout       = 5 * time.Second
 	sensitiveIdempotencyExpiryHeader = "X-Kingdom-Sensitive-Response-Expires-At"
 	sensitiveIdempotencyMaxResponses = 128
 	sensitiveIdempotencyResponseTTL  = time.Hour
@@ -189,13 +190,18 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 		record.ResponseHeaders = headersJSON
 		record.UpdatedAt = m.now().UTC().Format(time.RFC3339Nano)
 		if sensitiveResponse {
+			// Publish the memory-only response before durable completion becomes
+			// visible; remove and zero it if finalization does not commit.
 			m.storeSensitiveResponse(record.ID, record.ResponseStatus, []byte(headersJSON), capture.Body(), sensitiveExpiresAt)
 			record.ResponseStatus = 0
 			record.ResponseHeaders = "{}"
 		} else {
 			record.ResponseBody = string(capture.Body())
 		}
-		if err := m.store.Finalize(r.Context(), record); err != nil {
+		finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(r.Context()), idempotencyFinalizeTimeout)
+		err = m.store.Finalize(finalizeCtx, record)
+		cancelFinalize()
+		if err != nil {
 			if sensitiveResponse {
 				m.deleteSensitiveResponse(record.ID)
 			}

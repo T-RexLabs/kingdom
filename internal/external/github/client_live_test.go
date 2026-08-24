@@ -58,7 +58,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	const connectionID = "live-smoke"
-	if _, err = keys.Provision(connectionID, privateKey); err != nil {
+	if _, err = keys.Provision(connectionID, 1, privateKey); err != nil {
 		t.Fatalf("provision temporary smoke key: %v", err)
 	}
 	client, err := NewClient(ClientConfig{Keys: keys})
@@ -118,7 +118,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 		t.Fatalf("live transfer was not resolved safely: transferred=%t repository_id=%q issue_number=%d", result.Transferred, result.RepositoryID, result.Issue.IssueNumber)
 	}
 
-	key, _, err := keys.Load(connectionID)
+	key, _, err := keys.Load(connectionID, 1)
 	if err != nil {
 		t.Fatalf("reload temporary smoke key: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign uninstall request: %v", err)
 	}
-	if _, err = client.doJSON(ctx, connection.ConnectionID, http.MethodDelete, "/app/installations/"+connection.Installations[0].InstallationID, jwt, nil, nil, ""); err != nil {
+	if _, err = client.doJSON(ctx, connection.ConnectionID, connection.CredentialGeneration, http.MethodDelete, "/app/installations/"+connection.Installations[0].InstallationID, jwt, nil, nil, ""); err != nil {
 		t.Fatalf("uninstall controlled GitHub App installation: %v", err)
 	}
 	client.Evict(connection.ConnectionID)

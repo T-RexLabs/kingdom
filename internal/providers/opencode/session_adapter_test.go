@@ -573,6 +573,51 @@ func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.
 	}
 }
 
+func TestSessionAdapterCompletionRecoveryDrainsLargeStderrWhileStdoutRemainsOpen(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{
+		BinaryPath:              binaryPath,
+		FirstEventTimeout:       2 * time.Second,
+		StreamInactivityTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_LARGE_STDERR_BYTES", "1048576")
+	t.Setenv("FAKE_OPENCODE_LARGE_STDERR_MARKER", "recovery-stderr-complete")
+	enableFakeOpenCodeCompletionReceipt(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := adapter.RecoverMissingCompletionReceipt(ctx, ExecuteRequest{
+		SessionID:                 "session_recovery_large_stderr",
+		ProviderSessionID:         "ses_recovery_large_stderr",
+		AttemptID:                 "attempt_recovery_large_stderr",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "recover receipt after draining large stderr",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_recovery_large_stderr",
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_recovery_large_stderr",
+		CompletionReceiptDir:      t.TempDir(),
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			return CompletionReceiptAcceptance{EvidenceID: "evidence_recovery_large_stderr", FinalText: receipt.FinalText}, nil
+		},
+	}, "hello from fake")
+	if err != nil {
+		t.Fatalf("recover completion receipt with large stderr: %v", err)
+	}
+	if !res.CompletionReceiptAccepted || res.CompletionReceiptEvidenceID != "evidence_recovery_large_stderr" {
+		t.Fatalf("expected receipt-backed recovery settlement, got %#v", res)
+	}
+	assertProviderDiagnosticsStderr(t, res.ProviderDiagnosticsJSON, "recovery-stderr-complete")
+}
+
 func TestSessionAdapterRecoveryRejectsChangedFinalText(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
@@ -1043,8 +1088,8 @@ func TestSessionAdapterAcceptedReceiptWinsOverPostReceiptWatchdogTimeout(t *test
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
-		FirstEventTimeout:       500 * time.Millisecond,
-		StreamInactivityTimeout: 500 * time.Millisecond,
+		FirstEventTimeout:       5 * time.Second,
+		StreamInactivityTimeout: 2 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1267,6 +1312,52 @@ func TestSessionAdapterAcceptsCompletionReceiptAcrossToolCallContinuation(t *tes
 	if invocations != 2 {
 		t.Fatalf("expected exactly 2 run invocations across the continuation boundary, got %d args=%q", invocations, string(argsLogRaw))
 	}
+}
+
+func TestSessionAdapterContinuationDrainsLargeStderrWhileStdoutRemainsOpen(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{
+		BinaryPath:              binaryPath,
+		FirstEventTimeout:       2 * time.Second,
+		StreamInactivityTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", t.TempDir())
+	t.Setenv("FAKE_OPENCODE_CONTINUATION_LARGE_STDERR_BYTES", "1048576")
+	t.Setenv("FAKE_OPENCODE_LARGE_STDERR_MARKER", "continuation-stderr-complete")
+	enableFakeOpenCodeCompletionReceipt(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := adapter.Execute(ctx, ExecuteRequest{
+		SessionID:                 "session_continuation_large_stderr",
+		AttemptID:                 "attempt_continuation_large_stderr",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "continue after draining large stderr",
+		OccurredAt:                "2026-03-02T10:00:03Z",
+		InvocationID:              "invocation_continuation_large_stderr",
+		InvocationIssuedAt:        "2026-03-02T10:00:03Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_continuation_large_stderr",
+		CompletionReceiptDir:      t.TempDir(),
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			return CompletionReceiptAcceptance{EvidenceID: "evidence_continuation_large_stderr", FinalText: receipt.FinalText}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute continuation with large stderr: %v", err)
+	}
+	if !res.CompletionReceiptAccepted || res.CompletionReceiptEvidenceID != "evidence_continuation_large_stderr" {
+		t.Fatalf("expected receipt-backed continuation settlement, got %#v", res)
+	}
+	assertProviderDiagnosticsStderr(t, res.ProviderDiagnosticsJSON, "continuation-stderr-complete")
 }
 
 func TestSessionAdapterFailsReceiptRequiredToolCallContinuationWithoutReceipt(t *testing.T) {
@@ -2264,6 +2355,10 @@ func TestSessionAdapterCancelDuringContinuationStopsExecute(t *testing.T) {
 		invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
 		if invocations < 2 {
 			return fmt.Errorf("continuation invocation count=%d", invocations)
+		}
+		snapshot := adapter.InFlightSnapshot("attempt_cancel_during_continuation")
+		if snapshot["in_flight_present"] != true || snapshot["process_alive"] != true {
+			return fmt.Errorf("continuation process not registered in flight: %#v", snapshot)
 		}
 		return nil
 	})
@@ -3971,6 +4066,24 @@ func terminalEventsFromAttempt(t *testing.T, adapter *SessionAdapter, attemptID 
 	return terminal
 }
 
+func assertProviderDiagnosticsStderr(t *testing.T, raw, marker string) {
+	t.Helper()
+	var diagnostics struct {
+		StderrEOFSeen   bool   `json:"stderr_eof_seen"`
+		StderrLineCount int    `json:"stderr_line_count"`
+		StderrTail      string `json:"stderr_tail"`
+	}
+	if err := json.Unmarshal([]byte(raw), &diagnostics); err != nil {
+		t.Fatalf("decode provider diagnostics: %v", err)
+	}
+	if !diagnostics.StderrEOFSeen || diagnostics.StderrLineCount != 1 {
+		t.Fatalf("expected one completely drained stderr line, got %#v", diagnostics)
+	}
+	if !strings.Contains(diagnostics.StderrTail, marker) {
+		t.Fatalf("expected stderr diagnostic tail to contain %q, got %q", marker, diagnostics.StderrTail)
+	}
+}
+
 func enableFakeOpenCodeCompletionReceipt(t *testing.T) {
 	t.Helper()
 	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
@@ -4172,6 +4285,20 @@ receipt_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 PY
 }
 
+write_large_stderr() {
+  BYTES="$1"
+  if [ -z "$BYTES" ]; then
+    return
+  fi
+  python3 - "$BYTES" "${FAKE_OPENCODE_LARGE_STDERR_MARKER:-large-stderr-complete}" <<'PY' >&2
+import sys
+
+size = int(sys.argv[1])
+marker = sys.argv[2]
+sys.stdout.write("x" * size + marker + "\n")
+PY
+}
+
 if [ "$FAKE_OPENCODE_NO_OUTPUT" = "1" ]; then
   sleep 3
   exit 0
@@ -4199,6 +4326,8 @@ if [ "$FAKE_OPENCODE_PARTIAL_JSON_THEN_STALL" = "1" ]; then
 fi
 
 echo "{\"type\":\"step_start\"$SESSION_FIELD}"
+
+write_large_stderr "$FAKE_OPENCODE_LARGE_STDERR_BYTES"
 
 if [ "$FAKE_OPENCODE_STALL_AFTER_FIRST" = "1" ]; then
   sleep 3
@@ -4354,6 +4483,8 @@ if [ "$FAKE_OPENCODE_TOOL_CALLS_THEN_STOP" = "1" ]; then
     fi
     exit 17
   fi
+
+  write_large_stderr "$FAKE_OPENCODE_CONTINUATION_LARGE_STDERR_BYTES"
 
   printf '{"type":"text"%s,"part":{"text":%s}}\n' "$SESSION_FIELD" "$(python3 -c 'import json, os; print(json.dumps(os.environ["TOOL_CALLS_CONTINUATION_TEXT"]))')"
   echo "{\"type\":\"step_finish\"$SESSION_FIELD,\"part\":{\"reason\":\"stop\"$TOKENS_SUFFIX}}"

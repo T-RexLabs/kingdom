@@ -125,6 +125,45 @@ func TestScanProjectRootHonoursGitIgnoreRules(t *testing.T) {
 	}
 }
 
+func TestScanProjectRootPreservesGitPathBytes(t *testing.T) {
+	t.Parallel()
+
+	root := initTestGitRepository(t)
+	files := map[string]string{
+		" leading.txt":          "leading space\n",
+		"trailing.txt ":         "trailing space\n",
+		"embedded\nnewline.txt": "embedded newline\n",
+		"collision.txt":         "plain collision\n",
+		" collision.txt ":       "spaced collision with a different size\n",
+	}
+	for path, content := range files {
+		writeTestFile(t, root, path, content)
+	}
+
+	summary, err := scanProjectRoot(context.Background(), root)
+	if err != nil {
+		t.Fatalf("scan project root: %v", err)
+	}
+	if len(summary.IncludedFiles) != len(files) {
+		t.Fatalf("expected %d exact git paths, got %+v", len(files), summary.IncludedFiles)
+	}
+
+	included := make(map[string]int64, len(summary.IncludedFiles))
+	for _, entry := range summary.IncludedFiles {
+		included[entry.Path] = entry.Size
+	}
+	for path, content := range files {
+		if size, ok := included[path]; !ok || size != int64(len(content)) {
+			t.Errorf("path %q: got size %d, present=%t; included=%+v", path, size, ok, summary.IncludedFiles)
+		}
+	}
+	for _, entry := range summary.ExcludedFiles {
+		if entry.Reason == "stat_failed" {
+			t.Errorf("exact git path was normalized before stat: %+v", entry)
+		}
+	}
+}
+
 // Enumeration has to stop at the budget rather than walk the rest of the
 // repository to record excluded rows no prompt ever reads.
 func TestScanProjectRootStopsAtTheFileBudget(t *testing.T) {

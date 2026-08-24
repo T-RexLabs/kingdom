@@ -1,18 +1,23 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
@@ -104,6 +109,198 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 	if int(plannerPayload["planning_stream_resume_count"].(float64)) < 1 {
 		t.Fatalf("expected resume count >= 1, got %#v", plannerPayload["planning_stream_resume_count"])
+	}
+}
+
+func TestServerRealPlannerUsesPolicyStreamInactivityTimeout(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Planner Timeout\n"), 0o644); err != nil {
+		t.Fatalf("write project seed: %v", err)
+	}
+	kingdomHome := filepath.Join(projectRoot, ".kingdom")
+	if err := bootstrapassets.WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+		t.Fatalf("write managed OpenCode scaffold: %v", err)
+	}
+	policyPath := filepath.Join(kingdomHome, "policies", "opencode_provider_policy.yaml")
+	policyRaw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatalf("read provider policy: %v", err)
+	}
+	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: 10s", 1)
+	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: 150ms", 1)
+	if err := os.WriteFile(policyPath, []byte(policyText), 0o600); err != nil {
+		t.Fatalf("write timeout provider policy: %v", err)
+	}
+
+	pidPath := filepath.Join(t.TempDir(), "planner.pid")
+	t.Setenv("FAKE_OPENCODE_PID_PATH", pidPath)
+	binaryPath := filepath.Join(t.TempDir(), "fake-opencode")
+	fakeOpenCode := `#!/bin/sh
+if [ "$1" != "run" ]; then
+  exit 0
+fi
+printf '%s\n' "$$" > "$FAKE_OPENCODE_PID_PATH"
+printf '%s\n' '{"type":"step_start","sessionID":"ses_planner_stall","part":{"id":"part_planner_stall"}}'
+sleep 30
+`
+	if err := os.WriteFile(binaryPath, []byte(fakeOpenCode), 0o755); err != nil {
+		t.Fatalf("write fake OpenCode executable: %v", err)
+	}
+
+	db := openAPIServerTestDB(t)
+	handler, err := NewHandler(ServerConfig{
+		DB:                       db,
+		ProjectRoot:              projectRoot,
+		ProviderEngine:           "opencode",
+		OpenCodeBinaryPath:       binaryPath,
+		ProviderPolicyPath:       policyPath,
+		ProviderPolicySchemaPath: filepath.Join(kingdomHome, "schemas", "opencode_provider_policy.schema.json"),
+		ProviderModelCatalog:     staticProviderModelCatalog{items: defaultTestProviderModels()},
+		OperatorCredential:       []byte(apiTestOperatorCredential),
+	})
+	if err != nil {
+		t.Fatalf("build API with real planner adapter: %v", err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := handler.Close(closeCtx); err != nil {
+			t.Errorf("close API server: %v", err)
+		}
+	})
+
+	createRes := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/planning-sessions",
+		body:           map[string]any{"model_selection": map[string]any{"model": "github-copilot/gpt-4.1"}},
+		idempotencyKey: "idem-create-real-planner-timeout",
+	})
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected planning session create 201, got %d (%s)", createRes.Code, createRes.Body.String())
+	}
+	var created gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode planning session: %v", err)
+	}
+
+	runRes := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodPost,
+		path:   "/api/v1/acp/runs",
+		body: map[string]any{
+			"agent_name":          acp.PlannerReplyAgentName,
+			"planning_session_id": created.Session.PlanningSessionId,
+			"reply": map[string]any{
+				"content_markdown": "Trigger the real planner timeout",
+				"answer_payload":   map[string]any{"text": "Trigger the real planner timeout"},
+			},
+		},
+		idempotencyKey: "idem-real-planner-timeout-run",
+	})
+	if runRes.Code != http.StatusCreated {
+		t.Fatalf("expected ACP run create 201, got %d (%s)", runRes.Code, runRes.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode ACP run: %v", err)
+	}
+	terminal := awaitAcpRun(t, handler, run.RunId.String(), 10*time.Second)
+	if terminal.Status != gen.AcpRunStatus(acp.PlannerRunStatusFailed) {
+		t.Fatalf("expected failed ACP run, got %+v", terminal)
+	}
+	if terminal.Error == nil || !strings.Contains(*terminal.Error, "stream_inactivity_timeout") || !strings.Contains(*terminal.Error, "event_count=1") {
+		t.Fatalf("expected inactivity diagnostics on terminal run, got %+v", terminal.Error)
+	}
+
+	store := state.NewPlanningStore(db)
+	operation, found, err := store.GetOperationByAcpRunID(t.Context(), run.RunId.String())
+	if err != nil || !found {
+		t.Fatalf("get terminal planning operation: found=%t err=%v", found, err)
+	}
+	if operation.Status != state.PlanningOperationStatusFailed || operation.CanonicalSettlementID == nil || strings.TrimSpace(*operation.CanonicalSettlementID) == "" {
+		t.Fatalf("expected canonical failed operation settlement, got %+v", operation)
+	}
+	if operation.LeaseOwner != "" || operation.LeaseExpiresAt != nil || operation.LastHeartbeatAt != nil || operation.ActiveProviderInvocationID != nil {
+		t.Fatalf("expected operation lease and invocation fields cleared, got %+v", operation)
+	}
+	settlement, found, err := store.GetPlanningProviderCompletionSettlement(t.Context(), *operation.CanonicalSettlementID)
+	if err != nil || !found {
+		t.Fatalf("get canonical provider settlement: found=%t err=%v", found, err)
+	}
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_timeout" {
+		t.Fatalf("expected failed provider_timeout settlement, got %+v", settlement)
+	}
+	if !strings.Contains(settlement.FailureReasonText, "stream_inactivity_timeout") || !strings.Contains(settlement.FailureReasonText, "event_count=1") {
+		t.Fatalf("expected settlement inactivity diagnostics, got %q", settlement.FailureReasonText)
+	}
+	invocation, found, err := store.GetPlanningProviderInvocation(t.Context(), settlement.PlanningProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("get provider invocation: found=%t err=%v", found, err)
+	}
+	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed || invocation.ProviderSessionID != "ses_planner_stall" || invocation.FailureReasonCode != "provider_timeout" {
+		t.Fatalf("expected settled failed provider invocation, got %+v", invocation)
+	}
+	session, found, err := store.GetSession(t.Context(), created.Session.PlanningSessionId)
+	if err != nil || !found {
+		t.Fatalf("get planning session: found=%t err=%v", found, err)
+	}
+	if session.ConversationState != state.PlanningSessionConversationStateReady {
+		t.Fatalf("expected ready planning session after failure, got %+v", session)
+	}
+
+	events, err := store.ListOperationEventsAfterSeqPage(t.Context(), operation.OperationID, 0, 100)
+	if err != nil {
+		t.Fatalf("list planner lifecycle events: %v", err)
+	}
+	assertPlannerTimeoutLifecycleSubsequence(t, events, []string{
+		acp.RunCreatedEventType,
+		acp.RunInProgressEventType,
+		"generic:provider_launching",
+		"generic:provider_session_open",
+		"generic:Processing",
+		acp.RunFailedEventType,
+	})
+
+	pidRaw, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read fake provider pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
+	if err != nil {
+		t.Fatalf("parse fake provider pid: %v", err)
+	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("provider process %d is still present: %v", pid, err)
+	})
+}
+
+func assertPlannerTimeoutLifecycleSubsequence(t *testing.T, events []state.PlanningOperationEvent, expected []string) {
+	t.Helper()
+	next := 0
+	for _, event := range events {
+		signature := event.EventType
+		if event.EventType == acp.GenericEventType {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+				t.Fatalf("decode lifecycle event %s: %v", event.EventID, err)
+			}
+			detail, _ := payload["phase"].(string)
+			detail = strings.TrimSpace(detail)
+			if detail == "" {
+				detail, _ = payload["label"].(string)
+				detail = strings.TrimSpace(detail)
+			}
+			signature += ":" + detail
+		}
+		if next < len(expected) && signature == expected[next] {
+			next++
+		}
+	}
+	if next != len(expected) {
+		t.Fatalf("expected ordered lifecycle subsequence %v, matched %d from events %+v", expected, next, events)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -202,6 +203,33 @@ func TestOpenAPIGitHubCallbacksArePublicAndFlowMutationsRequireIdempotency(t *te
 		if !operationHasParameterRef(item.Post, "#/components/parameters/IdempotencyKey") {
 			t.Fatalf("setup POST %s must require idempotency", path)
 		}
+	}
+	deviceItem := swagger.Paths.Find("/connections/github/device-flows/{id}")
+	if deviceItem == nil || deviceItem.Delete == nil || !operationHasParameterRef(deviceItem.Delete, "#/components/parameters/IdempotencyKey") {
+		t.Fatal("device-flow discard must be declared and require idempotency")
+	}
+}
+
+func TestOpenAPIDeviceFlowStatusIncludesSafeStartingReservation(t *testing.T) {
+	t.Parallel()
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaRef := swagger.Components.Schemas["GitHubDeviceFlowStatus"]
+	if schemaRef == nil || schemaRef.Value == nil {
+		t.Fatal("missing GitHubDeviceFlowStatus schema")
+	}
+	stage := schemaRef.Value.Properties["stage"]
+	if stage == nil || stage.Value == nil {
+		t.Fatal("missing device flow stage schema")
+	}
+	if !slices.Contains(stage.Value.Enum, any("starting_authorization")) {
+		t.Fatalf("device flow stages=%v", stage.Value.Enum)
+	}
+	interval := schemaRef.Value.Properties["interval_seconds"]
+	if interval == nil || interval.Value == nil || interval.Value.Min == nil || *interval.Value.Min != 0 {
+		t.Fatalf("starting reservation interval schema=%#v", interval)
 	}
 }
 

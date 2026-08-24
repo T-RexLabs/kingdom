@@ -59,6 +59,7 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	if err := json.Unmarshal(connectionResponse.Body.Bytes(), &connection); err != nil {
 		t.Fatal(err)
 	}
+	publishFixtureCredentialGeneration(t, env, connection.ConnectionID, "audit-external-connection-credential")
 	healthResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionID + "/health-checks", idempotencyKey: "external-connection-health"})
 	if healthResponse.Code != http.StatusOK {
 		t.Fatalf("health check status=%d body=%s", healthResponse.Code, healthResponse.Body.String())
@@ -147,5 +148,17 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	}
 	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_source_links WHERE target_id IN (?,?)`, decree.DecreeID, planningPayload.Session.PlanningSessionID); count != 2 {
 		t.Fatalf("provenance links did not survive removal: %d", count)
+	}
+}
+
+func publishFixtureCredentialGeneration(t *testing.T, env *e2eEnv, connectionID, auditEventID string) {
+	t.Helper()
+	store := state.NewExternalStore(env.db)
+	connection, err := store.GetConnection(context.Background(), connectionID)
+	if err != nil {
+		t.Fatalf("load fixture connection: %v", err)
+	}
+	if err := store.RecordCredentialEvent(context.Background(), connectionID, connection.RowVersion, 1, "local-operator", auditEventID, "credential.provisioned", "2026-03-01T11:30:00Z"); err != nil {
+		t.Fatalf("publish fixture credential generation: %v", err)
 	}
 }

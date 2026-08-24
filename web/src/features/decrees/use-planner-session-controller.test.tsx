@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
@@ -7,16 +7,18 @@ import type { PlanningSessionDetail } from "@/api/hooks";
 import { usePlannerSessionController } from "./use-planner-session-controller";
 
 const createOperation = vi.fn();
+const mockUsePlanningOperation = vi.fn();
+const mockUsePlannerOperation = vi.fn();
 
 vi.mock("@/api/hooks", () => ({
   newIdempotencyKey: () => "variant-key",
   useActivateVariant: () => ({ mutateAsync: vi.fn() }),
   useCreatePlanningOperation: () => ({ mutateAsync: createOperation, error: null }),
-  usePlanningOperation: () => ({ data: null }),
+  usePlanningOperation: (...args: unknown[]) => mockUsePlanningOperation(...args),
 }));
 
 vi.mock("./use-planner-operation", () => ({
-  usePlannerOperation: () => ({ operation: null, connection: "idle" }),
+  usePlannerOperation: (...args: unknown[]) => mockUsePlannerOperation(...args),
 }));
 
 const session: PlanningSessionDetail = {
@@ -51,7 +53,20 @@ function pendingError() {
 }
 
 describe("usePlannerSessionController mutation recovery", () => {
-  beforeEach(() => createOperation.mockReset());
+  beforeEach(() => {
+    createOperation.mockReset();
+    mockUsePlanningOperation.mockReset();
+    mockUsePlanningOperation.mockReturnValue({
+      data: null,
+      error: null,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch: vi.fn(),
+    });
+    mockUsePlannerOperation.mockReset();
+    mockUsePlannerOperation.mockReturnValue({ operation: null, connection: { state: "idle" } });
+  });
 
   it.each([
     ["reply", (controller: ReturnType<typeof usePlannerSessionController>) => controller.submitReply({ text: "Ship it" })],
@@ -74,5 +89,45 @@ describe("usePlannerSessionController mutation recovery", () => {
 
     expect(createOperation.mock.calls[1]?.[0].body).toBe(firstRequest.body);
     expect(createOperation.mock.calls[1]?.[0].key).toBe(firstRequest.key);
+  });
+
+  it("retains a failed operation after the session clears its live run pointer", async () => {
+    const failedOperation = {
+      kind: "reply" as const,
+      operationId: "acp-run-1",
+      status: "error" as const,
+      lastEventSeq: 3,
+      pendingReply: null,
+      replyText: "",
+      formalizeText: "",
+      error: "Planner provider failed",
+      events: [],
+      activityItems: [],
+    };
+    mockUsePlanningOperation.mockReturnValue({
+      data: { run_id: "acp-run-1" },
+      error: null,
+      isError: false,
+      isFetching: false,
+      isPending: false,
+      refetch: vi.fn(),
+    });
+    mockUsePlannerOperation.mockReturnValue({ operation: failedOperation, connection: { state: "idle" } });
+    const processingSession: PlanningSessionDetail = {
+      ...session,
+      conversation_state: "processing" as const,
+      current_run_id: "acp-run-1",
+    };
+    const { result, rerender } = renderHook(
+      ({ currentSession }) => usePlannerSessionController(currentSession),
+      { wrapper, initialProps: { currentSession: processingSession } },
+    );
+
+    await waitFor(() => expect(result.current.activeOperation?.status).toBe("error"));
+
+    rerender({ currentSession: { ...processingSession, conversation_state: "ready", current_run_id: undefined } });
+
+    expect(result.current.activeOperation).toEqual(failedOperation);
+    expect(result.current.activeOperationId).toBeUndefined();
   });
 });

@@ -902,7 +902,7 @@ func TestGitHubKeyProvisionRejectsRemovedConnectionBeforeFilesystemMutation(t *t
 	if err := runtime.handleGitHubKeyProvision([]string{"--connection-id", "removed-connection", "--from", pemPath}, false); err == nil {
 		t.Fatal("removed connection unexpectedly accepted a private key")
 	}
-	keyPath := filepath.Join(kingdomHome, "secrets", "github-apps", "removed-connection", "private-key.pem")
+	keyPath := filepath.Join(kingdomHome, "secrets", "github-apps", "removed-connection", "private-key.1.pem")
 	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
 		t.Fatalf("removed connection gained a private key: %v", err)
 	}

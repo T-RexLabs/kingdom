@@ -255,11 +255,7 @@ func (c *Client) assertRepositoriesBelongToInstallation(ctx context.Context, con
 }
 
 func (c *Client) validateSharedInstallations(ctx context.Context, conn state.ExternalConnection) (external.ConnectionValidation, error) {
-	token, err := c.accessToken(ctx, conn, "")
-	if err != nil {
-		return external.ConnectionValidation{}, err
-	}
-	candidates, err := c.deviceOAuth.Candidates(ctx, token, conn.ClientID, conn.AppSlug)
+	candidates, err := c.sharedInstallationCandidates(ctx, conn)
 	if err != nil {
 		return external.ConnectionValidation{}, err
 	}
@@ -284,8 +280,22 @@ func (c *Client) validateSharedInstallations(ctx context.Context, conn state.Ext
 	return external.ConnectionValidation{AppSlug: conn.AppSlug, Installations: validated}, nil
 }
 
+func (c *Client) sharedInstallationCandidates(ctx context.Context, conn state.ExternalConnection) ([]InstallationCandidate, error) {
+	if conn.CredentialStrategy != "user_access_token" || c.userTokens == nil {
+		return nil, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	return installationCandidates(conn.ClientID, conn.AppSlug, func(path string, target any) error {
+		token, err := c.accessToken(ctx, conn, "")
+		if err != nil {
+			return err
+		}
+		_, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, path, token, nil, target, "")
+		return err
+	})
+}
+
 func (c *Client) validateAppKeyInstallations(ctx context.Context, conn state.ExternalConnection) (external.ConnectionValidation, error) {
-	key, _, err := c.keys.Load(conn.ConnectionID)
+	key, _, err := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)
 	if err != nil {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
@@ -300,7 +310,7 @@ func (c *Client) validateAppKeyInstallations(ctx context.Context, conn state.Ext
 		Permissions map[string]string `json:"permissions"`
 		Events      []string          `json:"events"`
 	}
-	if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/app", jwt, nil, &app, ""); err != nil {
+	if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, "/app", jwt, nil, &app, ""); err != nil {
 		return external.ConnectionValidation{}, err
 	}
 	if app.ID <= 0 || !clientIDPattern.MatchString(app.ClientID) || !appSlugPattern.MatchString(app.Slug) || strconv.FormatInt(app.ID, 10) != conn.AppID || app.ClientID != conn.ClientID || conn.AppSlug != "" && app.Slug != conn.AppSlug {
@@ -322,7 +332,7 @@ func (c *Client) validateAppKeyInstallations(ctx context.Context, conn state.Ext
 			SuspendedAt *string           `json:"suspended_at"`
 			Permissions map[string]string `json:"permissions"`
 		}
-		if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/app/installations/"+url.PathEscape(covered.InstallationID), jwt, nil, &installation, ""); err != nil {
+		if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, "/app/installations/"+url.PathEscape(covered.InstallationID), jwt, nil, &installation, ""); err != nil {
 			return external.ConnectionValidation{}, installationAuthenticationError(err)
 		}
 		accountID := strconv.FormatInt(installation.Account.ID, 10)
@@ -352,7 +362,7 @@ func allowedPermissions(p map[string]string) bool {
 }
 
 func (c *Client) installationToken(ctx context.Context, conn state.ExternalConnection, installationID string) (string, error) {
-	key, fingerprint, err := c.keys.Load(conn.ConnectionID)
+	key, fingerprint, err := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)
 	if err != nil {
 		return "", &external.ProviderError{Class: external.FailureAuthentication}
 	}
@@ -399,7 +409,7 @@ func (c *Client) installationToken(ctx context.Context, conn state.ExternalConne
 		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
-	if _, err = c.doJSON(ctx, conn.ConnectionID, http.MethodPost, "/app/installations/"+url.PathEscape(installationID)+"/access_tokens", jwt, body, &response, ""); err != nil {
+	if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodPost, "/app/installations/"+url.PathEscape(installationID)+"/access_tokens", jwt, body, &response, ""); err != nil {
 		pending.err = installationAuthenticationError(err)
 		return "", pending.err
 	}
@@ -407,7 +417,7 @@ func (c *Client) installationToken(ctx context.Context, conn state.ExternalConne
 		pending.err = err
 		return "", pending.err
 	}
-	_, currentFingerprint, keyErr := c.keys.Load(conn.ConnectionID)
+	_, currentFingerprint, keyErr := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)
 	c.tokensMu.Lock()
 	currentEpoch := c.epochs[conn.ConnectionID]
 	if keyErr == nil && currentEpoch == epoch && currentFingerprint == fingerprint {
@@ -442,10 +452,10 @@ func (c *Client) accessToken(ctx context.Context, conn state.ExternalConnection,
 	if conn.CredentialStrategy != "user_access_token" || c.userTokens == nil {
 		return "", &external.ProviderError{Class: external.FailureAuthentication}
 	}
-	return c.userAccessToken(ctx, conn.ConnectionID, "", false)
+	return c.userAccessToken(ctx, conn.ConnectionID, conn.CredentialGeneration, "", false)
 }
 
-func (c *Client) userAccessToken(ctx context.Context, connectionID, stale string, force bool) (string, error) {
+func (c *Client) userAccessToken(ctx context.Context, connectionID string, generation int, stale string, force bool) (string, error) {
 	c.userRefreshMu.Lock()
 	refreshLock := c.userRefreshLocks[connectionID]
 	if refreshLock == nil {
@@ -457,7 +467,7 @@ func (c *Client) userAccessToken(ctx context.Context, connectionID, stale string
 	defer refreshLock.Unlock()
 	var token string
 	err := c.userTokens.WithConnectionLock(connectionID, func() error {
-		current, err := c.userTokens.Load(connectionID)
+		current, err := c.userTokens.Load(connectionID, generation)
 		if err != nil || !current.RefreshExpiresAt.After(c.now()) {
 			return &external.ProviderError{Class: external.FailureAuthentication}
 		}
@@ -473,7 +483,7 @@ func (c *Client) userAccessToken(ctx context.Context, connectionID, stale string
 		if err != nil {
 			return err
 		}
-		if err := c.userTokens.StoreWhileLocked(connectionID, rotated); err != nil {
+		if err := c.userTokens.StoreWhileLocked(connectionID, generation, rotated); err != nil {
 			return err
 		}
 		token = rotated.AccessToken
@@ -505,7 +515,7 @@ func (c *Client) installationRepositoryPage(ctx context.Context, conn state.Exte
 	if conn.CredentialStrategy == "user_access_token" {
 		path = fmt.Sprintf("/user/installations/%s/repositories?per_page=100&page=%d", url.PathEscape(installationID), page)
 	}
-	headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, path, token, nil, &response, "")
+	headers, err := c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, path, token, nil, &response, "")
 	if err != nil {
 		return nil, false, err
 	}
@@ -683,7 +693,7 @@ func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, 
 			Incomplete bool          `json:"incomplete_results"`
 			Items      []githubIssue `json:"items"`
 		}
-		headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/search/issues?per_page=100&page="+strconv.Itoa(page)+"&q="+url.QueryEscape(q), token, nil, &response, "")
+		headers, err := c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, "/search/issues?per_page=100&page="+strconv.Itoa(page)+"&q="+url.QueryEscape(q), token, nil, &response, "")
 		if err != nil {
 			return out, err
 		}
@@ -698,7 +708,7 @@ func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, 
 		return out, nil
 	}
 	var response []githubIssue
-	headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, "/repos/"+repo.Locator+"/issues?per_page=100&page="+strconv.Itoa(page)+"&state="+stateFilter+"&sort=updated&direction=desc", token, nil, &response, "")
+	headers, err := c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, "/repos/"+repo.Locator+"/issues?per_page=100&page="+strconv.Itoa(page)+"&state="+stateFilter+"&sort=updated&direction=desc", token, nil, &response, "")
 	if err != nil {
 		return out, err
 	}
@@ -747,14 +757,15 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	}
 	var issue githubIssue
 	issuePath := fmt.Sprintf("/repos/%s/issues/%d", repo.Locator, req.IssueNumber)
-	response, err := c.doJSONResponse(ctx, req.Connection.ConnectionID, http.MethodGet, issuePath, token, nil, &issue, req.ETag)
+	response, err := c.doIssueJSONResponse(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, issuePath, token, &issue, req.ETag)
 	if err != nil {
-		if pe, ok := err.(*external.ProviderError); ok && pe.Status == 304 {
+		pe, providerError := err.(*external.ProviderError)
+		if providerError && pe.Status == 304 {
 			profile := req.Profile
 			if !profile.IncludeComments {
 				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
-			comments, fetched, fetchedPages, omitted, omittedPages, commentETag, commentsUnchanged, commentErr := c.fetchComments(ctx, req.Connection.ConnectionID, token, repo.Locator, req.IssueNumber, req.CommentsETag, req.CurrentCommentCount)
+			comments, fetched, fetchedPages, omitted, omittedPages, commentETag, commentsUnchanged, commentErr := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, repo.Locator, req.IssueNumber, req.CommentsETag, req.CurrentCommentCount)
 			if commentErr != nil {
 				return external.IssueResult{}, commentErr
 			}
@@ -763,30 +774,37 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 			}
 			return external.IssueResult{RepositoryID: req.RepositoryID, NativeID: req.ProviderNativeID, Issue: req.CurrentIssue, Profile: profile, Comments: comments, ProviderCommentCount: req.CurrentCommentCount, FetchedCommentCount: fetched, FetchedCommentPages: fetchedPages, OmittedCommentCount: omitted, OmittedCommentPages: omittedPages, ETag: req.ETag, CommentsETag: commentETag}, nil
 		}
-		return external.IssueResult{}, err
-	}
-	isPullRequest, markerErr := validatePullRequestMarker(issue.PullRequest)
-	if markerErr != nil {
-		return external.IssueResult{}, markerErr
-	}
-	if isPullRequest {
-		return external.IssueResult{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		if providerError && pe.Status >= 300 && pe.Status < 400 {
+			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		if !providerError || pe.Status != http.StatusNotFound {
+			return external.IssueResult{}, err
+		}
+		var found bool
+		response, found, err = c.probeMaskedTransfer(ctx, req.Connection, repo.InstallationID, issuePath)
+		if err != nil {
+			return external.IssueResult{}, err
+		}
+		if !found {
+			return external.IssueResult{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing, Status: http.StatusNotFound}
+		}
 	}
 	destination := repo
-	redirected := response.FinalURL != nil && response.FinalURL.String() != c.base+issuePath
+	redirected := response.Status == http.StatusMovedPermanently || response.Status == http.StatusPermanentRedirect
 	expectedLocator, expectedNumber := repo.Locator, req.IssueNumber
+	commentETag := req.CommentsETag
 	if redirected {
-		locator, number, parseErr := transferredIssueCoordinates(response.FinalURL)
+		transferURL, transferErr := c.permanentTransferLocation(response)
+		if transferErr != nil {
+			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		locator, number, parseErr := transferredIssueCoordinates(transferURL)
 		if parseErr != nil {
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
 		}
 		expectedLocator, expectedNumber = locator, number
-		// repositoryByLocator resolves against every installation the connection
-		// covers, so a transfer is accepted when the destination is still inside
-		// this connection's grant and refused when it has left it. That keeps the
-		// original boundary -- the issue cannot wander somewhere Kingdom was never
-		// given -- while letting it move between accounts the operator connected
-		// together.
+		// Resolve the destination against the connection's live grant before any
+		// issue request can carry a credential to those coordinates.
 		destination, err = c.repositoryByLocator(ctx, req.Connection, locator)
 		if err != nil {
 			return external.IssueResult{}, err
@@ -794,6 +812,31 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 		if repo.AccountID == "" || destination.AccountID == "" || destination.InstallationID == "" {
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureAuthentication}
 		}
+		token, err = c.accessToken(ctx, req.Connection, destination.InstallationID)
+		if err != nil {
+			return external.IssueResult{}, err
+		}
+		issue = githubIssue{}
+		destinationPath := fmt.Sprintf("/repos/%s/issues/%d", destination.Locator, number)
+		response, err = c.doIssueJSONResponse(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, destinationPath, token, &issue, "")
+		if err != nil {
+			var providerErr *external.ProviderError
+			if errors.As(err, &providerErr) && providerErr.Status >= 300 && providerErr.Status < 400 {
+				return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			return external.IssueResult{}, err
+		}
+		if response.Status == http.StatusMovedPermanently || response.Status == http.StatusPermanentRedirect {
+			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		commentETag = ""
+	}
+	isPullRequest, markerErr := validatePullRequestMarker(issue.PullRequest)
+	if markerErr != nil {
+		return external.IssueResult{}, markerErr
+	}
+	if isPullRequest {
+		return external.IssueResult{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 	}
 	item, err := normalizeIssue(issue, expectedLocator, expectedNumber)
 	if err != nil {
@@ -812,7 +855,7 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	}
 	out := external.IssueResult{RepositoryID: destination.ID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
 	if out.Profile.IncludeComments {
-		comments, fetched, fetchedPages, omitted, omittedPages, commentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, token, destination.Locator, issue.Number, req.CommentsETag, issue.Comments)
+		comments, fetched, fetchedPages, omitted, omittedPages, fetchedCommentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, destination.Locator, issue.Number, commentETag, issue.Comments)
 		if e != nil {
 			return out, e
 		}
@@ -821,10 +864,71 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 		out.FetchedCommentPages = fetchedPages
 		out.OmittedCommentCount = omitted
 		out.OmittedCommentPages = omittedPages
-		out.CommentsETag = commentETag
+		out.CommentsETag = fetchedCommentETag
 		out.CommentsNotModified = unchanged
 	}
 	return out, nil
+}
+
+// probeMaskedTransfer handles GitHub's private-App masking when the source
+// installation cannot see the issue's new installation. It is entered only
+// after a 404 and checks every other installation at most once in the stable
+// order stored on the connection. Shared user credentials already cover every
+// installation and therefore must not repeat the same request.
+func (c *Client) probeMaskedTransfer(ctx context.Context, conn state.ExternalConnection, sourceInstallationID, issuePath string) (responseMetadata, bool, error) {
+	strategy := conn.CredentialStrategy
+	if strategy == "" {
+		strategy = "app_private_key"
+	}
+	if strategy != "app_private_key" {
+		return responseMetadata{}, false, nil
+	}
+	for _, installation := range conn.Installations {
+		if installation.InstallationID == sourceInstallationID {
+			continue
+		}
+		token, err := c.accessToken(ctx, conn, installation.InstallationID)
+		if err != nil {
+			return responseMetadata{}, false, err
+		}
+		var issue githubIssue
+		response, err := c.doIssueJSONResponse(ctx, conn.ConnectionID, conn.CredentialGeneration, issuePath, token, &issue, "")
+		if err != nil {
+			var providerErr *external.ProviderError
+			if errors.As(err, &providerErr) && providerErr.Status == http.StatusNotFound {
+				continue
+			}
+			if errors.As(err, &providerErr) && providerErr.Status >= 300 && providerErr.Status < 400 {
+				return responseMetadata{}, false, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			return responseMetadata{}, false, err
+		}
+		if response.Status != http.StatusMovedPermanently && response.Status != http.StatusPermanentRedirect {
+			return responseMetadata{}, false, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		return response, true, nil
+	}
+	return responseMetadata{}, false, nil
+}
+
+func (c *Client) permanentTransferLocation(response responseMetadata) (*url.URL, error) {
+	if response.Status != http.StatusMovedPermanently && response.Status != http.StatusPermanentRedirect || response.FinalURL == nil {
+		return nil, fmt.Errorf("invalid transfer redirect")
+	}
+	locations := response.Header.Values("Location")
+	if len(locations) != 1 || strings.TrimSpace(locations[0]) == "" {
+		return nil, fmt.Errorf("invalid transfer location")
+	}
+	reference, err := url.Parse(locations[0])
+	if err != nil {
+		return nil, err
+	}
+	target := response.FinalURL.ResolveReference(reference)
+	origin, err := url.Parse(c.base)
+	if err != nil || target.User != nil || target.RawQuery != "" || target.Fragment != "" || target.Scheme != origin.Scheme || !strings.EqualFold(target.Host, origin.Host) {
+		return nil, fmt.Errorf("invalid transfer origin")
+	}
+	return target, nil
 }
 
 func (c *Client) repositoryByLocator(ctx context.Context, conn state.ExternalConnection, locator string) (external.Repository, error) {
@@ -847,14 +951,16 @@ func (c *Client) repositoryByLocator(ctx context.Context, conn state.ExternalCon
 	return external.Repository{}, &external.ProviderError{Class: external.FailureOversizedResponse}
 }
 
-func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo string, number int, etag string, providerCount int) ([]state.ExternalComment, int, int, int, int, string, bool, error) {
-	lastPage := (providerCount + 99) / 100
-	if lastPage < 1 {
-		lastPage = 1
-	}
+func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) ([]state.ExternalComment, int, int, int, int, string, bool, error) {
+	firstPage, lastPage := retainedCommentPageWindow(providerCount)
 	priorValidators := decodeCommentValidators(etag)
+	reuseValidators := commentValidatorWindowMatches(priorValidators, firstPage, lastPage)
+	lastValidator := ""
+	if reuseValidators {
+		lastValidator = priorValidators[lastPage]
+	}
 	pages := map[int]commentPage{}
-	last, err := c.fetchCommentPage(ctx, connectionID, token, repo, number, lastPage, priorValidators[lastPage])
+	last, err := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, lastValidator)
 	if err != nil {
 		return nil, 0, 0, 0, 0, "", false, err
 	}
@@ -863,7 +969,8 @@ func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo st
 			return nil, 0, 0, 0, 0, "", false, parseErr
 		} else if ok && linkedLast != lastPage {
 			lastPage = linkedLast
-			last, err = c.fetchCommentPage(ctx, connectionID, token, repo, number, lastPage, priorValidators[lastPage])
+			reuseValidators = false
+			last, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, "")
 			if err != nil {
 				return nil, 0, 0, 0, 0, "", false, err
 			}
@@ -874,10 +981,19 @@ func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo st
 	if !last.notModified {
 		tailCount = len(last.raw)
 	}
-	firstPage := lastPage
+	firstPage = lastPage
 	if lastPage > 1 && tailCount < 100 {
 		firstPage = lastPage - 1
-		previous, fetchErr := c.fetchCommentPage(ctx, connectionID, token, repo, number, firstPage, priorValidators[firstPage])
+	}
+	if !commentValidatorWindowMatches(priorValidators, firstPage, lastPage) {
+		reuseValidators = false
+	}
+	if firstPage != lastPage {
+		previousValidator := ""
+		if reuseValidators {
+			previousValidator = priorValidators[firstPage]
+		}
+		previous, fetchErr := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, firstPage, previousValidator)
 		if fetchErr != nil {
 			return nil, 0, 0, 0, 0, "", false, fetchErr
 		}
@@ -889,7 +1005,7 @@ func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo st
 		allUnchanged = allUnchanged && page.notModified
 	}
 	validators := make(map[int]string, len(pages))
-	if allUnchanged {
+	if allUnchanged && reuseValidators {
 		for page := firstPage; page <= lastPage; page++ {
 			validators[page] = priorValidators[page]
 		}
@@ -900,7 +1016,7 @@ func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo st
 	for page := firstPage; page <= lastPage; page++ {
 		item := pages[page]
 		if item.notModified {
-			item, err = c.fetchCommentPage(ctx, connectionID, token, repo, number, page, "")
+			item, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, page, "")
 			if err != nil {
 				return nil, 0, 0, 0, 0, "", false, err
 			}
@@ -931,6 +1047,30 @@ func (c *Client) fetchComments(ctx context.Context, connectionID, token, repo st
 	return combined, fetched, fetchedPages, omitted, omittedPages, encodeCommentValidators(validators), false, nil
 }
 
+func retainedCommentPageWindow(providerCount int) (int, int) {
+	lastPage := (providerCount + 99) / 100
+	if lastPage < 1 {
+		lastPage = 1
+	}
+	firstPage := lastPage
+	if lastPage > 1 && providerCount-(lastPage-1)*100 < 100 {
+		firstPage--
+	}
+	return firstPage, lastPage
+}
+
+func commentValidatorWindowMatches(validators map[int]string, firstPage, lastPage int) bool {
+	if len(validators) != lastPage-firstPage+1 {
+		return false
+	}
+	for page := firstPage; page <= lastPage; page++ {
+		if validators[page] == "" {
+			return false
+		}
+	}
+	return true
+}
+
 type commentPage struct {
 	raw         []githubComment
 	comments    []state.ExternalComment
@@ -939,9 +1079,9 @@ type commentPage struct {
 	notModified bool
 }
 
-func (c *Client) fetchCommentPage(ctx context.Context, connectionID, token, repo string, number, page int, etag string) (commentPage, error) {
+func (c *Client) fetchCommentPage(ctx context.Context, connectionID string, generation int, token, repo string, number, page int, etag string) (commentPage, error) {
 	var raw []githubComment
-	response, err := c.doJSONResponse(ctx, connectionID, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, nil, &raw, etag)
+	response, err := c.doJSONResponse(ctx, connectionID, generation, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, nil, &raw, etag)
 	if err != nil {
 		if pe, ok := err.(*external.ProviderError); ok && pe.Status == http.StatusNotModified {
 			return commentPage{headers: response.Header, etag: etag, notModified: true}, nil
@@ -1031,17 +1171,32 @@ func commentLinkPage(headers http.Header, relation string) (int, bool, error) {
 type responseMetadata struct {
 	Header   http.Header
 	FinalURL *url.URL
+	Status   int
 }
 
-func (c *Client) doJSON(ctx context.Context, connectionID, method, path, token string, body, out any, etag string) (http.Header, error) {
-	response, err := c.doJSONResponse(ctx, connectionID, method, path, token, body, out, etag)
+func (c *Client) doJSON(ctx context.Context, connectionID string, generation int, method, path, token string, body, out any, etag string) (http.Header, error) {
+	response, err := c.doJSONResponse(ctx, connectionID, generation, method, path, token, body, out, etag)
 	return response.Header, err
 }
 
-func (c *Client) doJSONResponse(ctx context.Context, connectionID, method, path, token string, body, out any, etag string) (responseMetadata, error) {
+func (c *Client) doJSONResponse(ctx context.Context, connectionID string, generation int, method, path, token string, body, out any, etag string) (responseMetadata, error) {
+	return c.doJSONResponseMode(ctx, connectionID, generation, method, path, token, body, out, etag, false)
+}
+
+func (c *Client) doIssueJSONResponse(ctx context.Context, connectionID string, generation int, path, token string, out any, etag string) (responseMetadata, error) {
+	return c.doJSONResponseMode(ctx, connectionID, generation, http.MethodGet, path, token, nil, out, etag, true)
+}
+
+func (c *Client) doJSONResponseMode(ctx context.Context, connectionID string, generation int, method, path, token string, body, out any, etag string, stopAtPermanentRedirect bool) (responseMetadata, error) {
 	var encoded []byte
 	if body != nil {
 		encoded, _ = json.Marshal(body)
+	}
+	httpClient := c.http
+	if stopAtPermanentRedirect {
+		clone := *c.http
+		clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &clone
 	}
 	authRetried := false
 	transportRetries := 0
@@ -1065,7 +1220,7 @@ func (c *Client) doJSONResponse(ctx context.Context, connectionID, method, path,
 		if etag != "" {
 			req.Header.Set("If-None-Match", etag)
 		}
-		resp, err := c.http.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			release()
 			if ctx.Err() != nil {
@@ -1091,13 +1246,17 @@ func (c *Client) doJSONResponse(ctx context.Context, connectionID, method, path,
 		if len(raw) > maxResponseBytes {
 			return responseMetadata{}, &external.ProviderError{Class: external.FailureOversizedResponse}
 		}
+		metadata := responseMetadata{Header: resp.Header, FinalURL: resp.Request.URL, Status: resp.StatusCode}
+		if stopAtPermanentRedirect && (resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusPermanentRedirect) {
+			return metadata, nil
+		}
 		if resp.StatusCode == 304 {
-			return responseMetadata{Header: resp.Header, FinalURL: resp.Request.URL}, &external.ProviderError{Status: 304}
+			return metadata, &external.ProviderError{Status: 304}
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			pe := providerErrorAt(resp, c.now())
 			if resp.StatusCode == http.StatusUnauthorized && method == http.MethodGet && !authRetried && c.isUserStrategy(connectionID) {
-				refreshed, refreshErr := c.userAccessToken(ctx, connectionID, token, true)
+				refreshed, refreshErr := c.userAccessToken(ctx, connectionID, generation, token, true)
 				if refreshErr == nil {
 					token = refreshed
 					authRetried = true
@@ -1130,12 +1289,12 @@ func (c *Client) doJSONResponse(ctx context.Context, connectionID, method, path,
 			if resp.StatusCode == 401 {
 				c.Evict(connectionID)
 			}
-			return responseMetadata{}, pe
+			return metadata, pe
 		}
 		if out != nil && json.Unmarshal(raw, out) != nil {
 			return responseMetadata{}, &external.ProviderError{Class: external.FailureMalformedResponse}
 		}
-		return responseMetadata{Header: resp.Header, FinalURL: resp.Request.URL}, nil
+		return metadata, nil
 	}
 }
 
@@ -1265,16 +1424,31 @@ func transferredIssueCoordinates(v *url.URL) (string, int, error) {
 	return owner + "/" + repository, number, nil
 }
 
-// ListInstallations enumerates the installations this App key reaches, so a
-// private-App connection can grow past the single installation its manifest run
-// learned about.
+// ListInstallations enumerates every installation a saved connection's exact
+// credential generation reaches. Shared credentials use the rotating user-token
+// transport; private Apps enumerate with an App JWT.
 func (c *Client) ListInstallations(ctx context.Context, conn state.ExternalConnection) ([]external.Installation, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	if conn.CredentialStrategy == "user_access_token" || c.keys == nil {
+	if conn.CredentialStrategy == "user_access_token" {
+		candidates, err := c.sharedInstallationCandidates(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]external.Installation, 0, len(candidates))
+		for _, candidate := range candidates {
+			out = append(out, external.Installation{
+				InstallationID: candidate.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin,
+				DisplayName: candidate.DisplayName, AppID: candidate.AppID, ClientID: candidate.ClientID, AppSlug: candidate.AppSlug,
+				RepositorySelection: candidate.RepositorySelection,
+			})
+		}
+		return out, nil
+	}
+	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return nil, &external.ProviderError{Class: external.FailureAuthentication}
 	}
-	key, _, err := c.keys.Load(conn.ConnectionID)
+	key, _, err := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)
 	if err != nil {
 		return nil, &external.ProviderError{Class: external.FailureAuthentication}
 	}
@@ -1285,7 +1459,7 @@ func (c *Client) ListInstallations(ctx context.Context, conn state.ExternalConne
 	out := []external.Installation{}
 	for page := 1; page <= setupMaxInstallationPage; page++ {
 		var response []setupInstallation
-		headers, err := c.doJSON(ctx, conn.ConnectionID, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, nil, &response, "")
+		headers, err := c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, fmt.Sprintf("/app/installations?per_page=100&page=%d", page), jwt, nil, &response, "")
 		if err != nil {
 			return nil, err
 		}

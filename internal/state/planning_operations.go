@@ -460,9 +460,9 @@ func (s *PlanningStore) ListRecentCompletedOperationTelemetryByType(ctx context.
 		        po.created_at,
 		        po.started_at,
 		        po.finished_at,
-		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'provider_session_open') AS provider_session_open_at,
-		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'text_delta') AS first_text_delta_at,
-		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'finalizing') AS finalizing_at
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'generic' AND json_extract(payload_json, '$.kind') = 'kingdom.phase' AND json_extract(payload_json, '$.phase') = 'provider_session_open') AS provider_session_open_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'message.part') AS first_text_delta_at,
+		        (SELECT MIN(created_at) FROM planning_operation_events WHERE operation_id = po.operation_id AND event_type = 'generic' AND json_extract(payload_json, '$.kind') = 'kingdom.phase' AND json_extract(payload_json, '$.phase') = 'finalizing') AS finalizing_at
 		 FROM planning_operations po
 		 WHERE po.type = ? AND po.finished_at IS NOT NULL
 		 ORDER BY po.finished_at DESC

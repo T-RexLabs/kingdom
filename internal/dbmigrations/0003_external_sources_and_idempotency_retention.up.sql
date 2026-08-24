@@ -20,7 +20,7 @@ CREATE TABLE external_connections (
   updated_at TEXT NOT NULL,
   CHECK (validated_generation <= credential_generation),
   CHECK (credential_strategy <> 'user_access_token' OR length(trim(app_slug)) > 0),
-  CHECK (health_class <> 'healthy' OR length(trim(app_slug)) > 0)
+  CHECK (health_class <> 'healthy' OR (length(trim(app_slug)) > 0 AND credential_generation > 0 AND validated_generation = credential_generation))
 );
 
 -- A connection is one App credential covering the installations that credential

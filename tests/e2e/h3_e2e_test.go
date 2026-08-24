@@ -144,7 +144,7 @@ func TestE2ESeededExternalSecretLeakContainment(t *testing.T) {
 	if err := os.MkdirAll(secretDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(secretDir, "private-key.pem"), []byte(privateKeyMarker), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(secretDir, "private-key.1.pem"), []byte(privateKeyMarker), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,6 +158,14 @@ func TestE2ESeededExternalSecretLeakContainment(t *testing.T) {
 		ConnectionID string `json:"connection_id"`
 	}
 	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
+		t.Fatal(err)
+	}
+	externalStore := state.NewExternalStore(env.db)
+	storedConnection, err := externalStore.GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := externalStore.RecordCredentialEvent(context.Background(), connection.ConnectionID, storedConnection.RowVersion, 1, "local-operator", "audit-e2e-leak-credential", "credential.provisioned", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	health := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionID + "/health-checks", idempotencyKey: "leak-health"})
@@ -219,6 +227,7 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
 		t.Fatal(err)
 	}
+	publishFixtureCredentialGeneration(t, env, connection.ConnectionID, "audit-e2e-external-credential")
 	health := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionID + "/health-checks", idempotencyKey: "e2e-external-health"})
 	if health.Code != http.StatusOK {
 		t.Fatalf("health: %d %s", health.Code, health.Body.String())
@@ -357,12 +366,17 @@ func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter
 	}
 
 	generator := &testIDGenerator{}
+	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot(t))
+	bootstrapPaths.ProviderPolicyPath = filepath.Join(projectRoot, ".kingdom", "policies", "opencode_provider_policy.yaml")
+	bootstrapPaths.ProviderPolicySchemaPath = filepath.Join(projectRoot, ".kingdom", "schemas", "opencode_provider_policy.schema.json")
 	handler, err := api.NewHandler(api.ServerConfig{
-		DB:                 db,
-		IDGenerator:        generator.Next,
-		ProjectRoot:        projectRoot,
-		ProviderEngine:     "opencode",
-		OpenCodeBinaryPath: "/bin/sh",
+		DB:                       db,
+		IDGenerator:              generator.Next,
+		ProjectRoot:              projectRoot,
+		ProviderEngine:           "opencode",
+		OpenCodeBinaryPath:       "/bin/sh",
+		ProviderPolicyPath:       bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath: bootstrapPaths.ProviderPolicySchemaPath,
 		ProviderModelCatalog: staticProviderModelCatalog{items: []gen.ProviderModel{{
 			Id:                    "github-copilot/gpt-5.3-codex",
 			ProviderId:            "github-copilot",
@@ -382,7 +396,7 @@ func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:               db,
-		Paths:            kingdom.DefaultBootstrapPaths(repoRoot(t)),
+		Paths:            bootstrapPaths,
 		Adapter:          opencode.NewMemoryAdapter(),
 		ProviderEngine:   "opencode",
 		DispatchInterval: 20 * time.Millisecond,

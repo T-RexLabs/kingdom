@@ -119,6 +119,16 @@ paths:
         default: { $ref: "#/components/responses/ErrorResponse" }
 
   /connections/github/device-flows:
+    get:
+      tags: [connections]
+      operationId: getCurrentGitHubDeviceFlow
+      summary: Discover the unfinished shared-App flow bound to this browser session and exact origin.
+      responses:
+        "200": { description: Current safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "204": { description: No unfinished flow is bound to this browser session and origin. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
     post:
       tags: [connections]
       operationId: startGitHubDeviceFlow
@@ -130,9 +140,11 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubDeviceFlowRequest" } } }
       responses:
+        "200": { description: Existing unfinished flow for the same binding and intent., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
         "201": { description: Safe device authorization instructions without provider device or token secrets., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
         "429": { $ref: "#/components/responses/ErrorResponse" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
@@ -148,6 +160,22 @@ paths:
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         "404": { $ref: "#/components/responses/NotFoundError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      tags: [connections]
+      operationId: discardGitHubDeviceFlow
+      summary: Discard an unfinished shared-App flow bound to this browser session and exact origin.
+      description: Clears memory-only provider authorization and token state. A flow with provider or durable work in flight conflicts until that work settles.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: Flow discarded. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
   /connections/github/device-flows/{id}/poll:
@@ -187,7 +215,7 @@ paths:
     post:
       tags: [connections]
       operationId: finalizeGitHubDeviceFlow
-      summary: Re-verify one selected installation and atomically finalize or reconnect a shared connection.
+      summary: Re-verify selected installations and atomically finalize a connection, or reauthorize the exact complete saved installation set.
       parameters:
         - $ref: "#/components/parameters/DeviceFlowId"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -3149,11 +3177,12 @@ components:
       required: [flow_id, stage, expires_at, interval_seconds, candidates]
       properties:
         flow_id: { type: string, minLength: 16, maxLength: 128 }
-        stage: { type: string, enum: [awaiting_authorization, discovering_installations, selecting_installation, needs_installation, finalizing, completed, access_denied, expired, failed] }
+        stage: { type: string, enum: [starting_authorization, awaiting_authorization, discovering_installations, selecting_installation, needs_installation, finalizing, completed, access_denied, expired, failed] }
         user_code: { type: string, pattern: "^[A-Z0-9-]{4,32}$" }
         verification_uri: { type: string, format: uri, pattern: "^https://github\\.com/login/device$" }
+        reconnect_connection_id: { type: string, minLength: 1, maxLength: 128, description: Saved connection being reauthorized. No other reconnect identity or credential state is exposed. }
         expires_at: { type: string, format: date-time }
-        interval_seconds: { type: integer, minimum: 5, maximum: 60 }
+        interval_seconds: { type: integer, minimum: 0, maximum: 60, description: Zero only while provider authorization startup is reserved. }
         retry_at: { type: string, format: date-time }
         install_url: { type: string, format: uri, pattern: "^https://github\\.com/apps/" }
         candidates: { type: array, maxItems: 1000, items: { $ref: "#/components/schemas/GitHubInstallationCandidate" } }

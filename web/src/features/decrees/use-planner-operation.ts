@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, type Dispatch } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { API_BASE, apiFetch, buildAuthHeaders } from "@/api/client";
+import { API_BASE, buildAuthHeaders } from "@/api/client";
 import type { AcpRun, AcpRunEvent, PlanningMessage, PlanningSessionDetail } from "@/api/hooks";
 import { subscribeSSE } from "@/lib/sse-stream";
 import {
@@ -121,49 +121,6 @@ export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperat
       }
     };
   }, [operation, queryClient]);
-
-  useEffect(() => {
-    if (state.connection.state !== "failed" || !operation) return;
-
-    const controller = new AbortController();
-
-    void (async () => {
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        if (controller.signal.aborted) return;
-        try {
-          const fresh = await apiFetch<AcpRun>(`/acp/runs/${operation.run_id}`, { signal: controller.signal });
-          if (fresh.status === "completed" || fresh.status === "failed" || fresh.status === "cancelled") {
-            dispatch({ type: "hydrate", operation: fresh });
-            dispatch({ type: "connection", connection: { state: "idle" } });
-			void queryClient.invalidateQueries({ queryKey: plannerKeys.operation(operation.run_id) });
-			void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
-			void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id) });
-			void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(operation.planning_session_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.plan(operation.planning_session_id) });
-            void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
-            return;
-          }
-        } catch {
-          if (controller.signal.aborted) return;
-        }
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 5_000);
-          controller.signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true },
-          );
-        });
-      }
-    })();
-
-    return () => {
-      controller.abort();
-    };
-  }, [state.connection.state, operation, queryClient]);
 
   return state;
 }

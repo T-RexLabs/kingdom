@@ -548,6 +548,22 @@ describe("PlanningSessionPage", () => {
     expect(screen.getByRole("button", { name: "Add GitHub Issue" })).toBeInTheDocument();
   });
 
+  it("wires the sources popover to responsive fixed width and end alignment", async () => {
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    const panel = document.querySelector<HTMLElement>("#planning-sources-popover");
+
+    expect(panel).toBeInTheDocument();
+    expect(panel).toHaveAttribute("data-popover-placement", "bottom-end");
+    expect(panel).toHaveClass("w-[264px]");
+    expect(panel).toHaveClass("sm:w-[380px]");
+    expect(panel).toHaveClass("max-w-[calc(100vw_-_16px)]");
+    await waitFor(() => expect(panel?.style.maxWidth).not.toBe(""));
+    expect(panel?.style.minWidth).toBe("");
+  });
+
   it("removes a source only after confirmation and detaches it on the server", async () => {
     const base = mockUsePlanningSession().data;
     mockUsePlanningSession.mockReturnValue({
@@ -850,7 +866,7 @@ describe("PlanningSessionPage", () => {
         lifecycle_state: "active",
         conversation_state: "processing",
         current_question_message_id: "assistant-1",
-        current_operation_id: "operation-1",
+        current_run_id: "operation-1",
         current_draft_id: undefined,
         context_snapshot_id: "planning-context-1",
         created_at: "2026-04-21T10:00:00Z",

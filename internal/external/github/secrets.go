@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -51,48 +52,46 @@ func NewKeyStore(secretsRoot string) (*KeyStore, error) {
 func CredentialHandle(connectionID string) string {
 	return "github-app:" + strings.TrimSpace(connectionID)
 }
-func (s *KeyStore) path(connectionID string) string {
-	return filepath.Join(s.root, "github-apps", strings.TrimSpace(connectionID), "private-key.pem")
+func (s *KeyStore) path(connectionID string, generation int) string {
+	return filepath.Join(s.root, "github-apps", strings.TrimSpace(connectionID), privateKeyName(generation))
 }
 
-func (s *KeyStore) Provision(connectionID string, raw []byte) (string, error) {
-	return s.install(connectionID, raw, false)
-}
-
-func (s *KeyStore) Rotate(connectionID string, raw []byte) (string, error) {
-	return s.install(connectionID, raw, true)
-}
-
-// InstallAudited serializes local key changes with connection removal and
-// restores the prior filesystem state when durable lifecycle recording fails.
-func (s *KeyStore) InstallAudited(connectionID string, raw []byte, rotate bool, audit func() error) (string, error) {
+func (s *KeyStore) Provision(connectionID string, generation int, raw []byte) (string, error) {
 	var fingerprint string
 	err := s.WithConnectionLock(connectionID, func() error {
-		var previous []byte
-		if rotate {
-			var err error
-			previous, err = s.readRaw(connectionID)
-			if err != nil {
-				return err
-			}
-		}
+		var installErr error
+		fingerprint, installErr = s.install(connectionID, generation, raw, false)
+		return installErr
+	})
+	return fingerprint, err
+}
+
+func (s *KeyStore) Rotate(connectionID string, generation int, raw []byte) (string, error) {
+	var fingerprint string
+	err := s.WithConnectionLock(connectionID, func() error {
+		var installErr error
+		fingerprint, installErr = s.install(connectionID, generation, raw, true)
+		return installErr
+	})
+	return fingerprint, err
+}
+
+// InstallAudited makes a new generation durable before publishing it through
+// the database callback. It never overwrites the previously selected key.
+func (s *KeyStore) InstallAudited(connectionID string, generation int, raw []byte, rotate bool, audit func() error) (string, error) {
+	var fingerprint string
+	err := s.WithConnectionLock(connectionID, func() error {
 		var err error
-		fingerprint, err = s.install(connectionID, raw, rotate)
+		fingerprint, err = s.install(connectionID, generation, raw, rotate)
 		if err != nil {
 			return err
 		}
 		if err = audit(); err == nil {
 			return nil
 		}
-		var rollbackErr error
-		if rotate {
-			_, rollbackErr = s.install(connectionID, previous, true)
-		} else {
-			rollbackErr = s.Remove(connectionID)
-		}
-		if rollbackErr != nil {
-			return errors.Join(err, fmt.Errorf("rollback github private key: %w", rollbackErr))
-		}
+		// Commit errors can be outcome-ambiguous. Keep the staged generation;
+		// startup reconciliation will retain it if the DB committed or remove it
+		// if the prior generation is still selected.
 		return err
 	})
 	return fingerprint, err
@@ -131,9 +130,12 @@ func (s *KeyStore) WithConnectionLock(connectionID string, fn func() error) erro
 	return fn()
 }
 
-func (s *KeyStore) install(connectionID string, raw []byte, rotate bool) (string, error) {
+func (s *KeyStore) install(connectionID string, generation int, raw []byte, rotate bool) (string, error) {
 	if err := validateConnectionID(connectionID); err != nil {
 		return "", err
+	}
+	if generation <= 0 || rotate != (generation > 1) {
+		return "", fmt.Errorf("invalid github private key generation")
 	}
 	key, err := parseRSAKey(raw)
 	if err != nil {
@@ -144,19 +146,16 @@ func (s *KeyStore) install(connectionID string, raw []byte, rotate bool) (string
 		return "", err
 	}
 	defer dir.Close()
-	destination := "private-key.pem"
+	destination := privateKeyName(generation)
 	_, statErr := dir.Lstat(destination)
-	if rotate && errors.Is(statErr, fs.ErrNotExist) {
-		return "", fmt.Errorf("GitHub private key is not provisioned")
-	}
-	if !rotate && statErr == nil {
-		return "", fmt.Errorf("GitHub private key is already provisioned; use rotate")
+	if statErr == nil {
+		return "", fmt.Errorf("GitHub private key generation is already staged")
 	}
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		return "", statErr
 	}
-	if rotate && statErr == nil {
-		if _, _, err := s.Load(connectionID); err != nil {
+	if rotate {
+		if _, _, err := s.Load(connectionID, generation-1); err != nil {
 			return "", err
 		}
 	}
@@ -180,12 +179,12 @@ func (s *KeyStore) install(connectionID string, raw []byte, rotate bool) (string
 	if err != nil {
 		return "", fmt.Errorf("stage github private key: %w", err)
 	}
-	if rotate {
-		err = dir.Rename(tmpName, destination)
-	} else {
-		err = dir.Link(tmpName, destination)
-	}
+	err = dir.Link(tmpName, destination)
 	if err != nil {
+		return "", fmt.Errorf("install github private key: %w", err)
+	}
+	if err = dir.Remove(tmpName); err != nil {
+		_ = dir.Remove(destination)
 		return "", fmt.Errorf("install github private key: %w", err)
 	}
 	d, err := dir.Open(".")
@@ -201,16 +200,19 @@ func (s *KeyStore) install(connectionID string, raw []byte, rotate bool) (string
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (s *KeyStore) Load(connectionID string) (*rsa.PrivateKey, string, error) {
+func (s *KeyStore) Load(connectionID string, generation int) (*rsa.PrivateKey, string, error) {
 	if err := validateConnectionID(connectionID); err != nil {
 		return nil, "", err
+	}
+	if generation <= 0 {
+		return nil, "", fmt.Errorf("invalid github private key generation")
 	}
 	dir, err := s.openConnection(connectionID, false)
 	if err != nil {
 		return nil, "", err
 	}
 	defer dir.Close()
-	file, err := securefs.OpenRegularFile(dir, "private-key.pem", os.O_RDONLY, 0)
+	file, err := securefs.OpenRegularFile(dir, privateKeyName(generation), os.O_RDONLY, 0)
 	if err != nil {
 		return nil, "", err
 	}
@@ -234,7 +236,11 @@ func (s *KeyStore) Load(connectionID string) (*rsa.PrivateKey, string, error) {
 	sum := sha256.Sum256(der)
 	return key, hex.EncodeToString(sum[:]), nil
 }
-func (s *KeyStore) Remove(connectionID string) error {
+func (s *KeyStore) RemoveAll(connectionID string) error {
+	return s.WithConnectionLock(connectionID, func() error { return s.RemoveAllWhileLocked(connectionID) })
+}
+
+func (s *KeyStore) RemoveAllWhileLocked(connectionID string) error {
 	if err := validateConnectionID(connectionID); err != nil {
 		return err
 	}
@@ -246,19 +252,14 @@ func (s *KeyStore) Remove(connectionID string) error {
 		return err
 	}
 	defer dir.Close()
-	info, err := dir.Lstat("private-key.pem")
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err = validatePrivateKeyInfo(info); err != nil {
-		return err
-	}
-	return dir.Remove("private-key.pem")
+	return removeKeyGenerations(dir, 0)
 }
-func (s *KeyStore) CleanupTemps() error {
+
+// ReconcileGenerations removes temporary, stale, and unowned key generations.
+// selectedGeneration runs while the connection lifecycle lock is held so it
+// can read the SQLite publication pointer fenced by the same lock as writers.
+// It must not attempt to acquire a credential lifecycle lock.
+func (s *KeyStore) ReconcileGenerations(selectedGeneration func(connectionID string) (int, error)) error {
 	secrets, err := s.openSecrets()
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -288,30 +289,20 @@ func (s *KeyStore) CleanupTemps() error {
 		if !entry.IsDir() || !safeConnectionID.MatchString(entry.Name()) {
 			continue
 		}
-		connection, err := securefs.OpenDir(apps, securefs.Directory{Name: entry.Name(), Mode: 0o700, ExactMode: true})
-		if err != nil {
-			return err
-		}
-		file, err := connection.Open(".")
-		if err != nil {
-			_ = connection.Close()
-			return err
-		}
-		children, readErr := file.ReadDir(-1)
-		_ = file.Close()
-		if readErr != nil {
-			_ = connection.Close()
-			return readErr
-		}
-		for _, child := range children {
-			if child.Type().IsRegular() && strings.HasPrefix(child.Name(), ".private-key-") && strings.HasSuffix(child.Name(), ".tmp") {
-				if err := connection.Remove(child.Name()); err != nil {
-					_ = connection.Close()
-					return err
-				}
+		if err := s.WithConnectionLock(entry.Name(), func() error {
+			selected, resolveErr := selectedGeneration(entry.Name())
+			if resolveErr != nil {
+				return resolveErr
 			}
+			dir, openErr := s.openConnection(entry.Name(), false)
+			if openErr != nil {
+				return openErr
+			}
+			defer dir.Close()
+			return removeKeyGenerations(dir, selected)
+		}); err != nil {
+			return err
 		}
-		_ = connection.Close()
 	}
 	return nil
 }
@@ -350,33 +341,105 @@ func (s *KeyStore) openConnection(connectionID string, create bool) (*os.Root, e
 	return connection, err
 }
 
-func (s *KeyStore) readRaw(connectionID string) ([]byte, error) {
-	dir, err := s.openConnection(connectionID, false)
-	if err != nil {
-		return nil, err
-	}
-	defer dir.Close()
-	file, err := securefs.OpenRegularFile(dir, "private-key.pem", os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if err = validatePrivateKeyInfo(info); err != nil {
-		return nil, err
-	}
-	return io.ReadAll(io.LimitReader(file, maxPrivateKeyBytes+1))
-}
-
 func randomTempName() (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
 	return ".private-key-" + hex.EncodeToString(raw[:]) + ".tmp", nil
+}
+
+func privateKeyName(generation int) string {
+	return "private-key." + strconv.Itoa(generation) + ".pem"
+}
+
+func privateKeyGeneration(name string) (int, bool) {
+	if !strings.HasPrefix(name, "private-key.") || !strings.HasSuffix(name, ".pem") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(name, "private-key."), ".pem")
+	generation, err := strconv.Atoi(raw)
+	return generation, err == nil && generation > 0 && strconv.Itoa(generation) == raw
+}
+
+func removeKeyGenerations(dir *os.Root, selected int) error {
+	file, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, err := file.ReadDir(-1)
+	_ = file.Close()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".private-key-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		file, openErr := securefs.OpenRegularFile(dir, name, os.O_RDONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		validateErr := validateReconcileTemp(file, name)
+		_ = file.Close()
+		if validateErr != nil {
+			return validateErr
+		}
+		if err := dir.Remove(name); err != nil {
+			return err
+		}
+		changed = true
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		generation, generationFile := privateKeyGeneration(name)
+		if !generationFile || generation == selected {
+			continue
+		}
+		opened, openErr := securefs.OpenRegularFile(dir, name, os.O_RDONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		validateErr := validatePrivateKeyInfoFromFile(opened)
+		_ = opened.Close()
+		if validateErr != nil {
+			return validateErr
+		}
+		if err := dir.Remove(name); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	d, err := dir.Open(".")
+	if err == nil {
+		err = d.Sync()
+		_ = d.Close()
+	}
+	return err
+}
+
+func validateReconcileTemp(file *os.File, name string) error {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("%s must be a 0600 regular file", name)
+	}
+	if err := securefs.CurrentUserOwns(info); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func validatePrivateKeyInfoFromFile(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	return validatePrivateKeyInfo(info)
 }
 
 func parseRSAKey(raw []byte) (*rsa.PrivateKey, error) {

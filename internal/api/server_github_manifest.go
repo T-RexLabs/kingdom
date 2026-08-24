@@ -248,7 +248,7 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 	connectionID := s.idGenerator("connection")
 	at := s.now().UTC().Format(time.RFC3339Nano)
 	var connection state.ExternalConnection
-	_, err = s.githubKeys.InstallAudited(connectionID, completion.PrivateKey, false, func() error {
+	_, err = s.githubKeys.InstallAudited(connectionID, 1, completion.PrivateKey, false, func() error {
 		if err := completionCtx.Err(); err != nil {
 			return err
 		}
@@ -365,12 +365,15 @@ func writeGitHubSetupError(w http.ResponseWriter, message string, err error) {
 	writeCanonicalErrorWithRetryAt(w, status, errorcatalog.CodeDependencyBlocked, message, "api.github_manifest.github", details, retryAt)
 }
 
-func contextWithFlowDeadline(parent context.Context, now func() time.Time, expiresAt time.Time) (context.Context, context.CancelFunc) {
+func contextWithFlowDeadline(parent context.Context, now func() time.Time, expiresAt time.Time, operationTimeout ...time.Duration) (context.Context, context.CancelFunc) {
 	remaining := expiresAt.Sub(now().UTC())
 	if remaining <= 0 {
 		ctx, cancel := context.WithCancel(parent)
 		cancel()
 		return ctx, func() {}
+	}
+	if len(operationTimeout) != 0 && operationTimeout[0] > 0 && operationTimeout[0] < remaining {
+		remaining = operationTimeout[0]
 	}
 	return context.WithTimeout(parent, remaining)
 }

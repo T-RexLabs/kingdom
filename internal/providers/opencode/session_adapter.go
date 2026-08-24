@@ -58,8 +58,15 @@ type SessionAdapter struct {
 	logicalToActual map[string]string
 	attempts        map[string]*sessionAttemptRecord
 	inFlight        map[string]*exec.Cmd
+	inFlightStates  map[string]inFlightProcessState
 	attemptCancels  map[string]context.CancelFunc
 	attemptDone     map[string]chan struct{}
+}
+
+type inFlightProcessState struct {
+	processStateKnown bool
+	waitReturned      bool
+	processExited     bool
 }
 
 type sessionAttemptRecord struct {
@@ -567,6 +574,14 @@ func readStderrCapture(stream io.Reader) stderrCapture {
 	return capture
 }
 
+func startStderrCapture(stream io.Reader) <-chan stderrCapture {
+	done := make(chan stderrCapture, 1)
+	go func() {
+		done <- readStderrCapture(stream)
+	}()
+	return done
+}
+
 func mergeStderrCapture(current, next stderrCapture) stderrCapture {
 	if len(next.raw) > 0 {
 		if len(current.raw) > 0 {
@@ -858,6 +873,7 @@ func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
 		logicalToActual:         make(map[string]string),
 		attempts:                make(map[string]*sessionAttemptRecord),
 		inFlight:                make(map[string]*exec.Cmd),
+		inFlightStates:          make(map[string]inFlightProcessState),
 		attemptCancels:          make(map[string]context.CancelFunc),
 		attemptDone:             make(map[string]chan struct{}),
 	}, nil
@@ -932,10 +948,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	defer close(ctxCancelDone)
 	watchdog := startCommandWatchdog(cmd, a.firstEventTimeout, a.streamInactivityTimeout)
 
-	stderrDone := make(chan stderrCapture, 1)
-	go func() {
-		stderrDone <- readStderrCapture(stderr)
-	}()
+	stderrDone := startStderrCapture(stderr)
 
 	textChunks := make([]string, 0)
 	var accumulatedTokens TokenUsage
@@ -1061,6 +1074,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 
 	execDiag.CmdWaitStartedAt = time.Now().UTC().Format(time.RFC3339)
 	waitErr := cmd.Wait()
+	a.markInFlightWaitReturned(req.AttemptID, cmd)
 	execDiag.CmdWaitFinishedAt = time.Now().UTC().Format(time.RFC3339)
 	execDiag.WaitReturned = true
 	if waitErr != nil {
@@ -1306,6 +1320,18 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			}
 			accumulateTokenUsage(&accumulatedTokens, continuationResult.Tokens)
 			combinedContinuationText := strings.TrimSpace(strings.Join(textChunks, "\n"))
+			if isExecutionCancelled(continuationErr) {
+				result := executionResultForCancellation(continuationErr, actualSessionID, "opencode continuation cancelled")
+				result.OutputText = combinedContinuationText
+				result.Tokens = accumulatedTokens
+				execDiag.CancelledEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
+					AttemptID:   req.AttemptID,
+					EventType:   AttemptEventTypeCancelled,
+					PayloadJSON: `{"reason":"opencode continuation cancelled"}`,
+					OccurredAt:  time.Now().UTC().Format(time.RFC3339),
+				})
+				return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
+			}
 			if receiptResult, settled, accepted := waitForCompletionReceiptSettlement(req, canonicalSettledOutputText(combinedContinuationText, latestContinuationText, continuationUsed), accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod); settled {
 				result = receiptResult
 				receiptAccepted = accepted
@@ -1313,26 +1339,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				break
 			}
 			if continuationErr != nil {
-				if !isExecutionCancelled(continuationErr) {
-					if receiptResult, settled, accepted := waitForCompletionReceiptSettlement(req, canonicalSettledOutputText(combinedContinuationText, latestContinuationText, continuationUsed), accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod); settled {
-						result = receiptResult
-						receiptAccepted = accepted
-						settledBeforeContinuation = true
-						break
-					}
-				}
-				if isExecutionCancelled(continuationErr) {
-					result := executionResultForCancellation(continuationErr, actualSessionID, "opencode continuation cancelled")
-					result.OutputText = combinedContinuationText
-					result.Tokens = accumulatedTokens
-					execDiag.CancelledEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
-						AttemptID:   req.AttemptID,
-						EventType:   AttemptEventTypeCancelled,
-						PayloadJSON: `{"reason":"opencode continuation cancelled"}`,
-						OccurredAt:  time.Now().UTC().Format(time.RFC3339),
-					})
-					return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
-				}
 				if isExecutionTimedOut(continuationErr) {
 					result := executionResultForTimeout(continuationErr, actualSessionID)
 					result.OutputText = combinedContinuationText
@@ -1875,6 +1881,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 
 	watchdog := startCommandWatchdog(cmd, a.firstEventTimeout, a.streamInactivityTimeout)
 	defer watchdog.Stop()
+	stderrDone := startStderrCapture(stderr)
 
 	result := continuationTurnResult{
 		TextChunks:        make([]string, 0),
@@ -1883,7 +1890,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	}
 	providerSessionObserved := false
 
-	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+	streamErr := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		if strings.TrimSpace(event.SessionID) != "" {
@@ -1925,30 +1932,38 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 			})
 		}
 		return nil
-	}, nil); err != nil {
-		if timeoutErr := watchdog.Err(); timeoutErr != nil {
-			return result, decorateTimeoutError(timeoutErr, streamDiagnostics{})
-		}
-		return result, fmt.Errorf("read opencode continuation stream: %w", err)
+	}, nil)
+	if streamErr != nil {
+		_ = terminateCommandProcessTree(cmd)
 	}
-
-	result.Stderr = readStderrCapture(stderr)
-	if waitErr := cmd.Wait(); waitErr != nil {
+	waitErr := cmd.Wait()
+	a.markInFlightWaitReturned(req.AttemptID, cmd)
+	result.Stderr = <-stderrDone
+	if waitErr != nil {
 		result.WaitError = waitErr.Error()
-		if timeoutErr := watchdog.Err(); timeoutErr != nil {
-			return result, decorateTimeoutError(timeoutErr, streamDiagnostics{})
+	}
+	if strings.TrimSpace(result.Stderr.scannerError) != "" {
+		if strings.TrimSpace(result.WaitError) == "" {
+			result.WaitError = result.Stderr.scannerError
+		} else {
+			result.WaitError += "; stderr_scan_error=" + result.Stderr.scannerError
 		}
-		if isExecutionCancelled(waitErr) || isExecutionCancelled(ctx.Err()) {
-			return result, context.Canceled
-		}
-		if isExecutionTimedOut(waitErr) || isExecutionTimedOut(ctx.Err()) {
-			return result, context.DeadlineExceeded
-		}
-		failureText := firstNonEmpty(strings.TrimSpace(result.UpstreamErrorText), strings.TrimSpace(string(result.Stderr.raw)), waitErr.Error())
-		return result, fmt.Errorf("opencode continuation failed: %s", failureText)
 	}
 	if timeoutErr := watchdog.Err(); timeoutErr != nil {
 		return result, decorateTimeoutError(timeoutErr, streamDiagnostics{})
+	}
+	if isExecutionCancelled(waitErr) || isExecutionCancelled(ctx.Err()) {
+		return result, context.Canceled
+	}
+	if isExecutionTimedOut(waitErr) || isExecutionTimedOut(ctx.Err()) {
+		return result, context.DeadlineExceeded
+	}
+	if streamErr != nil {
+		return result, fmt.Errorf("read opencode continuation stream: %w", streamErr)
+	}
+	if waitErr != nil {
+		failureText := firstNonEmpty(strings.TrimSpace(result.UpstreamErrorText), strings.TrimSpace(string(result.Stderr.raw)), waitErr.Error())
+		return result, fmt.Errorf("opencode continuation failed: %s", failureText)
 	}
 	if strings.TrimSpace(result.UpstreamErrorText) != "" {
 		return result, fmt.Errorf("opencode continuation failed: %s", result.UpstreamErrorText)
@@ -2030,6 +2045,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 
 	watchdog := startCommandWatchdog(cmd, a.firstEventTimeout, a.streamInactivityTimeout)
 	defer watchdog.Stop()
+	stderrDone := startStderrCapture(stderr)
 
 	result := continuationTurnResult{
 		TextChunks:        make([]string, 0),
@@ -2037,8 +2053,16 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 		ProviderSessionID: actualSessionID,
 	}
 	providerSessionObserved := false
+	stderrSnapshot := stderrCapture{}
+	execDiag := executionPathDiagnostics{
+		AttemptID: strings.TrimSpace(req.AttemptID),
+		SessionID: actualSessionID,
+	}
+	finish := func(resp ExecuteResponse) ExecuteResponse {
+		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(wrappedReq, streamDiagnostics{}, execDiag, stderrSnapshot, nil))
+	}
 
-	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+	streamErr := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		if strings.TrimSpace(event.SessionID) != "" {
@@ -2080,57 +2104,75 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 			})
 		}
 		return nil
-	}, nil); err != nil {
-		if timeoutErr := watchdog.Err(); timeoutErr != nil {
-			return executeResponseForCompletionResult(executionResultForTimeout(decorateTimeoutError(timeoutErr, streamDiagnostics{}), actualSessionID)), decorateTimeoutError(timeoutErr, streamDiagnostics{})
-		}
-		return executeResponseForObservedState(expectedFinalText, result.Tokens, result.ProviderSessionID), fmt.Errorf("read opencode completion recovery stream: %w", err)
+	}, nil)
+	if streamErr != nil {
+		_ = terminateCommandProcessTree(cmd)
 	}
-
-	stderrRaw, _ := io.ReadAll(stderr)
-	if waitErr := cmd.Wait(); waitErr != nil {
-		if timeoutErr := watchdog.Err(); timeoutErr != nil {
-			decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
-			return executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID)), decorated
+	execDiag.CmdWaitStartedAt = time.Now().UTC().Format(time.RFC3339)
+	waitErr := cmd.Wait()
+	a.markInFlightWaitReturned(req.AttemptID, cmd)
+	execDiag.CmdWaitFinishedAt = time.Now().UTC().Format(time.RFC3339)
+	execDiag.WaitReturned = true
+	stderrSnapshot = <-stderrDone
+	result.Stderr = stderrSnapshot
+	execDiag.StderrLineCount = stderrSnapshot.lineCount
+	execDiag.LastStderrLineAt = stderrSnapshot.lastLineAt
+	execDiag.StderrEOFSeen = stderrSnapshot.eofSeen
+	if waitErr != nil {
+		execDiag.WaitError = waitErr.Error()
+	}
+	if strings.TrimSpace(stderrSnapshot.scannerError) != "" {
+		if strings.TrimSpace(execDiag.WaitError) == "" {
+			execDiag.WaitError = stderrSnapshot.scannerError
+		} else {
+			execDiag.WaitError += "; stderr_scan_error=" + stderrSnapshot.scannerError
 		}
-		if isExecutionCancelled(waitErr) || isExecutionCancelled(attemptCtx.Err()) {
-			cancelledResult := executionResultForCancellation(waitErr, result.ProviderSessionID, "opencode completion recovery cancelled")
-			cancelledResult.OutputText = expectedFinalText
-			cancelledResult.Tokens = result.Tokens
-			return executeResponseForCompletionResult(cancelledResult), executeErrorForCompletionResult(cancelledResult)
-		}
-		if isExecutionTimedOut(waitErr) || isExecutionTimedOut(attemptCtx.Err()) {
-			timeoutErr := firstNonNilError(waitErr, attemptCtx.Err())
-			timeoutResult := executionResultForTimeout(timeoutErr, result.ProviderSessionID)
-			timeoutResult.OutputText = expectedFinalText
-			timeoutResult.Tokens = result.Tokens
-			return executeResponseForCompletionResult(timeoutResult), executeErrorForCompletionResult(timeoutResult)
-		}
-		trimmed := strings.TrimSpace(string(stderrRaw))
+	}
+	if strings.TrimSpace(result.UpstreamErrorText) != "" {
+		execDiag.UpstreamErrorText = result.UpstreamErrorText
+	}
+	if timeoutErr := watchdog.Err(); timeoutErr != nil {
+		decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
+		return finish(executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID))), decorated
+	}
+	if isExecutionCancelled(waitErr) || isExecutionCancelled(attemptCtx.Err()) {
+		cancelledResult := executionResultForCancellation(waitErr, result.ProviderSessionID, "opencode completion recovery cancelled")
+		cancelledResult.OutputText = expectedFinalText
+		cancelledResult.Tokens = result.Tokens
+		return finish(executeResponseForCompletionResult(cancelledResult)), executeErrorForCompletionResult(cancelledResult)
+	}
+	if isExecutionTimedOut(waitErr) || isExecutionTimedOut(attemptCtx.Err()) {
+		timeoutErr := firstNonNilError(waitErr, attemptCtx.Err())
+		timeoutResult := executionResultForTimeout(timeoutErr, result.ProviderSessionID)
+		timeoutResult.OutputText = expectedFinalText
+		timeoutResult.Tokens = result.Tokens
+		return finish(executeResponseForCompletionResult(timeoutResult)), executeErrorForCompletionResult(timeoutResult)
+	}
+	if streamErr != nil {
+		return finish(executeResponseForObservedState(expectedFinalText, result.Tokens, result.ProviderSessionID)), fmt.Errorf("read opencode completion recovery stream: %w", streamErr)
+	}
+	if waitErr != nil {
+		trimmed := strings.TrimSpace(string(stderrSnapshot.raw))
 		if trimmed == "" {
 			trimmed = waitErr.Error()
 		}
 		failedResult := executionResultForProcessError(waitErr, result.ProviderSessionID, result.UpstreamErrorText, trimmed)
 		failedResult.OutputText = expectedFinalText
 		failedResult.Tokens = result.Tokens
-		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)
-	}
-	if timeoutErr := watchdog.Err(); timeoutErr != nil {
-		decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
-		return executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID)), decorated
+		return finish(executeResponseForCompletionResult(failedResult)), executeErrorForCompletionResult(failedResult)
 	}
 	if strings.TrimSpace(result.UpstreamErrorText) != "" {
 		failedResult := executionResultForProcessError(errors.New(result.UpstreamErrorText), result.ProviderSessionID, result.UpstreamErrorText, "")
 		failedResult.OutputText = expectedFinalText
 		failedResult.Tokens = result.Tokens
-		return executeResponseForCompletionResult(failedResult), executeErrorForCompletionResult(failedResult)
+		return finish(executeResponseForCompletionResult(failedResult)), executeErrorForCompletionResult(failedResult)
 	}
 
 	if receiptResult, settled, _ := waitForCompletionReceiptSettlement(wrappedReq, expectedFinalText, result.Tokens, result.ProviderSessionID, completionReceiptObservationGracePeriod); settled {
 		if strings.TrimSpace(receiptResult.OutputText) == "" {
 			receiptResult.OutputText = expectedFinalText
 		}
-		return executeResponseForCompletionResult(receiptResult), executeErrorForCompletionResult(receiptResult)
+		return finish(executeResponseForCompletionResult(receiptResult)), executeErrorForCompletionResult(receiptResult)
 	}
 
 	incompleteResult := attemptCompletionResult{
@@ -2144,7 +2186,7 @@ func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, re
 		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
 		EvidenceSource:       completionEvidenceSourceStream,
 	}
-	return executeResponseForCompletionResult(incompleteResult), executeErrorForCompletionResult(incompleteResult)
+	return finish(executeResponseForCompletionResult(incompleteResult)), executeErrorForCompletionResult(incompleteResult)
 }
 
 func expectedFinalTextRecoveryHandler(expectedFinalText string, next func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error)) func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
@@ -2208,6 +2250,11 @@ func (a *SessionAdapter) InFlightSnapshot(attemptID string) map[string]any {
 	a.mu.Lock()
 	record, attemptKnown := a.attempts[trimmedAttemptID]
 	cmd := a.inFlight[trimmedAttemptID]
+	processState := a.inFlightStates[trimmedAttemptID]
+	streamEventCount := 0
+	if attemptKnown {
+		streamEventCount = len(record.Events)
+	}
 	a.mu.Unlock()
 
 	snapshot := map[string]any{
@@ -2216,7 +2263,7 @@ func (a *SessionAdapter) InFlightSnapshot(attemptID string) map[string]any {
 		"in_flight_present": cmd != nil,
 	}
 	if attemptKnown {
-		snapshot["stream_event_count"] = len(record.Events)
+		snapshot["stream_event_count"] = streamEventCount
 	}
 	if cmd == nil || cmd.Process == nil {
 		return snapshot
@@ -2225,13 +2272,10 @@ func (a *SessionAdapter) InFlightSnapshot(attemptID string) map[string]any {
 	pid := cmd.Process.Pid
 	snapshot["pid"] = pid
 	snapshot["process_alive"] = isProcessAlive(pid)
-	if cmd.ProcessState != nil {
-		snapshot["process_state_known"] = true
-		snapshot["wait_returned"] = true
-		snapshot["process_exited"] = cmd.ProcessState.Exited()
-	} else {
-		snapshot["process_state_known"] = false
-		snapshot["wait_returned"] = false
+	snapshot["process_state_known"] = processState.processStateKnown
+	snapshot["wait_returned"] = processState.waitReturned
+	if processState.processStateKnown {
+		snapshot["process_exited"] = processState.processExited
 	}
 
 	return snapshot
@@ -2241,12 +2285,27 @@ func (a *SessionAdapter) setInFlight(attemptID string, cmd *exec.Cmd) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.inFlight[attemptID] = cmd
+	a.inFlightStates[attemptID] = inFlightProcessState{}
+}
+
+func (a *SessionAdapter) markInFlightWaitReturned(attemptID string, cmd *exec.Cmd) {
+	state := inFlightProcessState{waitReturned: true}
+	if cmd != nil && cmd.ProcessState != nil {
+		state.processStateKnown = true
+		state.processExited = cmd.ProcessState.Exited()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.inFlight[attemptID] == cmd {
+		a.inFlightStates[attemptID] = state
+	}
 }
 
 func (a *SessionAdapter) clearInFlight(attemptID string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.inFlight, attemptID)
+	delete(a.inFlightStates, attemptID)
 }
 
 func (a *SessionAdapter) setAttemptCancel(attemptID string, cancel context.CancelFunc) {

@@ -132,7 +132,7 @@ describe("ConnectionsPage", () => {
     expectIdempotencyScope(startIdempotencyKey, "device-start");
   });
 
-  it("ignores a late poll failure from a replaced device flow", async () => {
+  it("keeps an active flow across Close instead of starting a duplicate authorization", async () => {
     let starts = 0;
     let pollRequested = false;
     let resolveOldPoll!: (response: Response) => void;
@@ -173,8 +173,10 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
     await waitFor(() => expect(pollRequested).toBe(true));
     await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
-    expect(await screen.findByText("NEW2-CODE")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
+    expect(starts).toBe(1);
 
     await act(async () => {
       resolveOldPoll(new Response(JSON.stringify({ error: { code: "dependency_blocked", message: "old flow expired" } }), {
@@ -184,7 +186,154 @@ describe("ConnectionsPage", () => {
       await oldPoll;
     });
     await waitFor(() => expect(screen.queryByText("old flow expired")).not.toBeInTheDocument());
+    expect(await screen.findByText("GitHub authorization could not be completed. Start again.")).toBeInTheDocument();
+  });
+
+  it("accepts a same-flow poll response after the modal closes", async () => {
+    let resolvePoll!: (response: Response) => void;
+    const poll = new Promise<Response>((resolve) => {
+      resolvePoll = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          flow_id: "flow-close-poll-123456",
+          stage: "awaiting_authorization",
+          user_code: "KEEP-CODE",
+          verification_uri: "https://github.com/login/device",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          retry_at: "2000-01-01T00:00:00Z",
+          candidates: [],
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/device-flows/flow-close-poll-123456/poll")) return poll;
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await waitFor(() => expect(screen.getByText("KEEP-CODE")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    await act(async () => {
+      resolvePoll(json({
+        flow_id: "flow-close-poll-123456",
+        stage: "needs_installation",
+        expires_at: "2099-08-15T13:00:00Z",
+        interval_seconds: 5,
+        install_url: "https://github.com/apps/kingdom/installations/new",
+        candidates: [],
+      }));
+      await poll;
+    });
+
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    expect(await screen.findByText("Choose Repositories on GitHub")).toBeInTheDocument();
+    expect(screen.queryByText("KEEP-CODE")).not.toBeInTheDocument();
+  });
+
+  it("ignores a late poll response after the flow ID is replaced", async () => {
+    let starts = 0;
+    let resolveOldPoll!: (response: Response) => void;
+    const oldPoll = new Promise<Response>((resolve) => {
+      resolveOldPoll = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        starts += 1;
+        return new Response(JSON.stringify({
+          flow_id: starts === 1 ? "flow-old-late-123456" : "flow-new-live-123456",
+          stage: "awaiting_authorization",
+          user_code: starts === 1 ? "OLD1-CODE" : "NEW2-CODE",
+          verification_uri: "https://github.com/login/device",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          retry_at: starts === 1 ? "2000-01-01T00:00:00Z" : "2099-08-15T12:00:05Z",
+          candidates: [],
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/device-flows/flow-old-late-123456/poll")) return oldPoll;
+      if (url.endsWith("/device-flows/flow-old-late-123456") && init?.method === "DELETE") return new Response(null, { status: 204 });
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Discard Setup" }));
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    expect(await screen.findByText("NEW2-CODE")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOldPoll(json({
+        flow_id: "flow-old-late-123456",
+        stage: "needs_installation",
+        expires_at: "2099-08-15T13:00:00Z",
+        interval_seconds: 5,
+        candidates: [],
+      }));
+      await oldPoll;
+    });
     expect(screen.getByText("NEW2-CODE")).toBeInTheDocument();
+    expect(screen.queryByText("Choose Repositories on GitHub")).not.toBeInTheDocument();
+  });
+
+  it("ignores a late poll response after unmount", async () => {
+    let resolvePoll!: (response: Response) => void;
+    let pollStarted = false;
+    const poll = new Promise<Response>((resolve) => {
+      resolvePoll = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          flow_id: "flow-unmount-12345678",
+          stage: "awaiting_authorization",
+          user_code: "GONE-CODE",
+          verification_uri: "https://github.com/login/device",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          retry_at: "2000-01-01T00:00:00Z",
+          candidates: [],
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/device-flows/flow-unmount-12345678/poll")) {
+        pollStarted = true;
+        return poll;
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    const view = render(<ConnectionsPage />);
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await waitFor(() => expect(pollStarted).toBe(true));
+
+    view.unmount();
+    await act(async () => {
+      resolvePoll(json({
+        flow_id: "flow-unmount-12345678",
+        stage: "needs_installation",
+        expires_at: "2099-08-15T13:00:00Z",
+        interval_seconds: 5,
+        candidates: [],
+      }));
+      await poll;
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("moves a known poll failure to a safe terminal state", async () => {
@@ -421,6 +570,169 @@ describe("ConnectionsPage", () => {
     expect(screen.queryByText("OLD1-CODE")).not.toBeInTheDocument();
     expect(startKeys).toHaveLength(2);
     expect(startKeys[1]).not.toBe(startKeys[0]);
+  });
+
+  it("recovers an intent conflict through transient 204 and starting status", async () => {
+    const shared = {
+      ...connection("Shared"),
+      credential_strategy: "user_access_token" as const,
+    };
+    let currentReads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [shared] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET")) {
+          currentReads += 1;
+          if (currentReads === 1) throw new TypeError("mount discovery failed");
+          if (currentReads === 2) return new Response(null, { status: 204 });
+          return json({
+            flow_id: "flow-recovered-123456",
+            stage: "starting_authorization",
+            reconnect_connection_id: "conn-1",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            candidates: [],
+          });
+        }
+        if (url.endsWith("/device-flows/flow-recovered-123456") && (!init?.method || init.method === "GET")) {
+          return json({
+            flow_id: "flow-recovered-123456",
+            stage: "selecting_installation",
+            reconnect_connection_id: "conn-1",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            install_url: "https://github.com/apps/kingdom/installations/new",
+            candidates: [{
+              installation_id: "2",
+              display_name: "octocat",
+              account_id: "10",
+              account_login: "octocat",
+              app_id: "1",
+              client_id: "Iv1",
+              app_slug: "kingdom",
+            }],
+          });
+        }
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(JSON.stringify({
+            error: {
+              code: "dependency_blocked",
+              message: "another GitHub setup is active",
+            },
+          }), { status: 409, headers: { "Content-Type": "application/json" } });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Shared");
+    await waitFor(() => expect(currentReads).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+
+    expect(await screen.findByText("GitHub Reconnect in Progress")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("another GitHub setup is active")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume Setup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard Setup" })).toBeInTheDocument();
+    expect(currentReads).toBe(3);
+
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    expect(await screen.findByRole("dialog", { name: "Reconnect GitHub" })).toBeInTheDocument();
+    expect(await screen.findByRole("checkbox", { name: /@octocat/ })).toBeChecked();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("clears reconnect selections when a 409 adopts a fresh canonical flow", async () => {
+    const shared = {
+      ...connection("Shared"),
+      credential_strategy: "user_access_token" as const,
+    };
+    let currentReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [shared] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET")) {
+        currentReads += 1;
+        if (currentReads === 1) return new Response(null, { status: 204 });
+        return json({
+          flow_id: "flow-canonical-fresh-1",
+          stage: "selecting_installation",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          install_url: "https://github.com/apps/kingdom/installations/new",
+          candidates: [{
+            installation_id: "2",
+            display_name: "octocat",
+            account_id: "10",
+            account_login: "octocat",
+            app_id: "1",
+            client_id: "Iv1",
+            app_slug: "kingdom",
+          }],
+        });
+      }
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        return new Response(JSON.stringify({ error: { code: "dependency_blocked", message: "fresh setup already active" } }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Shared");
+    await waitFor(() => expect(currentReads).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
+    expect(await screen.findByText("GitHub Setup in Progress")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+
+    expect(await screen.findByRole("dialog", { name: "Connect GitHub" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /@octocat/ })).not.toBeChecked();
+    expect(screen.getByText("0 selected")).toBeInTheDocument();
+  });
+
+  it("stops preparing after bounded 409 rediscovery finds no current flow", async () => {
+    let currentReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET")) {
+        currentReads += 1;
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        return new Response(JSON.stringify({ error: { code: "dependency_blocked", message: "GitHub authorization is already being started" } }), {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await waitFor(() => expect(currentReads).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+    expect(screen.getByText("Preparing GitHub...")).toBeInTheDocument();
+    expect(await screen.findByText("GitHub authorization is already being started", {}, { timeout: 2500 })).toBeInTheDocument();
+    expect(currentReads).toBe(1 + 5);
+    expect(screen.queryByText("Preparing GitHub...")).not.toBeInTheDocument();
+    expect(screen.getByText("No active GitHub setup is available.")).toBeInTheDocument();
   });
 
   it("starts the primary personal manifest flow with a browser POST form into the setup tab", async () => {
@@ -1275,7 +1587,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await screen.findByText("Shared");
     expect(
-      screen.getByRole("button", { name: "Reconnect" }),
+      screen.getByRole("button", { name: "Reconnect Connection" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(/kd connections github key/i),
@@ -1409,10 +1721,10 @@ describe("ConnectionsPage", () => {
   });
 
   it("connects both accounts as one connection", async () => {
-    const candidate = (id: string, login: string) => ({
+    const candidate = (id: string, login: string, accountID = id) => ({
       installation_id: id,
       display_name: login,
-      account_id: id,
+      account_id: accountID,
       account_login: login,
       app_id: "1",
       client_id: "Iv1",
@@ -1463,21 +1775,93 @@ describe("ConnectionsPage", () => {
     expect(finalized).toMatchObject({ installation_ids: ["10", "11"] });
   });
 
-  it("keeps reconnect to a single installation", async () => {
+  it("disables competing shared-flow actions while finalization is active", async () => {
+    const candidate = {
+      installation_id: "10",
+      display_name: "enkiid",
+      account_id: "100",
+      account_login: "enkiid",
+      app_id: "1",
+      client_id: "Iv1",
+      app_slug: "kingdom",
+    };
+    let resolveFinalize!: (response: Response) => void;
+    const finalize = new Promise<Response>((resolve) => {
+      resolveFinalize = resolve;
+    });
+    let finalizeStarted = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(JSON.stringify({
+            flow_id: "flow-finalize-ui-race",
+            stage: "selecting_installation",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            install_url: "https://github.com/apps/kingdom/installations/new",
+            candidates: [candidate],
+          }), { status: 201, headers: { "Content-Type": "application/json" } });
+        if (url.endsWith("/device-flows/flow-finalize-ui-race/finalize")) {
+          finalizeStarted = true;
+          return finalize;
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
+    expect(screen.getByRole("link", { name: "Install on Another Account" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Manage Repositories on GitHub" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Connect Selected Installations" }));
+    await waitFor(() => expect(finalizeStarted).toBe(true));
+
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub" });
+    expect(within(dialog).getByRole("checkbox", { name: /@enkiid/ })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Refresh Installations" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Discard Setup" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Connect Selected Installations" })).toBeDisabled();
+    expect(within(dialog).queryByRole("link", { name: "Install on Another Account" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("link", { name: "Manage Repositories on GitHub" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Install on Another Account")).toHaveAttribute("aria-disabled", "true");
+    expect(within(dialog).getByText("Manage Repositories on GitHub")).toHaveAttribute("aria-disabled", "true");
+
+    await act(async () => {
+      resolveFinalize(json(connection("Kingdom Issues")));
+      await finalize;
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect GitHub" })).not.toBeInTheDocument());
+  });
+
+  it("reconnects the exact complete saved installation set without editing it", async () => {
     const shared = {
       ...connection("Shared"),
       credential_strategy: "user_access_token" as const,
-      installations: [{ installation_id: "10", account_id: "10", account_login: "enkiid" }],
+      installations: [
+        { installation_id: "10", account_id: "100", account_login: "enkiid" },
+        { installation_id: "11", account_id: "101", account_login: "T-RexLabs" },
+      ],
     };
-    const candidate = (id: string, login: string) => ({
+    const candidate = (id: string, login: string, accountID = id) => ({
       installation_id: id,
       display_name: login,
-      account_id: id,
+      account_id: accountID,
       account_login: login,
       app_id: "1",
       client_id: "Iv1",
       app_slug: "kingdom",
     });
+    let finalized: Record<string, unknown> | undefined;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1493,12 +1877,21 @@ describe("ConnectionsPage", () => {
             JSON.stringify({
               flow_id: "flow-recon-123456789",
               stage: "selecting_installation",
+              reconnect_connection_id: "conn-1",
               expires_at: "2099-08-15T13:00:00Z",
               interval_seconds: 5,
-              candidates: [candidate("10", "enkiid"), candidate("11", "T-RexLabs")],
+              candidates: [
+                candidate("10", "enkiid", "100"),
+                candidate("11", "T-RexLabs", "101"),
+                candidate("12", "not-part-of-this-connection"),
+              ],
             }),
             { status: 201, headers: { "Content-Type": "application/json" } },
           );
+        if (url.endsWith("/finalize")) {
+          finalized = JSON.parse(String(init?.body));
+          return json(shared);
+        }
         throw new Error(`unexpected request ${url}`);
       }),
     );
@@ -1506,26 +1899,285 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
     await screen.findByText("Shared");
-    await user.click(screen.getByRole("button", { name: "Reconnect" }));
+    await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
 
-    // Reauthorization reproves one connection, so the picker stays single-choice.
-    const first = await screen.findByRole("radio", { name: /@enkiid/ });
-    await user.click(first);
-    await user.click(screen.getByRole("radio", { name: /@T-RexLabs/ }));
-    expect(screen.getByText("1 selected")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Reconnect Selected Installation/ }),
-    ).toBeInTheDocument();
+    const first = await screen.findByRole("checkbox", { name: /@enkiid/ });
+    const second = screen.getByRole("checkbox", { name: /@T-RexLabs/ });
+    expect(first).toBeChecked();
+    expect(first).toBeDisabled();
+    expect(second).toBeChecked();
+    expect(second).toBeDisabled();
+    expect(screen.queryByText("@not-part-of-this-connection")).not.toBeInTheDocument();
+    expect(screen.getByText("2 saved")).toBeInTheDocument();
+    const reconnectDialog = screen.getByRole("dialog", { name: "Reconnect GitHub" });
+    await user.click(within(reconnectDialog).getByRole("button", { name: "Reconnect Connection" }));
+    await waitFor(() => expect(finalized).toBeDefined());
+    expect(finalized).toMatchObject({ installation_ids: ["10", "11"], display_name: "Shared" });
   });
 
-  it("adds a second account to a saved connection", async () => {
-    let saved: Record<string, unknown> | undefined;
+  it("discovers a resumable device flow without opening it and resumes polling only on request", async () => {
+    const shared = {
+      ...connection("Shared"),
+      credential_strategy: "user_access_token" as const,
+    };
+    let polls = 0;
+    let discarded = false;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
-          return json({ items: [connection("Kingdom Issues")] });
+          return json({ items: [shared] });
+        if (url.endsWith("/connections/github/setup-options"))
+          return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows"))
+          return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET"))
+          return json({
+            flow_id: "flow-resume-123456789",
+            stage: "awaiting_authorization",
+            reconnect_connection_id: "conn-1",
+            user_code: "KEEP-CODE",
+            verification_uri: "https://github.com/login/device",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            retry_at: "2000-01-01T00:00:00Z",
+            candidates: [],
+          });
+        if (url.endsWith("/device-flows/flow-resume-123456789/poll")) {
+          polls += 1;
+          return json({
+            flow_id: "flow-resume-123456789",
+            stage: "needs_installation",
+            reconnect_connection_id: "conn-1",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            install_url: "https://github.com/apps/kingdom/installations/new",
+            candidates: [],
+          });
+        }
+        if (url.endsWith("/device-flows/flow-resume-123456789") && init?.method === "DELETE") {
+          discarded = true;
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    expect(await screen.findByText("GitHub Reconnect in Progress")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(polls).toBe(0);
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect Connection" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    expect(await screen.findByRole("dialog", { name: "Reconnect GitHub" })).toBeInTheDocument();
+    await waitFor(() => expect(polls).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("button", { name: "Resume Setup" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Discard Setup" }));
+    await waitFor(() => expect(discarded).toBe(true));
+    expect(screen.queryByText("GitHub Reconnect in Progress")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("polls a discovered installation discovery until the canonical flow is stable", async () => {
+    let statusReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET")) {
+        return json({
+          flow_id: "flow-discovering-12345",
+          stage: "discovering_installations",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          candidates: [],
+        });
+      }
+      if (url.endsWith("/device-flows/flow-discovering-12345") && (!init?.method || init.method === "GET")) {
+        statusReads += 1;
+        return json({
+          flow_id: "flow-discovering-12345",
+          stage: statusReads === 1 ? "discovering_installations" : "selecting_installation",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          install_url: "https://github.com/apps/kingdom/installations/new",
+          candidates: statusReads === 1 ? [] : [{
+            installation_id: "10",
+            display_name: "octocat",
+            account_id: "100",
+            account_login: "octocat",
+            app_id: "1",
+            client_id: "Iv1",
+            app_slug: "kingdom",
+          }],
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    expect(await screen.findByText("GitHub Setup in Progress")).toBeInTheDocument();
+    await waitFor(() => expect(statusReads).toBe(2));
+    await user.click(screen.getByRole("button", { name: "Resume Setup" }));
+    expect(await screen.findByText("@octocat")).toBeInTheDocument();
+  });
+
+  it("invalidates connections and clears a discovered finalization on completion", async () => {
+    let connectionReads = 0;
+    let statusReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) {
+        connectionReads += 1;
+        return json({ items: connectionReads > 1 ? [connection("Completed")] : [] });
+      }
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && (!init?.method || init.method === "GET")) {
+        return json({
+          flow_id: "flow-finalizing-123456",
+          stage: "finalizing",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          candidates: [],
+        });
+      }
+      if (url.endsWith("/device-flows/flow-finalizing-123456") && (!init?.method || init.method === "GET")) {
+        statusReads += 1;
+        return json({
+          flow_id: "flow-finalizing-123456",
+          stage: "completed",
+          connection_id: "conn-1",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          candidates: [],
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    render(<ConnectionsPage />);
+
+    expect(await screen.findByText("Completed")).toBeInTheDocument();
+    expect(statusReads).toBe(1);
+    expect(connectionReads).toBe(2);
+    expect(screen.queryByText("GitHub Setup in Progress")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+  });
+
+  it("adopts canonical failure after a definitive installation refresh failure", async () => {
+    let canonicalRead = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+      if (url.endsWith("/connections/github/device-flows") && init?.method === "POST") {
+        return new Response(JSON.stringify({
+          flow_id: "flow-refresh-failed-1",
+          stage: "selecting_installation",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          install_url: "https://github.com/apps/kingdom/installations/new",
+          candidates: [{
+            installation_id: "10",
+            display_name: "octocat",
+            account_id: "100",
+            account_login: "octocat",
+            app_id: "1",
+            client_id: "Iv1",
+            app_slug: "kingdom",
+          }],
+        }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/device-flows/flow-refresh-failed-1/candidates")) {
+        return new Response(JSON.stringify({ error: { code: "dependency_blocked", message: "GitHub installations could not be refreshed" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/device-flows/flow-refresh-failed-1") && (!init?.method || init.method === "GET")) {
+        canonicalRead = true;
+        return json({
+          flow_id: "flow-refresh-failed-1",
+          stage: "failed",
+          expires_at: "2099-08-15T13:00:00Z",
+          interval_seconds: 5,
+          candidates: [],
+          failure: "GitHub installations could not be refreshed. Reconnect to continue.",
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    }));
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+
+    await user.click(await screen.findByRole("button", { name: "Refresh Installations" }));
+    expect(await screen.findByText("GitHub installations could not be refreshed. Reconnect to continue.")).toBeInTheDocument();
+    expect(canonicalRead).toBe(true);
+    expect(screen.queryByRole("button", { name: "Refresh Installations" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Install on Another Account" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start Again" })).toBeInTheDocument();
+  });
+
+  it("blocks reconnect when a saved installation is missing and points to Change", async () => {
+    const shared = {
+      ...connection("Shared"),
+      credential_strategy: "user_access_token" as const,
+      installations: [
+        { installation_id: "10", account_id: "100", account_login: "enkiid" },
+        { installation_id: "11", account_id: "101", account_login: "T-RexLabs" },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [shared] });
+        if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true, app_slug: "kingdom" });
+        if (url.endsWith("/connections/github/manifest-flows")) return new Response(null, { status: 204 });
+        if (url.endsWith("/connections/github/device-flows") && init?.method === "POST")
+          return new Response(JSON.stringify({
+            flow_id: "flow-missing-12345678",
+            stage: "selecting_installation",
+            reconnect_connection_id: "conn-1",
+            expires_at: "2099-08-15T13:00:00Z",
+            interval_seconds: 5,
+            candidates: [{ installation_id: "10", display_name: "enkiid", account_id: "100", account_login: "enkiid", app_id: "1", client_id: "Iv1", app_slug: "kingdom" }],
+          }), { status: 201, headers: { "Content-Type": "application/json" } });
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+    await screen.findByText("Shared");
+    await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
+    expect(await screen.findByText("Some Saved Installations Are Missing")).toBeInTheDocument();
+    expect(screen.getAllByText(/@T-RexLabs/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/use Change/i).length).toBeGreaterThan(1);
+    expect(within(screen.getByRole("dialog", { name: "Reconnect GitHub" })).getByRole("button", { name: "Reconnect Connection" })).toBeDisabled();
+  });
+
+  it("adds a second account to a saved connection", async () => {
+    let saved: Record<string, unknown> | undefined;
+    let current = connection("Kingdom Issues");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET"))
+          return json({ items: [current] });
         if (url.endsWith("/connections/github/setup-options"))
           return json({ shared_enabled: true, app_slug: "kingdom" });
         if (url.endsWith("/connections/github/manifest-flows"))
@@ -1539,7 +2191,16 @@ describe("ConnectionsPage", () => {
           });
         if (url.endsWith("/installations") && init?.method === "PUT") {
           saved = JSON.parse(String(init.body));
-          return json(connection("Kingdom Issues"));
+          current = {
+            ...current,
+            health_class: "never_checked",
+            installations: [
+              ...current.installations,
+              { installation_id: "11", account_id: "101", account_login: "T-RexLabs" },
+            ],
+            updated_at: "2026-08-24T11:00:00Z",
+          };
+          return json(current);
         }
         throw new Error(`unexpected request ${url}`);
       }),
@@ -1556,5 +2217,6 @@ describe("ConnectionsPage", () => {
     await user.click(screen.getByRole("button", { name: /Save Installations/ }));
     await waitFor(() => expect(saved).toBeDefined());
     expect(saved).toEqual({ installation_ids: ["11", "2"] });
+    expect(await screen.findByText("never checked")).toBeInTheDocument();
   });
 });

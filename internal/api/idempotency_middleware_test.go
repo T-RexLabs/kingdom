@@ -387,6 +387,129 @@ func TestIdempotencyMiddlewareReplaysStoredResponse(t *testing.T) {
 	}
 }
 
+func TestIdempotencyMiddlewareFinalizesCommittedResponseAfterRequestCancellation(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+	now := time.Now()
+	key := testIdempotencyKey(t, "cancelled-after-commit", now)
+	middleware := newIdempotencyMiddleware(store, func() time.Time { return now })
+	middleware.waitTimeout = 40 * time.Millisecond
+	middleware.pollInterval = 5 * time.Millisecond
+
+	var calls atomic.Int32
+	var cancelRequest context.CancelFunc
+	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"run_id":"run_1"}`))
+		cancelRequest()
+	}))
+	request := func(body, sessionID string, ctx context.Context) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/runs", bytes.NewBufferString(body)).WithContext(ctx)
+		req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{
+			ActorID: operatorActorID, RoleID: operatorRoleID, Method: "cookie", SessionID: sessionID, SessionOrigin: "http://localhost",
+		}))
+		req.Header.Set(idempotencyKeyHeader, key)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+
+	firstCtx, cancel := context.WithCancel(context.Background())
+	cancelRequest = cancel
+	first := request(`{"workflow_id":"wf_1"}`, "expired-session", firstCtx)
+	if first.Code != http.StatusCreated || first.Body.String() != `{"run_id":"run_1"}` {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	cancelRequest = func() {}
+	replay := request(`{"workflow_id":"wf_1"}`, "expired-session", context.Background())
+	if replay.Code != first.Code || replay.Body.String() != first.Body.String() {
+		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	if conflict := request(`{"workflow_id":"wf_2"}`, "expired-session", context.Background()); conflict.Code != http.StatusConflict {
+		t.Fatalf("body conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	if conflict := request(`{"workflow_id":"wf_1"}`, "replacement-session", context.Background()); conflict.Code != http.StatusConflict {
+		t.Fatalf("session conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mutation calls=%d want 1", got)
+	}
+
+	record, found, err := store.Lookup(context.Background(), "POST /runs", operatorActorID, key)
+	if err != nil || !found {
+		t.Fatalf("lookup idempotency record: found=%t err=%v", found, err)
+	}
+	if record.Status != state.IdempotencyStatusCompleted {
+		t.Fatalf("idempotency status=%q want completed", record.Status)
+	}
+}
+
+func TestSensitiveIdempotencyResponseFinalizesAfterRequestCancellation(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+	now := time.Now()
+	key := testIdempotencyKey(t, "cancelled-sensitive-setup", now)
+	middleware := newIdempotencyMiddleware(store, func() time.Time { return now })
+	middleware.waitTimeout = 40 * time.Millisecond
+	middleware.pollInterval = 5 * time.Millisecond
+
+	var calls atomic.Int32
+	var cancelRequest context.CancelFunc
+	handler := middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("X-Setup-State", "provider-state-secret")
+		writeJSON(w, http.StatusCreated, map[string]string{
+			"device_code": "provider-device-secret",
+			"user_code":   "ABCD-EFGH",
+		})
+		cancelRequest()
+	}))
+	request := func(body, sessionID string, ctx context.Context) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/connections/github/device-flows", bytes.NewBufferString(body)).WithContext(ctx)
+		req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{
+			ActorID: operatorActorID, RoleID: operatorRoleID, Method: "cookie", SessionID: sessionID, SessionOrigin: "http://localhost", ExpiresAt: now.Add(time.Minute),
+		}))
+		req.Header.Set(idempotencyKeyHeader, key)
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res
+	}
+
+	firstCtx, cancel := context.WithCancel(context.Background())
+	cancelRequest = cancel
+	first := request(`{"connection_id":""}`, "expired-session", firstCtx)
+	if first.Code != http.StatusCreated || !strings.Contains(first.Body.String(), "provider-device-secret") {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+
+	cancelRequest = func() {}
+	replay := request(`{"connection_id":""}`, "expired-session", context.Background())
+	if replay.Code != first.Code || replay.Body.String() != first.Body.String() || replay.Header().Get("X-Setup-State") != "provider-state-secret" {
+		t.Fatalf("replay status=%d state=%q body=%s", replay.Code, replay.Header().Get("X-Setup-State"), replay.Body.String())
+	}
+	if conflict := request(`{"connection_id":"other"}`, "expired-session", context.Background()); conflict.Code != http.StatusConflict {
+		t.Fatalf("body conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	if conflict := request(`{"connection_id":""}`, "replacement-session", context.Background()); conflict.Code != http.StatusConflict {
+		t.Fatalf("session conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("mutation calls=%d want 1", got)
+	}
+
+	record, found, err := store.Lookup(context.Background(), "POST /connections/github/device-flows", operatorActorID, key)
+	if err != nil || !found {
+		t.Fatalf("lookup setup reservation: found=%t err=%v", found, err)
+	}
+	if record.Status != state.IdempotencyStatusCompleted {
+		t.Fatalf("idempotency status=%q want completed", record.Status)
+	}
+	if record.ResponseStatus != 0 || record.ResponseHeaders != "{}" || record.ResponseBody != "" {
+		t.Fatalf("sensitive response persisted in idempotency row: %#v", record)
+	}
+}
+
 func TestIdempotencyMiddlewareReplaysStoredFailures(t *testing.T) {
 	t.Parallel()
 

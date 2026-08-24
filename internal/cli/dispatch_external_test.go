@@ -57,7 +57,7 @@ func TestGitHubKeyProvisionRejectsRemovedConnectionBeforeWriting(t *testing.T) {
 	if err := runtime.handleGitHubKeyProvision([]string{"--connection-id", "conn-removed", "--from", pemPath}, false); err == nil {
 		t.Fatal("expected removed connection provisioning to fail")
 	}
-	keyPath := filepath.Join(secrets, "github-apps", "conn-removed", "private-key.pem")
+	keyPath := filepath.Join(secrets, "github-apps", "conn-removed", "private-key.1.pem")
 	if _, err := os.Lstat(keyPath); !os.IsNotExist(err) {
 		t.Fatalf("removed connection key was recreated: %v", err)
 	}

@@ -9,6 +9,7 @@ import {
   useRole,
   type ElementProps,
   type FloatingContext,
+  type Placement,
 } from "@floating-ui/react";
 import { useCallback, useState } from "react";
 import { isElementInsideModal, popoverZIndexForOwner } from "./overlay-system";
@@ -33,6 +34,10 @@ export interface PopoverFloatingOptions {
 	role: "listbox" | "dialog";
 	/** Lower bound on the panel width; defaults to 160px. */
 	minWidth?: number;
+	/** Anchoring direction; defaults to bottom-start. */
+	placement?: Placement;
+	/** Lets responsive CSS own width while Floating UI caps it to available space. */
+	widthMode?: "reference-min" | "css";
 	/** Upper bound on panel height (px); defaults to 320 (content scrolls). */
 	maxHeight?: number;
 	triggerDisabled?: boolean;
@@ -58,6 +63,8 @@ export function usePopoverFloating({
 	onOpenChange,
 	role,
 	minWidth = 160,
+	placement = "bottom-start",
+	widthMode = "reference-min",
 	maxHeight = 320,
 	triggerDisabled,
 	dismissDisabled,
@@ -65,7 +72,7 @@ export function usePopoverFloating({
 	const { refs, floatingStyles, context } = useFloating({
 		open,
 		onOpenChange,
-		placement: "bottom-start",
+		placement,
 		whileElementsMounted: autoUpdate,
 		middleware: [
 			offset(4),
@@ -77,9 +84,15 @@ export function usePopoverFloating({
 			// triggers landed in the lower half of the viewport.
 			size({
 				padding: 8,
-				apply({ rects, elements, availableHeight }) {
+				apply({ rects, elements, availableHeight, availableWidth }) {
+					if (widthMode === "css") {
+						elements.floating.style.minWidth = "";
+						elements.floating.style.maxWidth = `${Math.max(0, availableWidth)}px`;
+					} else {
+						elements.floating.style.minWidth = `${Math.max(minWidth, rects.reference.width)}px`;
+						elements.floating.style.maxWidth = "";
+					}
 					Object.assign(elements.floating.style, {
-						minWidth: `${Math.max(minWidth, rects.reference.width)}px`,
 						maxHeight: `${Math.min(maxHeight, availableHeight)}px`,
 					});
 				},

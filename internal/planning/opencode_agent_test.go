@@ -11,12 +11,60 @@ import (
 // recordingPlannerAdapter captures the request Kingdom would send to OpenCode,
 // which is where the session policy for a turn is decided.
 type recordingPlannerAdapter struct {
-	request opencode.ExecuteRequest
+	request  opencode.ExecuteRequest
+	response opencode.ExecuteResponse
+	err      error
 }
 
 func (a *recordingPlannerAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	a.request = req
+	if a.response.OutputText != "" || a.err != nil {
+		return a.response, a.err
+	}
 	return opencode.ExecuteResponse{Accepted: true, OutputText: "Linked issue noted; what should we settle first?"}, nil
+}
+
+func TestOpenCodeAgentCarriesProviderDiagnosticsMetadata(t *testing.T) {
+	adapter := &recordingPlannerAdapter{response: opencode.ExecuteResponse{
+		Accepted:                true,
+		OutputText:              "Planner response",
+		ProviderDiagnosticsJSON: ` {"stream":{"events":4}} `,
+	}}
+	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
+
+	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{
+		SessionID:   "session-1",
+		ProjectRoot: t.TempDir(),
+	}, nil)
+	if err != nil {
+		t.Fatalf("planner invocation: %v", err)
+	}
+	if turn.Metadata.ProviderDiagnosticsJSON != `{"stream":{"events":4}}` {
+		t.Fatalf("expected provider diagnostics metadata to be carried, got %q", turn.Metadata.ProviderDiagnosticsJSON)
+	}
+}
+
+func TestOpenCodeAgentCarriesProviderDiagnosticsMetadataOnFailure(t *testing.T) {
+	adapter := &recordingPlannerAdapter{
+		response: opencode.ExecuteResponse{
+			OutputText:              "partial response",
+			ProviderDiagnosticsJSON: `{"repair":{"source":"export"}}`,
+		},
+		err: contextError("provider failed"),
+	}
+	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
+
+	_, err := agent.ContinueTurnStream(context.Background(), AgentContext{
+		SessionID:   "session-1",
+		ProjectRoot: t.TempDir(),
+	}, nil)
+	if err == nil {
+		t.Fatal("expected planner invocation failure")
+	}
+	metadata := providerMetadataFromError(err)
+	if metadata.ProviderDiagnosticsJSON != `{"repair":{"source":"export"}}` {
+		t.Fatalf("expected failure diagnostics metadata to be carried, got %q", metadata.ProviderDiagnosticsJSON)
+	}
 }
 
 func TestExternalContextIsDelimitedOutsideTranscript(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -87,26 +88,30 @@ func UserCredentialHandle(connectionID string) string {
 	return "github-user:" + strings.TrimSpace(connectionID)
 }
 
-func (s *UserTokenStore) Load(connectionID string) (UserTokens, error) {
-	raw, err := s.loadRaw(connectionID)
+func (s *UserTokenStore) Load(connectionID string, generation int) (UserTokens, error) {
+	raw, err := s.loadRaw(connectionID, generation)
 	if err != nil {
 		return UserTokens{}, err
 	}
 	return decodeUserTokens(raw)
 }
 
-func (s *UserTokenStore) loadRaw(connectionID string) ([]byte, error) {
+func (s *UserTokenStore) loadRaw(connectionID string, generation int) ([]byte, error) {
+	if generation <= 0 {
+		return nil, fmt.Errorf("invalid github user token generation")
+	}
 	dir, err := s.openConnection(connectionID, false)
 	if err != nil {
 		return nil, err
 	}
 	defer dir.Close()
-	file, err := securefs.OpenRegularFile(dir, "tokens.json", os.O_RDONLY, 0)
+	name := userTokenName(generation)
+	file, err := securefs.OpenRegularFile(dir, name, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	if err := validateUserTokenFile(file); err != nil {
+	if err := validateProtectedRegularFile(file, name); err != nil {
 		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maxUserTokenFileBytes+1))
@@ -135,36 +140,24 @@ func decodeUserTokens(raw []byte) (UserTokens, error) {
 	return tokens, nil
 }
 
-func (s *UserTokenStore) Store(connectionID string, tokens UserTokens) error {
-	return s.WithConnectionLock(connectionID, func() error { return s.store(connectionID, tokens) })
+func (s *UserTokenStore) Store(connectionID string, generation int, tokens UserTokens) error {
+	return s.WithConnectionLock(connectionID, func() error { return s.store(connectionID, generation, tokens, true) })
 }
 
-func (s *UserTokenStore) StoreWhileLocked(connectionID string, tokens UserTokens) error {
-	return s.store(connectionID, tokens)
+func (s *UserTokenStore) StoreWhileLocked(connectionID string, generation int, tokens UserTokens) error {
+	return s.store(connectionID, generation, tokens, true)
 }
 
-// InstallAudited restores the previous token file if the durable connection
-// transaction fails. The callback must not retain token material.
-func (s *UserTokenStore) InstallAudited(connectionID string, tokens UserTokens, audit func() error) error {
+// InstallAudited makes a new generation durable before publishing it through
+// the database callback. It never overwrites a selected token generation.
+func (s *UserTokenStore) InstallAudited(connectionID string, generation int, tokens UserTokens, audit func() error) error {
 	return s.WithConnectionLock(connectionID, func() error {
-		previous, loadErr := s.loadRaw(connectionID)
-		hadPrevious := loadErr == nil
-		if loadErr != nil && !errors.Is(loadErr, fs.ErrNotExist) {
-			return loadErr
-		}
-		if err := s.store(connectionID, tokens); err != nil {
+		if err := s.store(connectionID, generation, tokens, false); err != nil {
 			return err
 		}
 		if err := audit(); err != nil {
-			var rollbackErr error
-			if hadPrevious {
-				rollbackErr = s.storeRaw(connectionID, previous)
-			} else {
-				rollbackErr = s.removeUnlocked(connectionID)
-			}
-			if rollbackErr != nil {
-				return errors.Join(err, fmt.Errorf("rollback github user tokens: %w", rollbackErr))
-			}
+			// Commit errors can be outcome-ambiguous. Pointer-driven startup
+			// reconciliation decides whether this durable stage is owned.
 			return err
 		}
 		return nil
@@ -180,19 +173,6 @@ func (s *UserTokenStore) WithConnectionLock(connectionID string, fn func() error
 		return err
 	}
 	defer dir.Close()
-	if info, statErr := dir.Lstat("tokens.json"); statErr == nil {
-		file, openErr := securefs.OpenRegularFile(dir, "tokens.json", os.O_RDONLY, 0)
-		if openErr != nil {
-			return openErr
-		}
-		validateErr := validateProtectedRegularFile(file, "tokens.json")
-		_ = file.Close()
-		if validateErr != nil || !info.Mode().IsRegular() {
-			return errors.Join(validateErr, fmt.Errorf("existing github user token path is unsafe"))
-		}
-	} else if !errors.Is(statErr, fs.ErrNotExist) {
-		return statErr
-	}
 	lock, err := dir.OpenFile(".lifecycle.lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if errors.Is(err, fs.ErrExist) {
 		lock, err = securefs.OpenRegularFile(dir, ".lifecycle.lock", os.O_RDWR, 0)
@@ -211,17 +191,17 @@ func (s *UserTokenStore) WithConnectionLock(connectionID string, fn func() error
 	return fn()
 }
 
-func (s *UserTokenStore) Remove(connectionID string) error {
-	return s.WithConnectionLock(connectionID, func() error { return s.removeUnlocked(connectionID) })
+func (s *UserTokenStore) RemoveAll(connectionID string) error {
+	return s.WithConnectionLock(connectionID, func() error { return s.removeAllUnlocked(connectionID) })
 }
 
-// RemoveWhileLocked is for lifecycle transactions already executing inside
+// RemoveAllWhileLocked is for lifecycle transactions already executing inside
 // WithConnectionLock.
-func (s *UserTokenStore) RemoveWhileLocked(connectionID string) error {
-	return s.removeUnlocked(connectionID)
+func (s *UserTokenStore) RemoveAllWhileLocked(connectionID string) error {
+	return s.removeAllUnlocked(connectionID)
 }
 
-func (s *UserTokenStore) removeUnlocked(connectionID string) error {
+func (s *UserTokenStore) removeAllUnlocked(connectionID string) error {
 	dir, err := s.openConnection(connectionID, false)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -230,32 +210,15 @@ func (s *UserTokenStore) removeUnlocked(connectionID string) error {
 		return err
 	}
 	defer dir.Close()
-	file, err := securefs.OpenRegularFile(dir, "tokens.json", os.O_RDONLY, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err := validateProtectedRegularFile(file, "tokens.json"); err != nil {
-		_ = file.Close()
-		return err
-	}
-	_ = file.Close()
-	if err := dir.Remove("tokens.json"); err != nil {
-		return err
-	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return removeTokenGenerations(dir, 0)
 }
 
-func (s *UserTokenStore) store(connectionID string, tokens UserTokens) error {
+func (s *UserTokenStore) store(connectionID string, generation int, tokens UserTokens, replace bool) error {
 	if err := validateConnectionID(connectionID); err != nil {
 		return err
+	}
+	if generation <= 0 {
+		return fmt.Errorf("invalid github user token generation")
 	}
 	if err := tokens.Validate(time.Now().Add(-time.Minute)); err != nil {
 		return err
@@ -264,10 +227,10 @@ func (s *UserTokenStore) store(connectionID string, tokens UserTokens) error {
 	if err != nil || len(raw) > maxUserTokenFileBytes {
 		return fmt.Errorf("encode github user tokens")
 	}
-	return s.storeRaw(connectionID, raw)
+	return s.storeRaw(connectionID, generation, raw, replace)
 }
 
-func (s *UserTokenStore) storeRaw(connectionID string, raw []byte) error {
+func (s *UserTokenStore) storeRaw(connectionID string, generation int, raw []byte, replace bool) error {
 	if len(raw) > maxUserTokenFileBytes {
 		return fmt.Errorf("encode github user tokens")
 	}
@@ -279,12 +242,16 @@ func (s *UserTokenStore) storeRaw(connectionID string, raw []byte) error {
 		return err
 	}
 	defer dir.Close()
-	if info, statErr := dir.Lstat("tokens.json"); statErr == nil {
-		file, openErr := securefs.OpenRegularFile(dir, "tokens.json", os.O_RDONLY, 0)
+	destination := userTokenName(generation)
+	if info, statErr := dir.Lstat(destination); statErr == nil {
+		if !replace {
+			return fmt.Errorf("github user token generation is already staged")
+		}
+		file, openErr := securefs.OpenRegularFile(dir, destination, os.O_RDONLY, 0)
 		if openErr != nil {
 			return openErr
 		}
-		validateErr := validateProtectedRegularFile(file, "tokens.json")
+		validateErr := validateProtectedRegularFile(file, destination)
 		_ = file.Close()
 		if validateErr != nil || !info.Mode().IsRegular() {
 			return errors.Join(validateErr, fmt.Errorf("existing github user token path is unsafe"))
@@ -310,7 +277,15 @@ func (s *UserTokenStore) storeRaw(connectionID string, raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("stage github user tokens: %w", err)
 	}
-	if err := dir.Rename(tmpName, "tokens.json"); err != nil {
+	if replace {
+		err = dir.Rename(tmpName, destination)
+	} else {
+		err = dir.Link(tmpName, destination)
+		if err == nil {
+			err = dir.Remove(tmpName)
+		}
+	}
+	if err != nil {
 		return fmt.Errorf("install github user tokens: %w", err)
 	}
 	d, err := dir.Open(".")
@@ -321,7 +296,11 @@ func (s *UserTokenStore) storeRaw(connectionID string, raw []byte) error {
 	return err
 }
 
-func (s *UserTokenStore) CleanupTemps() error {
+// ReconcileGenerations removes temporary, stale, and unowned token generations.
+// selectedGeneration runs while the connection lifecycle lock is held so it
+// can read the SQLite publication pointer fenced by the same lock as writers.
+// It must not attempt to acquire a credential lifecycle lock.
+func (s *UserTokenStore) ReconcileGenerations(selectedGeneration func(connectionID string) (int, error)) error {
 	secrets, err := securefs.OpenDirChain(s.anchor, s.rootChain...)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -351,30 +330,20 @@ func (s *UserTokenStore) CleanupTemps() error {
 		if !entry.IsDir() || !safeConnectionID.MatchString(entry.Name()) {
 			continue
 		}
-		dir, err := securefs.OpenDir(users, securefs.Directory{Name: entry.Name(), Mode: 0o700, ExactMode: true})
-		if err != nil {
-			return err
-		}
-		file, err := dir.Open(".")
-		if err != nil {
-			_ = dir.Close()
-			return err
-		}
-		children, err := file.ReadDir(-1)
-		_ = file.Close()
-		if err != nil {
-			_ = dir.Close()
-			return err
-		}
-		for _, child := range children {
-			if child.Type().IsRegular() && strings.HasPrefix(child.Name(), ".tokens-") && strings.HasSuffix(child.Name(), ".tmp") {
-				if err := dir.Remove(child.Name()); err != nil {
-					_ = dir.Close()
-					return err
-				}
+		if err := s.WithConnectionLock(entry.Name(), func() error {
+			selected, resolveErr := selectedGeneration(entry.Name())
+			if resolveErr != nil {
+				return resolveErr
 			}
+			dir, openErr := s.openConnection(entry.Name(), false)
+			if openErr != nil {
+				return openErr
+			}
+			defer dir.Close()
+			return removeTokenGenerations(dir, selected)
+		}); err != nil {
+			return err
 		}
-		_ = dir.Close()
 	}
 	return nil
 }
@@ -401,10 +370,6 @@ func (s *UserTokenStore) openConnection(connectionID string, create bool) (*os.R
 	return dir, err
 }
 
-func validateUserTokenFile(file *os.File) error {
-	return validateProtectedRegularFile(file, "tokens.json")
-}
-
 func validateProtectedRegularFile(file *os.File, name string) error {
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
@@ -428,4 +393,78 @@ func userTokenTempName() (string, error) {
 		return "", err
 	}
 	return ".tokens-" + hex.EncodeToString(raw[:]) + ".tmp", nil
+}
+
+func userTokenName(generation int) string {
+	return "tokens." + strconv.Itoa(generation) + ".json"
+}
+
+func userTokenGeneration(name string) (int, bool) {
+	if !strings.HasPrefix(name, "tokens.") || !strings.HasSuffix(name, ".json") {
+		return 0, false
+	}
+	raw := strings.TrimSuffix(strings.TrimPrefix(name, "tokens."), ".json")
+	generation, err := strconv.Atoi(raw)
+	return generation, err == nil && generation > 0 && strconv.Itoa(generation) == raw
+}
+
+func removeTokenGenerations(dir *os.Root, selected int) error {
+	file, err := dir.Open(".")
+	if err != nil {
+		return err
+	}
+	entries, err := file.ReadDir(-1)
+	_ = file.Close()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".tokens-") || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		file, openErr := securefs.OpenRegularFile(dir, name, os.O_RDONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		validateErr := validateReconcileTemp(file, name)
+		_ = file.Close()
+		if validateErr != nil {
+			return validateErr
+		}
+		if err := dir.Remove(name); err != nil {
+			return err
+		}
+		changed = true
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		generation, generationFile := userTokenGeneration(name)
+		if !generationFile || generation == selected {
+			continue
+		}
+		file, openErr := securefs.OpenRegularFile(dir, name, os.O_RDONLY, 0)
+		if openErr != nil {
+			return openErr
+		}
+		validateErr := validateProtectedRegularFile(file, name)
+		_ = file.Close()
+		if validateErr != nil {
+			return validateErr
+		}
+		if err := dir.Remove(name); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	d, err := dir.Open(".")
+	if err == nil {
+		err = d.Sync()
+		_ = d.Close()
+	}
+	return err
 }

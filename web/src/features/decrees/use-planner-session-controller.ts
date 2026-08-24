@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type CreateAcpRunRequest,
   newIdempotencyKey,
@@ -90,28 +90,58 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
   const activateVariantMutation = useActivateVariant(sessionId);
   const activateVariantRef = useRef(activateVariantMutation);
   useEffect(() => { activateVariantRef.current = activateVariantMutation; });
-  const [trackedOperationId, setActiveOperationId] = useState<string | undefined>(undefined);
+  const [trackedOperationId, setTrackedOperationId] = useState<string | undefined>(undefined);
   const [optimisticOperation, setOptimisticOperation] = useState<PlannerOperationState | null>(null);
   const requestSeqRef = useRef(0);
 
   const operationId = trackedOperationId ?? session?.current_run_id ?? undefined;
   const activeOperationQuery = usePlanningOperation(operationId);
   const { operation: streamedOperation, connection } = usePlannerOperation(activeOperationQuery.data ?? null);
-  const activeOperation = streamedOperation ?? optimisticOperation;
-  const trackedOperationIsTerminal =
-    trackedOperationId &&
-    activeOperation?.operationId === trackedOperationId &&
-    isPlannerOperationTerminal(activeOperation.status);
-  if (trackedOperationIsTerminal) {
-    setActiveOperationId(undefined);
-  }
-  const activeOperationId = trackedOperationIsTerminal ? undefined : trackedOperationId;
+  const canonicalOperation = streamedOperation?.operationId === operationId ? streamedOperation : null;
+  const activeOperation = optimisticOperation ?? canonicalOperation;
+  const activeOperationId = trackedOperationId && !isPlannerOperationTerminal(activeOperation?.status ?? "pending")
+    ? trackedOperationId
+    : undefined;
+  const setActiveOperationId = useCallback((next: string | undefined) => {
+    setTrackedOperationId(next);
+  }, []);
+
+  useEffect(() => {
+    if (!canonicalOperation || !isPlannerOperationTerminal(canonicalOperation.status)) return;
+
+    // Failed and cancelled runs stay query-backed for their notice. Successful
+    // runs release local tracking after the stream hook reconciles the canonical
+    // transcript. Defer the query-to-local synchronization so terminal cache
+    // reconciliation completes without a cascading render inside this effect.
+    let mounted = true;
+    queueMicrotask(() => {
+      if (!mounted) return;
+      setTrackedOperationId((current) => {
+        if (canonicalOperation.status === "error" || canonicalOperation.status === "cancelled") {
+          return canonicalOperation.operationId;
+        }
+        return current === canonicalOperation.operationId ? undefined : current;
+      });
+    });
+    return () => { mounted = false; };
+  }, [canonicalOperation]);
+
+  const operationQueryState = useMemo(() => ({
+    isLoading: Boolean(operationId) && activeOperationQuery.isPending && !activeOperationQuery.data,
+    isError: activeOperationQuery.isError,
+    isRetrying: activeOperationQuery.isFetching,
+    error: activeOperationQuery.error,
+    retry: () => {
+      void activeOperationQuery.refetch();
+    },
+  }), [activeOperationQuery, operationId]);
 
   const state = useMemo(
     () => ({
       activeOperation,
       activeOperationId,
       connection,
+      operationQueryState,
       setActiveOperationId,
       createOperation,
       recoveryKind,
@@ -270,7 +300,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         }
       },
     }),
-    [activeOperation, activeOperationId, connection, createOperation, optimisticOperation, queryClient, recoverableFormalize, recoverableRegenerate, recoverableReply, recoveryKind, session],
+    [activeOperation, activeOperationId, connection, createOperation, operationQueryState, optimisticOperation, queryClient, recoverableFormalize, recoverableRegenerate, recoverableReply, recoveryKind, session, setActiveOperationId],
   );
 
   return state;

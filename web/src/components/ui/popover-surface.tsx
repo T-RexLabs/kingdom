@@ -34,6 +34,7 @@ export function PopoverSurface({
 				<div
 					ref={panelRef}
 					style={style}
+					data-popover-placement={context.placement}
 					className={className ?? "flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"}
 					{...floatingProps}
 				>

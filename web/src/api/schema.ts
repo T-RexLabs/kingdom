@@ -84,7 +84,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Discover the unfinished shared-App flow bound to this browser session and exact origin. */
+        get: operations["getCurrentGitHubDeviceFlow"];
         put?: never;
         /** Start restart-scoped GitHub device authorization bound to this browser session and exact origin. */
         post: operations["startGitHubDeviceFlow"];
@@ -105,7 +106,11 @@ export interface paths {
         get: operations["getGitHubDeviceFlow"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Discard an unfinished shared-App flow bound to this browser session and exact origin.
+         * @description Clears memory-only provider authorization and token state. A flow with provider or durable work in flight conflicts until that work settles.
+         */
+        delete: operations["discardGitHubDeviceFlow"];
         options?: never;
         head?: never;
         patch?: never;
@@ -154,7 +159,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Re-verify one selected installation and atomically finalize or reconnect a shared connection. */
+        /** Re-verify selected installations and atomically finalize a connection, or reauthorize the exact complete saved installation set. */
         post: operations["finalizeGitHubDeviceFlow"];
         delete?: never;
         options?: never;
@@ -1813,12 +1818,15 @@ export interface components {
         GitHubDeviceFlowStatus: {
             flow_id: string;
             /** @enum {string} */
-            stage: "awaiting_authorization" | "discovering_installations" | "selecting_installation" | "needs_installation" | "finalizing" | "completed" | "access_denied" | "expired" | "failed";
+            stage: "starting_authorization" | "awaiting_authorization" | "discovering_installations" | "selecting_installation" | "needs_installation" | "finalizing" | "completed" | "access_denied" | "expired" | "failed";
             user_code?: string;
             /** Format: uri */
             verification_uri?: string;
+            /** @description Saved connection being reauthorized. No other reconnect identity or credential state is exposed. */
+            reconnect_connection_id?: string;
             /** Format: date-time */
             expires_at: string;
+            /** @description Zero only while provider authorization startup is reserved. */
             interval_seconds: number;
             /** Format: date-time */
             retry_at?: string;
@@ -3311,6 +3319,36 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
+    getCurrentGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current safe flow status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
+            /** @description No unfinished flow is bound to this browser session and origin. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
     startGitHubDeviceFlow: {
         parameters: {
             query?: never;
@@ -3329,6 +3367,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Existing unfinished flow for the same binding and intent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubDeviceFlowStatus"];
+                };
+            };
             /** @description Safe device authorization instructions without provider device or token secrets. */
             201: {
                 headers: {
@@ -3340,6 +3387,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             429: components["responses"]["ErrorResponse"];
             default: components["responses"]["ErrorResponse"];
         };
@@ -3367,6 +3415,36 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    discardGitHubDeviceFlow: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["DeviceFlowId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Flow discarded. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

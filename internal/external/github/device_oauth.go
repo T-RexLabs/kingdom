@@ -165,14 +165,23 @@ func (c *DeviceOAuthClient) Refresh(ctx context.Context, clientID, refreshToken 
 }
 
 func (c *DeviceOAuthClient) Candidates(ctx context.Context, accessToken, expectedClientID, expectedSlug string) ([]InstallationCandidate, error) {
-	if len(accessToken) < 8 || len(accessToken) > 1024 || !clientIDPattern.MatchString(expectedClientID) || !appSlugPattern.MatchString(expectedSlug) {
+	if len(accessToken) < 8 || len(accessToken) > 1024 {
+		return nil, ErrSetupValidation
+	}
+	return installationCandidates(expectedClientID, expectedSlug, func(path string, target any) error {
+		return c.apiJSON(ctx, path, accessToken, target)
+	})
+}
+
+func installationCandidates(expectedClientID, expectedSlug string, get func(string, any) error) ([]InstallationCandidate, error) {
+	if !clientIDPattern.MatchString(expectedClientID) || !appSlugPattern.MatchString(expectedSlug) {
 		return nil, ErrSetupValidation
 	}
 	var user struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
 	}
-	if err := c.apiJSON(ctx, "/user", accessToken, &user); err != nil {
+	if err := get("/user", &user); err != nil {
 		return nil, err
 	}
 	if user.ID <= 0 || strings.TrimSpace(user.Login) == "" {
@@ -185,7 +194,7 @@ func (c *DeviceOAuthClient) Candidates(ctx context.Context, accessToken, expecte
 			TotalCount    int                 `json:"total_count"`
 			Installations []setupInstallation `json:"installations"`
 		}
-		if err := c.apiJSON(ctx, fmt.Sprintf("/user/installations?per_page=100&page=%d", page), accessToken, &response); err != nil {
+		if err := get(fmt.Sprintf("/user/installations?per_page=100&page=%d", page), &response); err != nil {
 			return nil, err
 		}
 		if response.TotalCount < len(response.Installations) || response.TotalCount > setupMaxInstallationPage*100 {

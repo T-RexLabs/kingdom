@@ -839,6 +839,9 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 			t.Fatalf("external_connections.%s is missing", column)
 		}
 	}
+	if _, err := db.Exec(`INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,credential_handle,lifecycle,health_class,credential_generation,validated_generation,created_at,updated_at) VALUES ('invalid-healthy','github','app_private_key','Invalid','1','Iv1','app','github-app:invalid-healthy','enabled','healthy',0,0,'2026-08-15T12:00:00Z','2026-08-15T12:00:00Z')`); err == nil {
+		t.Fatal("schema accepted healthy connection with generation zero")
+	}
 	// Installation identity is a set the connection covers, not a column on it.
 	for _, column := range []string{"installation_id", "connection_id", "account_id", "account_login"} {
 		if !columnExists(t, db, "external_connection_installations", column) {

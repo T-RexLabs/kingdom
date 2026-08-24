@@ -650,8 +650,9 @@ func (r *Runtime) handleGitHubKeyProvision(args []string, rotate bool) error {
 		eventType = "credential.rotated"
 	}
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = store.InstallAudited(connectionID, raw, rotate, func() error {
-		return externalStore.RecordCredentialEvent(context.Background(), connectionID, connection.RowVersion, "local-operator", fmt.Sprintf("external_audit_%d", time.Now().UTC().UnixNano()), eventType, at)
+	targetGeneration := connection.CredentialGeneration + 1
+	if _, err = store.InstallAudited(connectionID, targetGeneration, raw, rotate, func() error {
+		return externalStore.RecordCredentialEvent(context.Background(), connectionID, connection.RowVersion, targetGeneration, "local-operator", fmt.Sprintf("external_audit_%d", time.Now().UTC().UnixNano()), eventType, at)
 	}); err != nil {
 		return fmt.Errorf("provision and record GitHub App private key: %w", err)
 	}

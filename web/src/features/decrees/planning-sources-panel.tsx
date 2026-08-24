@@ -59,7 +59,8 @@ export function PlanningSourcesPanel({
     open,
     onOpenChange: handleOpenChange,
     role: "dialog",
-    minWidth: 380,
+    placement: "bottom-end",
+    widthMode: "css",
     maxHeight: 420,
     // Both the import dialog and the update review open over this panel. Left
     // dismissable, the first outside press that reached them would close the
@@ -111,9 +112,9 @@ export function PlanningSourcesPanel({
           panelRef={setPanel}
           style={panelStyle}
           modalOwned={modalOwned}
-          floatingProps={getFloatingProps()}
+          floatingProps={getFloatingProps({ id: "planning-sources-popover" })}
           initialFocus={-1}
-          className="flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
+          className="flex w-[264px] max-w-[calc(100vw_-_16px)] flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl sm:w-[380px]"
         >
           <div aria-label="Planning Sources" className="flex min-h-0 flex-col">
             <div className="shrink-0 border-b border-border p-2">

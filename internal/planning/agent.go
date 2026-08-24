@@ -54,6 +54,7 @@ type ProviderExecutionMetadata struct {
 	FinalText                       string
 	ProviderSessionID               string
 	CompletionStructuredPayloadJSON string
+	ProviderDiagnosticsJSON         string
 	OutcomeState                    string
 	FailureReasonCode               string
 	FailureReasonText               string

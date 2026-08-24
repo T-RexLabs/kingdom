@@ -91,7 +91,7 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 	}))
 	defer server.Close()
 	store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
-	if err := store.Store("connection-1", UserTokens{AccessToken: "access-initial", RefreshToken: "refresh-initial", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}); err != nil {
+	if err := store.Store("connection-1", 1, UserTokens{AccessToken: "access-initial", RefreshToken: "refresh-initial", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
@@ -99,7 +99,7 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
+	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
 	for range 2 {
@@ -122,6 +122,146 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 	}
 	if repositoryCalls.Load() < 3 || repositoryCalls.Load() > 4 || refreshCalls.Load() != 1 {
 		t.Fatalf("repository calls=%d refresh calls=%d", repositoryCalls.Load(), refreshCalls.Load())
+	}
+}
+
+func TestSharedListInstallationsRefreshesExpiredTokenAndRetriesOne401(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		advanceBefore time.Duration
+		unauthorizeAt string
+	}{
+		{name: "proactive refresh", advanceBefore: 59 * time.Minute},
+		{name: "expired token refresh", advanceBefore: 2 * time.Hour},
+		{name: "one safe 401 retry", unauthorizeAt: "/user/installations"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			var refreshCalls, userCalls, installationCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/login/oauth/access_token":
+					refreshCalls.Add(1)
+					_, _ = w.Write([]byte(`{"access_token":"access-rotated","refresh_token":"refresh-rotated","token_type":"bearer","scope":"","expires_in":28800,"refresh_token_expires_in":15811200}`))
+				case "/user":
+					userCalls.Add(1)
+					_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
+				case "/user/installations":
+					installationCalls.Add(1)
+					if test.unauthorizeAt == r.URL.Path && r.Header.Get("Authorization") == "Bearer access-initial" {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}]}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
+			initial := UserTokens{AccessToken: "access-initial", RefreshToken: "refresh-initial", AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour)}
+			if err := store.Store("connection-1", 1, initial); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(test.advanceBefore)
+			oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
+			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+			installations, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(installations) != 1 || installations[0].InstallationID != "2" || installations[0].RepositorySelection != "selected" {
+				t.Fatalf("installations=%#v", installations)
+			}
+			if refreshCalls.Load() != 1 || userCalls.Load() != 1 {
+				t.Fatalf("refresh calls=%d user calls=%d", refreshCalls.Load(), userCalls.Load())
+			}
+			wantInstallationCalls := int32(1)
+			if test.unauthorizeAt != "" {
+				wantInstallationCalls = 2
+			}
+			if installationCalls.Load() != wantInstallationCalls {
+				t.Fatalf("installation calls=%d, want %d", installationCalls.Load(), wantInstallationCalls)
+			}
+		})
+	}
+}
+
+func TestStaleGenerationRefreshCannotOverwriteNewerTokenGeneration(t *testing.T) {
+	now := time.Now().UTC()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			_ = r.ParseForm()
+			if r.Form.Get("refresh_token") != "refresh-token-old" {
+				t.Errorf("refresh used wrong generation token")
+			}
+			_, _ = w.Write([]byte(`{"access_token":"access-rotated-old","refresh_token":"refresh-rotated-old","token_type":"bearer","scope":"","expires_in":28800,"refresh_token_expires_in":15811200}`))
+		case "/user":
+			if r.Header.Get("Authorization") != "Bearer access-rotated-old" {
+				t.Errorf("candidate listing used wrong generation token: %q", r.Header.Get("Authorization"))
+			}
+			_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
+		case "/user/installations":
+			_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
+	stale := testUserTokens(now, "old")
+	stale.AccessExpiresAt = now.Add(time.Minute)
+	newer := testUserTokens(now, "newer")
+	if err := store.Store("connection-1", 1, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Store("connection-1", 2, newer); err != nil {
+		t.Fatal(err)
+	}
+	oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
+	client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	installations, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
+	if err != nil || len(installations) != 1 || installations[0].InstallationID != "2" {
+		t.Fatalf("stale generation installations=%#v err=%v", installations, err)
+	}
+	selected, err := store.Load("connection-1", 2)
+	if err != nil || selected.AccessToken != newer.AccessToken || selected.RefreshToken != newer.RefreshToken {
+		t.Fatalf("newer generation was overwritten: %#v err=%v", selected, err)
+	}
+	refreshedStale, err := store.Load("connection-1", 1)
+	if err != nil || refreshedStale.AccessToken != "access-rotated-old" {
+		t.Fatalf("ordinary same-generation refresh was not atomic: %#v err=%v", refreshedStale, err)
+	}
+}
+
+func TestSharedListInstallationsPreservesProviderFailureClass(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+		class  external.FailureClass
+	}{
+		{name: "rate limited", status: http.StatusTooManyRequests, class: external.FailureRateLimited},
+		{name: "service unavailable", status: http.StatusServiceUnavailable, class: external.FailureUnavailable},
+		{name: "malformed response", status: http.StatusOK, body: `{`, class: external.FailureMalformedResponse},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
+			if err := store.Store("connection-1", 1, testUserTokens(now, "candidate")); err != nil {
+				t.Fatal(err)
+			}
+			oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
+			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+			_, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
+			assertProviderFailureClass(t, err, test.class)
+		})
 	}
 }
 
@@ -203,12 +343,12 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
 		defer server.Close()
 		store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
-		if err := store.Store("connection-1", testUserTokens(now, "candidate")); err != nil {
+		if err := store.Store("connection-1", 1, testUserTokens(now, "candidate")); err != nil {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
-		_, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
+		_, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
 	t.Run("refresh outage after 401", func(t *testing.T) {
@@ -221,12 +361,12 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		}))
 		defer server.Close()
 		store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
-		if err := store.Store("connection-1", testUserTokens(now, "refresh")); err != nil {
+		if err := store.Store("connection-1", 1, testUserTokens(now, "refresh")); err != nil {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
-		_, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "", "")
+		_, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "", "")
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
 	t.Run("proactive refresh rate limit", func(t *testing.T) {
@@ -238,12 +378,12 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
 		tokens := testUserTokens(now, "rate-limit")
 		tokens.AccessExpiresAt = now.Add(time.Minute)
-		if err := store.Store("connection-1", tokens); err != nil {
+		if err := store.Store("connection-1", 1, tokens); err != nil {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-		_, err := client.userAccessToken(context.Background(), "connection-1", "", false)
+		_, err := client.userAccessToken(context.Background(), "connection-1", 1, "", false)
 		var providerErr *external.ProviderError
 		if !errors.As(err, &providerErr) || providerErr.Class != external.FailureRateLimited || providerErr.RetryAt == nil || !providerErr.RetryAt.Equal(now.Add(30*time.Second)) {
 			t.Fatalf("refresh rate-limit error=%v", err)
@@ -257,12 +397,12 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 		store, _ := NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
 		tokens := testUserTokens(now, "bad-refresh")
 		tokens.AccessExpiresAt = now.Add(time.Minute)
-		if err := store.Store("connection-1", tokens); err != nil {
+		if err := store.Store("connection-1", 1, tokens); err != nil {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
 		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-		_, err := client.userAccessToken(context.Background(), "connection-1", "", false)
+		_, err := client.userAccessToken(context.Background(), "connection-1", 1, "", false)
 		assertProviderFailureClass(t, err, external.FailureAuthentication)
 	})
 }

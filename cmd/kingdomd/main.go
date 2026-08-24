@@ -137,9 +137,10 @@ func run() (exitCode int) {
 		return exitFatalStartup
 	}
 
+	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
 	runtime, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
-		Paths:               kingdom.DefaultBootstrapPaths(repoRoot),
+		Paths:               bootstrapPaths,
 		ProviderEngine:      providerEngine,
 		ProviderStrict:      providerStrict,
 		GovernanceMode:      governanceMode,
@@ -161,7 +162,19 @@ func run() (exitCode int) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	apiServer, err := api.NewHandler(api.ServerConfig{DB: db, BasePath: basePath, AutonomousApprovalsDefault: &autonomousApprovals, ProjectRoot: repoRoot, OperatorCredential: operatorCredential, GitHubSharedAppSlug: githubSharedSlug, GitHubSharedAppClientID: githubSharedClientID})
+	apiServer, err := api.NewHandler(api.ServerConfig{
+		DB:                         db,
+		StartupContext:             ctx,
+		BasePath:                   basePath,
+		AutonomousApprovalsDefault: &autonomousApprovals,
+		OpenCodeBinaryPath:         providerBinary,
+		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
+		ProjectRoot:                repoRoot,
+		OperatorCredential:         operatorCredential,
+		GitHubSharedAppSlug:        githubSharedSlug,
+		GitHubSharedAppClientID:    githubSharedClientID,
+	})
 	if err != nil {
 		log.Printf("build api handler: %v", err)
 		return exitFatalStartup

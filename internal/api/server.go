@@ -25,6 +25,7 @@ import (
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
@@ -53,6 +54,8 @@ type ServerConfig struct {
 	ProviderEngine             string
 	OpenCodeBinaryPath         string
 	ProviderModelCatalog       ProviderModelCatalog
+	ProviderPolicyPath         string
+	ProviderPolicySchemaPath   string
 	SchemaDir                  string
 	RoleCommPolicyPath         string
 	RoleCommSchemaPath         string
@@ -85,6 +88,8 @@ type Server struct {
 	plannerRuntimeWarmer       providerRuntimeWarmer
 	projectRoot                string
 	defaultPublishMode         string
+	lifecycleCtx               context.Context
+	lifecycleCancel            context.CancelFunc
 
 	eventIngestor           *state.AttemptEventIngestor
 	transitionService       *state.TransitionService
@@ -126,6 +131,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
+	}
+	if s.lifecycleCancel != nil {
+		s.lifecycleCancel()
 	}
 	var closeErr error
 	if s.planningService != nil {
@@ -183,6 +191,9 @@ func (s *Server) ForceClose() {
 	if s == nil {
 		return
 	}
+	if s.lifecycleCancel != nil {
+		s.lifecycleCancel()
+	}
 	if s.planningService != nil {
 		s.planningService.ForceClose()
 	}
@@ -197,6 +208,14 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if startupCtx == nil {
 		startupCtx = context.Background()
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(startupCtx)
+	startupCtx = lifecycleCtx
+	lifecycleTransferred := false
+	defer func() {
+		if !lifecycleTransferred {
+			lifecycleCancel()
+		}
+	}()
 
 	basePath, err := ValidateBasePath(cfg.BasePath)
 	if err != nil {
@@ -290,21 +309,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("initialize github key store: %w", err)
 		}
 	}
-	if githubKeys != nil {
-		if cleanupErr := githubKeys.CleanupTemps(); cleanupErr != nil {
-			return nil, fmt.Errorf("clean orphaned github key stages: %w", cleanupErr)
-		}
-	}
 	githubUserTokens := cfg.GitHubUserTokenStore
 	if githubUserTokens == nil && projectRoot != "" {
 		githubUserTokens, err = githubexternal.NewUserTokenStore(filepath.Join(projectRoot, ".kingdom", "secrets"))
 		if err != nil {
 			return nil, fmt.Errorf("initialize github user token store: %w", err)
-		}
-	}
-	if githubUserTokens != nil {
-		if cleanupErr := githubUserTokens.CleanupTemps(); cleanupErr != nil {
-			return nil, fmt.Errorf("clean orphaned github user token stages: %w", cleanupErr)
 		}
 	}
 	githubDeviceOAuth := cfg.GitHubDeviceOAuthClient
@@ -364,11 +373,38 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		providerModelCatalog:       cfg.ProviderModelCatalog,
 		projectRoot:                projectRoot,
 		defaultPublishMode:         defaultPublishMode,
+		lifecycleCtx:               lifecycleCtx,
+		lifecycleCancel:            lifecycleCancel,
 		cursors:                    cursorSigner,
 		auth:                       auth,
 	}
 	var plannerAgent planning.Agent
 	if githubKeys != nil || githubUserTokens != nil {
+		selectedGeneration := func(strategy string) func(string) (int, error) {
+			return func(connectionID string) (int, error) {
+				publication, publicationErr := s.externalStore.GetCredentialPublication(startupCtx, connectionID)
+				if errors.Is(publicationErr, state.ErrExternalNotFound) {
+					return 0, nil
+				}
+				if publicationErr != nil {
+					return 0, publicationErr
+				}
+				if publication.CredentialStrategy != strategy || (publication.Lifecycle != "enabled" && publication.Lifecycle != "disabled") || publication.CredentialGeneration <= 0 {
+					return 0, nil
+				}
+				return publication.CredentialGeneration, nil
+			}
+		}
+		if githubKeys != nil {
+			if reconcileErr := githubKeys.ReconcileGenerations(selectedGeneration("app_private_key")); reconcileErr != nil {
+				return nil, fmt.Errorf("reconcile github key generations: %w", reconcileErr)
+			}
+		}
+		if githubUserTokens != nil {
+			if reconcileErr := githubUserTokens.ReconcileGenerations(selectedGeneration("user_access_token")); reconcileErr != nil {
+				return nil, fmt.Errorf("reconcile github user token generations: %w", reconcileErr)
+			}
+		}
 		connections, listErr := s.externalStore.ListConnectionsAwaitingRemovalReconciliation(startupCtx)
 		if listErr != nil {
 			return nil, fmt.Errorf("list connections for removal reconciliation: %w", listErr)
@@ -377,9 +413,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			reconcile := func() error {
 				var removeErr error
 				if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
-					removeErr = githubUserTokens.RemoveWhileLocked(connection.ConnectionID)
+					removeErr = githubUserTokens.RemoveAllWhileLocked(connection.ConnectionID)
 				} else if githubKeys != nil {
-					removeErr = githubKeys.Remove(connection.ConnectionID)
+					removeErr = githubKeys.RemoveAllWhileLocked(connection.ConnectionID)
 				}
 				if removeErr != nil {
 					return removeErr
@@ -413,14 +449,27 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 				return nil, fmt.Errorf("validate managed opencode planner assets: %w", err)
 			}
 		}
+		if strings.TrimSpace(cfg.ProviderPolicyPath) == "" || strings.TrimSpace(cfg.ProviderPolicySchemaPath) == "" {
+			return nil, fmt.Errorf("provider policy and schema paths must both be set for the OpenCode planner")
+		}
+		providerPolicy, loadErr := providerpolicy.LoadPolicyFromFile(cfg.ProviderPolicyPath, cfg.ProviderPolicySchemaPath)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		firstEventTimeout, streamInactivityTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
+		if timeoutErr != nil {
+			return nil, fmt.Errorf("parse provider execution timeouts: %w", timeoutErr)
+		}
 		plannerAdapter, adapterErr := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
-			BinaryPath:          cfg.OpenCodeBinaryPath,
-			WorkDir:             strings.TrimSpace(cfg.ProjectRoot),
-			ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(cfg.ProjectRoot),
-			DatabasePath:        bootstrapassets.ManagedOpenCodeDatabasePath(cfg.ProjectRoot),
-			InlineConfigContent: plannerInlineConfig,
-			Agent:               "planner",
-			SkipPermissions:     true,
+			BinaryPath:              cfg.OpenCodeBinaryPath,
+			WorkDir:                 strings.TrimSpace(cfg.ProjectRoot),
+			ConfigDir:               bootstrapassets.ManagedOpenCodeRoot(cfg.ProjectRoot),
+			DatabasePath:            bootstrapassets.ManagedOpenCodeDatabasePath(cfg.ProjectRoot),
+			InlineConfigContent:     plannerInlineConfig,
+			Agent:                   "planner",
+			SkipPermissions:         true,
+			FirstEventTimeout:       firstEventTimeout,
+			StreamInactivityTimeout: streamInactivityTimeout,
 		})
 		if adapterErr != nil {
 			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
@@ -444,6 +493,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if constructorOK {
 			return
 		}
+		lifecycleCancel()
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(startupCtx), 10*time.Second)
 		defer cancel()
 		_ = s.planningService.Close(closeCtx)
@@ -482,6 +532,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 
 	s.handler = limitRequestBody(mux)
 	constructorOK = true
+	lifecycleTransferred = true
 	return s, nil
 }
 
@@ -495,8 +546,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /connections", s.handleListConnections)
 	mux.HandleFunc("POST /connections", s.handleCreateConnection)
 	mux.HandleFunc("GET /connections/github/setup-options", s.handleGitHubSetupOptions)
+	mux.HandleFunc("GET /connections/github/device-flows", s.handleCurrentGitHubDeviceFlow)
 	mux.HandleFunc("POST /connections/github/device-flows", s.handleStartGitHubDeviceFlow)
 	mux.HandleFunc("GET /connections/github/device-flows/{id}", s.handleGetGitHubDeviceFlow)
+	mux.HandleFunc("DELETE /connections/github/device-flows/{id}", s.handleDiscardGitHubDeviceFlow)
 	mux.HandleFunc("POST /connections/github/device-flows/{id}/poll", s.handlePollGitHubDeviceFlow)
 	mux.HandleFunc("POST /connections/github/device-flows/{id}/candidates", s.handleRefreshGitHubDeviceCandidates)
 	mux.HandleFunc("POST /connections/github/device-flows/{id}/finalize", s.handleFinalizeGitHubDeviceFlow)

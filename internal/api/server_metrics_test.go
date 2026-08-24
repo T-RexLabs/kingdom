@@ -5,13 +5,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/state"
 )
+
+func TestTokenByRolePayloadSerializesEmptyRequiredByModelArray(t *testing.T) {
+	payload := buildTokenByRolePayload([]state.TokenUsageByRole{{RequiredRole: "builder-berserker"}}, nil)
+	if len(payload) != 1 {
+		t.Fatalf("expected one role payload, got %d", len(payload))
+	}
+	response := httptest.NewRecorder()
+	writeJSON(response, http.StatusOK, payload[0])
+	raw := response.Body.Bytes()
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(wire["by_model"]); got != "[]" {
+		t.Fatalf("by_model=%s payload=%s", got, raw)
+	}
+}
 
 func TestServerRuntimeMetricsEndpointReportsRunningAndStaleNodes(t *testing.T) {
 	t.Parallel()

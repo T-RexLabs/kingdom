@@ -2,11 +2,18 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +21,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/external"
+	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/state"
 )
 
@@ -57,11 +65,13 @@ type externalAPITestAdapter struct {
 	results          map[int]external.IssueResult
 	fetchErr         error
 	validateErr      error
+	zeroValuePages   bool
 	evicted          []string
 	calls            int
 	repositorySearch string
 	repositoryCursor string
 	installations    []external.Installation
+	validation       []state.ConnectionInstallation
 }
 
 func TestExternalProviderErrorsExposeOnlySafeRetryTime(t *testing.T) {
@@ -166,6 +176,9 @@ func (a *externalAPITestAdapter) Validate(_ context.Context, connection state.Ex
 	if slug == "" {
 		slug = "verified-app"
 	}
+	if a.validation != nil {
+		return external.ConnectionValidation{Installations: a.validation, AppSlug: slug}, nil
+	}
 	return external.ConnectionValidation{Installations: validatedInstallations(connection), AppSlug: slug}, nil
 }
 
@@ -223,6 +236,9 @@ func (a *externalAPITestAdapter) ListRepositories(_ context.Context, _ state.Ext
 	a.repositorySearch = search
 	a.repositoryCursor = cursor
 	a.mu.Unlock()
+	if a.zeroValuePages {
+		return external.RepositoryPage{}, nil
+	}
 	return external.RepositoryPage{NextCursor: "provider-next"}, nil
 }
 func (a *externalAPITestAdapter) ListIssues(context.Context, state.ExternalConnection, string, string, string, string) (external.IssuePage, error) {
@@ -239,6 +255,192 @@ func (a *externalAPITestAdapter) FetchIssue(_ context.Context, request external.
 		return result, a.fetchErr
 	}
 	return a.result, a.fetchErr
+}
+
+func publishExternalTestCredential(t *testing.T, db *sql.DB, connectionID, auditID, at string) {
+	t.Helper()
+	store := state.NewExternalStore(db)
+	connection, err := store.GetConnection(context.Background(), connectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(context.Background(), connectionID, connection.RowVersion, 1, "local-operator", auditID, "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExternalDiscoveryNormalizesZeroValuePageItemsOnTheWire(t *testing.T) {
+	adapter := &externalAPITestAdapter{zeroValuePages: true}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	_, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+		ConnectionID: "conn-empty-pages", CredentialStrategy: "app_private_key", DisplayName: "Empty Pages", AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-empty-pages", ActorID: "local-operator", CreatedAt: "2026-08-24T10:00:00Z", AuditEventID: "audit-empty-pages",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{
+		"/api/v1/connections/conn-empty-pages/repositories",
+		"/api/v1/connections/conn-empty-pages/repositories/200/issues",
+	} {
+		response := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: path})
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &wire); err != nil {
+			t.Fatalf("decode %s response: %v", path, err)
+		}
+		if got := string(wire["items"]); got != "[]" {
+			t.Fatalf("%s items=%s body=%s", path, got, response.Body.String())
+		}
+		if strings.HasSuffix(path, "/issues") {
+			if got := string(wire["search_result_cap"]); got != "1000" {
+				t.Fatalf("%s search_result_cap=%s body=%s", path, got, response.Body.String())
+			}
+		}
+	}
+}
+
+func apiTestPrivateKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+}
+
+func TestStartupReconcilesCredentialGenerationsFromDatabasePointers(t *testing.T) {
+	db := openAPIServerTestDB(t)
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".kingdom"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := githubexternal.NewKeyStore(filepath.Join(project, ".kingdom", "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewExternalStore(db)
+	at := "2026-08-24T10:00:00Z"
+	connection, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "owned", CredentialStrategy: "app_private_key", DisplayName: "Owned", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:owned", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-owned-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(context.Background(), connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-owned-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Provision("owned", 1, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Rotate("owned", 2, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Provision("unowned", 1, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := githubexternal.NewUserTokenStore(filepath.Join(project, ".kingdom", "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: "shared-owned", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "3", ClientID: "IvShared", AppSlug: "shared", Installations: []state.ConnectionInstallation{{InstallationID: "3", AccountID: "30", AccountLogin: "shared"}}, CredentialHandle: "github-user:shared-owned", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-shared-owned"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstTokens := githubexternal.UserTokens{AccessToken: "access-first", RefreshToken: "refresh-first", AccessExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(180 * 24 * time.Hour)}
+	secondTokens := githubexternal.UserTokens{AccessToken: "access-second", RefreshToken: "refresh-second", AccessExpiresAt: time.Now().Add(time.Hour), RefreshExpiresAt: time.Now().Add(180 * 24 * time.Hour)}
+	if err := tokens.Store(shared.ConnectionID, 1, firstTokens); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokens.Store(shared.ConnectionID, 2, secondTokens); err != nil {
+		t.Fatal(err)
+	}
+	if err := tokens.Store("shared-unowned", 1, firstTokens); err != nil {
+		t.Fatal(err)
+	}
+
+	newAPIServerForTestWithConfig(t, ServerConfig{DB: db, ProjectRoot: project, GitHubKeyStore: keys, GitHubUserTokenStore: tokens, ExternalAdapter: &externalAPITestAdapter{}})
+	if _, _, err := keys.Load("owned", 1); err != nil {
+		t.Fatalf("startup removed DB-selected generation: %v", err)
+	}
+	for _, item := range []struct {
+		id         string
+		generation int
+	}{{"owned", 2}, {"unowned", 1}} {
+		if _, _, err := keys.Load(item.id, item.generation); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("startup retained stale credential %s/%d: %v", item.id, item.generation, err)
+		}
+	}
+	if _, err := tokens.Load(shared.ConnectionID, 1); err != nil {
+		t.Fatalf("startup removed DB-selected token generation: %v", err)
+	}
+	for _, item := range []struct {
+		id         string
+		generation int
+	}{{shared.ConnectionID, 2}, {"shared-unowned", 1}} {
+		if _, err := tokens.Load(item.id, item.generation); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("startup retained stale token %s/%d: %v", item.id, item.generation, err)
+		}
+	}
+}
+
+func TestConnectionTombstoneRemovesEveryCredentialGeneration(t *testing.T) {
+	db := openAPIServerTestDB(t)
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".kingdom"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := githubexternal.NewKeyStore(filepath.Join(project, ".kingdom", "secrets"))
+	store := state.NewExternalStore(db)
+	at := "2026-08-24T10:00:00Z"
+	connection, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "remove-all", CredentialStrategy: "app_private_key", DisplayName: "Remove", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "22"}}, CredentialHandle: "github-app:remove-all", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-remove-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(context.Background(), connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-remove-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Provision(connection.ConnectionID, 1, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{DB: db, ProjectRoot: project, GitHubKeyStore: keys, ExternalAdapter: &externalAPITestAdapter{}})
+	if _, err := keys.Rotate(connection.ConnectionID, 2, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID, idempotencyKey: "remove-all-generations"})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, generation := range []int{1, 2} {
+		if _, _, err := keys.Load(connection.ConnectionID, generation); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("tombstone retained generation %d: %v", generation, err)
+		}
+	}
+	tombstone, err := store.GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || tombstone.Lifecycle != "removed" {
+		t.Fatalf("tombstone=%#v err=%v", tombstone, err)
+	}
+}
+
+func TestConnectionPresentationLoadsOnlyDatabaseSelectedGeneration(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "secrets")
+	keys, _ := githubexternal.NewKeyStore(root)
+	if _, err := keys.Provision("presented", 1, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Rotate("presented", 2, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	connection := state.ExternalConnection{ConnectionID: "presented", Provider: "github", CredentialStrategy: "app_private_key", DisplayName: "Presented", AppID: "1", ClientID: "Iv1", AppSlug: "app", Lifecycle: "enabled", HealthClass: "never_checked", CredentialGeneration: 3, CreatedAt: "2026-08-24T10:00:00Z", UpdatedAt: "2026-08-24T10:00:00Z"}
+	if presented := presentConnection(connection, keys, nil); presented.CredentialState != "missing" {
+		t.Fatalf("stale generations satisfied missing DB generation: %#v", presented)
+	}
+	connection.CredentialGeneration = 2
+	if presented := presentConnection(connection, keys, nil); presented.CredentialState != "present" {
+		t.Fatalf("selected durable generation was not presented: %#v", presented)
+	}
 }
 
 func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *testing.T) {
@@ -269,6 +471,7 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 	if err := json.Unmarshal(createdConnection.Body.Bytes(), &connection); err != nil {
 		t.Fatal(err)
 	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-attach-credential", at)
 	health := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionId + "/health-checks", idempotencyKey: "attach-health"})
 	if health.Code != http.StatusOK {
 		t.Fatalf("health status=%d body=%s", health.Code, health.Body.String())
@@ -379,6 +582,57 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 		t.Fatalf("later adoption mutated prior operation bindings: before=%v after=%v", firstBindings, got)
 	}
 
+	detach := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + firstLink + "/detachments", idempotencyKey: "attach-detach-first"})
+	if detach.Code != http.StatusCreated {
+		t.Fatalf("detach status=%d body=%s", detach.Code, detach.Body.String())
+	}
+	adapter.mu.Lock()
+	adapter.results[7] = issueResult(7, "First reattached", "2026-08-12T12:00:00Z")
+	adapter.mu.Unlock()
+	reattach := attach(firstSession.Session.PlanningSessionId, 7, "attach-reattach-first")
+	if reattach.Code != http.StatusCreated {
+		t.Fatalf("re-attach status=%d body=%s", reattach.Code, reattach.Body.String())
+	}
+	var reattached gen.ExternalProvenanceSummary
+	if err := json.Unmarshal(reattach.Body.Bytes(), &reattached); err != nil {
+		t.Fatal(err)
+	}
+	if reattached.LinkId != firstLink || reattached.ActiveSnapshotId == nil || reattached.LatestSnapshotId != *reattached.ActiveSnapshotId {
+		t.Fatalf("re-attach provenance=%#v", reattached)
+	}
+	freshSnapshotID := reattached.LatestSnapshotId
+	adoptAfterReattach := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + firstLink + "/adoptions", idempotencyKey: "attach-adopt-after-reattach"})
+	if adoptAfterReattach.Code != http.StatusCreated {
+		t.Fatalf("adopt after re-attach status=%d body=%s", adoptAfterReattach.Code, adoptAfterReattach.Body.String())
+	}
+	detailAfterReattach := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/planning-sessions/" + firstSession.Session.PlanningSessionId})
+	if detailAfterReattach.Code != http.StatusOK {
+		t.Fatalf("planning detail after re-attach status=%d body=%s", detailAfterReattach.Code, detailAfterReattach.Body.String())
+	}
+	if err := json.Unmarshal(detailAfterReattach.Body.Bytes(), &planningDetail); err != nil {
+		t.Fatal(err)
+	}
+	foundFresh := false
+	for _, source := range planningDetail.ExternalSources {
+		if source.LinkId == firstLink && source.ActiveSnapshotId != nil && source.LatestSnapshotId == freshSnapshotID && *source.ActiveSnapshotId == freshSnapshotID {
+			foundFresh = true
+		}
+	}
+	if !foundFresh {
+		t.Fatalf("adopting latest after re-attach regressed planning detail: %#v", planningDetail.ExternalSources)
+	}
+	thirdRun := createRun("attach-operation-after-reattach")
+	thirdBindings := planningBindingIDsForAcpRun(t, db, thirdRun.RunId.String())
+	foundFresh = false
+	for _, snapshotID := range thirdBindings {
+		if snapshotID == freshSnapshotID {
+			foundFresh = true
+		}
+	}
+	if !foundFresh {
+		t.Fatalf("operation after re-attach bound stale snapshots: fresh=%q bindings=%v", freshSnapshotID, thirdBindings)
+	}
+
 	deletedID := secondSession.Session.PlanningSessionId
 	deleted := performJSONRequest(t, handler, requestSpec{method: http.MethodDelete, path: "/api/v1/planning-sessions/" + deletedID, idempotencyKey: "attach-delete-session"})
 	if deleted.Code != http.StatusNoContent {
@@ -434,7 +688,7 @@ func planningBindingIDsForAcpRun(t *testing.T, db *sql.DB, runID string) []strin
 
 func TestExternalDiscoveryAndCaptureRequireCurrentHealthyValidation(t *testing.T) {
 	adapter := &externalAPITestAdapter{}
-	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
 	create := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections", idempotencyKey: "create-unvalidated-connection", body: map[string]any{"provider": "github", "credential_strategy": "app_private_key", "display_name": "Unvalidated", "app_id": "1", "client_id": "Iv1", "app_slug": "app", "installation_id": "2"}})
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
@@ -443,6 +697,7 @@ func TestExternalDiscoveryAndCaptureRequireCurrentHealthyValidation(t *testing.T
 	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
 		t.Fatal(err)
 	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-unvalidated-credential", "2026-08-12T10:00:00Z")
 	requests := []requestSpec{
 		{method: http.MethodGet, path: "/api/v1/connections/" + connection.ConnectionId + "/repositories"},
 		{method: http.MethodGet, path: "/api/v1/connections/" + connection.ConnectionId + "/repositories/200/issues"},
@@ -472,6 +727,7 @@ func TestConnectionHealthPersistsInstallationAccountIdentity(t *testing.T) {
 	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
 		t.Fatal(err)
 	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-identity-credential", "2026-08-12T10:00:00Z")
 	health := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionId + "/health-checks", idempotencyKey: "health-identity-connection"})
 	if health.Code != http.StatusOK {
 		t.Fatalf("health status=%d body=%s", health.Code, health.Body.String())
@@ -499,6 +755,7 @@ func TestManualConnectionAllowsSlugDiscoveryOnlyAtHealthValidation(t *testing.T)
 	if connection.AppSlug != "" {
 		t.Fatalf("unvalidated manual slug=%q", connection.AppSlug)
 	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-slug-credential", "2026-08-12T10:00:00Z")
 	health := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionId + "/health-checks", idempotencyKey: "health-slugless-manual"})
 	if health.Code != http.StatusOK {
 		t.Fatalf("health status=%d body=%s", health.Code, health.Body.String())
@@ -516,6 +773,9 @@ func TestRepositoryFilterIsCursorScoped(t *testing.T) {
 	at := "2026-08-12T10:00:00Z"
 	connection, err := store.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{ConnectionID: "conn-repositories", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-repositories", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-repositories-create"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(context.Background(), connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-repositories-credential", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateConnectionState(context.Background(), connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
@@ -536,11 +796,121 @@ func TestRepositoryFilterIsCursorScoped(t *testing.T) {
 		t.Fatalf("unexpected adapter request search=%q cursor=%q", adapter.repositorySearch, adapter.repositoryCursor)
 	}
 	adapter.mu.Unlock()
+	continued := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-repositories/repositories?search=widget&cursor=" + page.NextCursor})
+	if continued.Code != http.StatusOK {
+		t.Fatalf("same-version cursor status=%d body=%s", continued.Code, continued.Body.String())
+	}
+	adapter.mu.Lock()
+	if adapter.repositoryCursor != "provider-next" {
+		t.Fatalf("same-version provider cursor=%q", adapter.repositoryCursor)
+	}
+	adapter.mu.Unlock()
 	changed := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-repositories/repositories?search=other&cursor=" + page.NextCursor})
 	if changed.Code != http.StatusBadRequest {
 		t.Fatalf("changed-filter cursor status=%d body=%s", changed.Code, changed.Body.String())
 	}
 }
+
+func TestRepositoryCursorTracksActualInstallationSetChanges(t *testing.T) {
+	tests := []struct {
+		name         string
+		initial      []string
+		updated      []string
+		actualChange bool
+	}{
+		{name: "add earlier installation can repeat", initial: []string{"20", "30"}, updated: []string{"10", "20", "30"}, actualChange: true},
+		{name: "remove earlier installation can skip", initial: []string{"10", "20", "30"}, updated: []string{"20", "30"}, actualChange: true},
+		{name: "replace earlier installation changes ordered set", initial: []string{"10", "30"}, updated: []string{"20", "30"}, actualChange: true},
+		{name: "reordered normalized set is unchanged", initial: []string{"10", "20", "30"}, updated: []string{"30", "20", "10"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			logins := map[string]string{"10": "ten", "20": "twenty", "30": "thirty"}
+			adapter := &externalAPITestAdapter{installations: []external.Installation{
+				{InstallationID: "10", AccountID: "100", AccountLogin: "ten", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+				{InstallationID: "20", AccountID: "200", AccountLogin: "twenty", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+				{InstallationID: "30", AccountID: "300", AccountLogin: "thirty", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
+			}}
+			handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+			store := state.NewExternalStore(db)
+			installations := make([]state.ConnectionInstallation, 0, len(test.initial))
+			for _, id := range test.initial {
+				installations = append(installations, state.ConnectionInstallation{InstallationID: id, AccountID: id + "0", AccountLogin: logins[id]})
+			}
+			connection, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+				ConnectionID: "conn-cursor", CredentialStrategy: "app_private_key", DisplayName: "Cursor", AppID: "1", ClientID: "Iv1", AppSlug: "app",
+				Installations: installations, CredentialHandle: "github-app:conn-cursor", ActorID: "local-operator", CreatedAt: "2026-08-24T10:00:00Z", AuditEventID: "audit-cursor-create",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-cursor/repositories?search=widget"})
+			if first.Code != http.StatusOK {
+				t.Fatalf("first repository page status=%d body=%s", first.Code, first.Body.String())
+			}
+			var page struct {
+				NextCursor string `json:"next_cursor"`
+			}
+			if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil || page.NextCursor == "" {
+				t.Fatalf("decode cursor: %v body=%s", err, first.Body.String())
+			}
+
+			mutation := performJSONRequest(t, handler, requestSpec{
+				method: http.MethodPut, path: "/api/v1/connections/conn-cursor/installations", idempotencyKey: "mutate-cursor-installations",
+				body: map[string]any{"installation_ids": test.updated},
+			})
+			if mutation.Code != http.StatusOK {
+				t.Fatalf("installation mutation status=%d body=%s", mutation.Code, mutation.Body.String())
+			}
+			updated, err := store.GetConnection(context.Background(), connection.ConnectionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			continuation := requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-cursor/repositories?search=widget&cursor=" + page.NextCursor}
+			if !test.actualChange {
+				if updated.RowVersion != connection.RowVersion || !updated.HasCurrentValidation() {
+					t.Fatalf("normalized no-op changed connection state: before=%#v after=%#v", connection, updated)
+				}
+				continued := performJSONRequest(t, handler, continuation)
+				if continued.Code != http.StatusOK {
+					t.Fatalf("no-op continuation status=%d body=%s", continued.Code, continued.Body.String())
+				}
+				adapter.mu.Lock()
+				defer adapter.mu.Unlock()
+				if adapter.calls != 2 {
+					t.Fatalf("no-op continuation repository calls=%d", adapter.calls)
+				}
+				return
+			}
+			if updated.RowVersion == connection.RowVersion || updated.HealthClass != "never_checked" || updated.HasCurrentValidation() {
+				t.Fatalf("installation mutation did not invalidate health: before=%#v after=%#v", connection, updated)
+			}
+			blocked := performJSONRequest(t, handler, continuation)
+			if blocked.Code != http.StatusConflict {
+				t.Fatalf("pre-Check continuation status=%d body=%s", blocked.Code, blocked.Body.String())
+			}
+			checked := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/conn-cursor/health-checks", idempotencyKey: "check-cursor-installations"})
+			if checked.Code != http.StatusOK {
+				t.Fatalf("Check status=%d body=%s", checked.Code, checked.Body.String())
+			}
+			stale := performJSONRequest(t, handler, continuation)
+			if stale.Code != http.StatusBadRequest {
+				t.Fatalf("stale cursor status=%d body=%s", stale.Code, stale.Body.String())
+			}
+			envelope := decodeCanonicalErrorEnvelope(t, stale.Body.Bytes())
+			if envelope.Error.Code != "policy_violation" || envelope.Error.Message != "invalid repositories cursor" {
+				t.Fatalf("stale cursor error=%#v", envelope.Error)
+			}
+			adapter.mu.Lock()
+			defer adapter.mu.Unlock()
+			if adapter.calls != 1 {
+				t.Fatalf("blocked stale cursor reached provider; repository calls=%d", adapter.calls)
+			}
+		})
+	}
+}
+
 func (a *externalAPITestAdapter) Evict(id string) {
 	a.mu.Lock()
 	a.evicted = append(a.evicted, id)
@@ -555,6 +925,9 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	at := "2026-08-12T10:00:00Z"
 	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-refresh", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-refresh", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-create"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-refresh-credential", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
@@ -602,6 +975,9 @@ func TestExternalRefreshPersistsRevokedStatusAndReturnsRecoveryMessage(t *testin
 	at := "2026-08-12T10:00:00Z"
 	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-revoked", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-revoked", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-revoked-create"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-revoked-credential", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
@@ -694,6 +1070,9 @@ func TestDelayedHealthCheckDoesNotForkExternalAuditChain(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if err := store.RecordCredentialEvent(ctx, created.ConnectionID, created.RowVersion, 1, "local-operator", "audit-credential-"+id, "credential.provisioned", clock().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
 		if err := store.UpdateConnectionState(ctx, created.ConnectionID, "enabled", "never_checked", "", clock().Format(time.RFC3339Nano), false, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "", AccountLogin: ""}}); err != nil {
 			t.Fatal(err)
 		}
@@ -729,7 +1108,7 @@ func (a *externalAPITestAdapter) ListInstallations(_ context.Context, _ state.Ex
 
 // twoAccountConnectionFixture is a healthy private-App connection covering
 // @enkiid, with @T-RexLabs available to add.
-func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.ExternalStore, state.ExternalConnection) {
+func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.ExternalStore, *externalAPITestAdapter, state.ExternalConnection) {
 	t.Helper()
 	adapter := &externalAPITestAdapter{installations: []external.Installation{
 		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid", DisplayName: "enkiid", AppID: "1", ClientID: "Iv1", AppSlug: "app"},
@@ -750,11 +1129,11 @@ func twoAccountConnectionFixture(t *testing.T, id string) (http.Handler, *state.
 	if err != nil {
 		t.Fatal(err)
 	}
-	return handler, store, current
+	return handler, store, adapter, current
 }
 
 func TestInstallationCandidatesFlagWhatTheConnectionAlreadyCovers(t *testing.T) {
-	handler, _, _ := twoAccountConnectionFixture(t, "conn-candidates")
+	handler, _, _, _ := twoAccountConnectionFixture(t, "conn-candidates")
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-candidates/installation-candidates"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
@@ -775,7 +1154,7 @@ func TestInstallationCandidatesFlagWhatTheConnectionAlreadyCovers(t *testing.T) 
 }
 
 func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
-	handler, store, _ := twoAccountConnectionFixture(t, "conn-add")
+	handler, store, adapter, _ := twoAccountConnectionFixture(t, "conn-add")
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-add/installations", idempotencyKey: "add-second", body: map[string]any{"installation_ids": []string{"10", "11"}}})
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
@@ -791,10 +1170,87 @@ func TestChangingInstallationsAddsASecondAccountToOneConnection(t *testing.T) {
 	if stored.Installations[0].AccountLogin != "enkiid" || stored.Installations[1].AccountLogin != "T-RexLabs" {
 		t.Fatalf("accounts=%#v", stored.Installations)
 	}
+	if stored.HealthClass != "never_checked" || stored.ValidatedGeneration != 0 || stored.HasCurrentValidation() {
+		t.Fatalf("changed installation set remained validated: %#v", stored)
+	}
+	blocked := []requestSpec{
+		{method: http.MethodGet, path: "/api/v1/connections/conn-add/repositories"},
+		{method: http.MethodGet, path: "/api/v1/connections/conn-add/repositories/200/issues"},
+		{method: http.MethodPost, path: "/api/v1/external-source-captures", idempotencyKey: "capture-after-installation-change", body: map[string]any{"connection_id": "conn-add", "repository_id": "200", "issue_number": 7}},
+	}
+	for _, request := range blocked {
+		response := performJSONRequest(t, handler, request)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("%s %s before Check status=%d body=%s", request.method, request.path, response.Code, response.Body.String())
+		}
+	}
+	adapter.validation = []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}}
+	partial := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/conn-add/health-checks", idempotencyKey: "partial-check-after-installation-change"})
+	if partial.Code != http.StatusConflict {
+		t.Fatalf("partial Check status=%d body=%s", partial.Code, partial.Body.String())
+	}
+	partiallyChecked, err := store.GetConnection(context.Background(), "conn-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partiallyChecked.HealthClass != "never_checked" || partiallyChecked.ValidatedGeneration != 0 || partiallyChecked.HasCurrentValidation() {
+		t.Fatalf("partial Check published healthy state: %#v", partiallyChecked)
+	}
+	adapter.validation = nil
+	health := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/conn-add/health-checks", idempotencyKey: "check-after-installation-change"})
+	if health.Code != http.StatusOK {
+		t.Fatalf("Check status=%d body=%s", health.Code, health.Body.String())
+	}
+	checked, err := store.GetConnection(context.Background(), "conn-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checked.HasCurrentValidation() || len(checked.Installations) != 2 || checked.Installations[0].AccountID != "100" || checked.Installations[1].AccountID != "101" {
+		t.Fatalf("Check did not validate every saved installation: %#v", checked)
+	}
+	for _, request := range blocked[:2] {
+		response := performJSONRequest(t, handler, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s %s after Check status=%d body=%s", request.method, request.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestSharedInstallationCandidatesAndChangeUseProviderAdapter(t *testing.T) {
+	adapter := &externalAPITestAdapter{installations: []external.Installation{
+		{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid", DisplayName: "enkiid", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"},
+		{InstallationID: "11", AccountID: "101", AccountLogin: "T-RexLabs", DisplayName: "T-RexLabs", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+		ConnectionID: "conn-shared-change", CredentialStrategy: "user_access_token", DisplayName: "Kingdom Shared App",
+		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+		Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		CredentialHandle: "github-user:conn-shared-change", ActorID: "local-operator", CreatedAt: "2026-08-19T10:00:00Z", AuditEventID: "audit-shared-change",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	candidates := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/connections/conn-shared-change/installation-candidates"})
+	if candidates.Code != http.StatusOK {
+		t.Fatalf("candidate status=%d body=%s", candidates.Code, candidates.Body.String())
+	}
+	change := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-shared-change/installations", idempotencyKey: "shared-add-second", body: map[string]any{"installation_ids": []string{"10", "11"}}})
+	if change.Code != http.StatusOK {
+		t.Fatalf("change status=%d body=%s", change.Code, change.Body.String())
+	}
+	stored, err := store.GetConnection(context.Background(), "conn-shared-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.InstallationIDs(); len(got) != 2 || got[0] != "10" || got[1] != "11" {
+		t.Fatalf("installations=%v, want both shared installations", got)
+	}
 }
 
 func TestAConnectionCannotCoverAnInstallationItsCredentialCannotSee(t *testing.T) {
-	handler, store, _ := twoAccountConnectionFixture(t, "conn-unseen")
+	handler, store, _, _ := twoAccountConnectionFixture(t, "conn-unseen")
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-unseen/installations", idempotencyKey: "add-unseen", body: map[string]any{"installation_ids": []string{"10", "999"}}})
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
@@ -806,7 +1262,7 @@ func TestAConnectionCannotCoverAnInstallationItsCredentialCannotSee(t *testing.T
 }
 
 func TestAnInstallationHeldByAnotherLiveConnectionIsRefused(t *testing.T) {
-	handler, store, _ := twoAccountConnectionFixture(t, "conn-first")
+	handler, store, _, before := twoAccountConnectionFixture(t, "conn-first")
 	at := "2026-08-19T10:00:00Z"
 	if _, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
 		ConnectionID: "conn-second", CredentialStrategy: "app_private_key", DisplayName: "Other",
@@ -819,5 +1275,15 @@ func TestAnInstallationHeldByAnotherLiveConnectionIsRefused(t *testing.T) {
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodPut, path: "/api/v1/connections/conn-first/installations", idempotencyKey: "steal", body: map[string]any{"installation_ids": []string{"10", "11"}}})
 	if res.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s, want a refusal to take another connection's installation", res.Code, res.Body.String())
+	}
+	stored, err := store.GetConnection(context.Background(), "conn-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Installations) != 1 || stored.RowVersion != before.RowVersion || stored.HealthClass != before.HealthClass || stored.ValidatedGeneration != before.ValidatedGeneration || stored.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("a refused change must leave connection state alone: before=%#v after=%#v", before, stored)
+	}
+	if stored.LastCheckedAt == nil || stored.LastSuccessAt == nil || *stored.LastCheckedAt != *before.LastCheckedAt || *stored.LastSuccessAt != *before.LastSuccessAt {
+		t.Fatalf("a refused change altered health timestamps: before=%#v after=%#v", before, stored)
 	}
 }

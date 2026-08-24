@@ -46,8 +46,10 @@ type ConnectionForm = Pick<Connection, "display_name" | "app_id" | "client_id"> 
   installation_id: string;
 };
 type SetupOptions = components["schemas"]["GitHubSetupOptions"];
-type DeviceFlow = components["schemas"]["GitHubDeviceFlowStatus"];
+type GeneratedDeviceFlow = components["schemas"]["GitHubDeviceFlowStatus"];
+type DeviceFlow = GeneratedDeviceFlow;
 type RequestError = { message: string; retryAt?: string };
+const noConnections: Connection[] = [];
 
 function isAmbiguousSetupFailure(cause: unknown): boolean {
   return shouldRetainMutationRequest(cause);
@@ -73,6 +75,14 @@ const manifestWaitingStages = new Set<FlowStatus["stage"]>([
   "awaiting_authorization",
 ]);
 const manifestPollIntervalMs = 2000;
+const sharedStatusPollIntervalMs = 250;
+const sharedConflictDiscoveryAttempts = 5;
+const sharedConflictDiscoveryIntervalMs = 250;
+const sharedTransientStages = new Set<DeviceFlow["stage"]>([
+  "starting_authorization",
+  "discovering_installations",
+  "finalizing",
+]);
 
 const flowCopy: Record<FlowStatus["stage"], string> = {
   awaiting_app_creation: "Finish creating the private App on GitHub.",
@@ -103,7 +113,13 @@ const manifestFailureCopy: Record<ManifestFailureStage, string> = {
   failed: "This private App setup flow cannot continue.",
 };
 
-function InstallationList({ connection }: { connection: Connection }) {
+function InstallationList({
+  connection,
+  managementLinksDisabled = false,
+}: {
+  connection: Connection;
+  managementLinksDisabled?: boolean;
+}) {
   if (connection.installations.length === 0) {
     return (
       <p className="mt-2 text-sm text-foreground-muted">No installations yet.</p>
@@ -121,7 +137,15 @@ function InstallationList({ connection }: { connection: Connection }) {
             <span className="font-medium">
               @{installation.account_login ?? "Account pending validation"}
             </span>
-            {href && (
+            {href && (managementLinksDisabled ? (
+              <span
+                aria-disabled="true"
+                className="inline-flex items-center gap-1 text-xs text-foreground-muted"
+              >
+                Manage Repositories on GitHub
+                <ExternalLink className="h-3 w-3" />
+              </span>
+            ) : (
               <a
                 className="inline-flex items-center gap-1 text-xs text-gold underline-offset-2 hover:underline"
                 href={href}
@@ -131,7 +155,7 @@ function InstallationList({ connection }: { connection: Connection }) {
                 Manage Repositories on GitHub
                 <ExternalLink className="h-3 w-3" />
               </a>
-            )}
+            ))}
           </li>
         );
       })}
@@ -299,7 +323,7 @@ export function ConnectionsPage() {
   // rather than keeping a copy that can fall behind them.
   const queryClient = useQueryClient();
   const connections = useConnections();
-  const items = connections.data?.items ?? [];
+  const items = connections.data?.items ?? noConnections;
   const loading = connections.isPending;
   const [error, setError] = useState<RequestError>();
   const [manifestError, setManifestError] = useState<RequestError>();
@@ -314,6 +338,7 @@ export function ConnectionsPage() {
     shared_enabled: false,
   });
   const [sharedFlow, setSharedFlow] = useState<DeviceFlow>();
+  const [sharedStatusAttempt, setSharedStatusAttempt] = useState(0);
   const [sharedOpen, setSharedOpen] = useState(false);
   const [selectedInstallations, setSelectedInstallations] = useState<Set<string>>(new Set());
   // Which saved connection has its installation editor open, and what that
@@ -338,6 +363,11 @@ export function ConnectionsPage() {
   const [removalError, setRemovalError] = useState<RequestError>();
   const advancing = useRef("");
   const setupRequestKeys = useRef(new Map<string, string>());
+  const mounted = useRef(false);
+  const sharedFlowID = useRef<string | undefined>(undefined);
+  const sharedStartAttempt = useRef(0);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const createConnection = useRecoverableMutation(
     "connection",
     (form: ConnectionForm, key) => apiFetch<Connection>("/connections", {
@@ -406,11 +436,95 @@ export function ConnectionsPage() {
     [queryClient],
   );
 
+  const adoptSharedFlow = useCallback((next?: DeviceFlow, preserveFreshSelection = false) => {
+    const sameFlow = !!next && sharedFlowID.current === next.flow_id;
+    sharedFlowID.current = next?.flow_id;
+    setSharedFlow(next);
+
+    const reconnectID = next?.reconnect_connection_id ?? "";
+    setSharedReconnectID(reconnectID);
+    if (!next) {
+      setSelectedInstallations(new Set());
+      return;
+    }
+    if (reconnectID) {
+      const reconnect = itemsRef.current.find(
+        (connection) => connection.connection_id === reconnectID,
+      );
+      setSelectedInstallations(new Set(
+        reconnect?.installations.map((installation) => installation.installation_id) ?? [],
+      ));
+      return;
+    }
+    if (preserveFreshSelection && sameFlow) {
+      const candidateIDs = new Set(next.candidates.map((candidate) => candidate.installation_id));
+      setSelectedInstallations((existing) => new Set(
+        [...existing].filter((installationID) => candidateIDs.has(installationID)),
+      ));
+      return;
+    }
+    setSelectedInstallations(new Set());
+  }, []);
+
+  const canAcceptSharedFlow = useCallback(
+    (flowID: string) => mounted.current && sharedFlowID.current === flowID,
+    [],
+  );
+
+  const acceptSharedStatus = useCallback(async (
+    next: DeviceFlow,
+    expectedFlowID?: string,
+    preserveFreshSelection = true,
+  ) => {
+    if (expectedFlowID && !canAcceptSharedFlow(expectedFlowID)) return;
+    if (next.stage === "completed") {
+      await reloadConnections();
+      if (expectedFlowID && !canAcceptSharedFlow(expectedFlowID)) return;
+      adoptSharedFlow(undefined);
+      setSharedError(undefined);
+      setSharedOpen(false);
+      return;
+    }
+    adoptSharedFlow(next, preserveFreshSelection);
+    setSharedError(undefined);
+  }, [adoptSharedFlow, canAcceptSharedFlow, reloadConnections]);
+
+  const discoverCurrentSharedFlow = useCallback(async () => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < sharedConflictDiscoveryAttempts; attempt += 1) {
+      if (!mounted.current) return undefined;
+      try {
+        const current = await apiFetch<DeviceFlow | undefined>(
+          "/connections/github/device-flows",
+        );
+        if (current?.flow_id) return current;
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401) throw cause;
+        lastError = cause;
+      }
+      if (attempt + 1 < sharedConflictDiscoveryAttempts) {
+        await new Promise((resolve) => window.setTimeout(resolve, sharedConflictDiscoveryIntervalMs));
+      }
+    }
+    if (lastError) throw lastError;
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      sharedFlowID.current = undefined;
+      sharedStartAttempt.current += 1;
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     void (async () => {
+      let options: SetupOptions = { shared_enabled: false };
       try {
-        const options = await apiFetch<SetupOptions>(
+        options = await apiFetch<SetupOptions>(
           "/connections/github/setup-options",
         );
         if (active) setSetupOptions(options);
@@ -437,11 +551,36 @@ export function ConnectionsPage() {
         if (active && cause instanceof ApiError && cause.status !== 404)
           setManifestError(requestError(cause));
       }
+      if (options.shared_enabled) {
+        try {
+          const currentSharedFlow = await apiFetch<DeviceFlow>(
+            "/connections/github/device-flows",
+          );
+          if (active && currentSharedFlow?.flow_id) {
+            adoptSharedFlow(currentSharedFlow);
+          }
+        } catch {
+          // Discovery is best-effort. A start still receives the canonical
+          // binding/intent conflict if an undiscovered flow is active.
+        }
+      }
     })();
     return () => {
       active = false;
     };
-  }, []);
+  }, [adoptSharedFlow]);
+
+  useEffect(() => {
+    if (!sharedFlow?.reconnect_connection_id) return;
+    const reconnect = items.find(
+      (connection) => connection.connection_id === sharedFlow.reconnect_connection_id,
+    );
+    if (!reconnect) return;
+    setSharedReconnectID(reconnect.connection_id);
+    setSelectedInstallations(
+      new Set(reconnect.installations.map((installation) => installation.installation_id)),
+    );
+  }, [items, sharedFlow?.flow_id, sharedFlow?.reconnect_connection_id]);
 
   useEffect(() => {
     const advanceID = flow ? `${flow.flow_id}:${flow.stage}:${manifestRetryAttempt}` : "";
@@ -581,7 +720,7 @@ export function ConnectionsPage() {
 
   useEffect(() => {
     if (!sharedOpen || sharedFlow?.stage !== "awaiting_authorization") return;
-    let active = true;
+    const polledFlowID = sharedFlow.flow_id;
     const retryAt = sharedFlow.retry_at
       ? Date.parse(sharedFlow.retry_at)
       : Date.now() + sharedFlow.interval_seconds * 1000;
@@ -603,12 +742,11 @@ export function ConnectionsPage() {
               },
             );
             settleSetupRequest(requestID);
-            if (!active) return;
-            setSharedError(undefined);
-            setSharedFlow(next);
+            if (!canAcceptSharedFlow(polledFlowID)) return;
+            await acceptSharedStatus(next, polledFlowID);
           } catch (cause) {
             settleSetupRequest(requestID, cause);
-            if (!active) return;
+            if (!canAcceptSharedFlow(polledFlowID)) return;
             if (cause instanceof ApiError && cause.status === 429) {
               const nextRetryAt =
                 cause.retryAt ??
@@ -652,17 +790,47 @@ export function ConnectionsPage() {
       Math.min(2_147_000_000, Math.max(0, retryAt - Date.now())),
     );
     return () => {
-      active = false;
       window.clearTimeout(timer);
     };
-  }, [sharedFlow, sharedOpen]);
+  }, [acceptSharedStatus, canAcceptSharedFlow, sharedFlow, sharedOpen]);
+
+  useEffect(() => {
+    if (!sharedFlow || !sharedTransientStages.has(sharedFlow.stage)) return;
+    const watchedFlowID = sharedFlow.flow_id;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const next = await apiFetch<DeviceFlow>(
+            `/connections/github/device-flows/${watchedFlowID}`,
+          );
+          if (!canAcceptSharedFlow(watchedFlowID)) return;
+          await acceptSharedStatus(next, watchedFlowID);
+        } catch {
+          if (canAcceptSharedFlow(watchedFlowID)) {
+            setSharedStatusAttempt((attempt) => attempt + 1);
+          }
+        }
+      })();
+    }, sharedStatusPollIntervalMs);
+    return () => window.clearTimeout(timer);
+  }, [acceptSharedStatus, canAcceptSharedFlow, sharedFlow, sharedStatusAttempt]);
 
   const startShared = async (connectionID?: string) => {
+    if (sharedFlowLive) {
+      setSharedOpen(true);
+      return;
+    }
+    const startAttempt = ++sharedStartAttempt.current;
     const requestID = `device-start:${connectionID || "new"}`;
     setOperation("shared-start");
     setSharedError(undefined);
-    setSharedFlow(undefined);
-    setSelectedInstallations(new Set());
+    adoptSharedFlow(undefined);
+    const reconnect = items.find(
+      (connection) => connection.connection_id === connectionID,
+    );
+    setSelectedInstallations(
+      new Set(reconnect?.installations.map((installation) => installation.installation_id) ?? []),
+    );
     setSharedReconnectID(connectionID || "");
     setSharedOpen(true);
     try {
@@ -679,41 +847,76 @@ export function ConnectionsPage() {
         },
       );
       settleSetupRequest(requestID);
-      setSharedFlow(next);
+      if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+      await acceptSharedStatus(next, undefined, false);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
+      if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+      if (cause instanceof ApiError && cause.status === 409) {
+        try {
+          const current = await discoverCurrentSharedFlow();
+          if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+          if (current?.flow_id) {
+            await acceptSharedStatus(current, undefined, false);
+            setSharedOpen(false);
+            return;
+          }
+        } catch {
+          // Keep the start conflict when canonical rediscovery is unavailable.
+        }
+      }
       setSharedError(requestError(cause));
     } finally {
-      setOperation("");
+      if (mounted.current && sharedStartAttempt.current === startAttempt) {
+        setOperation("");
+      }
     }
   };
 
   const refreshCandidates = async () => {
-    if (!sharedFlow) return;
-    const requestID = `device-candidates:${sharedFlow.flow_id}`;
+    if (!sharedFlow || operation === "shared-finalize") return;
+    const refreshedFlowID = sharedFlow.flow_id;
+    const requestID = `device-candidates:${refreshedFlowID}`;
     setOperation("shared-refresh");
     setSharedError(undefined);
     try {
-      setSharedFlow(
-        await apiFetch<DeviceFlow>(
-          `/connections/github/device-flows/${sharedFlow.flow_id}/candidates`,
-          {
-            method: "POST",
-            headers: {
-              "Idempotency-Key": setupRequestKey(
-                requestID,
-                "device-candidates",
-              ),
-            },
+      const next = await apiFetch<DeviceFlow>(
+        `/connections/github/device-flows/${refreshedFlowID}/candidates`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": setupRequestKey(
+              requestID,
+              "device-candidates",
+            ),
           },
-        ),
+        },
       );
       settleSetupRequest(requestID);
+      if (!canAcceptSharedFlow(refreshedFlowID)) return;
+      await acceptSharedStatus(next, refreshedFlowID);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
-      setSharedError(requestError(cause));
+      if (!canAcceptSharedFlow(refreshedFlowID)) return;
+      try {
+        const canonical = await apiFetch<DeviceFlow>(
+          `/connections/github/device-flows/${refreshedFlowID}`,
+        );
+        if (!canAcceptSharedFlow(refreshedFlowID)) return;
+        await acceptSharedStatus(canonical, refreshedFlowID);
+        if (["selecting_installation", "needs_installation"].includes(canonical.stage)
+          && canAcceptSharedFlow(refreshedFlowID)) {
+          setSharedError(requestError(cause));
+        }
+      } catch {
+        if (!canAcceptSharedFlow(refreshedFlowID)) return;
+        if (!isAmbiguousSetupFailure(cause) && cause instanceof ApiError) {
+          adoptSharedFlow(undefined);
+        }
+        setSharedError(requestError(cause));
+      }
     } finally {
-      setOperation("");
+      if (mounted.current) setOperation("");
     }
   };
 
@@ -771,12 +974,15 @@ export function ConnectionsPage() {
   };
 
   const finalizeShared = async () => {
-    if (!sharedFlow) return;
+    if (!sharedFlow || operation) return;
     const chosen = sharedFlow.candidates.filter((item) =>
       selectedInstallations.has(item.installation_id),
     );
-    if (chosen.length === 0) return;
-    const installationIDs = chosen.map((item) => item.installation_id).sort();
+    if (sharedReconnectID && (!reconnectConnection || missingReconnectInstallations.length !== 0)) return;
+    if (!sharedReconnectID && chosen.length === 0) return;
+    const installationIDs = sharedReconnectID
+      ? reconnectConnection!.installations.map((item) => item.installation_id).sort()
+      : chosen.map((item) => item.installation_id).sort();
     // The key follows the whole selection: changing what is ticked after an
     // ambiguous failure must mint a new key rather than replay the old body.
     const requestID = `device-finalize:${sharedFlow.flow_id}:${installationIDs.join("+")}`;
@@ -792,8 +998,9 @@ export function ConnectionsPage() {
           },
           body: JSON.stringify({
             installation_ids: installationIDs,
-            display_name:
-              chosen.length === 1
+            display_name: sharedReconnectID
+              ? reconnectConnection!.display_name
+              : chosen.length === 1
                 ? chosen[0].display_name
                 : `${chosen[0].display_name} +${chosen.length - 1}`,
           }),
@@ -802,19 +1009,77 @@ export function ConnectionsPage() {
       settleSetupRequest(requestID);
       await reloadConnections();
       setSharedOpen(false);
-      setSharedFlow(undefined);
-      setSharedReconnectID("");
+      adoptSharedFlow(undefined);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
-      setSharedError(requestError(cause));
+      if (!canAcceptSharedFlow(sharedFlow.flow_id)) return;
+      try {
+        const canonical = await apiFetch<DeviceFlow>(
+          `/connections/github/device-flows/${sharedFlow.flow_id}`,
+        );
+        if (!canAcceptSharedFlow(sharedFlow.flow_id)) return;
+        await acceptSharedStatus(canonical, sharedFlow.flow_id);
+        if (canonical.stage === "selecting_installation"
+          && canAcceptSharedFlow(sharedFlow.flow_id)) {
+          setSharedError(requestError(cause));
+        }
+      } catch {
+        if (canAcceptSharedFlow(sharedFlow.flow_id)) {
+          setSharedError(requestError(cause));
+        }
+      }
     } finally {
-      setOperation("");
+      if (mounted.current) setOperation("");
     }
+  };
+
+  const discardShared = async () => {
+    if (!sharedFlow || operation === "shared-finalize") return;
+    const requestID = `device-discard:${sharedFlow.flow_id}`;
+    setOperation("shared-discard");
+    setSharedError(undefined);
+    try {
+      await apiFetch(`/connections/github/device-flows/${sharedFlow.flow_id}`, {
+        method: "DELETE",
+        headers: {
+          "Idempotency-Key": setupRequestKey(requestID, "device-discard"),
+        },
+      });
+      settleSetupRequest(requestID);
+    } catch (cause) {
+      settleSetupRequest(requestID, cause);
+      if (!(cause instanceof ApiError && cause.status === 404)) {
+        setSharedError(requestError(cause));
+        setOperation("");
+        return;
+      }
+    }
+    adoptSharedFlow(undefined);
+    setSharedOpen(false);
+    setOperation("");
   };
 
   // One source of truth for "a private-App setup is live and unfinished" so the
   // inline and modal surfaces cannot disagree about what is startable.
   const manifestFlowLive = !!flow && flow.stage !== "completed" && flow.stage !== "failed";
+  const sharedFlowLive = !!sharedFlow && !["completed", "access_denied", "expired", "failed"].includes(sharedFlow.stage);
+  const reconnectConnection = sharedReconnectID
+    ? items.find((connection) => connection.connection_id === sharedReconnectID)
+    : undefined;
+  const reconnectCandidateIDs = new Set(
+    sharedFlow?.candidates
+      .filter((candidate) => reconnectConnection?.installations.some(
+        (installation) => installation.installation_id === candidate.installation_id
+          && installation.account_id === candidate.account_id,
+      ))
+      .map((candidate) => candidate.installation_id) ?? [],
+  );
+  const reconnectCandidates = sharedFlow?.candidates.filter((candidate) =>
+    reconnectCandidateIDs.has(candidate.installation_id),
+  ) ?? [];
+  const missingReconnectInstallations = reconnectConnection?.installations.filter(
+    (installation) => !reconnectCandidateIDs.has(installation.installation_id),
+  ) ?? [];
   const startManifestDisabled =
     !!operation ||
     !!manifestError ||
@@ -1023,6 +1288,32 @@ export function ConnectionsPage() {
                     ? "Connect through Kingdom's public GitHub App, create a private App you own, or register one you already have. Whichever route you take, Kingdom requests only repository metadata read and Issues read, with no events and no webhook."
                     : "GitHub creates an App owned by your personal account or organization, or you register one you already have. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
                 </p>
+                {sharedFlowLive && !sharedOpen ? (
+                  <div className="mt-4 rounded-lg border border-gold/30 bg-gold/5 p-4">
+                    <p className="text-sm font-medium">
+                      {sharedReconnectID ? "GitHub Reconnect in Progress" : "GitHub Setup in Progress"}
+                    </p>
+                    <p className="mt-1 text-xs text-foreground-muted">
+                      This setup is preserved for this browser session until it is completed, discarded, or expires.
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button type="button" size="sm" onClick={() => setSharedOpen(true)}>
+                        Resume Setup
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={!!operation}
+                        onClick={() => void discardShared()}
+                      >
+                        {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                        Discard Setup
+                      </Button>
+                    </div>
+                    <ErrorNotice error={sharedError} />
+                  </div>
+                ) : null}
                 {flow || manifestError ? (
                   <div className="mt-4 space-y-3">
                     <ManifestSetupStatus
@@ -1069,7 +1360,7 @@ export function ConnectionsPage() {
                 <div className="space-y-3">
                   <Button
                     className="w-full"
-                    disabled={!!operation}
+                    disabled={!!operation || sharedFlowLive}
                     onClick={() => void startShared()}
                   >
                     {operation === "shared-start" ? (
@@ -1276,7 +1567,10 @@ export function ConnectionsPage() {
                                   </button>
                                 )}
                               </div>
-                              <InstallationList connection={connection} />
+                              <InstallationList
+                                connection={connection}
+                                managementLinksDisabled={operation === "shared-finalize"}
+                              />
                               {installationsEditingID === connection.connection_id && (
                                 <div className="mt-3 rounded-xl border border-border bg-background/40 p-4">
                                   <p className="text-xs text-foreground-muted">
@@ -1354,12 +1648,12 @@ export function ConnectionsPage() {
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  disabled={!!operation || ordinaryRecoveryPending}
+                                  disabled={!!operation || ordinaryRecoveryPending || sharedFlowLive}
                                   onClick={() =>
                                     void startShared(connection.connection_id)
                                   }
                                 >
-                                  Reconnect
+                                  Reconnect Connection
                                 </Button>
                               )}
                               <Button
@@ -1480,10 +1774,20 @@ export function ConnectionsPage() {
             open
             onClose={() => setSharedOpen(false)}
             size="lg"
-            title="Connect GitHub"
-            description="Authorize on GitHub, then choose the installation Kingdom may use."
+            title={sharedReconnectID ? "Reconnect GitHub" : "Connect GitHub"}
+            description={sharedReconnectID ? "Reauthorize every installation already saved on this connection." : "Authorize on GitHub, then choose the installations Kingdom may use."}
             footer={
               <ModalFooter>
+                {sharedFlowLive ? (
+                  <Button
+                    variant="outline"
+                    disabled={!!operation}
+                    onClick={() => void discardShared()}
+                  >
+                    {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    Discard Setup
+                  </Button>
+                ) : null}
                 <Button variant="ghost" onClick={() => setSharedOpen(false)}>
                   Close
                 </Button>
@@ -1492,11 +1796,15 @@ export function ConnectionsPage() {
           >
               <div className="space-y-5">
                 <ErrorNotice error={sharedError} />
-                {!sharedFlow || operation === "shared-start" ? (
+                {operation === "shared-start" ? (
                   <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-foreground-muted">
                     <Loader2 className="h-4 w-4 animate-spin text-gold" />
-                    Preparing GitHub…
+                    Preparing GitHub...
                   </div>
+                ) : !sharedFlow ? (
+                  <p className="py-10 text-center text-sm text-foreground-muted">
+                    No active GitHub setup is available.
+                  </p>
                 ) : sharedFlow.stage === "awaiting_authorization" ? (
                   <div className="space-y-5">
                     <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 text-center">
@@ -1542,8 +1850,9 @@ export function ConnectionsPage() {
                         Choose Repositories on GitHub
                       </h3>
                       <p className="mt-2 text-sm text-foreground-muted">
-                        Install the App for an account and select the
-                        repositories Kingdom should be able to discover.
+                        {sharedReconnectID
+                          ? "Install or restore the App on every account this connection already covers, then refresh the list. Use Change on the saved connection if the covered accounts should change."
+                          : "Install the App for an account and select the repositories Kingdom should be able to discover."}
                       </p>
                     </div>
                     <a
@@ -1558,7 +1867,7 @@ export function ConnectionsPage() {
                     <Button
                       variant="outline"
                       className="w-full"
-                      disabled={operation === "shared-refresh"}
+                      disabled={!!operation}
                       onClick={() => void refreshCandidates()}
                     >
                       {operation === "shared-refresh" && (
@@ -1571,22 +1880,22 @@ export function ConnectionsPage() {
                   <div className="space-y-4">
                     <div>
                       <h3 className="font-display text-lg font-semibold">
-                        {sharedReconnectID ? "Confirm the Installation" : "Choose Installations"}
+                        {sharedReconnectID ? "Saved Installations" : "Choose Installations"}
                       </h3>
                       <p className="mt-1 text-sm text-foreground-muted">
                         {sharedReconnectID
-                          ? "Reauthorizing keeps this connection covering the same accounts."
+                          ? "Reconnect reauthorizes the complete saved set. To add or remove accounts, close this setup and use Change on the connection."
                           : "One connection is created covering every account you tick, and it reads every repository those installations grant."}
                       </p>
                     </div>
                     <InstallationPicker
                       name="installation"
-                      candidates={sharedFlow.candidates}
+                      candidates={sharedReconnectID ? reconnectCandidates : sharedFlow.candidates}
                       selected={selectedInstallations}
-                      single={!!sharedReconnectID}
+                      disabled={!!sharedReconnectID || operation === "shared-finalize"}
+                      managementLinksDisabled={operation === "shared-finalize"}
                       onToggle={(installationID: string) =>
                         setSelectedInstallations((existing) => {
-                          if (sharedReconnectID) return new Set([installationID]);
                           const next = new Set(existing);
                           if (next.has(installationID)) next.delete(installationID);
                           else next.add(installationID);
@@ -1595,12 +1904,22 @@ export function ConnectionsPage() {
                       }
                     />
                     <p className="text-xs text-foreground-muted" aria-live="polite">
-                      {selectedInstallations.size} selected
+                      {sharedReconnectID
+                        ? `${selectedInstallations.size} saved`
+                        : `${selectedInstallations.size} selected`}
                     </p>
+                    {sharedReconnectID && missingReconnectInstallations.length > 0 ? (
+                      <div role="alert" className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-200">
+                        <p className="font-medium">Some Saved Installations Are Missing</p>
+                        <p className="mt-1 text-xs leading-5">
+                          Restore App installation and user access for {missingReconnectInstallations.map((installation) => `@${installation.account_login ?? installation.installation_id}`).join(", ")}, then refresh. Use Change only if these accounts should no longer belong to the connection.
+                        </p>
+                      </div>
+                    ) : null}
                     <Button
                       className="w-full"
                       disabled={
-                        selectedInstallations.size === 0 || operation === "shared-finalize"
+                        selectedInstallations.size === 0 || missingReconnectInstallations.length > 0 || !!operation
                       }
                       onClick={() => void finalizeShared()}
                     >
@@ -1608,32 +1927,45 @@ export function ConnectionsPage() {
                         <Loader2 className="h-4 w-4 animate-spin" />
                       )}
                       {sharedReconnectID
-                        ? "Reconnect Selected Installation"
+                        ? "Reconnect Connection"
                         : "Connect Selected Installations"}
                     </Button>
                     <div className="rounded-xl border border-border bg-background/40 p-4">
                       <p className="text-sm text-foreground-muted">
-                        Missing an account, or need different repositories?
-                        Install the App on another account or change which
-                        repositories it can see, then refresh this list.
+                        {sharedReconnectID
+                          ? "Missing a saved account? Restore the App installation and your access on GitHub, then refresh. The saved set cannot be edited during reconnect."
+                          : "Missing an account, or need different repositories? Install the App on another account or change which repositories it can see, then refresh this list."}
                       </p>
                       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                        <a
-                          className={buttonVariants({
-                            variant: "outline",
-                            className: "flex-1",
-                          })}
-                          href={sharedFlow.install_url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Install on Another Account
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
+                        {operation === "shared-finalize" ? (
+                          <span
+                            aria-disabled="true"
+                            className={buttonVariants({
+                              variant: "outline",
+                              className: "flex-1 opacity-50",
+                            })}
+                          >
+                            Install on Another Account
+                            <ExternalLink className="h-4 w-4" />
+                          </span>
+                        ) : (
+                          <a
+                            className={buttonVariants({
+                              variant: "outline",
+                              className: "flex-1",
+                            })}
+                            href={sharedFlow.install_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Install on Another Account
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        )}
                         <Button
                           variant="outline"
                           className="flex-1"
-                          disabled={operation === "shared-refresh"}
+                          disabled={!!operation}
                           onClick={() => void refreshCandidates()}
                         >
                           {operation === "shared-refresh" && (

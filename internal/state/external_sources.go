@@ -60,8 +60,14 @@ type ExternalConnection struct {
 	CreatedAt, UpdatedAt                                    string
 }
 
+type CredentialPublication struct {
+	CredentialStrategy   string
+	Lifecycle            string
+	CredentialGeneration int
+}
+
 func (c ExternalConnection) HasCurrentValidation() bool {
-	if c.Lifecycle != "enabled" || c.HealthClass != "healthy" || c.ValidatedGeneration != c.CredentialGeneration || len(c.Installations) == 0 {
+	if c.Lifecycle != "enabled" || c.HealthClass != "healthy" || c.CredentialGeneration <= 0 || c.ValidatedGeneration != c.CredentialGeneration || len(c.Installations) == 0 {
 		return false
 	}
 	for _, installation := range c.Installations {
@@ -255,15 +261,17 @@ func (s *ExternalStore) AttachPlanningExternalSource(ctx context.Context, req At
 	// unique and immutable. Re-adding it therefore reuses that link rather than
 	// creating a second one.
 	var existingLinkID string
+	var existingHeadVersion int
 	err = tx.QueryRowContext(ctx, `
-		SELECT link.link_id
+		SELECT link.link_id,head.row_version
 		FROM external_source_links link
+		JOIN external_source_link_heads head ON head.link_id=link.link_id
 		JOIN external_sources source ON source.source_id=link.source_id
 		WHERE link.target_kind='planning_session'
 		  AND link.target_id=?
 		  AND source.connection_id=?
 		  AND source.source_kind='issue'
-		  AND source.provider_native_id=?`, req.PlanningSessionID, req.Capture.ConnectionID, req.Capture.ProviderNativeID).Scan(&existingLinkID)
+		  AND source.provider_native_id=?`, req.PlanningSessionID, req.Capture.ConnectionID, req.Capture.ProviderNativeID).Scan(&existingLinkID, &existingHeadVersion)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ExternalLinkSummary{}, err
 	}
@@ -286,6 +294,17 @@ func (s *ExternalStore) AttachPlanningExternalSource(ctx context.Context, req At
 	linkID := req.LinkID
 	if reattaching {
 		linkID = existingLinkID
+		result, err := tx.ExecContext(ctx, `UPDATE external_source_link_heads SET latest_snapshot_id=?,status='never_checked',checked_at=NULL,row_version=row_version+1 WHERE link_id=? AND row_version=?`, snapshot.SnapshotID, linkID, existingHeadVersion)
+		if err != nil {
+			return ExternalLinkSummary{}, err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return ExternalLinkSummary{}, err
+		}
+		if updated != 1 {
+			return ExternalLinkSummary{}, ErrExternalConflict
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO external_source_link_attachment_changes (change_id,link_id,attached,actor_id,changed_at) VALUES (?,?,1,?,?)`, req.LinkID, linkID, req.ActorID, req.AttachedAt); err != nil {
 			return ExternalLinkSummary{}, err
 		}
@@ -406,9 +425,14 @@ func (s *ExternalStore) LinkHistoryPage(ctx context.Context, linkID string, offs
 	return items, hasMore, nil
 }
 
-type ExternalStore struct{ db *sql.DB }
+type ExternalStore struct {
+	db       *sql.DB
+	commitTx func(*sql.Tx) error
+}
 
-func NewExternalStore(db *sql.DB) *ExternalStore { return &ExternalStore{db: db} }
+func NewExternalStore(db *sql.DB) *ExternalStore {
+	return &ExternalStore{db: db, commitTx: func(tx *sql.Tx) error { return tx.Commit() }}
+}
 
 func normalizedInstallations(in []ConnectionInstallation) ([]ConnectionInstallation, error) {
 	if len(in) == 0 {
@@ -631,6 +655,17 @@ func (s *ExternalStore) listConnections(ctx context.Context, predicate string) (
 	return out, nil
 }
 
+// GetCredentialPublication returns the fields that select a connection's
+// credential file in one SQLite row read.
+func (s *ExternalStore) GetCredentialPublication(ctx context.Context, id string) (CredentialPublication, error) {
+	var publication CredentialPublication
+	err := s.db.QueryRowContext(ctx, `SELECT credential_strategy,lifecycle,credential_generation FROM external_connections WHERE connection_id=?`, strings.TrimSpace(id)).Scan(&publication.CredentialStrategy, &publication.Lifecycle, &publication.CredentialGeneration)
+	if errors.Is(err, sql.ErrNoRows) {
+		return publication, ErrExternalNotFound
+	}
+	return publication, err
+}
+
 func (s *ExternalStore) GetConnection(ctx context.Context, id string) (ExternalConnection, error) {
 	var r ExternalConnection
 	var checked, success sql.NullString
@@ -794,8 +829,29 @@ func (s *ExternalStore) updateConnectionStateVersion(ctx context.Context, id, li
 	if err != nil {
 		return err
 	}
+	if successful {
+		stored, err := loadConnectionInstallations(ctx, tx, []string{id})
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		covered := stored[id]
+		if len(covered) != len(installations) {
+			_ = tx.Rollback()
+			return ErrExternalConflict
+		}
+		for i := range covered {
+			if covered[i].InstallationID != installations[i].InstallationID || (covered[i].AccountID != "" && covered[i].AccountID != installations[i].AccountID) {
+				_ = tx.Rollback()
+				return ErrExternalConflict
+			}
+		}
+	}
 	query := `UPDATE external_connections SET lifecycle=?,health_class=?,failure_class=?,last_checked_at=?,last_success_at=COALESCE(?,last_success_at),app_slug=CASE WHEN ? THEN ? ELSE app_slug END,validated_generation=CASE WHEN ? THEN credential_generation ELSE 0 END,row_version=row_version+1,updated_at=? WHERE connection_id=? AND lifecycle<>'removed'`
 	args := []any{lifecycle, health, failure, nullable(strings.TrimSpace(checkedAt)), lastSuccess, successful, appSlug, successful, checkedAt, id}
+	if successful {
+		query += ` AND credential_generation>0`
+	}
 	if expectedVersion > 0 {
 		query += ` AND row_version=?`
 		args = append(args, expectedVersion)
@@ -841,12 +897,15 @@ func (s *ExternalStore) updateConnectionStateVersion(ctx context.Context, id, li
 	return tx.Commit()
 }
 
-func (s *ExternalStore) RecordCredentialEvent(ctx context.Context, connectionID string, expectedVersion int, actorID, auditEventID, eventType, at string) error {
+func (s *ExternalStore) RecordCredentialEvent(ctx context.Context, connectionID string, expectedVersion, targetGeneration int, actorID, auditEventID, eventType, at string) error {
+	if targetGeneration <= 0 {
+		return fmt.Errorf("credential generation must be positive")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET health_class=CASE WHEN lifecycle='enabled' THEN 'never_checked' ELSE 'disabled' END,failure_class='',last_checked_at=NULL,last_success_at=NULL,credential_generation=credential_generation+1,validated_generation=0,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND lifecycle IN ('enabled','disabled')`, at, strings.TrimSpace(connectionID), expectedVersion)
+	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET health_class=CASE WHEN lifecycle='enabled' THEN 'never_checked' ELSE 'disabled' END,failure_class='',last_checked_at=NULL,last_success_at=NULL,credential_generation=?,validated_generation=0,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND credential_generation=? AND lifecycle IN ('enabled','disabled')`, targetGeneration, at, strings.TrimSpace(connectionID), expectedVersion, targetGeneration-1)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -855,7 +914,7 @@ func (s *ExternalStore) RecordCredentialEvent(ctx context.Context, connectionID 
 		_ = tx.Rollback()
 		return ErrExternalConflict
 	}
-	if err = appendExternalAudit(ctx, tx, auditEventID, connectionID, "", eventType, actorID, map[string]any{"credential_state": "present"}, at); err != nil {
+	if err = appendExternalAudit(ctx, tx, auditEventID, connectionID, "", eventType, actorID, map[string]any{"credential_state": "present", "credential_generation": targetGeneration}, at); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -888,23 +947,27 @@ func (s *ExternalStore) SetConnectionInstallations(ctx context.Context, connecti
 		return ExternalConnection{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND lifecycle IN ('enabled','disabled')`, req.UpdatedAt, connectionID, req.ExpectedRowVersion)
+	var current ExternalConnection
+	var checked, success sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT `+connectionColumnList("")+` FROM external_connections WHERE connection_id=?`, connectionID).Scan(connectionScanTargets(&current, &checked, &success)...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ExternalConnection{}, ErrExternalConflict
+	}
 	if err != nil {
 		return ExternalConnection{}, err
 	}
-	if n, _ := result.RowsAffected(); n != 1 {
+	if current.RowVersion != req.ExpectedRowVersion || (current.Lifecycle != "enabled" && current.Lifecycle != "disabled") {
 		return ExternalConnection{}, ErrExternalConflict
 	}
+	current.LastCheckedAt, current.LastSuccessAt = nullableStringFromSQL(checked), nullableStringFromSQL(success)
 	existing, err := loadConnectionInstallations(ctx, tx, []string{connectionID})
 	if err != nil {
 		return ExternalConnection{}, err
 	}
+	current.Installations = existing[connectionID]
 	pinned := map[string]ConnectionInstallation{}
-	for _, installation := range existing[connectionID] {
+	for _, installation := range current.Installations {
 		pinned[installation.InstallationID] = installation
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM external_connection_installations WHERE connection_id=?`, connectionID); err != nil {
-		return ExternalConnection{}, err
 	}
 	for i, installation := range installations {
 		if previous, ok := pinned[installation.InstallationID]; ok && previous.AccountID != "" {
@@ -916,6 +979,25 @@ func (s *ExternalStore) SetConnectionInstallations(ctx context.Context, connecti
 				installations[i].AccountLogin = previous.AccountLogin
 			}
 		}
+	}
+	unchanged := len(installations) == len(current.Installations)
+	for i := range installations {
+		if unchanged && installations[i] != current.Installations[i] {
+			unchanged = false
+		}
+	}
+	if unchanged {
+		return current, nil
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET health_class=CASE WHEN lifecycle='enabled' THEN 'never_checked' ELSE 'disabled' END,failure_class='',last_checked_at=NULL,last_success_at=NULL,validated_generation=0,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND lifecycle IN ('enabled','disabled')`, req.UpdatedAt, connectionID, req.ExpectedRowVersion)
+	if err != nil {
+		return ExternalConnection{}, err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ExternalConnection{}, ErrExternalConflict
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM external_connection_installations WHERE connection_id=?`, connectionID); err != nil {
+		return ExternalConnection{}, err
 	}
 	if err := insertConnectionInstallations(ctx, tx, connectionID, installations, req.UpdatedAt); err != nil {
 		return ExternalConnection{}, err
@@ -939,7 +1021,7 @@ func (s *ExternalStore) SetConnectionInstallations(ctx context.Context, connecti
 // not already cover.
 func (s *ExternalStore) ReauthorizeSharedConnection(ctx context.Context, expected ExternalConnection, appSlug string, proved []ConnectionInstallation, actorID, auditEventID, at string) (ExternalConnection, error) {
 	appSlug = strings.TrimSpace(appSlug)
-	if expected.CredentialStrategy != "user_access_token" || expected.ConnectionID == "" || expected.AppID == "" || expected.ClientID == "" || appSlug == "" {
+	if expected.CredentialStrategy != "user_access_token" || expected.ConnectionID == "" || expected.AppID == "" || expected.ClientID == "" || appSlug == "" || expected.CredentialGeneration <= 0 {
 		return ExternalConnection{}, fmt.Errorf("valid shared connection identity is required")
 	}
 	installations, err := normalizedInstallations(proved)
@@ -963,7 +1045,16 @@ func (s *ExternalStore) ReauthorizeSharedConnection(ctx context.Context, expecte
 		return ExternalConnection{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET app_slug=?,lifecycle='enabled',health_class='healthy',failure_class='',last_checked_at=?,last_success_at=?,credential_generation=credential_generation+1,validated_generation=credential_generation+1,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND credential_strategy='user_access_token' AND app_id=? AND client_id=? AND lifecycle IN ('enabled','disabled')`, appSlug, at, at, at, expected.ConnectionID, expected.RowVersion, expected.AppID, expected.ClientID)
+	targetGeneration := expected.CredentialGeneration + 1
+	updated := expected
+	updated.AppSlug = appSlug
+	updated.Lifecycle, updated.HealthClass, updated.FailureClass = "enabled", "healthy", ""
+	updated.LastCheckedAt, updated.LastSuccessAt = &at, &at
+	updated.CredentialGeneration, updated.ValidatedGeneration = targetGeneration, targetGeneration
+	updated.RowVersion++
+	updated.Installations = installations
+	updated.UpdatedAt = at
+	result, err := tx.ExecContext(ctx, `UPDATE external_connections SET app_slug=?,lifecycle='enabled',health_class='healthy',failure_class='',last_checked_at=?,last_success_at=?,credential_generation=?,validated_generation=?,row_version=row_version+1,updated_at=? WHERE connection_id=? AND row_version=? AND credential_generation=? AND credential_strategy='user_access_token' AND app_id=? AND client_id=? AND lifecycle IN ('enabled','disabled')`, appSlug, at, at, targetGeneration, targetGeneration, at, expected.ConnectionID, expected.RowVersion, expected.CredentialGeneration, expected.AppID, expected.ClientID)
 	if err != nil {
 		return ExternalConnection{}, err
 	}
@@ -978,10 +1069,13 @@ func (s *ExternalStore) ReauthorizeSharedConnection(ctx context.Context, expecte
 	if err := appendExternalAudit(ctx, tx, auditEventID, expected.ConnectionID, "", "connection.shared_reauthorized", actorID, map[string]any{"credential_strategy": "user_access_token", "app_slug": appSlug, "installations": installationAuditPayload(installations)}, at); err != nil {
 		return ExternalConnection{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return ExternalConnection{}, err
+	if err := s.commitTx(tx); err != nil {
+		// Commit failures can be outcome-ambiguous. Return the exact projection
+		// attempted by this transaction so the caller can reconcile it against
+		// the durable publication pointer without another read on the success path.
+		return updated, err
 	}
-	return s.GetConnection(ctx, expected.ConnectionID)
+	return updated, nil
 }
 
 func validConnectionLifecycle(v string) bool {
@@ -1025,7 +1119,7 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 		if err := tx.QueryRowContext(ctx, `SELECT row_version,lifecycle,health_class,credential_generation,validated_generation FROM external_connections WHERE connection_id=?`, req.ConnectionID).Scan(&version, &lifecycle, &health, &credentialGeneration, &validatedGeneration); err != nil {
 			return ExternalSourceSnapshot{}, false, err
 		}
-		if version != req.ConnectionRowVersion || lifecycle != "enabled" || health != "healthy" || validatedGeneration != credentialGeneration {
+		if version != req.ConnectionRowVersion || lifecycle != "enabled" || health != "healthy" || credentialGeneration <= 0 || validatedGeneration != credentialGeneration {
 			return ExternalSourceSnapshot{}, false, ErrExternalConflict
 		}
 	}

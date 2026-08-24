@@ -309,7 +309,7 @@ func enumerateTrackedProjectFiles(ctx context.Context, root string, visit func(p
 	seen := make(map[string]struct{})
 	stopped := false
 	for scanner.Scan() {
-		path := strings.TrimSpace(scanner.Text())
+		path := scanner.Text()
 		if path == "" {
 			continue
 		}

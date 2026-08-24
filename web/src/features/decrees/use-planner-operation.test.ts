@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { AcpRun, AcpRunEvent, PlanningSessionDetail } from "@/api/hooks";
 import { plannerKeys } from "./planner-query-keys";
-import { patchPlannerTerminalCaches } from "./use-planner-operation";
+import { patchPlannerTerminalCaches, reconcileTerminalOperationSnapshot } from "./use-planner-operation";
 
 function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningSessionDetail {
   return {
@@ -129,5 +129,20 @@ describe("patchPlannerTerminalCaches", () => {
 
     const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
     expect(detail?.current_title_run_id).toBeUndefined();
+  });
+});
+
+describe("reconcileTerminalOperationSnapshot", () => {
+  it("reconciles a completion first observed from the canonical run query", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.messages("ps_1"), { pages: [], pageParams: [] });
+
+    reconcileTerminalOperationSnapshot(qc, buildRun({ status: "completed" }));
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+    expect(qc.getQueryState(plannerKeys.messages("ps_1"))?.isInvalidated).toBe(true);
   });
 });

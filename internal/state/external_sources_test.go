@@ -349,6 +349,9 @@ func TestAttachPlanningExternalSourceIsAtomicAndSessionScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-attach-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +800,11 @@ func TestUpdateConnectionDisplayNamePreservesValidatedIdentity(t *testing.T) {
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
-	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-edit", CredentialStrategy: "app_private_key", DisplayName: "Old", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-edit", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-edit-create"}); err != nil {
+	connection, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-edit", CredentialStrategy: "app_private_key", DisplayName: "Old", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-edit", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-edit-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-edit-credential", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateConnectionState(ctx, "conn-edit", "enabled", "healthy", "", at, true, []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
@@ -848,6 +855,33 @@ func TestFinalizeConnectionCreatesHealthyValidatedGenerationAtomically(t *testin
 	}
 }
 
+func TestCurrentValidationRequiresPositivePublishedGeneration(t *testing.T) {
+	connection := ExternalConnection{
+		Lifecycle: "enabled", HealthClass: "healthy", CredentialGeneration: 0, ValidatedGeneration: 0,
+		Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}},
+	}
+	if connection.HasCurrentValidation() {
+		t.Fatal("generation-zero connection was treated as currently validated")
+	}
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-15T12:00:00Z"
+	created, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-zero", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-zero", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-zero-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = store.UpdateConnectionStateAuditedVersion(ctx, created.ConnectionID, "enabled", "healthy", "", at, true, []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, "local-operator", "audit-zero-health", "connection.health_checked", created.RowVersion)
+	if !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("healthy generation-zero state error=%v", err)
+	}
+	if err := store.RecordCredentialEvent(ctx, created.ConnectionID, created.RowVersion, 2, "local-operator", "audit-skipped-generation", "credential.provisioned", at); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("store accepted skipped credential generation: %v", err)
+	}
+}
+
 func TestSharedReauthorizationAdvancesGenerationWithoutChangingPinnedIdentity(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
@@ -870,6 +904,56 @@ func TestSharedReauthorizationAdvancesGenerationWithoutChangingPinnedIdentity(t 
 	}
 }
 
+func TestSharedReauthorizationReturnsCommittedProjectionWithoutContextRead(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx, cancel := context.WithCancel(context.Background())
+	at := "2026-08-24T12:00:00Z"
+	connection, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{ConnectionID: "conn-projection", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "old-login"}}, CredentialHandle: "github-user:conn-projection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-projection-create"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.commitTx = func(tx *sql.Tx) error {
+		err := tx.Commit()
+		cancel()
+		return err
+	}
+	updated, err := store.ReauthorizeSharedConnection(ctx, connection, "kingdom", []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "new-login"}}, "local-operator", "audit-projection-reauthorize", "2026-08-24T12:01:00Z")
+	if err != nil {
+		t.Fatalf("reauthorization performed a fallible post-commit read: %v", err)
+	}
+	if updated.CredentialGeneration != 2 || updated.ValidatedGeneration != 2 || updated.RowVersion != connection.RowVersion+1 || updated.LastCheckedAt == nil || *updated.LastCheckedAt != "2026-08-24T12:01:00Z" || onlyInstallation(t, updated).AccountLogin != "new-login" {
+		t.Fatalf("committed projection=%#v", updated)
+	}
+}
+
+func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	at := "2026-08-24T13:00:00Z"
+	connection, err := store.FinalizeConnection(context.Background(), FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{ConnectionID: "conn-ambiguous", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-user:conn-ambiguous", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-ambiguous-create"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return ambiguous
+	}
+	projected, err := store.ReauthorizeSharedConnection(context.Background(), connection, "kingdom", connection.Installations, "local-operator", "audit-ambiguous-reauthorize", "2026-08-24T13:01:00Z")
+	if !errors.Is(err, ambiguous) || projected.ConnectionID != connection.ConnectionID || projected.CredentialGeneration != 2 || projected.ValidatedGeneration != 2 {
+		t.Fatalf("ambiguous result projection=%#v err=%v", projected, err)
+	}
+	published, err := store.GetCredentialPublication(context.Background(), connection.ConnectionID)
+	if err != nil || published.CredentialStrategy != "user_access_token" || published.CredentialGeneration != 2 {
+		t.Fatalf("published generation=%#v err=%v", published, err)
+	}
+}
+
 func TestCredentialGenerationFencesStaleCaptureAndHealth(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
@@ -880,7 +964,7 @@ func TestCredentialGenerationFencesStaleCaptureAndHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordCredentialEvent(ctx, conn.ConnectionID, conn.RowVersion, "local-operator", "audit-fence-key", "credential.provisioned", at); err != nil {
+	if err := store.RecordCredentialEvent(ctx, conn.ConnectionID, conn.RowVersion, 1, "local-operator", "audit-fence-key", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	err = store.UpdateConnectionStateAuditedVersion(ctx, conn.ConnectionID, "enabled", "healthy", "", at, true, []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, "local-operator", "audit-stale-health", "connection.health_checked", conn.RowVersion)
@@ -900,6 +984,13 @@ func TestConnectionHealthPinsInstallationAccountIdentity(t *testing.T) {
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
 	connection, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-identity", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-identity", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-identity-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-identity-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	connection, err = store.GetConnection(ctx, connection.ConnectionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1062,7 +1153,7 @@ func TestCredentialMutationRejectsPendingAndRemovedConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, "local-operator", "audit-credential-present", "credential.provisioned", at); err != nil {
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-credential-present", "credential.provisioned", at); err != nil {
 		t.Fatal(err)
 	}
 	provisioned, err := store.GetConnection(ctx, connection.ConnectionID)
@@ -1075,7 +1166,7 @@ func TestCredentialMutationRejectsPendingAndRemovedConnections(t *testing.T) {
 	if _, err := store.GetConnectionForCredentialMutation(ctx, connection.ConnectionID); !errors.Is(err, ErrExternalNotFound) {
 		t.Fatalf("pending connection authorized credential mutation: %v", err)
 	}
-	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, "local-operator", "audit-credential-stale", "credential.rotated", at); !errors.Is(err, ErrExternalConflict) {
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-credential-stale", "credential.rotated", at); !errors.Is(err, ErrExternalConflict) {
 		t.Fatalf("pending connection accepted credential audit: %v", err)
 	}
 	name := "Impossible edit"
@@ -1298,6 +1389,9 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-detach-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1311,6 +1405,9 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	capture := CaptureExternalIssueRequest{SourceID: "source-detach", SnapshotID: "snapshot-detach-a", ConnectionID: connection.ConnectionID, ConnectionRowVersion: connection.RowVersion, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Version A", Body: "first", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at}
 	link, err := store.AttachPlanningExternalSource(ctx, AttachPlanningExternalSourceRequest{PlanningSessionID: "session-detach", Capture: capture, LinkID: "link-detach", AdoptionID: "adoption-detach", AuditEventID: "audit-detach-attach", ActorID: "local-operator", AttachedAt: at})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-detach-control", Title: "Control", Text: "immutable", CreatedAt: at, DirectSnapshotID: capture.SnapshotID, NewLinkID: func() string { return "link-detach-decree" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1372,15 +1469,28 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	if reattached.LinkID != link.LinkID {
 		t.Fatalf("re-adding a removed source created a second link: %q want %q", reattached.LinkID, link.LinkID)
 	}
-	if reattached.UsedSnapshotID != capture.SnapshotID || reattached.ActiveSnapshotID != fresh.SnapshotID {
-		t.Fatalf("re-attach provenance: used=%q active=%q", reattached.UsedSnapshotID, reattached.ActiveSnapshotID)
+	if reattached.UsedSnapshotID != capture.SnapshotID || reattached.LatestSnapshotID != fresh.SnapshotID || reattached.ActiveSnapshotID != fresh.SnapshotID {
+		t.Fatalf("re-attach provenance: used=%q latest=%q active=%q", reattached.UsedSnapshotID, reattached.LatestSnapshotID, reattached.ActiveSnapshotID)
+	}
+	if reattached.RowVersion != link.RowVersion+1 {
+		t.Fatalf("re-attach head row version=%d, want %d", reattached.RowVersion, link.RowVersion+1)
 	}
 	links, err = store.GetLinksForTarget(ctx, "planning_session", "session-detach")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(links) != 1 || links[0].LinkID != link.LinkID || links[0].ActiveSnapshotID != fresh.SnapshotID {
+	if len(links) != 1 || links[0].LinkID != link.LinkID || links[0].LatestSnapshotID != fresh.SnapshotID || links[0].ActiveSnapshotID != fresh.SnapshotID {
 		t.Fatalf("re-added source not presented from current content: %#v", links)
+	}
+	if err := store.AdoptLatest(ctx, link.LinkID, "adoption-after-reattach", "local-operator", "2026-08-12T12:01:00Z", "audit-adopt-after-reattach"); err != nil {
+		t.Fatal(err)
+	}
+	links, err = store.GetLinksForTarget(ctx, "planning_session", "session-detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].LatestSnapshotID != fresh.SnapshotID || links[0].ActiveSnapshotID != fresh.SnapshotID {
+		t.Fatalf("adopting latest after re-attach regressed the source: %#v", links)
 	}
 	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-after-reattach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: reattachAt}); err != nil {
 		t.Fatal(err)
@@ -1391,6 +1501,21 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	}
 	if len(afterReattachIDs) != 1 || afterReattachIDs[0] != fresh.SnapshotID || !strings.Contains(afterText, "Version B") {
 		t.Fatalf("re-added source did not feed later operations: ids=%#v text=%s", afterReattachIDs, afterText)
+	}
+	decreeLinks, err := store.GetLinksForTarget(ctx, "decree", "decree-detach-control")
+	if err != nil || len(decreeLinks) != 1 {
+		t.Fatalf("control decree links=%#v err=%v", decreeLinks, err)
+	}
+	assertExternalLinkCoordinates(t, decreeLinks[0], capture.SnapshotID, "", capture.SnapshotID, "owner/repo", 7)
+	var attachmentChanges, adoptions int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_link_attachment_changes WHERE link_id=?`, link.LinkID).Scan(&attachmentChanges); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, link.LinkID).Scan(&adoptions); err != nil {
+		t.Fatal(err)
+	}
+	if attachmentChanges != 2 || adoptions != 3 {
+		t.Fatalf("re-attach provenance rows: attachment_changes=%d adoptions=%d", attachmentChanges, adoptions)
 	}
 }
 
@@ -1515,6 +1640,22 @@ func TestChangingTheCoveredSetKeepsPinnedAccountsAndReleasesTheRest(t *testing.T
 	if got := updated.InstallationIDs(); len(got) != 2 || got[0] != "10" || got[1] != "12" {
 		t.Fatalf("installation ids=%v", got)
 	}
+	if updated.HealthClass != "never_checked" || updated.FailureClass != "" || updated.ValidatedGeneration != 0 || updated.LastCheckedAt != nil || updated.LastSuccessAt != nil {
+		t.Fatalf("changed installation set retained stale health: %#v", updated)
+	}
+	if updated.RowVersion != connection.RowVersion+1 {
+		t.Fatalf("changed installation set row version=%d, want %d", updated.RowVersion, connection.RowVersion+1)
+	}
+	if updated.Installations[0].AccountID != "100" || updated.Installations[0].AccountLogin != "enkiid" {
+		t.Fatalf("surviving installation lost pinned identity: %#v", updated.Installations[0])
+	}
+	var auditCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events WHERE audit_event_id='audit-change' AND event_type='connection.installations_changed'`).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("installation change audit count=%d err=%v", auditCount, err)
+	}
+	if err := NewAuditIntegrityVerifier(store.db).VerifyOrError(ctx); err != nil {
+		t.Fatalf("installation change broke audit integrity: %v", err)
+	}
 	// The dropped installation is free for another connection to hold.
 	var held int
 	_ = store.db.QueryRow(`SELECT COUNT(*) FROM external_connection_installations WHERE installation_id='11'`).Scan(&held)
@@ -1527,6 +1668,33 @@ func TestChangingTheCoveredSetKeepsPinnedAccountsAndReleasesTheRest(t *testing.T
 		ExpectedRowVersion: updated.RowVersion, ActorID: "local-operator", UpdatedAt: at, AuditEventID: "audit-swap",
 	}); !errors.Is(err, ErrExternalConflict) {
 		t.Fatalf("account swap error=%v, want conflict", err)
+	}
+}
+
+func TestSettingTheSameNormalizedInstallationSetDoesNotChurnState(t *testing.T) {
+	store, ctx, connection := multiInstallationFixture(t)
+	updated, err := store.SetConnectionInstallations(ctx, connection.ConnectionID, SetConnectionInstallationsRequest{
+		Installations: []ConnectionInstallation{
+			{InstallationID: " 11 ", AccountID: " 101 ", AccountLogin: " T-RexLabs "},
+			{InstallationID: " 10 ", AccountID: " 100 ", AccountLogin: " enkiid "},
+		},
+		ExpectedRowVersion: connection.RowVersion, ActorID: "local-operator", UpdatedAt: "2026-08-19T11:00:00Z", AuditEventID: "audit-noop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RowVersion != connection.RowVersion || updated.UpdatedAt != connection.UpdatedAt || updated.HealthClass != "healthy" || updated.ValidatedGeneration != connection.ValidatedGeneration {
+		t.Fatalf("equivalent installation set changed connection state: before=%#v after=%#v", connection, updated)
+	}
+	if updated.LastCheckedAt == nil || updated.LastSuccessAt == nil || *updated.LastCheckedAt != *connection.LastCheckedAt || *updated.LastSuccessAt != *connection.LastSuccessAt {
+		t.Fatalf("equivalent installation set changed health timestamps: before=%#v after=%#v", connection, updated)
+	}
+	var auditCount int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events WHERE audit_event_id='audit-noop'`).Scan(&auditCount); err != nil || auditCount != 0 {
+		t.Fatalf("equivalent installation set audit count=%d err=%v", auditCount, err)
+	}
+	if err := NewAuditIntegrityVerifier(store.db).VerifyOrError(ctx); err != nil {
+		t.Fatalf("equivalent installation set broke audit integrity: %v", err)
 	}
 }
 
@@ -1569,5 +1737,13 @@ func TestReauthorizationReprovesTheSetRatherThanAdoptingOne(t *testing.T) {
 	widened := append(append([]ConnectionInstallation{}, proved...), ConnectionInstallation{InstallationID: "12", AccountID: "102", AccountLogin: "third-org"})
 	if _, err := store.ReauthorizeSharedConnection(ctx, updated, "kingdom", widened, "local-operator", "audit-reauth-wide", at); !errors.Is(err, ErrExternalConflict) {
 		t.Fatalf("adopting a new installation on reconnect error=%v, want conflict", err)
+	}
+	if _, err := store.ReauthorizeSharedConnection(ctx, updated, "kingdom", proved[:1], "local-operator", "audit-reauth-subset", at); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("dropping an installation on reconnect error=%v, want conflict", err)
+	}
+	impostor := append([]ConnectionInstallation(nil), proved...)
+	impostor[1].AccountID = "999"
+	if _, err := store.ReauthorizeSharedConnection(ctx, updated, "kingdom", impostor, "local-operator", "audit-reauth-account", at); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("changing a pinned account on reconnect error=%v, want conflict", err)
 	}
 }

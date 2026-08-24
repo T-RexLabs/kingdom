@@ -672,12 +672,13 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	if err != nil {
 		return err
 	}
+	bootstrapPaths := bootstrapPathsFromConfig(cfg)
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
 		StartupContext:      ctx,
 		StartupReporter:     startupTracker.Report,
-		Paths:               bootstrapPathsFromConfig(cfg),
+		Paths:               bootstrapPaths,
 		ProviderEngine:      cfg.Provider.Engine,
 		ProviderStrict:      cfg.Provider.Strict,
 		GovernanceMode:      cfg.Provider.GovernanceMode,
@@ -709,6 +710,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
 		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
+		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		RoleCommPolicyPath:         filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),

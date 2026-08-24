@@ -12,6 +12,7 @@ import {
   useCreateRun,
   useMailbox,
   useMailboxMessage,
+  ACP_RUN_REFETCH_INTERVAL_MS,
   useProviderModels,
   useRefreshProviderModels,
   useRunExecution,
@@ -27,6 +28,7 @@ import {
   useRoles,
   useRuns,
   useTimeline,
+  usePlanningOperation,
   useUpdatePlanningSessionTitle,
   type PlanningSessionDetail,
 } from "./hooks";
@@ -108,6 +110,90 @@ afterEach(() => {
   vi.useRealTimers();
   focusManager.setFocused(undefined);
   qc.clear();
+});
+
+describe("usePlanningOperation polling", () => {
+  const acpRun = (status: "created" | "in-progress" | "completed") => ({
+    run_id: "acp-run-1",
+    session_id: "acp-session-1",
+    planning_session_id: "planning-session-1",
+    agent_name: "planner-reply" as const,
+    status,
+    created_at: "2026-08-24T10:00:00Z",
+  });
+
+  it("discovers completion by polling and stops once the run is terminal", async () => {
+    vi.useFakeTimers();
+    apiFetchMock
+      .mockResolvedValueOnce(acpRun("in-progress"))
+      .mockResolvedValueOnce(acpRun("completed"));
+
+    const { result } = renderHook(() => usePlanningOperation("acp-run-1"), {
+      wrapper: makeWrapper(qc),
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.data?.status).toBe("in-progress");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACP_RUN_REFETCH_INTERVAL_MS + 1);
+    });
+    expect(result.current.data?.status).toBe("completed");
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACP_RUN_REFETCH_INTERVAL_MS * 2);
+    });
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans up nonterminal polling when its observer unmounts", async () => {
+    vi.useFakeTimers();
+    apiFetchMock.mockResolvedValue(acpRun("in-progress"));
+
+    const { unmount } = renderHook(() => usePlanningOperation("acp-run-1"), {
+      wrapper: makeWrapper(qc),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACP_RUN_REFETCH_INTERVAL_MS * 2);
+    });
+    expect(apiFetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps polling after a query error so the run can recover", async () => {
+    vi.useFakeTimers();
+    const pollingClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    apiFetchMock
+      .mockRejectedValueOnce(new Error("connection reset"))
+      .mockResolvedValueOnce(acpRun("completed"));
+
+    const { result } = renderHook(() => usePlanningOperation("acp-run-1"), {
+      wrapper: makeWrapper(pollingClient),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(result.current.isError).toBe(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ACP_RUN_REFETCH_INTERVAL_MS + 1);
+    });
+    expect(result.current.data?.status).toBe("completed");
+    expect(result.current.isError).toBe(false);
+    expect(apiFetchMock).toHaveBeenCalledTimes(2);
+
+    pollingClient.clear();
+  });
 });
 
 describe("useUpdatePlanningSessionTitle — same-slice ordering", () => {

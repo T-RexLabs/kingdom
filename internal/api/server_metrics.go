@@ -40,7 +40,7 @@ type tokenByRolePayload struct {
 	OutputTokens        int64                 `json:"output_tokens"`
 	ReasoningTokens     int64                 `json:"reasoning_tokens"`
 	RecordCount         int                   `json:"record_count"`
-	ByModel             []tokenByModelPayload `json:"by_model,omitempty"`
+	ByModel             []tokenByModelPayload `json:"by_model"`
 }
 
 type tokenByModelPayload struct {

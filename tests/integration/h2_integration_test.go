@@ -146,6 +146,12 @@ func TestIntegrationExternalPlanningAttachIsAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := externalStore.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-intake-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if connection, err = externalStore.GetConnection(ctx, connection.ConnectionID); err != nil {
+		t.Fatal(err)
+	}
 	if err := externalStore.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}); err != nil {
 		t.Fatal(err)
 	}

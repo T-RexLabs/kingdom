@@ -64,6 +64,78 @@ func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	}
 }
 
+func TestListRecentCompletedOperationTelemetryUsesCurrentACPEvents(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_telemetry",
+		Title:              "Telemetry",
+		TitleState:         "custom",
+		LifecycleState:     PlanningSessionLifecycleStateActive,
+		ConversationState:  PlanningSessionConversationStateReady,
+		ProjectRoot:        "/workspace/project",
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-08-24T10:00:00Z",
+		UpdatedAt:          "2026-08-24T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	bindTestPlanningContext(t, db, "ps_telemetry")
+	if _, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
+		OperationID:        "po_telemetry",
+		PlanningSessionID:  "ps_telemetry",
+		Type:               PlanningOperationTypeReply,
+		Status:             PlanningOperationStatusSucceeded,
+		RequestPayloadJSON: `{}`,
+		CreatedAt:          "2026-08-24T10:00:01Z",
+		StartedAt:          "2026-08-24T10:00:02Z",
+		FinishedAt:         "2026-08-24T10:00:09Z",
+	}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+
+	events := []AppendPlanningOperationEventRequest{
+		{EventID: "po_telemetry:1", OperationID: "po_telemetry", Seq: 1, EventType: "provider_session_open", PayloadJSON: `{}`, CreatedAt: "2026-08-24T10:00:03Z"},
+		{EventID: "po_telemetry:2", OperationID: "po_telemetry", Seq: 2, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"not-a-phase","phase":"provider_session_open"}`, CreatedAt: "2026-08-24T10:00:04Z"},
+		{EventID: "po_telemetry:3", OperationID: "po_telemetry", Seq: 3, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.phase","phase":"provider_session_open"}`, CreatedAt: "2026-08-24T10:00:05Z"},
+		{EventID: "po_telemetry:4", OperationID: "po_telemetry", Seq: 4, EventType: "text_delta", PayloadJSON: `{"text":"obsolete"}`, CreatedAt: "2026-08-24T10:00:03Z"},
+		{EventID: "po_telemetry:5", OperationID: "po_telemetry", Seq: 5, EventType: acp.MessagePartEventType, PayloadJSON: `{"text":"current"}`, CreatedAt: "2026-08-24T10:00:06Z"},
+		{EventID: "po_telemetry:6", OperationID: "po_telemetry", Seq: 6, EventType: "finalizing", PayloadJSON: `{}`, CreatedAt: "2026-08-24T10:00:03Z"},
+		{EventID: "po_telemetry:7", OperationID: "po_telemetry", Seq: 7, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.phase","phase":"finalizing"}`, CreatedAt: "2026-08-24T10:00:07Z"},
+	}
+	for _, event := range events {
+		if _, err := store.AppendOperationEvent(ctx, event); err != nil {
+			t.Fatalf("append operation event %s: %v", event.EventID, err)
+		}
+	}
+
+	samples, err := store.ListRecentCompletedOperationTelemetryByType(ctx, PlanningOperationTypeReply, 10)
+	if err != nil {
+		t.Fatalf("list telemetry samples: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected one telemetry sample, got %d", len(samples))
+	}
+	sample := samples[0]
+	assertPlanningTelemetryTimestamp(t, "started", sample.StartedAt, "2026-08-24T10:00:02Z")
+	assertPlanningTelemetryTimestamp(t, "finished", sample.FinishedAt, "2026-08-24T10:00:09Z")
+	assertPlanningTelemetryTimestamp(t, "provider session open", sample.ProviderSessionOpenAt, "2026-08-24T10:00:05Z")
+	assertPlanningTelemetryTimestamp(t, "first text", sample.FirstTextDeltaAt, "2026-08-24T10:00:06Z")
+	assertPlanningTelemetryTimestamp(t, "finalizing", sample.FinalizingAt, "2026-08-24T10:00:07Z")
+}
+
+func assertPlanningTelemetryTimestamp(t *testing.T, name string, got *string, want string) {
+	t.Helper()
+	if got == nil || *got != want {
+		t.Fatalf("expected nonzero %s timestamp %q, got %v", name, want, got)
+	}
+}
+
 func TestSetActiveBranchRefreshesSessionRecency(t *testing.T) {
 	t.Parallel()
 

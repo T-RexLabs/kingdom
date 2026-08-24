@@ -10,22 +10,20 @@ type Candidate = components["schemas"]["GitHubInstallationCandidate"];
  *
  * One connection covers whichever of these the operator ticks, so setup and the
  * saved connection ask the question the same way and can never drift apart.
- * Reconnect passes `single` because it reauthorizes one existing connection
- * rather than choosing what to cover.
  */
 export function InstallationPicker({
   candidates,
   selected,
   onToggle,
-  single = false,
   disabled = false,
+  managementLinksDisabled = false,
   name,
 }: {
   candidates: Candidate[];
   selected: ReadonlySet<string>;
   onToggle: (installationID: string) => void;
-  single?: boolean;
   disabled?: boolean;
+  managementLinksDisabled?: boolean;
   name: string;
 }) {
   return (
@@ -49,7 +47,7 @@ export function InstallationPicker({
           >
             <input
               className="sr-only"
-              type={single ? "radio" : "checkbox"}
+              type="checkbox"
               name={name}
               value={candidate.installation_id}
               checked={isSelected}
@@ -61,7 +59,7 @@ export function InstallationPicker({
                 aria-hidden
                 className={cn(
                   "mt-0.5 flex h-4 w-4 flex-none items-center justify-center border text-[10px] font-bold",
-                  single ? "rounded-full" : "rounded",
+                  "rounded",
                   isSelected ? "border-gold bg-gold text-background" : "border-border",
                 )}
               >
@@ -76,7 +74,15 @@ export function InstallationPicker({
                       : "Selected Repositories"}
                   </span>
                 )}
-                {manageURL && (
+                {manageURL && (managementLinksDisabled ? (
+                  <span
+                    aria-disabled="true"
+                    className="mt-1 inline-flex items-center gap-1 text-xs text-foreground-muted"
+                  >
+                    Manage Repositories on GitHub
+                    <ExternalLink className="h-3 w-3" />
+                  </span>
+                ) : (
                   <a
                     className="mt-1 inline-flex items-center gap-1 text-xs text-gold underline-offset-2 hover:underline"
                     href={manageURL}
@@ -87,7 +93,7 @@ export function InstallationPicker({
                     Manage Repositories on GitHub
                     <ExternalLink className="h-3 w-3" />
                   </a>
-                )}
+                ))}
               </span>
             </span>
           </label>

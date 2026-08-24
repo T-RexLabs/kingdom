@@ -34,11 +34,11 @@ func presentConnection(c state.ExternalConnection, keys *githubexternal.KeyStore
 	credentialState := "missing"
 	if c.Lifecycle != "removed" && c.Lifecycle != "removal_pending" {
 		if c.CredentialStrategy == "app_private_key" && keys != nil {
-			if _, _, err := keys.Load(c.ConnectionID); err == nil {
+			if _, _, err := keys.Load(c.ConnectionID, c.CredentialGeneration); err == nil {
 				credentialState = "present"
 			}
 		} else if c.CredentialStrategy == "user_access_token" && userTokens != nil {
-			if _, err := userTokens.Load(c.ConnectionID); err == nil {
+			if _, err := userTokens.Load(c.ConnectionID, c.CredentialGeneration); err == nil {
 				credentialState = "present"
 			}
 		}
@@ -155,12 +155,12 @@ func (s *Server) handleDeleteConnection(w http.ResponseWriter, r *http.Request) 
 		}
 		if connection, getErr := s.externalStore.GetConnection(r.Context(), id); getErr == nil && connection.CredentialStrategy == "user_access_token" {
 			if s.githubUserTokens != nil {
-				if err := s.githubUserTokens.RemoveWhileLocked(id); err != nil {
+				if err := s.githubUserTokens.RemoveAllWhileLocked(id); err != nil {
 					return err
 				}
 			}
 		} else if s.githubKeys != nil {
-			if err := s.githubKeys.Remove(id); err != nil {
+			if err := s.githubKeys.RemoveAllWhileLocked(id); err != nil {
 				return err
 			}
 		}
@@ -268,32 +268,8 @@ func (s *Server) enabledConnectionAdapter(w http.ResponseWriter, r *http.Request
 }
 
 // connectionInstallationCandidates lists the installations a saved connection's
-// own credential can see. The source differs by strategy: the shared App's
-// candidate listing filters on Kingdom's client id and slug, so it cannot serve
-// a private App, which enumerates its own installations with an App JWT.
+// exact credential generation can see through its provider adapter.
 func (s *Server) connectionInstallationCandidates(ctx context.Context, conn state.ExternalConnection) ([]external.Installation, error) {
-	if conn.CredentialStrategy == "user_access_token" {
-		if s.githubDeviceOAuth == nil || s.githubUserTokens == nil {
-			return nil, state.ErrExternalConnectionUnavailable
-		}
-		tokens, err := s.githubUserTokens.Load(conn.ConnectionID)
-		if err != nil {
-			return nil, state.ErrExternalValidationNeeded
-		}
-		candidates, err := s.githubDeviceOAuth.Candidates(ctx, tokens.AccessToken, conn.ClientID, conn.AppSlug)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]external.Installation, 0, len(candidates))
-		for _, candidate := range candidates {
-			out = append(out, external.Installation{
-				InstallationID: candidate.InstallationID, AccountID: candidate.AccountID, AccountLogin: candidate.AccountLogin,
-				DisplayName: candidate.DisplayName, AppID: candidate.AppID, ClientID: candidate.ClientID, AppSlug: candidate.AppSlug,
-				RepositorySelection: candidate.RepositorySelection,
-			})
-		}
-		return out, nil
-	}
 	adapter, ok := s.externalRegistry.Adapter(conn.Provider)
 	if !ok {
 		return nil, state.ErrExternalConnectionUnavailable
@@ -411,7 +387,7 @@ func (s *Server) handleListConnectionRepositories(w http.ResponseWriter, r *http
 		return
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
-	cursorScope := conn.ConnectionID + "\n" + search
+	cursorScope := fmt.Sprintf("%s\n%d\n%s", conn.ConnectionID, conn.RowVersion, search)
 	providerCursor := ""
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
 		var decodeErr error
@@ -426,7 +402,11 @@ func (s *Server) handleListConnectionRepositories(w http.ResponseWriter, r *http
 		writeExternalError(w, err, "api.list_connection_repositories")
 		return
 	}
-	response := map[string]any{"items": page.Items}
+	items := page.Items
+	if items == nil {
+		items = make([]external.Repository, 0)
+	}
+	response := map[string]any{"items": items}
 	if page.NextCursor != "" {
 		response["next_cursor"] = s.cursors.Encode("connection-repositories", cursorScope, page.NextCursor)
 	}
@@ -453,7 +433,11 @@ func (s *Server) handleListConnectionIssues(w http.ResponseWriter, r *http.Reque
 		writeExternalError(w, err, "api.list_connection_issues")
 		return
 	}
-	response := map[string]any{"items": page.Items, "incomplete_results": page.IncompleteResults, "search_result_cap": page.SearchResultCap}
+	items := page.Items
+	if items == nil {
+		items = make([]external.IssueSummary, 0)
+	}
+	response := map[string]any{"items": items, "incomplete_results": page.IncompleteResults, "search_result_cap": gen.N1000}
 	if page.NextCursor != "" {
 		response["next_cursor"] = s.cursors.Encode("connection-issues", cursorScope, page.NextCursor)
 	}

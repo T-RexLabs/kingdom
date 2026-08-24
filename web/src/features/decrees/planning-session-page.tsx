@@ -124,7 +124,7 @@ export function PlanningSessionPage() {
 	const messagePages = usePlannerMessagePages(sessionId);
   const userMessageCount = messagePages.messages.filter((m) => m.role === "user").length;
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const { activeOperation, activeOperationId, connection, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
+  const { activeOperation, activeOperationId, connection, operationQueryState, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
@@ -630,6 +630,7 @@ export function PlanningSessionPage() {
         session={session}
         operation={activeOperation}
         connection={connection}
+        operationQueryState={operationQueryState}
         onSubmitReply={({ text, answer, parentMessageId }) =>
           submitReply({ text, answer, parentMessageId })
         }
