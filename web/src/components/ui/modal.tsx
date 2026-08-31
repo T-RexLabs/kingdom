@@ -27,6 +27,7 @@ export function Modal({
   height = "auto",
   bodyClassName,
   overlayClassName,
+  getFinalFocus,
 }: {
   open: boolean;
   onClose: () => void;
@@ -39,6 +40,7 @@ export function Modal({
   height?: ModalShellHeight;
   bodyClassName?: string;
   overlayClassName?: string;
+  getFinalFocus?: () => HTMLElement | null;
 }) {
   // Named by the heading the operator can actually see. Call sites used to pass
   // a separate `ariaLabel` string, so screen readers heard a label that no
@@ -52,6 +54,7 @@ export function Modal({
       ariaLabelledBy={titleId}
       panelClassName={cn("w-full min-w-0", modalShellSizeClass(size))}
       overlayClassName={overlayClassName}
+      getFinalFocus={getFinalFocus}
     >
       <ModalShell
         title={title}

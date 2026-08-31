@@ -7,6 +7,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useEffectEvent,
   useRef,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ interface ModalDialogProps {
   ariaLabelledBy?: string;
   overlayClassName?: string;
   panelClassName?: string;
+  getFinalFocus?: () => HTMLElement | null;
 }
 
 /**
@@ -38,10 +40,12 @@ export function ModalDialog({
   ariaLabelledBy,
   overlayClassName,
   panelClassName,
+  getFinalFocus,
 }: ModalDialogProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const presenceRegisteredRef = useRef(false);
+  const resolveFinalFocus = useEffectEvent(() => getFinalFocus?.());
 
   const registerPanel = useCallback((panel: HTMLDivElement | null) => {
     panelRef.current = panel;
@@ -74,13 +78,16 @@ export function ModalDialog({
       }
       const previousFocus = previousFocusRef.current;
       previousFocusRef.current = null;
-      if (previousFocus) {
-        window.requestAnimationFrame(() => {
-          if (previousFocus.isConnected) {
-            previousFocus.focus();
-          }
-        });
-      }
+      window.requestAnimationFrame(() => {
+        const finalFocus = resolveFinalFocus();
+        if (finalFocus && finalFocus.isConnected && !finalFocus.matches(":disabled")) {
+          finalFocus.focus();
+          return;
+        }
+        if (previousFocus?.isConnected) {
+          previousFocus.focus();
+        }
+      });
     };
   }, [open]);
 

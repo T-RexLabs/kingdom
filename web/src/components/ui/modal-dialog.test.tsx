@@ -1,6 +1,6 @@
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_ROOT_ID, OVERLAY_Z_INDEX, SCENE_ROOT_ID } from "@/lib/overlay-system";
 import { ModalDialog } from "./modal-dialog";
@@ -94,6 +94,35 @@ describe("modal dialog", () => {
 
 		await waitFor(() => {
 			expect(view.getByRole("button", { name: "Open modal" })).toHaveFocus();
+		});
+	});
+
+	it("uses the supplied post-close focus target when it appears with the recovery state", async () => {
+		const user = userEvent.setup();
+		function Harness() {
+			const [open, setOpen] = useState(true);
+			const resumeRef = useRef<HTMLButtonElement | null>(null);
+			return (
+				<>
+					{!open ? <button ref={resumeRef} type="button">Resume Setup</button> : null}
+					<ModalDialog
+						open={open}
+						onClose={() => setOpen(false)}
+						ariaLabel="Focus modal"
+						panelClassName="w-full max-w-sm"
+						getFinalFocus={() => resumeRef.current}
+					>
+						<button type="button" onClick={() => setOpen(false)}>Close modal</button>
+					</ModalDialog>
+				</>
+			);
+		}
+
+		render(<Harness />);
+		await user.click(within(document.getElementById(OVERLAY_ROOT_ID) as HTMLElement).getByRole("button", { name: "Close modal" }));
+
+		await waitFor(() => {
+			expect(document.activeElement).toHaveAccessibleName("Resume Setup");
 		});
 	});
 

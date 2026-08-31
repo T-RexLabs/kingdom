@@ -35,6 +35,7 @@ type OperationStreamState = {
 type OperationStreamAction =
   | { type: "reset" }
   | { type: "hydrate"; operation: AcpRun }
+  | { type: "terminal"; operation: AcpRun }
   | { type: "event"; event: AcpRunEvent }
   | { type: "connection"; connection: PlannerConnection };
 
@@ -52,6 +53,25 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
         operation: buildPlannerOperationState(action.operation),
         connection: state.connection,
       };
+    case "terminal": {
+      if (!state.operation || state.operation.operationId !== action.operation.run_id) {
+        return {
+          operation: buildPlannerOperationState(action.operation),
+          connection: { state: "idle" },
+        };
+      }
+      const terminal = buildPlannerOperationState(action.operation);
+      return {
+        operation: {
+          ...state.operation,
+          status: terminal.status,
+          error: terminal.error,
+          replyText: terminal.replyText || state.operation.replyText,
+          formalizeText: terminal.formalizeText || state.operation.formalizeText,
+        },
+        connection: { state: "idle" },
+      };
+    }
     case "event":
       if (!state.operation || state.operation.operationId !== action.event.run_id) {
         return state;
@@ -69,38 +89,55 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
 
 export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperationResult {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const abortRef = useRef<AbortController | null>(null);
+  const ownerRef = useRef<{ runId: string; controller: AbortController; active: boolean } | null>(null);
+  const operationRef = useRef<AcpRun | null>(operation ?? null);
   const queryClient = useQueryClient();
+  const runId = operation?.run_id;
+  const operationStatus = operation?.status;
+  const operationOutputText = operation?.output_text;
+  const operationError = operation?.error;
 
   useEffect(() => {
-    if (!operation) {
+    operationRef.current = operation ?? null;
+  }, [operation]);
+
+  useEffect(() => {
+    const initialOperation = operationRef.current;
+    if (!initialOperation) {
+      ownerRef.current?.controller.abort();
+      ownerRef.current = null;
       dispatch({ type: "reset" });
       return;
     }
 
-    dispatch({ type: "hydrate", operation });
+    dispatch({ type: "hydrate", operation: initialOperation });
 
-    if (operation.status === "completed" || operation.status === "failed" || operation.status === "cancelled") {
-      reconcileTerminalOperationSnapshot(queryClient, operation);
+    if (initialOperation.status === "completed" || initialOperation.status === "failed" || initialOperation.status === "cancelled") {
+      reconcileTerminalOperationSnapshot(queryClient, initialOperation);
       dispatch({ type: "connection", connection: { state: "idle" } });
       return;
     }
 
-    abortRef.current?.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    const owner = { runId: initialOperation.run_id, controller, active: true };
+    ownerRef.current = owner;
+    const isCurrentOwner = () => owner.active && ownerRef.current === owner && !controller.signal.aborted;
 
     void subscribeSSE({
-      url: `${API_BASE}/acp/runs/${operation.run_id}/events`,
+      url: `${API_BASE}/acp/runs/${initialOperation.run_id}/events`,
       buildHeaders: (lastId) => buildAuthHeaders(lastId ? { "Last-Event-ID": lastId } : undefined),
       isTerminalEventType: (type) => type === "run.completed" || type === "run.failed" || type === "run.cancelled",
       signal: controller.signal,
       onConnectionChange: (next) => {
+        if (!isCurrentOwner()) return;
         dispatch({ type: "connection", connection: next });
       },
       onEvent: (parsed) => {
+        if (!isCurrentOwner()) return false;
+        const currentOperation = operationRef.current;
+        if (!currentOperation || currentOperation.run_id !== owner.runId) return false;
         const applied = handleEventPayload({
-          operation,
+          operation: currentOperation,
           eventType: parsed.type,
           data: parsed.data,
           eventId: parsed.id || null,
@@ -115,12 +152,28 @@ export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperat
     });
 
     return () => {
+      owner.active = false;
       controller.abort();
-      if (abortRef.current === controller) {
-        abortRef.current = null;
+      if (ownerRef.current === owner) {
+        ownerRef.current = null;
       }
     };
-  }, [operation, queryClient]);
+  }, [queryClient, runId]);
+
+  useEffect(() => {
+    const terminalOperation = operationRef.current;
+    if (!terminalOperation || (operationStatus !== "completed" && operationStatus !== "failed" && operationStatus !== "cancelled")) {
+      return;
+    }
+    const owner = ownerRef.current;
+    if (owner?.runId === terminalOperation.run_id) {
+      owner.active = false;
+      owner.controller.abort();
+      ownerRef.current = null;
+    }
+    dispatch({ type: "terminal", operation: terminalOperation });
+    reconcileTerminalOperationSnapshot(queryClient, terminalOperation);
+  }, [operationError, operationOutputText, operationStatus, queryClient, runId]);
 
   return state;
 }

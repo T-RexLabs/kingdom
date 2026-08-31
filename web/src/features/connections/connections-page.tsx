@@ -366,6 +366,7 @@ export function ConnectionsPage() {
   const mounted = useRef(false);
   const sharedFlowID = useRef<string | undefined>(undefined);
   const sharedStartAttempt = useRef(0);
+  const sharedResumeRef = useRef<HTMLButtonElement | null>(null);
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const createConnection = useRecoverableMutation(
@@ -1288,76 +1289,9 @@ export function ConnectionsPage() {
                     ? "Connect through Kingdom's public GitHub App, create a private App you own, or register one you already have. Whichever route you take, Kingdom requests only repository metadata read and Issues read, with no events and no webhook."
                     : "GitHub creates an App owned by your personal account or organization, or you register one you already have. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
                 </p>
-                {sharedFlowLive && !sharedOpen ? (
-                  <div className="mt-4 rounded-lg border border-gold/30 bg-gold/5 p-4">
-                    <p className="text-sm font-medium">
-                      {sharedReconnectID ? "GitHub Reconnect in Progress" : "GitHub Setup in Progress"}
-                    </p>
-                    <p className="mt-1 text-xs text-foreground-muted">
-                      This setup is preserved for this browser session until it is completed, discarded, or expires.
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button type="button" size="sm" onClick={() => setSharedOpen(true)}>
-                        Resume Setup
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={!!operation}
-                        onClick={() => void discardShared()}
-                      >
-                        {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        Discard Setup
-                      </Button>
-                    </div>
-                    <ErrorNotice error={sharedError} />
-                  </div>
-                ) : null}
-                {flow || manifestError ? (
-                  <div className="mt-4 space-y-3">
-                    <ManifestSetupStatus
-                      flow={flow}
-                      error={manifestError}
-                      failureStage={manifestFailureStage}
-                      recovery={manifestRecovery}
-                      busy={operation.startsWith("flow-")}
-                      onRecover={recoverManifest}
-                    />
-                    <ManifestHandoffAction
-                      flow={flow}
-                      url={manifestHandoffURL}
-                      busy={!!operation}
-                      onBlocked={reportSetupWindowBlocked}
-                    />
-                    {setupOptions.shared_enabled && manifestFlowLive ? (
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => setManifestOpen(true)}
-                        >
-                          Resume Setup
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={!!operation}
-                          onClick={() => void abandonManifest()}
-                        >
-                          {operation === "flow-discard" ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : null}
-                          Abandon Setup
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
               {setupOptions.shared_enabled ? (
-                <div className="space-y-3">
+                <div className="space-y-3" role="group" aria-label="GitHub Setup Options">
                   <Button
                     className="w-full"
                     disabled={!!operation || sharedFlowLive}
@@ -1390,7 +1324,7 @@ export function ConnectionsPage() {
                   </button>
                 </div>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-3" role="group" aria-label="GitHub Setup Options">
                   <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-background/70 p-1">
                     <button
                       type="button"
@@ -1446,6 +1380,67 @@ export function ConnectionsPage() {
                 </div>
               )}
             </div>
+            {sharedFlowLive && !sharedOpen ? (
+              <section className="mt-6 max-w-2xl rounded-lg border border-gold/30 bg-gold/5 p-4" aria-labelledby="shared-setup-status">
+                <p id="shared-setup-status" className="text-sm font-medium">
+                  {sharedReconnectID ? "GitHub Reconnect in Progress" : "GitHub Setup in Progress"}
+                </p>
+                <p className="mt-1 text-xs text-foreground-muted" aria-live="polite">
+                  This setup is preserved for this browser session until it is completed, discarded, or expires.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button ref={sharedResumeRef} type="button" size="sm" onClick={() => setSharedOpen(true)}>
+                    Resume Setup
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!!operation}
+                    onClick={() => void discardShared()}
+                  >
+                    {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    Discard Setup
+                  </Button>
+                </div>
+                <ErrorNotice error={sharedError} />
+              </section>
+            ) : null}
+            {flow || manifestError ? (
+              <section className="mt-6 max-w-2xl space-y-3" aria-label="Private GitHub App Setup Status">
+                <ManifestSetupStatus
+                  flow={flow}
+                  error={manifestError}
+                  failureStage={manifestFailureStage}
+                  recovery={manifestRecovery}
+                  busy={operation.startsWith("flow-")}
+                  onRecover={recoverManifest}
+                />
+                <ManifestHandoffAction
+                  flow={flow}
+                  url={manifestHandoffURL}
+                  busy={!!operation}
+                  onBlocked={reportSetupWindowBlocked}
+                />
+                {setupOptions.shared_enabled && manifestFlowLive ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" onClick={() => setManifestOpen(true)}>
+                      Resume Setup
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={!!operation}
+                      onClick={() => void abandonManifest()}
+                    >
+                      {operation === "flow-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                      Abandon Setup
+                    </Button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -1773,6 +1768,7 @@ export function ConnectionsPage() {
           <Modal
             open
             onClose={() => setSharedOpen(false)}
+            getFinalFocus={sharedFlowLive ? () => sharedResumeRef.current : undefined}
             size="lg"
             title={sharedReconnectID ? "Reconnect GitHub" : "Connect GitHub"}
             description={sharedReconnectID ? "Reauthorize every installation already saved on this connection." : "Authorize on GitHub, then choose the installations Kingdom may use."}

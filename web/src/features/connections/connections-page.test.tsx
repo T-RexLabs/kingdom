@@ -1976,7 +1976,9 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByRole("dialog", { name: "Reconnect GitHub" })).toBeInTheDocument();
     await waitFor(() => expect(polls).toBe(1));
     await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.getByRole("button", { name: "Resume Setup" })).toBeInTheDocument();
+    const resumeSetup = screen.getByRole("button", { name: "Resume Setup" });
+    expect(resumeSetup).toBeInTheDocument();
+    await waitFor(() => expect(resumeSetup).toHaveFocus());
 
     await user.click(screen.getByRole("button", { name: "Discard Setup" }));
     await waitFor(() => expect(discarded).toBe(true));
