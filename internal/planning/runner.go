@@ -1364,7 +1364,7 @@ func (r *operationRunner) claimOperationWithRetry(ctx context.Context, operation
 		}
 		lastErr = err
 		r.observeClaimFailure(source, err)
-		if ctx.Err() != nil || attempt == planningStartMaxClaimAttempts {
+		if ctx.Err() != nil || !state.IsSQLiteBusy(err) || attempt == planningStartMaxClaimAttempts {
 			break
 		}
 		r.observeClaimRetry(source)

@@ -1152,66 +1152,35 @@ func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, 
 		return PlanningOperation{}, false, fmt.Errorf("operation id and lease fields are required")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return PlanningOperation{}, false, fmt.Errorf("begin claim planning operation: %w", err)
-	}
-
-	row, ok, err := getPlanningOperation(ctx, tx, trimmedOperationID)
-	if err != nil || !ok {
-		return PlanningOperation{}, ok, rollbackPlanningTx(tx, "claim planning operation", err)
-	}
 	// Queued-only claim. Running rows stay owned by the current worker until
 	// shutdown or stuck-operation recovery finalizes them; reclaiming them here
 	// would race in-flight planner work inside the grace window.
-	if row.Status != PlanningOperationStatusQueued {
-		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
-	}
-
-	statusRunning := PlanningOperationStatusRunning
-	nextLeaseVersion := row.LeaseVersion + 1
-	startedAt := trimmedHeartbeatAt
-	if row.StartedAt != nil && strings.TrimSpace(*row.StartedAt) != "" {
-		startedAt = strings.TrimSpace(*row.StartedAt)
-	}
-	result, err := tx.ExecContext(ctx,
+	row := s.db.QueryRowContext(ctx,
 		`UPDATE planning_operations
-		 SET status = ?, lease_owner = ?, lease_expires_at = ?, lease_version = ?, last_heartbeat_at = ?, started_at = ?, finished_at = NULL
-		 WHERE operation_id = ?
-		   AND status = ?
-		   AND lease_owner = ?
-		   AND COALESCE(lease_expires_at, '') = ?
-		   AND lease_version = ?`,
-		statusRunning,
+		 SET status = ?, lease_owner = ?, lease_expires_at = ?, lease_version = lease_version + 1,
+		     last_heartbeat_at = ?, started_at = CASE WHEN TRIM(COALESCE(started_at, '')) = '' THEN ? ELSE started_at END,
+		     finished_at = NULL
+		 WHERE operation_id = ? AND status = ?
+		 RETURNING operation_id, acp_run_id, planning_session_id, planning_context_snapshot_id, type, status,
+		           request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at,
+		           provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref,
+		           canonical_settlement_id, created_at, started_at, finished_at`,
+		PlanningOperationStatusRunning,
 		trimmedLeaseOwner,
 		trimmedLeaseExpiresAt,
-		nextLeaseVersion,
 		trimmedHeartbeatAt,
-		startedAt,
+		trimmedHeartbeatAt,
 		trimmedOperationID,
-		row.Status,
-		row.LeaseOwner,
-		normalizedNullableString(row.LeaseExpiresAt),
-		row.LeaseVersion,
+		PlanningOperationStatusQueued,
 	)
-	if err != nil {
-		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("claim planning operation: %w", err))
+	var claimed PlanningOperation
+	if err := scanPlanningOperation(row, &claimed); err != nil {
+		if err == sql.ErrNoRows {
+			return PlanningOperation{}, false, nil
+		}
+		return PlanningOperation{}, false, fmt.Errorf("claim planning operation: %w", err)
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("claim planning operation rows affected: %w", err))
-	}
-	if rowsAffected == 0 {
-		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
-	}
-	updated, ok, err := getPlanningOperation(ctx, tx, trimmedOperationID)
-	if err != nil || !ok {
-		return PlanningOperation{}, ok, rollbackPlanningTx(tx, "claim planning operation", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return PlanningOperation{}, false, fmt.Errorf("commit claim planning operation: %w", err)
-	}
-	return updated, true, nil
+	return claimed, true, nil
 }
 
 func scanPlanningOperation(row scannable, dest *PlanningOperation) error {
