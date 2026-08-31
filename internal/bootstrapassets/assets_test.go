@@ -356,6 +356,7 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"task: false",
 		"todowrite: false",
 		"todoread: false",
+		"kingdom_complete_attempt: false",
 		`"*": deny`,
 	)
 	assertContains(

@@ -191,6 +191,7 @@ type IncompleteTerminalStateError struct {
 
 type continuationTurnResult struct {
 	TextChunks        []string
+	TerminalText      string
 	Tokens            TokenUsage
 	LastReason        stepFinishReasonEvidence
 	ProviderSessionID string
@@ -318,12 +319,12 @@ func executionResultForCancellation(err error, providerSessionID, failureText st
 	}).Result
 }
 
-func canonicalSettledOutputText(observedText, latestContinuationText string, usedContinuation bool) string {
-	trimmedObserved := strings.TrimSpace(observedText)
+func canonicalSettledOutputText(terminalText, latestContinuationText string, usedContinuation bool) string {
+	trimmedTerminal := strings.TrimSpace(terminalText)
 	if !usedContinuation {
-		return trimmedObserved
+		return trimmedTerminal
 	}
-	return firstNonEmpty(strings.TrimSpace(latestContinuationText), trimmedObserved)
+	return firstNonEmpty(strings.TrimSpace(latestContinuationText), trimmedTerminal)
 }
 
 func completionResultForAcceptedReceipt(accepted CompletionReceiptAcceptance, outputText string, tokens TokenUsage, providerSessionID, invocationID, invocationAt string) attemptCompletionResult {
@@ -951,6 +952,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	stderrDone := startStderrCapture(stderr)
 
 	textChunks := make([]string, 0)
+	stepText := stepOutputAssembler{}
 	var accumulatedTokens TokenUsage
 	exportChecks := make([]ExportCheck, 0)
 	stderrSnapshot := stderrCapture{}
@@ -992,6 +994,9 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			execDiag.UpstreamErrorText = upstreamErrorText
 		}
 
+		if event.Type == "step_start" {
+			stepText.startStep()
+		}
 		if event.Type == "step_finish" {
 			execDiag.StepFinishSeen = true
 			lastStepFinish = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
@@ -1010,6 +1015,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				}
 				terminalFailureSeen = true
 			}
+			stepText.finishStep(lastStepFinish.Class)
 		}
 		if event.Type == "step_finish" && event.Part.Tokens != nil {
 			accumulatedTokens.InputTokens += event.Part.Tokens.Input
@@ -1030,6 +1036,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		execDiag.LastProgressTextSHA = fmt.Sprintf("%x", sum[:])
 
 		textChunks = append(textChunks, event.Part.Text)
+		stepText.appendText(event.Part.Text)
 		if req.OnProgress != nil {
 			req.OnProgress(event.Part.Text)
 		}
@@ -1315,11 +1322,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				execDiag.SessionID = actualSessionID
 			}
 			textChunks = append(textChunks, continuationResult.TextChunks...)
-			if continuationText := strings.TrimSpace(strings.Join(continuationResult.TextChunks, "\n")); continuationText != "" {
+			if continuationText := strings.TrimSpace(continuationResult.TerminalText); continuationText != "" {
 				latestContinuationText = continuationText
 			}
 			accumulateTokenUsage(&accumulatedTokens, continuationResult.Tokens)
-			combinedContinuationText := strings.TrimSpace(strings.Join(textChunks, "\n"))
+			combinedContinuationText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
 			if isExecutionCancelled(continuationErr) {
 				result := executionResultForCancellation(continuationErr, actualSessionID, "opencode continuation cancelled")
 				result.OutputText = combinedContinuationText
@@ -1408,7 +1415,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	}
 
 	observedCombinedText := strings.TrimSpace(strings.Join(textChunks, "\n"))
-	canonicalCombinedText := canonicalSettledOutputText(observedCombinedText, latestContinuationText, continuationUsed)
+	canonicalCombinedText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
 	if !settledBeforeContinuation {
 		decision = attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
 			ProviderSessionID:           actualSessionID,
@@ -1422,6 +1429,14 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		})
 		if receiptRequired && !receiptAccepted {
 			decision = receiptRequiredDecision(decision, actualSessionID, canonicalCombinedText, req.InvocationID, req.InvocationIssuedAt)
+		}
+		if !receiptRequired && strings.TrimSpace(req.Agent) == "planner" && execDiag.TerminalStateClass == string(stepFinishTerminalSuccessCandidate) && canonicalCombinedText == "" {
+			decision.Result.State = attemptCompletionStateIncompleteTurn
+			decision.Result.ReasonCode = "provider_incomplete_turn"
+			decision.Result.FailureText = "planner terminal-success step contained no output"
+			decision.Result.OutputText = ""
+			decision.ExportCheckPolicy = exportCheckPolicyNone
+			decision.ExportCheckReason = ""
 		}
 		result = decision.Result
 		execDiag.ExportCheckPolicy = strings.TrimSpace(string(decision.ExportCheckPolicy))
@@ -1590,6 +1605,9 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	}
 
 	if result.State != attemptCompletionStateSuccess {
+		if canonicalCombinedText == "" && !terminalSuccessSeen {
+			result.OutputText = observedCombinedText
+		}
 		reason := firstNonEmpty(result.ReasonCode, execDiag.LastStepFinishReasonKind, execDiag.LastStepFinishReason)
 		if result.State == attemptCompletionStateIncompleteTurn {
 			if receiptRequired {
@@ -1888,6 +1906,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		LastReason:        buildStepFinishReasonEvidence("", false),
 		ProviderSessionID: strings.TrimSpace(sessionID),
 	}
+	stepText := stepOutputAssembler{}
 	providerSessionObserved := false
 
 	streamErr := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
@@ -1899,8 +1918,12 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		if strings.TrimSpace(event.ErrorText) != "" && strings.TrimSpace(event.Type) == "error" {
 			result.UpstreamErrorText = strings.TrimSpace(event.ErrorText)
 		}
+		if event.Type == "step_start" {
+			stepText.startStep()
+		}
 		if event.Type == "step_finish" {
 			result.LastReason = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
+			stepText.finishStep(result.LastReason.Class)
 			if event.Part.Tokens != nil {
 				result.Tokens.InputTokens += event.Part.Tokens.Input
 				result.Tokens.OutputTokens += event.Part.Tokens.Output
@@ -1913,6 +1936,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		emitActivityObservation(req, event)
 		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
 			result.TextChunks = append(result.TextChunks, event.Part.Text)
+			stepText.appendText(event.Part.Text)
 			if req.OnProgress != nil {
 				req.OnProgress(event.Part.Text)
 			}
@@ -1939,6 +1963,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	waitErr := cmd.Wait()
 	a.markInFlightWaitReturned(req.AttemptID, cmd)
 	result.Stderr = <-stderrDone
+	result.TerminalText = stepText.terminalOutput()
 	if waitErr != nil {
 		result.WaitError = waitErr.Error()
 	}

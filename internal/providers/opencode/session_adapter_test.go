@@ -2130,6 +2130,7 @@ func TestSessionAdapterWaitsForFinalStopAfterToolCallsBoundary(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_MULTI_STEP", "1")
 	t.Setenv("FAKE_OPENCODE_MULTI_STEP_GAP_MS", "80")
 
+	progress := make([]string, 0, 2)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		SessionID:     "session_tool_calls_boundary",
 		AttemptID:     "attempt_tool_calls_boundary",
@@ -2138,12 +2139,18 @@ func TestSessionAdapterWaitsForFinalStopAfterToolCallsBoundary(t *testing.T) {
 		WorkspacePath: t.TempDir(),
 		Prompt:        "run multiple steps",
 		OccurredAt:    "2026-03-02T10:10:00Z",
+		OnProgress: func(text string) {
+			progress = append(progress, text)
+		},
 	})
 	if err != nil {
 		t.Fatalf("execute multi-step should succeed: %v", err)
 	}
-	if !strings.Contains(res.OutputText, "hello from fake") || !strings.Contains(res.OutputText, "second step output") {
-		t.Fatalf("expected output from both steps, got %q", res.OutputText)
+	if res.OutputText != "second step output" {
+		t.Fatalf("expected only terminal step output, got %q", res.OutputText)
+	}
+	if strings.Join(progress, "\n") != "hello from fake\nsecond step output" {
+		t.Fatalf("expected provisional progress from both steps, got %#v", progress)
 	}
 
 	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_tool_calls_boundary"), AttemptEventTypeSucceeded)
@@ -2156,6 +2163,41 @@ func TestSessionAdapterWaitsForFinalStopAfterToolCallsBoundary(t *testing.T) {
 	}
 	if execPath["completion_gate_passed"] != true {
 		t.Fatalf("expected completion_gate_passed=true, got %#v", execPath["completion_gate_passed"])
+	}
+}
+
+func TestSessionAdapterRejectsEmptyTerminalStepOutput(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{
+		BinaryPath:              binaryPath,
+		FirstEventTimeout:       5 * time.Second,
+		StreamInactivityTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_MULTI_STEP", "1")
+	t.Setenv("FAKE_OPENCODE_MULTI_STEP_EMPTY_TERMINAL", "1")
+
+	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		SessionID:     "session_empty_terminal_step",
+		AttemptID:     "attempt_empty_terminal_step",
+		RunID:         "run_1",
+		NodeRunID:     "nr_1",
+		WorkspacePath: t.TempDir(),
+		Prompt:        "finish after tool work",
+		OccurredAt:    "2026-03-02T10:10:00Z",
+		Agent:         "planner",
+	})
+	if err == nil {
+		t.Fatal("expected empty terminal step to fail")
+	}
+	if res.OutputText != "" {
+		t.Fatalf("expected no fallback to nonterminal text, got %q", res.OutputText)
+	}
+	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
+		t.Fatalf("expected incomplete terminal outcome, got %#v", res.Outcome)
 	}
 }
 
@@ -3890,8 +3932,8 @@ func TestSessionAdapterPreservesContinuationObservedStateOnUpstreamError(t *test
 	if res.Outcome.ReasonCode != "provider_upstream_error" {
 		t.Fatalf("expected provider_upstream_error outcome, got %#v", res.Outcome)
 	}
-	if !strings.Contains(res.OutputText, "starting tool work") || !strings.Contains(res.OutputText, "continued before upstream error") {
-		t.Fatalf("expected continuation output to be preserved on upstream error, got %q", res.OutputText)
+	if res.OutputText != "continued before upstream error" {
+		t.Fatalf("expected terminal continuation output on upstream error, got %q", res.OutputText)
 	}
 	if res.Tokens.InputTokens != 4 || res.Tokens.OutputTokens != 6 || res.Tokens.TotalTokens != 10 {
 		t.Fatalf("expected continuation tokens to be preserved on upstream error, got %#v", res.Tokens)
@@ -4406,7 +4448,9 @@ PY
   echo "{\"type\":\"step_finish\"$SESSION_FIELD,\"part\":{\"reason\":\"tool-calls\"$TOKENS_SUFFIX}}"
   sleep "$GAP_SECONDS"
   echo "{\"type\":\"step_start\"$SESSION_FIELD}"
-  echo "{\"type\":\"text\"$SESSION_FIELD,\"part\":{\"text\":\"second step output\"}}"
+  if [ "$FAKE_OPENCODE_MULTI_STEP_EMPTY_TERMINAL" != "1" ]; then
+    echo "{\"type\":\"text\"$SESSION_FIELD,\"part\":{\"text\":\"second step output\"}}"
+  fi
   echo "{\"type\":\"step_finish\"$SESSION_FIELD,\"part\":{\"reason\":\"stop\"$TOKENS_SUFFIX}}"
   RECEIPT_FINAL_TEXT="second step output"
   export RECEIPT_FINAL_TEXT
