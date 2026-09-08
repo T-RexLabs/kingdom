@@ -2,8 +2,8 @@ package verdict
 
 import "testing"
 
-func TestFindNearTopAcceptsVerdictWithinFirstTwelveNonEmptyLines(t *testing.T) {
-	text := "Context\nVERDICT: PASS\nDetails"
+func TestFindNearTopRequiresVerdictAsFirstNonEmptyLine(t *testing.T) {
+	text := "\n\tVERDICT: PASS\nDetails"
 	got, found, err := FindNearTop(text)
 	if err != nil {
 		t.Fatalf("find verdict: %v", err)
@@ -23,14 +23,24 @@ func TestFindNearTopRejectsConflictingVerdicts(t *testing.T) {
 	}
 }
 
-func TestFindNearTopReturnsNotFoundWhenVerdictIsTooLate(t *testing.T) {
-	text := "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\nVERDICT: PASS"
+func TestFindNearTopRejectsVerdictAfterNonControlText(t *testing.T) {
+	text := "Context\nVERDICT: PASS"
 	got, found, err := FindNearTop(text)
 	if err != nil {
 		t.Fatalf("find verdict: %v", err)
 	}
 	if found || got != "" {
 		t.Fatalf("expected no verdict, got found=%t verdict=%q", found, got)
+	}
+}
+
+func TestFindNearTopRejectsDuplicateVerdictAfterBody(t *testing.T) {
+	_, found, err := FindNearTop("VERDICT: PASS\nDetails\nVERDICT: PASS")
+	if err != ErrMultipleVerdicts {
+		t.Fatalf("expected duplicate verdict error, got %v", err)
+	}
+	if found {
+		t.Fatal("expected duplicate verdicts not to resolve a verdict")
 	}
 }
 
@@ -58,7 +68,7 @@ func TestReceiptDecisionForNodeReturnsReworkFailureForExecutionReview(t *testing
 func TestReceiptDecisionForNodeReturnsReworkFailureForValidation(t *testing.T) {
 	t.Parallel()
 
-	decision, handled, err := ReceiptDecisionForNode("validation_gates_qa_scout", "", `{"verdict":"REWORK"}`, "ignored")
+	decision, handled, err := ReceiptDecisionForNode("validation_gates_qa_scout", "", `{"verdict":"REWORK"}`, "VERDICT: REWORK\nNeeds another pass.")
 	if err != nil {
 		t.Fatalf("receipt decision for validation: %v", err)
 	}
@@ -70,6 +80,18 @@ func TestReceiptDecisionForNodeReturnsReworkFailureForValidation(t *testing.T) {
 	}
 	if decision.FailureReasonText != "validation requested rework" {
 		t.Fatalf("expected concise validation failure text, got %#v", decision)
+	}
+}
+
+func TestReceiptDecisionForNodeRejectsStructuredVerdictThatConflictsWithText(t *testing.T) {
+	t.Parallel()
+
+	_, handled, err := ReceiptDecisionForNode("validation_gates_qa_scout", "", `{"verdict":"PASS"}`, "VERDICT: REWORK\nNeeds another pass.")
+	if !handled {
+		t.Fatal("expected validation receipt decision to be handled")
+	}
+	if err == nil {
+		t.Fatal("expected conflicting structured verdict to fail")
 	}
 }
 

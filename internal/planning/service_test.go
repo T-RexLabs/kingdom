@@ -58,7 +58,7 @@ func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessio
 
 // testSuccessMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
-// final text. There is no model-invoked completion receipt.
+// final text.
 func testSuccessMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
 		input.ProviderInvocation.OnProviderSession("provider-session-1")
@@ -493,8 +493,7 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 // through the real runner with the server-settling mockAgent (terminal success
 // outcome + non-empty assembled final text). It pins the new contract: the
 // assistant message is persisted, the op succeeds, and the canonical settlement
-// row is a success keyed on a stream_observation primary evidence row — there is
-// no model-invoked completion receipt.
+// row is keyed on a stream_observation primary evidence row.
 func TestServiceReplyOperationPersistsServerSettledSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -1651,10 +1650,6 @@ func TestRefreshContextReturnsErrSessionNotFoundForUnknownSession(t *testing.T) 
 	}
 }
 
-// TestRecoveryReplaysReceiptPersistedStuckOperationAsSuccess exercises the
-// stuck-op recovery path when the planner already persisted a valid receipt.
-// Recovery must treat the receipt as canonical success authority and replay
-// the normal finalize path rather than overwriting it as failure.
 // TestRecoveryFailsStuckRunningOperationAsFailed pins the new server-side
 // settlement contract: a planner reply still marked running after a restart
 // never reached the atomic FinalizeOperation transaction, so there is no
@@ -1704,14 +1699,12 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	}
 	// The invocation is created+opened but never settled: server-side success
 	// is only minted inside FinalizeOperation, which this abandoned op never
-	// reached. There is no receipt to accept anymore.
+	// reached.
 	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stuck_e2e",
 		PlanningOperationID:          "po_stuck_e2e",
 		PlanningSessionID:            "ps_stuck_e2e",
 		LogicalSessionID:             "planner-ps_stuck_e2e",
-		CompletionCapability:         "capability_stuck_e2e",
-		IssuedAt:                     "2026-04-26T08:55:02Z",
 		CreatedAt:                    "2026-04-26T08:55:02Z",
 	}); err != nil {
 		t.Fatalf("create provider invocation: %v", err)

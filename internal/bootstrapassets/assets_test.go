@@ -400,6 +400,57 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 	)
 }
 
+func TestWriteScaffoldRestrictsCompletionToolToBuilder(t *testing.T) {
+	t.Parallel()
+
+	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
+	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+		t.Fatalf("scaffold write: %v", err)
+	}
+
+	completionAuthority := map[string]bool{
+		"advisor.md":    false,
+		"builder.md":    true,
+		"chancellor.md": false,
+		"council.md":    false,
+		"king.md":       false,
+		"nightraven.md": false,
+		"planner.md":    false,
+		"qa_scout.md":   false,
+		"reviewer.md":   false,
+		"tester.md":     false,
+	}
+
+	managedProfiles, err := ListManagedOpenCodeAgentProfiles()
+	if err != nil {
+		t.Fatalf("list managed profiles: %v", err)
+	}
+	if len(managedProfiles) != len(completionAuthority) {
+		t.Fatalf("expected completion authority for every managed profile: got %d profiles, want %d", len(managedProfiles), len(completionAuthority))
+	}
+
+	for _, profile := range managedProfiles {
+		allowed, known := completionAuthority[profile]
+		if !known {
+			t.Fatalf("managed profile %s has no completion authority contract", profile)
+		}
+		profilePath := filepath.Join(kingdomHome, "opencode", "agents", profile)
+		raw, err := os.ReadFile(profilePath)
+		if err != nil {
+			t.Fatalf("read managed profile %s: %v", profile, err)
+		}
+		content := string(raw)
+
+		want := "kingdom_complete_attempt: false"
+		if allowed {
+			want = "kingdom_complete_attempt: true"
+		}
+		if strings.Count(content, "kingdom_complete_attempt:") != 1 || !strings.Contains(content, want) {
+			t.Fatalf("expected managed profile %s to declare %q", profile, want)
+		}
+	}
+}
+
 func TestWriteScaffoldNonBuilderProfilesDenyMarkdownEdits(t *testing.T) {
 	t.Parallel()
 

@@ -26,13 +26,14 @@ func TestSessionAdapterExecuteAndStream(t *testing.T) {
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_1",
-		AttemptID:     "attempt_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "hello world",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_1",
+		AttemptID:      "attempt_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "hello world",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -64,13 +65,14 @@ func TestSessionAdapterExecuteAndStream(t *testing.T) {
 	}
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_1",
-		AttemptID:     "attempt_2",
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "hello again",
-		OccurredAt:    "2026-03-02T10:00:01Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_1",
+		AttemptID:      "attempt_2",
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "hello again",
+		OccurredAt:     "2026-03-02T10:00:01Z",
 	})
 	if err != nil {
 		t.Fatalf("second execute: %v", err)
@@ -105,13 +107,14 @@ func TestFakeOpenCodeDoesNotEmitCompletionReceiptFromAmbientEnvironment(t *testi
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", receiptDir)
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_ambient_receipt_env",
-		AttemptID:     "attempt_ambient_receipt_env",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "ambient completion env must not trigger fake receipt emission",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_ambient_receipt_env",
+		AttemptID:      "attempt_ambient_receipt_env",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "ambient completion env must not trigger fake receipt emission",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -143,13 +146,14 @@ func TestSessionAdapterSetsConfiguredOpencodeConfigDir(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_config_dir_default",
-		AttemptID:     "attempt_config_dir_default",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "check config dir",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_config_dir_default",
+		AttemptID:      "attempt_config_dir_default",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "check config dir",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -176,13 +180,14 @@ func TestSessionAdapterSetsConfiguredOpencodeDatabasePath(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_database_path_default",
-		AttemptID:     "attempt_database_path_default",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "check database path",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_database_path_default",
+		AttemptID:      "attempt_database_path_default",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "check database path",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -213,13 +218,14 @@ func TestSessionAdapterPassesWorkspaceDirFlagForRunExecution(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_WRITE_CONTENT", "<html>ok</html>\n")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_workspace_dir",
-		AttemptID:     "attempt_workspace_dir",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: workspacePath,
-		Prompt:        "write deliverable",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_workspace_dir",
+		AttemptID:      "attempt_workspace_dir",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  workspacePath,
+		Prompt:         "write deliverable",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -256,14 +262,15 @@ func TestSessionAdapterRequestConfigDirOverridesDefault(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_config_dir_override",
-		AttemptID:     "attempt_config_dir_override",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		ConfigDir:     overrideConfigDir,
-		Prompt:        "check override config dir",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_config_dir_override",
+		AttemptID:      "attempt_config_dir_override",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		ConfigDir:      overrideConfigDir,
+		Prompt:         "check override config dir",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -295,14 +302,15 @@ func TestSessionAdapterRequestDatabasePathOverridesDefault(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_database_path_override",
-		AttemptID:     "attempt_database_path_override",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		DatabasePath:  overrideDatabasePath,
-		Prompt:        "check override database path",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_database_path_override",
+		AttemptID:      "attempt_database_path_override",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		DatabasePath:   overrideDatabasePath,
+		Prompt:         "check override database path",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -333,13 +341,14 @@ func TestSessionAdapterSetsConfiguredOpencodeInlineConfigContent(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_inline_config_default",
-		AttemptID:     "attempt_inline_config_default",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "check inline config",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_inline_config_default",
+		AttemptID:      "attempt_inline_config_default",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "check inline config",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -391,6 +400,7 @@ func TestSessionAdapterRequiresCompletionReceiptWhenReceiptModeEnabled(t *testin
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_required",
 		AttemptID:                 "attempt_receipt_required",
 		RunID:                     "run_1",
@@ -430,6 +440,7 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	receiptDir := t.TempDir()
 	receipts := make([]CompletionReceipt, 0, 1)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_success",
 		AttemptID:                 "attempt_receipt_success",
 		RunID:                     "run_1",
@@ -488,216 +499,6 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	}
 }
 
-func TestSessionAdapterRecoversMissingCompletionReceiptInSameSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	receiptDir := t.TempDir()
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	enableFakeOpenCodeCompletionReceipt(t)
-	receipts := make([]CompletionReceipt, 0, 1)
-	activities := make([]ExecuteActivityObservation, 0, 4)
-	progressTexts := make([]string, 0, 1)
-	t.Setenv("FAKE_OPENCODE_TEXT", "hello from fake")
-	t.Setenv("FAKE_OPENCODE_STDOUT_BANNER", `{"type":"tool_use","sessionID":"ses_receipt_recovery","part":{"type":"tool","tool":"webfetch","id":"prt_recovery_tool_1","state":{"status":"completed","title":"https://example.com","input":{"url":"https://example.com"}}}`)
-	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
-		SessionID:                 "session_receipt_recovery",
-		ProviderSessionID:         "ses_receipt_recovery",
-		AttemptID:                 "attempt_receipt_recovery",
-		RunID:                     "run_1",
-		NodeRunID:                 "nr_1",
-		WorkspacePath:             t.TempDir(),
-		Prompt:                    "completion receipt recovery",
-		OccurredAt:                "2026-03-02T10:00:00Z",
-		InvocationID:              "invocation_receipt_recovery",
-		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
-		CompletionProtocolVersion: CompletionProtocolVersion,
-		CompletionCapability:      "capability_receipt_recovery",
-		CompletionReceiptDir:      receiptDir,
-		OnActivity: func(activity ExecuteActivityObservation) {
-			activities = append(activities, activity)
-		},
-		OnProgress: func(text string) {
-			progressTexts = append(progressTexts, text)
-		},
-		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-			receipts = append(receipts, receipt)
-			return CompletionReceiptAcceptance{
-				EvidenceID:            "evidence_receipt_recovery",
-				FinalText:             receipt.FinalText,
-				StructuredPayloadJSON: receipt.StructuredPayloadJSON,
-			}, nil
-		},
-	}, "hello from fake")
-	if err != nil {
-		t.Fatalf("recover missing completion receipt: %v", err)
-	}
-	if !res.CompletionReceiptAccepted {
-		t.Fatal("expected completion recovery receipt to be accepted")
-	}
-	if res.CompletionReceiptEvidenceID != "evidence_receipt_recovery" {
-		t.Fatalf("expected recovery evidence id, got %q", res.CompletionReceiptEvidenceID)
-	}
-	if len(receipts) != 1 {
-		t.Fatalf("expected one recovery receipt, got %d", len(receipts))
-	}
-	if receipts[0].FinalText != "hello from fake" {
-		t.Fatalf("expected recovery final_text to round-trip, got %#v", receipts[0])
-	}
-	if len(activities) == 0 {
-		t.Fatal("expected completion recovery to emit provider activity")
-	}
-	if activities[0].Kind != ExecuteActivityKindProgress {
-		t.Fatalf("expected recovery to surface live activity callbacks, got %#v", activities)
-	}
-	if len(progressTexts) != 1 || progressTexts[0] != "hello from fake" {
-		t.Fatalf("expected completion recovery to emit streamed progress text, got %#v", progressTexts)
-	}
-
-	argsLogRaw, err := os.ReadFile(argsLogPath)
-	if err != nil {
-		t.Fatalf("read args log: %v", err)
-	}
-	if !strings.Contains(string(argsLogRaw), "--session ses_receipt_recovery") {
-		t.Fatalf("expected recovery run to reuse provider session, args=%q", string(argsLogRaw))
-	}
-	promptRaw, err := os.ReadFile(argsLogPath + ".ses_receipt_recovery.prompt")
-	if err != nil {
-		t.Fatalf("read recovery prompt log: %v", err)
-	}
-	if !strings.Contains(string(promptRaw), "Do not change your prior answer.") {
-		t.Fatalf("expected recovery prompt instructions, got %q", string(promptRaw))
-	}
-}
-
-func TestSessionAdapterCompletionRecoveryDrainsLargeStderrWhileStdoutRemainsOpen(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_LARGE_STDERR_BYTES", "1048576")
-	t.Setenv("FAKE_OPENCODE_LARGE_STDERR_MARKER", "recovery-stderr-complete")
-	enableFakeOpenCodeCompletionReceipt(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	res, err := adapter.RecoverMissingCompletionReceipt(ctx, ExecuteRequest{
-		SessionID:                 "session_recovery_large_stderr",
-		ProviderSessionID:         "ses_recovery_large_stderr",
-		AttemptID:                 "attempt_recovery_large_stderr",
-		RunID:                     "run_1",
-		NodeRunID:                 "nr_1",
-		WorkspacePath:             t.TempDir(),
-		Prompt:                    "recover receipt after draining large stderr",
-		OccurredAt:                "2026-03-02T10:00:00Z",
-		InvocationID:              "invocation_recovery_large_stderr",
-		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
-		CompletionProtocolVersion: CompletionProtocolVersion,
-		CompletionCapability:      "capability_recovery_large_stderr",
-		CompletionReceiptDir:      t.TempDir(),
-		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-			return CompletionReceiptAcceptance{EvidenceID: "evidence_recovery_large_stderr", FinalText: receipt.FinalText}, nil
-		},
-	}, "hello from fake")
-	if err != nil {
-		t.Fatalf("recover completion receipt with large stderr: %v", err)
-	}
-	if !res.CompletionReceiptAccepted || res.CompletionReceiptEvidenceID != "evidence_recovery_large_stderr" {
-		t.Fatalf("expected receipt-backed recovery settlement, got %#v", res)
-	}
-	assertProviderDiagnosticsStderr(t, res.ProviderDiagnosticsJSON, "recovery-stderr-complete")
-}
-
-func TestSessionAdapterRecoveryRejectsChangedFinalText(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_TEXT", "different recovery text")
-	enableFakeOpenCodeCompletionReceipt(t)
-	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
-		SessionID:                 "session_receipt_recovery_changed",
-		ProviderSessionID:         "ses_receipt_recovery_changed",
-		AttemptID:                 "attempt_receipt_recovery_changed",
-		RunID:                     "run_1",
-		NodeRunID:                 "nr_1",
-		WorkspacePath:             t.TempDir(),
-		Prompt:                    "completion receipt recovery",
-		OccurredAt:                "2026-03-02T10:00:00Z",
-		InvocationID:              "invocation_receipt_recovery_changed",
-		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
-		CompletionProtocolVersion: CompletionProtocolVersion,
-		CompletionCapability:      "capability_receipt_recovery_changed",
-		CompletionReceiptDir:      t.TempDir(),
-		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-			return CompletionReceiptAcceptance{EvidenceID: "should_not_accept"}, nil
-		},
-	}, "original final text")
-	if err == nil {
-		t.Fatal("expected changed recovery final_text to fail")
-	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if res.CompletionReceiptEvidenceID != "" {
-		t.Fatalf("expected no accepted receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
-	}
-}
-
-func TestSessionAdapterRecoveryNonZeroExitPrefersStructuredUpstreamError(t *testing.T) {
-	const structuredCause = "Forbidden: unauthorized: not licensed to use Copilot"
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_STRUCTURED_ERROR_EXIT", "1")
-	t.Setenv("FAKE_OPENCODE_ERROR_STDERR", "transport wrapper: opaque recovery failure")
-	res, err := adapter.RecoverMissingCompletionReceipt(context.Background(), ExecuteRequest{
-		SessionID:                 "session_receipt_recovery_upstream_error",
-		ProviderSessionID:         "ses_receipt_recovery_upstream_error",
-		AttemptID:                 "attempt_receipt_recovery_upstream_error",
-		RunID:                     "run_1",
-		NodeRunID:                 "nr_1",
-		WorkspacePath:             t.TempDir(),
-		Prompt:                    "completion receipt recovery",
-		OccurredAt:                "2026-03-02T10:00:00Z",
-		InvocationID:              "invocation_receipt_recovery_upstream_error",
-		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
-		CompletionProtocolVersion: CompletionProtocolVersion,
-		CompletionCapability:      "capability_receipt_recovery_upstream_error",
-		CompletionReceiptDir:      t.TempDir(),
-		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-			return CompletionReceiptAcceptance{}, nil
-		},
-	}, "original final text")
-	if err == nil {
-		t.Fatal("expected structured provider failure during completion recovery")
-	}
-	if !strings.Contains(err.Error(), structuredCause) || strings.Contains(err.Error(), "opaque recovery failure") {
-		t.Fatalf("expected recovery error to preserve only structured cause, got %v", err)
-	}
-	if res.Outcome.ReasonCode != "provider_upstream_error" || res.Outcome.FailureText != structuredCause {
-		t.Fatalf("expected structured recovery outcome, got %#v", res.Outcome)
-	}
-}
-
 func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
@@ -709,13 +510,14 @@ func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) 
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_process_failure_diagnostics",
-		AttemptID:     "attempt_process_failure_diagnostics",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "process failure diagnostics",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_process_failure_diagnostics",
+		AttemptID:      "attempt_process_failure_diagnostics",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "process failure diagnostics",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err == nil {
 		t.Fatal("expected process failure to return an error")
@@ -755,6 +557,7 @@ func TestSessionAdapterLeavesReceiptFileWhenAcceptanceFails(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	enableFakeOpenCodeCompletionReceipt(t)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_retryable_error",
 		AttemptID:                 "attempt_receipt_retryable_error",
 		RunID:                     "run_1",
@@ -810,6 +613,7 @@ func TestSessionAdapterContinuesPastRejectedReceiptFileToLaterAcceptedReceipt(t 
 	enableFakeOpenCodeCompletionReceipt(t)
 	seenReceipts := make([]string, 0, 2)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_rejected_then_valid",
 		AttemptID:                 "attempt_receipt_rejected_then_valid",
 		RunID:                     "run_1",
@@ -882,6 +686,7 @@ func TestSessionAdapterInvalidatesAcceptedReceiptWhenLaterReceiptConflicts(t *te
 	enableFakeOpenCodeCompletionReceipt(t)
 	seenReceipts := make([]string, 0, 2)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_conflict_after_accept",
 		AttemptID:                 "attempt_receipt_conflict_after_accept",
 		RunID:                     "run_1",
@@ -974,6 +779,7 @@ func TestSessionAdapterInvalidatesReceiptWhenConflictArrivesDuringQuiescenceWind
 
 	seenReceipts := make([]string, 0, 2)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_conflict_quiescence",
 		AttemptID:                 "attempt_receipt_conflict_quiescence",
 		RunID:                     "run_1",
@@ -1052,6 +858,7 @@ func TestSessionAdapterAcceptsIdempotentDuplicateDuringQuiescenceWindow(t *testi
 	seenReceipts := make([]string, 0, 2)
 	acceptCount := 0
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_duplicate_quiescence",
 		AttemptID:                 "attempt_receipt_duplicate_quiescence",
 		RunID:                     "run_1",
@@ -1099,6 +906,7 @@ func TestSessionAdapterAcceptedReceiptWinsOverPostReceiptWatchdogTimeout(t *test
 	t.Setenv("FAKE_OPENCODE_STALL_AFTER_STEP_FINISH", "1")
 	enableFakeOpenCodeCompletionReceipt(t)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_timeout_precedence",
 		AttemptID:                 "attempt_receipt_timeout_precedence",
 		RunID:                     "run_1",
@@ -1142,6 +950,7 @@ func TestSessionAdapterRequiresDurableReceiptAcceptance(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	enableFakeOpenCodeCompletionReceipt(t)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_zero_acceptance",
 		AttemptID:                 "attempt_receipt_zero_acceptance",
 		RunID:                     "run_1",
@@ -1175,8 +984,6 @@ func TestSessionAdapterAcceptedReceiptIgnores65536ByteTruncatedExport(t *testing
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1185,6 +992,7 @@ func TestSessionAdapterAcceptedReceiptIgnores65536ByteTruncatedExport(t *testing
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	enableFakeOpenCodeCompletionReceipt(t)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_truncated_export",
 		AttemptID:                 "attempt_receipt_truncated_export",
 		RunID:                     "run_1",
@@ -1249,6 +1057,7 @@ func TestSessionAdapterAcceptsCompletionReceiptAcrossToolCallContinuation(t *tes
 	receipts := make([]CompletionReceipt, 0, 1)
 	progressTexts := make([]string, 0, 2)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_tool_calls",
 		AttemptID:                 "attempt_receipt_tool_calls",
 		RunID:                     "run_1",
@@ -1335,6 +1144,7 @@ func TestSessionAdapterContinuationDrainsLargeStderrWhileStdoutRemainsOpen(t *te
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	res, err := adapter.Execute(ctx, ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_continuation_large_stderr",
 		AttemptID:                 "attempt_continuation_large_stderr",
 		RunID:                     "run_1",
@@ -1377,6 +1187,7 @@ func TestSessionAdapterFailsReceiptRequiredToolCallContinuationWithoutReceipt(t 
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
 		SessionID:                 "session_receipt_tool_calls_missing",
 		AttemptID:                 "attempt_receipt_tool_calls_missing",
 		RunID:                     "run_1",
@@ -1416,13 +1227,14 @@ func TestSessionAdapterExecuteReportsObservedProviderSession(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_observed_1")
 	observed := make([]string, 0, 1)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_observed",
-		AttemptID:     "attempt_observed",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "observe provider session",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_observed",
+		AttemptID:      "attempt_observed",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "observe provider session",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 		OnProviderSession: func(sessionID string) {
 			observed = append(observed, sessionID)
 		},
@@ -1444,6 +1256,7 @@ func TestSessionAdapterExecuteUsesExplicitProviderSessionIDWhenLogicalMapCold(t 
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:    CompletionModeServerResponse,
 		SessionID:         "session_logical_only",
 		ProviderSessionID: "ses_persisted_resume",
 		AttemptID:         "attempt_resume_provider_session",
@@ -1480,6 +1293,7 @@ func TestSessionAdapterExecuteReportsObservedProviderSessionWhenSameAsPersisted(
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_persisted_resume")
 	observed := make([]string, 0, 1)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:    CompletionModeServerResponse,
 		SessionID:         "session_logical_only",
 		ProviderSessionID: "ses_persisted_resume",
 		AttemptID:         "attempt_resume_provider_session_observed",
@@ -1512,6 +1326,7 @@ func TestSessionAdapterForceNewSessionObservesAndReusesRotatedProviderSession(t 
 	execReq := func(attemptID, occurredAt string, forceNew bool) {
 		t.Helper()
 		_, execErr := adapter.Execute(context.Background(), ExecuteRequest{
+			CompletionMode:  CompletionModeServerResponse,
 			SessionID:       "session_rotation",
 			AttemptID:       attemptID,
 			RunID:           "run_1",
@@ -1560,6 +1375,7 @@ func TestSessionAdapterDistinctLogicalSessionsKeepIndependentProviderSessions(t 
 		t.Helper()
 		t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", emittedSessionID)
 		_, execErr := adapter.Execute(context.Background(), ExecuteRequest{
+			CompletionMode:  CompletionModeServerResponse,
 			SessionID:       sessionID,
 			AttemptID:       attemptID,
 			RunID:           "run_1",
@@ -1610,13 +1426,14 @@ func TestSessionAdapterCancelInFlightAttempt(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, execErr := adapter.Execute(context.Background(), ExecuteRequest{
-			SessionID:     "session_cancel",
-			AttemptID:     "attempt_cancel",
-			RunID:         "run_1",
-			NodeRunID:     "nr_cancel",
-			WorkspacePath: t.TempDir(),
-			Prompt:        "long running",
-			OccurredAt:    "2026-03-02T10:01:00Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_cancel",
+			AttemptID:      "attempt_cancel",
+			RunID:          "run_1",
+			NodeRunID:      "nr_cancel",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "long running",
+			OccurredAt:     "2026-03-02T10:01:00Z",
 		})
 		errCh <- execErr
 	}()
@@ -1679,13 +1496,14 @@ func TestSessionAdapterCancelKillsSpawnedChildProcesses(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, execErr := adapter.Execute(context.Background(), ExecuteRequest{
-			SessionID:     "session_child_cancel",
-			AttemptID:     "attempt_child_cancel",
-			RunID:         "run_1",
-			NodeRunID:     "nr_child_cancel",
-			WorkspacePath: t.TempDir(),
-			Prompt:        "spawn child and block",
-			OccurredAt:    "2026-03-02T10:05:00Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_child_cancel",
+			AttemptID:      "attempt_child_cancel",
+			RunID:          "run_1",
+			NodeRunID:      "nr_child_cancel",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "spawn child and block",
+			OccurredAt:     "2026-03-02T10:05:00Z",
 		})
 		errCh <- execErr
 	}()
@@ -1732,13 +1550,14 @@ func TestSessionAdapterContextCancellationKillsSpawnedChildProcesses(t *testing.
 	errCh := make(chan error, 1)
 	go func() {
 		_, execErr := adapter.Execute(ctx, ExecuteRequest{
-			SessionID:     "session_child_ctx_cancel",
-			AttemptID:     "attempt_child_ctx_cancel",
-			RunID:         "run_1",
-			NodeRunID:     "nr_child_ctx_cancel",
-			WorkspacePath: t.TempDir(),
-			Prompt:        "spawn child and cancel context",
-			OccurredAt:    "2026-03-02T10:06:00Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_child_ctx_cancel",
+			AttemptID:      "attempt_child_ctx_cancel",
+			RunID:          "run_1",
+			NodeRunID:      "nr_child_ctx_cancel",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "spawn child and cancel context",
+			OccurredAt:     "2026-03-02T10:06:00Z",
 		})
 		errCh <- execErr
 	}()
@@ -1777,16 +1596,17 @@ func TestSessionAdapterExecuteUsesRequestModelVariantAndAgentOverrides(t *testin
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_override",
-		AttemptID:     "attempt_override",
-		RunID:         "run_1",
-		NodeRunID:     "nr_override",
-		Model:         "OpenAI EU/gpt-5.3-codex",
-		Variant:       "high",
-		Agent:         "advisor",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "hello override",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_override",
+		AttemptID:      "attempt_override",
+		RunID:          "run_1",
+		NodeRunID:      "nr_override",
+		Model:          "OpenAI EU/gpt-5.3-codex",
+		Variant:        "high",
+		Agent:          "advisor",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "hello override",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -1820,13 +1640,14 @@ func TestSessionAdapterExecuteAddsSkipPermissionsFlagWhenEnabled(t *testing.T) {
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_skip_permissions",
-		AttemptID:     "attempt_skip_permissions",
-		RunID:         "run_1",
-		NodeRunID:     "nr_skip_permissions",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "hello skip permissions",
-		OccurredAt:    "2026-03-02T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_skip_permissions",
+		AttemptID:      "attempt_skip_permissions",
+		RunID:          "run_1",
+		NodeRunID:      "nr_skip_permissions",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "hello skip permissions",
+		OccurredAt:     "2026-03-02T10:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -1857,13 +1678,14 @@ func TestSessionAdapterFirstEventTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_SLEEP_MS", "3000")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_timeout_first",
-		AttemptID:     "attempt_timeout_first",
-		RunID:         "run_1",
-		NodeRunID:     "nr_timeout_first",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger no output",
-		OccurredAt:    "2026-03-03T10:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_timeout_first",
+		AttemptID:      "attempt_timeout_first",
+		RunID:          "run_1",
+		NodeRunID:      "nr_timeout_first",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger no output",
+		OccurredAt:     "2026-03-03T10:00:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "first_event_timeout") {
 		t.Fatalf("expected first_event_timeout error, got %v", err)
@@ -1933,13 +1755,14 @@ func TestSessionAdapterFirstEventTimeoutIgnoresWhitespaceStdout(t *testing.T) {
 
 	started := time.Now()
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_timeout_whitespace",
-		AttemptID:     "attempt_timeout_whitespace",
-		RunID:         "run_1",
-		NodeRunID:     "nr_timeout_whitespace",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger whitespace before first event",
-		OccurredAt:    "2026-03-03T10:00:30Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_timeout_whitespace",
+		AttemptID:      "attempt_timeout_whitespace",
+		RunID:          "run_1",
+		NodeRunID:      "nr_timeout_whitespace",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger whitespace before first event",
+		OccurredAt:     "2026-03-03T10:00:30Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "first_event_timeout") {
 		t.Fatalf("expected first_event_timeout error, got %v", err)
@@ -1964,13 +1787,14 @@ func TestSessionAdapterFirstEventTimeoutIgnoresPartialJSONStdout(t *testing.T) {
 
 	started := time.Now()
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_timeout_partial_json",
-		AttemptID:     "attempt_timeout_partial_json",
-		RunID:         "run_1",
-		NodeRunID:     "nr_timeout_partial_json",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger partial json before first event",
-		OccurredAt:    "2026-03-03T10:00:45Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_timeout_partial_json",
+		AttemptID:      "attempt_timeout_partial_json",
+		RunID:          "run_1",
+		NodeRunID:      "nr_timeout_partial_json",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger partial json before first event",
+		OccurredAt:     "2026-03-03T10:00:45Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "first_event_timeout") {
 		t.Fatalf("expected first_event_timeout error, got %v", err)
@@ -1995,13 +1819,14 @@ func TestSessionAdapterStreamInactivityTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_SLEEP_MS", "3000")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_timeout_stream",
-		AttemptID:     "attempt_timeout_stream",
-		RunID:         "run_1",
-		NodeRunID:     "nr_timeout_stream",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger stream stall",
-		OccurredAt:    "2026-03-03T10:01:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_timeout_stream",
+		AttemptID:      "attempt_timeout_stream",
+		RunID:          "run_1",
+		NodeRunID:      "nr_timeout_stream",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger stream stall",
+		OccurredAt:     "2026-03-03T10:01:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "stream_inactivity_timeout") {
 		t.Fatalf("expected stream_inactivity_timeout error, got %v", err)
@@ -2071,13 +1896,14 @@ func TestSessionAdapterLongRunWithHeartbeatEventsDoesNotTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_HEARTBEAT_SLEEP", "0.05")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_heartbeat",
-		AttemptID:     "attempt_heartbeat",
-		RunID:         "run_1",
-		NodeRunID:     "nr_heartbeat",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "long compute with periodic heartbeat",
-		OccurredAt:    "2026-03-03T10:02:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_heartbeat",
+		AttemptID:      "attempt_heartbeat",
+		RunID:          "run_1",
+		NodeRunID:      "nr_heartbeat",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "long compute with periodic heartbeat",
+		OccurredAt:     "2026-03-03T10:02:00Z",
 	})
 	if err != nil {
 		t.Fatalf("expected successful execute under heartbeat, got %v", err)
@@ -2132,13 +1958,14 @@ func TestSessionAdapterWaitsForFinalStopAfterToolCallsBoundary(t *testing.T) {
 
 	progress := make([]string, 0, 2)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_boundary",
-		AttemptID:     "attempt_tool_calls_boundary",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "run multiple steps",
-		OccurredAt:    "2026-03-02T10:10:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_boundary",
+		AttemptID:      "attempt_tool_calls_boundary",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "run multiple steps",
+		OccurredAt:     "2026-03-02T10:10:00Z",
 		OnProgress: func(text string) {
 			progress = append(progress, text)
 		},
@@ -2181,14 +2008,15 @@ func TestSessionAdapterRejectsEmptyTerminalStepOutput(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_MULTI_STEP_EMPTY_TERMINAL", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_empty_terminal_step",
-		AttemptID:     "attempt_empty_terminal_step",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "finish after tool work",
-		OccurredAt:    "2026-03-02T10:10:00Z",
-		Agent:         "planner",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_empty_terminal_step",
+		AttemptID:      "attempt_empty_terminal_step",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "finish after tool work",
+		OccurredAt:     "2026-03-02T10:10:00Z",
+		Agent:          "planner",
 	})
 	if err == nil {
 		t.Fatal("expected empty terminal step to fail")
@@ -2218,13 +2046,14 @@ func TestSessionAdapterSettlesAcrossToolCallsProcessBoundary(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_continue",
-		AttemptID:     "attempt_tool_calls_continue",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "cross process boundary and continue",
-		OccurredAt:    "2026-03-02T10:19:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_continue",
+		AttemptID:      "attempt_tool_calls_continue",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "cross process boundary and continue",
+		OccurredAt:     "2026-03-02T10:19:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute should continue across tool-calls boundary: %v", err)
@@ -2238,23 +2067,21 @@ func TestSessionAdapterSettlesAcrossToolCallsProcessBoundary(t *testing.T) {
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations != 1 {
-		t.Fatalf("expected pre-continuation reconciliation to settle without a second run invocation, got %d args=%q", invocations, string(argsLogRaw))
+	if invocations != 2 {
+		t.Fatalf("expected one live-stream continuation, got %d run invocations args=%q", invocations, string(argsLogRaw))
 	}
-	if !strings.Contains(string(argsLogRaw), "export ses_fake_created") {
-		t.Fatalf("expected provider export reconciliation to confirm the settled turn, args=%q", string(argsLogRaw))
+	if strings.Contains(string(argsLogRaw), "export ses_fake_created") {
+		t.Fatalf("export must not participate in completion authority, args=%q", string(argsLogRaw))
 	}
 }
 
-func TestSessionAdapterSkipsContinuationWhenExportAlreadySettledAfterToolCalls(t *testing.T) {
+func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_tool_calls_pre_resolved", "invocation_tool_calls_settled", "canonical settled output"))}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2264,23 +2091,18 @@ func TestSessionAdapterSkipsContinuationWhenExportAlreadySettledAfterToolCalls(t
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_pre_resolved",
-		AttemptID:     "attempt_tool_calls_pre_resolved",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "tool calls but export already settled",
-		OccurredAt:    "2026-03-02T10:19:10Z",
-		InvocationID:  "invocation_tool_calls_settled",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_pre_resolved",
+		AttemptID:      "attempt_tool_calls_pre_resolved",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "tool calls but export already settled",
+		OccurredAt:     "2026-03-02T10:19:10Z",
+		InvocationID:   "invocation_tool_calls_settled",
 	})
-	if err != nil {
-		t.Fatalf("execute should short-circuit from export before continuation: %v", err)
-	}
-	if res.OutputText != "canonical settled output" {
-		t.Fatalf("expected canonical export output, got %q", res.OutputText)
-	}
-	if res.Outcome.EvidenceSource != string(completionEvidenceSourceExport) {
-		t.Fatalf("expected export evidence source, got %#v", res.Outcome)
+	if err == nil {
+		t.Fatalf("export must not settle an incomplete live stream, got %#v", res)
 	}
 
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
@@ -2288,11 +2110,11 @@ func TestSessionAdapterSkipsContinuationWhenExportAlreadySettledAfterToolCalls(t
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations != 1 {
-		t.Fatalf("expected pre-continuation export reconciliation to avoid a second run invocation, got %d args=%q", invocations, string(argsLogRaw))
+	if invocations != 3 {
+		t.Fatalf("expected only bounded live-stream continuations, got %d args=%q", invocations, string(argsLogRaw))
 	}
-	if len(exporter.providerSessionIDs) != 1 || exporter.providerSessionIDs[0] != "ses_fake_created" {
-		t.Fatalf("expected export reconciliation to use observed provider session id, got %#v", exporter.providerSessionIDs)
+	if len(exporter.providerSessionIDs) != 0 {
+		t.Fatalf("export must not be read for completion, got %#v", exporter.providerSessionIDs)
 	}
 }
 
@@ -2306,8 +2128,6 @@ func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalform
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2323,13 +2143,14 @@ func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalform
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_CONTINUATION_TEXT", continuedVerdict)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_malformed_export",
-		AttemptID:     "attempt_tool_calls_malformed_export",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "tool calls continuation with malformed export",
-		OccurredAt:    "2026-03-02T10:19:20Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_malformed_export",
+		AttemptID:      "attempt_tool_calls_malformed_export",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "tool calls continuation with malformed export",
+		OccurredAt:     "2026-03-02T10:19:20Z",
 	})
 	if err != nil {
 		t.Fatalf("execute should fall back to stream success after malformed export: %v", err)
@@ -2352,8 +2173,8 @@ func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalform
 	if invocations != 2 {
 		t.Fatalf("expected exactly 2 run invocations across the continuation boundary, got %d args=%q", invocations, string(argsLogRaw))
 	}
-	if len(exporter.exportModes) != 2 || exporter.exportModes[0] != sessionExportModeRaw || exporter.exportModes[1] != sessionExportModeSanitized {
-		t.Fatalf("expected raw then sanitized malformed precheck export attempts, got %#v", exporter.exportModes)
+	if len(exporter.exportModes) != 0 {
+		t.Fatalf("export must not be read before continuation, got %#v", exporter.exportModes)
 	}
 }
 
@@ -2378,13 +2199,14 @@ func TestSessionAdapterCancelDuringContinuationStopsExecute(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		_, execErr := adapter.Execute(context.Background(), ExecuteRequest{
-			SessionID:     "session_cancel_during_continuation",
-			AttemptID:     "attempt_cancel_during_continuation",
-			RunID:         "run_1",
-			NodeRunID:     "nr_1",
-			WorkspacePath: t.TempDir(),
-			Prompt:        "cross process boundary and stall continuation",
-			OccurredAt:    "2026-03-02T10:19:30Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_cancel_during_continuation",
+			AttemptID:      "attempt_cancel_during_continuation",
+			RunID:          "run_1",
+			NodeRunID:      "nr_1",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "cross process boundary and stall continuation",
+			OccurredAt:     "2026-03-02T10:19:30Z",
 		})
 		errCh <- execErr
 	}()
@@ -2453,13 +2275,14 @@ func TestSessionAdapterContinuesAcrossUnknownFinishReason(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_unknown_continue",
-		AttemptID:     "attempt_unknown_continue",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "cross unknown boundary and continue",
-		OccurredAt:    "2026-03-03T11:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_unknown_continue",
+		AttemptID:      "attempt_unknown_continue",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "cross unknown boundary and continue",
+		OccurredAt:     "2026-03-03T11:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute should continue across unknown boundary: %v", err)
@@ -2489,13 +2312,14 @@ func TestSessionAdapterContinuationWatchdogCoversPostStdoutEOF(t *testing.T) {
 
 	started := time.Now()
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_continuation_post_eof",
-		AttemptID:     "attempt_continuation_post_eof",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger continuation stdout eof then process stall",
-		OccurredAt:    "2026-03-03T11:05:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_continuation_post_eof",
+		AttemptID:      "attempt_continuation_post_eof",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger continuation stdout eof then process stall",
+		OccurredAt:     "2026-03-03T11:05:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "stream_inactivity_timeout") {
 		t.Fatalf("expected stream_inactivity_timeout error, got %v", err)
@@ -2524,13 +2348,14 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_STALL_AFTER_FIRST", "1")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_timeout_continuation_stream",
-		AttemptID:     "attempt_timeout_continuation_stream",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "trigger continuation stream stall",
-		OccurredAt:    "2026-03-03T10:10:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_timeout_continuation_stream",
+		AttemptID:      "attempt_timeout_continuation_stream",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "trigger continuation stream stall",
+		OccurredAt:     "2026-03-03T10:10:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "stream_inactivity_timeout") {
 		t.Fatalf("expected stream_inactivity_timeout error, got %v", err)
@@ -2549,7 +2374,6 @@ func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
 		MaxContinuationTurns:    2,
-		ReconcileTotalTimeout:   time.Nanosecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2559,13 +2383,14 @@ func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_boundary_max_turns",
-		AttemptID:     "attempt_tool_calls_boundary_max_turns",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "emit tool-calls finish until turns exhausted",
-		OccurredAt:    "2026-03-02T10:20:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_boundary_max_turns",
+		AttemptID:      "attempt_tool_calls_boundary_max_turns",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "emit tool-calls finish until turns exhausted",
+		OccurredAt:     "2026-03-02T10:20:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "incomplete terminal state") {
 		t.Fatalf("expected incomplete terminal state error, got %v", err)
@@ -2587,7 +2412,6 @@ func TestSessionAdapterRejectsToolCallsOnlyFinishAsIncomplete(t *testing.T) {
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2597,13 +2421,14 @@ func TestSessionAdapterRejectsToolCallsOnlyFinishAsIncomplete(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_tool_calls_only",
-		AttemptID:     "attempt_tool_calls_only",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "emit tool-calls finish and exit",
-		OccurredAt:    "2026-03-02T10:20:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_tool_calls_only",
+		AttemptID:      "attempt_tool_calls_only",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "emit tool-calls finish and exit",
+		OccurredAt:     "2026-03-02T10:20:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "incomplete terminal state") {
 		t.Fatalf("expected incomplete terminal state error, got %v", err)
@@ -2637,13 +2462,14 @@ func TestSessionAdapterFailsWhenStepFinishReasonIsError(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_REASON", "error")
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_finish_error",
-		AttemptID:     "attempt_finish_error",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "emit finish error",
-		OccurredAt:    "2026-03-02T10:21:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_finish_error",
+		AttemptID:      "attempt_finish_error",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "emit finish error",
+		OccurredAt:     "2026-03-02T10:21:00Z",
 	})
 	if err == nil || !strings.Contains(err.Error(), "terminal failure reason") {
 		t.Fatalf("expected terminal failure reason error, got %v", err)
@@ -2677,13 +2503,14 @@ func TestSessionAdapterHandlesLargeToolEventWithoutScannerOverflow(t *testing.T)
 	t.Setenv("FAKE_OPENCODE_LARGE_TOOL_EVENT_BYTES", "3145728")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_large_tool_event",
-		AttemptID:     "attempt_large_tool_event",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "emit large tool event",
-		OccurredAt:    "2026-03-02T10:21:15Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_large_tool_event",
+		AttemptID:      "attempt_large_tool_event",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "emit large tool event",
+		OccurredAt:     "2026-03-02T10:21:15Z",
 	})
 	if err != nil {
 		t.Fatalf("expected successful execute with large tool event, got %v", err)
@@ -2712,8 +2539,6 @@ func TestSessionAdapterStopFinishSettlesStreamSuccessWithoutExportConfirmation(t
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2721,13 +2546,14 @@ func TestSessionAdapterStopFinishSettlesStreamSuccessWithoutExportConfirmation(t
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_stop_confirmation",
-		AttemptID:     "attempt_stop_confirmation",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "require durable export confirmation",
-		OccurredAt:    "2026-03-02T10:21:30Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_stop_confirmation",
+		AttemptID:      "attempt_stop_confirmation",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "require durable export confirmation",
+		OccurredAt:     "2026-03-02T10:21:30Z",
 	})
 	if err != nil {
 		t.Fatalf("expected clear stream success to survive malformed export, got %v", err)
@@ -2774,12 +2600,11 @@ func TestSessionAdapterRequiredReconcileCancellationReturnsCancelled(t *testing.
 		<-ctx.Done()
 		return sessionExportResult{}, ctx.Err()
 	}}
+	_ = exporter
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2798,13 +2623,14 @@ func TestSessionAdapterRequiredReconcileCancellationReturnsCancelled(t *testing.
 	resultCh := make(chan executeResult, 1)
 	go func() {
 		res, execErr := adapter.Execute(ctx, ExecuteRequest{
-			SessionID:     "session_required_reconcile_cancel",
-			AttemptID:     "attempt_required_reconcile_cancel",
-			RunID:         "run_1",
-			NodeRunID:     "nr_1",
-			WorkspacePath: workspacePath,
-			Prompt:        "tool calls then cancel required reconcile",
-			OccurredAt:    "2026-03-02T10:21:34Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_required_reconcile_cancel",
+			AttemptID:      "attempt_required_reconcile_cancel",
+			RunID:          "run_1",
+			NodeRunID:      "nr_1",
+			WorkspacePath:  workspacePath,
+			Prompt:         "tool calls then cancel required reconcile",
+			OccurredAt:     "2026-03-02T10:21:34Z",
 		})
 		resultCh <- executeResult{response: res, err: execErr}
 	}()
@@ -2848,12 +2674,11 @@ func TestSessionAdapterRequiredReconcileDeadlineReturnsTimeoutFailure(t *testing
 		<-ctx.Done()
 		return sessionExportResult{}, ctx.Err()
 	}}
+	_ = exporter
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2871,13 +2696,14 @@ func TestSessionAdapterRequiredReconcileDeadlineReturnsTimeoutFailure(t *testing
 	resultCh := make(chan executeResult, 1)
 	go func() {
 		res, execErr := adapter.Execute(ctx, ExecuteRequest{
-			SessionID:     "session_required_reconcile_timeout",
-			AttemptID:     "attempt_required_reconcile_timeout",
-			RunID:         "run_1",
-			NodeRunID:     "nr_1",
-			WorkspacePath: t.TempDir(),
-			Prompt:        "tool calls then time out required reconcile",
-			OccurredAt:    "2026-03-02T10:21:35Z",
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_required_reconcile_timeout",
+			AttemptID:      "attempt_required_reconcile_timeout",
+			RunID:          "run_1",
+			NodeRunID:      "nr_1",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "tool calls then time out required reconcile",
+			OccurredAt:     "2026-03-02T10:21:35Z",
 		})
 		resultCh <- executeResult{response: res, err: execErr}
 	}()
@@ -2931,14 +2757,15 @@ func TestSessionAdapterReconcilesAmbiguousEOFViaExportUsingProviderSessionID(t *
 	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_logical_only",
-		AttemptID:     "attempt_export_reconcile",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "clean eof then export reconcile",
-		OccurredAt:    "2026-03-02T10:22:00Z",
-		InvocationID:  "invocation_export_reconcile",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_logical_only",
+		AttemptID:      "attempt_export_reconcile",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "clean eof then export reconcile",
+		OccurredAt:     "2026-03-02T10:22:00Z",
+		InvocationID:   "invocation_export_reconcile",
 		OnLifecycle: func(observation ExecuteLifecycleObservation) {
 			lifecycle = append(lifecycle, observation)
 		},
@@ -2951,9 +2778,6 @@ func TestSessionAdapterReconcilesAmbiguousEOFViaExportUsingProviderSessionID(t *
 	}
 	if res.ProviderSessionID != "ses_fake_created" {
 		t.Fatalf("expected provider session id ses_fake_created, got %q", res.ProviderSessionID)
-	}
-	if !res.SuppressEmptyOutputRetry {
-		t.Fatal("expected reconciled success to suppress empty output retry")
 	}
 	if len(res.ExportChecks) != 1 || res.ExportChecks[0].Phase != ExportCheckPhaseForegroundReconcile || res.ExportChecks[0].Status != ExportCheckStatusResolvedSuccess {
 		t.Fatalf("expected one foreground export check, got %#v", res.ExportChecks)
@@ -3007,8 +2831,6 @@ func TestSessionAdapterDoesNotResolveRetryFromOlderAssistantTurnInReusedProvider
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3019,14 +2841,15 @@ func TestSessionAdapterDoesNotResolveRetryFromOlderAssistantTurnInReusedProvider
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared")
 
 	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared",
-		AttemptID:     "attempt_retry_shared_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "first retry reconcile",
-		OccurredAt:    "2026-03-02T10:22:00Z",
-		InvocationID:  "invocation_first",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared",
+		AttemptID:      "attempt_retry_shared_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "first retry reconcile",
+		OccurredAt:     "2026-03-02T10:22:00Z",
+		InvocationID:   "invocation_first",
 	})
 	if err != nil {
 		t.Fatalf("first execute should reconcile successfully: %v", err)
@@ -3036,14 +2859,15 @@ func TestSessionAdapterDoesNotResolveRetryFromOlderAssistantTurnInReusedProvider
 	}
 
 	secondRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared",
-		AttemptID:     "attempt_retry_shared_2",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "second retry reconcile should not reuse older turn",
-		OccurredAt:    "2026-03-02T10:23:00Z",
-		InvocationID:  "invocation_second",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared",
+		AttemptID:      "attempt_retry_shared_2",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "second retry reconcile should not reuse older turn",
+		OccurredAt:     "2026-03-02T10:23:00Z",
+		InvocationID:   "invocation_second",
 	})
 	if err == nil {
 		t.Fatal("expected stale reused-session reconciliation to fail")
@@ -3084,8 +2908,6 @@ func TestSessionAdapterDoesNotResolveLatePersistedPriorInvocationInReusedProvide
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3096,14 +2918,15 @@ func TestSessionAdapterDoesNotResolveLatePersistedPriorInvocationInReusedProvide
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_late")
 
 	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_late",
-		AttemptID:     "attempt_retry_shared_late_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "first retry reconcile",
-		OccurredAt:    "2026-03-02T10:22:00Z",
-		InvocationID:  "invocation_first",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_late",
+		AttemptID:      "attempt_retry_shared_late_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "first retry reconcile",
+		OccurredAt:     "2026-03-02T10:22:00Z",
+		InvocationID:   "invocation_first",
 	})
 	if err != nil {
 		t.Fatalf("first execute should reconcile successfully: %v", err)
@@ -3113,14 +2936,15 @@ func TestSessionAdapterDoesNotResolveLatePersistedPriorInvocationInReusedProvide
 	}
 
 	secondRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_late",
-		AttemptID:     "attempt_retry_shared_late_2",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "second retry reconcile should ignore late prior invocation output",
-		OccurredAt:    "2026-03-02T10:23:00Z",
-		InvocationID:  "invocation_second",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_late",
+		AttemptID:      "attempt_retry_shared_late_2",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "second retry reconcile should ignore late prior invocation output",
+		OccurredAt:     "2026-03-02T10:23:00Z",
+		InvocationID:   "invocation_second",
 	})
 	if err == nil {
 		t.Fatal("expected late persisted prior invocation reconciliation to fail")
@@ -3146,12 +2970,11 @@ func TestSessionAdapterDoesNotResolveLaterInvocationOutputInReusedProviderSessio
 		exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_retry_shared_window_0", "invocation_first", "bootstrap output")),
 		exportResultFixture(invocationWindowBleedExportFixture("invocation_second", "", "invocation_third", "later invocation output", "stop")),
 	}}
+	_ = exporter
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3162,14 +2985,15 @@ func TestSessionAdapterDoesNotResolveLaterInvocationOutputInReusedProviderSessio
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_window")
 
 	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_window",
-		AttemptID:     "attempt_retry_shared_window_0",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "bootstrap reused provider session",
-		OccurredAt:    "2026-03-02T10:23:00Z",
-		InvocationID:  "invocation_first",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_window",
+		AttemptID:      "attempt_retry_shared_window_0",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "bootstrap reused provider session",
+		OccurredAt:     "2026-03-02T10:23:00Z",
+		InvocationID:   "invocation_first",
 	})
 	if err != nil {
 		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
@@ -3179,14 +3003,15 @@ func TestSessionAdapterDoesNotResolveLaterInvocationOutputInReusedProviderSessio
 	}
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_window",
-		AttemptID:     "attempt_retry_shared_window_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "second invocation should ignore later invocation output",
-		OccurredAt:    "2026-03-02T10:24:00Z",
-		InvocationID:  "invocation_second",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_window",
+		AttemptID:      "attempt_retry_shared_window_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "second invocation should ignore later invocation output",
+		OccurredAt:     "2026-03-02T10:24:00Z",
+		InvocationID:   "invocation_second",
 	})
 	if err == nil {
 		t.Fatal("expected later invocation output reconciliation to fail")
@@ -3212,8 +3037,6 @@ func TestSessionAdapterReconcilesReusedSessionAfterSameInvocationContinuationPro
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3223,14 +3046,15 @@ func TestSessionAdapterReconcilesReusedSessionAfterSameInvocationContinuationPro
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_continued")
 
 	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_continued",
-		AttemptID:     "attempt_retry_shared_continued_0",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "bootstrap reused provider session",
-		OccurredAt:    "2026-03-02T10:23:00Z",
-		InvocationID:  "invocation_first",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_continued",
+		AttemptID:      "attempt_retry_shared_continued_0",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "bootstrap reused provider session",
+		OccurredAt:     "2026-03-02T10:23:00Z",
+		InvocationID:   "invocation_first",
 	})
 	if err != nil {
 		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
@@ -3245,14 +3069,15 @@ func TestSessionAdapterReconcilesReusedSessionAfterSameInvocationContinuationPro
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_EXIT_BEFORE_STEP_FINISH", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_continued",
-		AttemptID:     "attempt_retry_shared_continued_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "second invocation should reconcile continuation output",
-		OccurredAt:    "2026-03-02T10:24:00Z",
-		InvocationID:  "invocation_second",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_continued",
+		AttemptID:      "attempt_retry_shared_continued_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "second invocation should reconcile continuation output",
+		OccurredAt:     "2026-03-02T10:24:00Z",
+		InvocationID:   "invocation_second",
 	})
 	if err != nil {
 		t.Fatalf("expected same-invocation continuation reconciliation to succeed: %v", err)
@@ -3291,8 +3116,6 @@ func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestamp
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
 		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3303,14 +3126,15 @@ func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestamp
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_skewed")
 
 	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_skewed",
-		AttemptID:     "attempt_retry_shared_skewed_0",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "bootstrap reused provider session",
-		OccurredAt:    "2026-03-02T10:23:00Z",
-		InvocationID:  "invocation_first",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_skewed",
+		AttemptID:      "attempt_retry_shared_skewed_0",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "bootstrap reused provider session",
+		OccurredAt:     "2026-03-02T10:23:00Z",
+		InvocationID:   "invocation_first",
 	})
 	if err != nil {
 		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
@@ -3320,14 +3144,15 @@ func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestamp
 	}
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_retry_shared_skewed",
-		AttemptID:     "attempt_retry_shared_skewed_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "second invocation should reconcile marker-owned output despite skewed completion timestamp",
-		OccurredAt:    "2026-03-02T10:24:00Z",
-		InvocationID:  "invocation_second",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_retry_shared_skewed",
+		AttemptID:      "attempt_retry_shared_skewed_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "second invocation should reconcile marker-owned output despite skewed completion timestamp",
+		OccurredAt:     "2026-03-02T10:24:00Z",
+		InvocationID:   "invocation_second",
 	})
 	if err != nil {
 		t.Fatalf("expected skewed-timestamp reconciliation to succeed: %v", err)
@@ -3377,14 +3202,15 @@ func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestamp
 	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_fresh_skewed")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_fresh_skewed",
-		AttemptID:     "attempt_fresh_skewed_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "fresh invocation should reconcile marker-owned output despite skewed completion timestamp",
-		OccurredAt:    "2026-03-02T10:24:00Z",
-		InvocationID:  "invocation_fresh",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_fresh_skewed",
+		AttemptID:      "attempt_fresh_skewed_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "fresh invocation should reconcile marker-owned output despite skewed completion timestamp",
+		OccurredAt:     "2026-03-02T10:24:00Z",
+		InvocationID:   "invocation_fresh",
 	})
 	if err != nil {
 		t.Fatalf("expected skewed-timestamp fresh-session reconciliation to succeed: %v", err)
@@ -3403,7 +3229,7 @@ func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestamp
 	}
 }
 
-func TestSessionAdapterSkipsBannerStdoutLinesBeforeValidJsonEvents(t *testing.T) {
+func TestSessionAdapterRejectsMalformedStdoutBeforeValidJsonEvents(t *testing.T) {
 	binaryPath, _ := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
 	if err != nil {
@@ -3412,19 +3238,20 @@ func TestSessionAdapterSkipsBannerStdoutLinesBeforeValidJsonEvents(t *testing.T)
 
 	t.Setenv("FAKE_OPENCODE_STDOUT_BANNER", "warning: provider banner")
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_banner_stdout",
-		AttemptID:     "attempt_banner_stdout",
-		RunID:         "run_1",
-		NodeRunID:     "nr_banner_stdout",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "ignore banner stdout",
-		OccurredAt:    "2026-03-02T10:25:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_banner_stdout",
+		AttemptID:      "attempt_banner_stdout",
+		RunID:          "run_1",
+		NodeRunID:      "nr_banner_stdout",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "reject malformed stdout",
+		OccurredAt:     "2026-03-02T10:25:00Z",
 	})
-	if err != nil {
-		t.Fatalf("execute should tolerate banner stdout: %v", err)
+	if err == nil {
+		t.Fatal("expected malformed provider stdout to reject completion")
 	}
-	if res.OutputText != "hello from fake" {
-		t.Fatalf("expected valid JSON events after banner to be processed, got %q", res.OutputText)
+	if res.Outcome.ReasonCode != "provider_malformed_protocol" {
+		t.Fatalf("expected malformed protocol outcome, got %#v", res.Outcome)
 	}
 }
 
@@ -3441,13 +3268,14 @@ func TestSessionAdapterSkipsBannerStdoutLinesDuringContinuation(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_CONTINUATION_STDOUT_BANNER", "warning: continuation banner")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_banner_continuation",
-		AttemptID:     "attempt_banner_continuation",
-		RunID:         "run_1",
-		NodeRunID:     "nr_banner_continuation",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "ignore continuation banner stdout",
-		OccurredAt:    "2026-03-02T10:26:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_banner_continuation",
+		AttemptID:      "attempt_banner_continuation",
+		RunID:          "run_1",
+		NodeRunID:      "nr_banner_continuation",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "ignore continuation banner stdout",
+		OccurredAt:     "2026-03-02T10:26:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute should tolerate continuation banner stdout: %v", err)
@@ -3457,7 +3285,7 @@ func TestSessionAdapterSkipsBannerStdoutLinesDuringContinuation(t *testing.T) {
 	}
 }
 
-func TestSessionAdapterAmbiguousMalformedRawExportUsesSanitizedFallback(t *testing.T) {
+func TestSessionAdapterAmbiguousMalformedExportCannotAuthorizeSuccess(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	exporter := &fakeSessionExporter{
 		results:          []sessionExportResult{exportResultFixture(`{"messages":[`)},
@@ -3479,23 +3307,21 @@ func TestSessionAdapterAmbiguousMalformedRawExportUsesSanitizedFallback(t *testi
 	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_ambiguous_sanitized_fallback",
-		AttemptID:     "attempt_ambiguous_sanitized_fallback",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "ambiguous export sanitized fallback",
-		OccurredAt:    "2026-03-02T10:22:02Z",
-		InvocationID:  "invocation_ambiguous_sanitized_fallback",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_ambiguous_sanitized_fallback",
+		AttemptID:      "attempt_ambiguous_sanitized_fallback",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "ambiguous export sanitized fallback",
+		OccurredAt:     "2026-03-02T10:22:02Z",
+		InvocationID:   "invocation_ambiguous_sanitized_fallback",
 		OnLifecycle: func(observation ExecuteLifecycleObservation) {
 			lifecycle = append(lifecycle, observation)
 		},
 	})
-	if err != nil {
-		t.Fatalf("expected success with sanitized export fallback, got %v", err)
-	}
-	if res.Outcome.EvidenceSource != string(completionEvidenceSourceExportSanitized) {
-		t.Fatalf("expected sanitized export evidence source, got %#v", res.Outcome)
+	if err == nil {
+		t.Fatalf("expected export fallback to remain non-authoritative, got %#v", res)
 	}
 	if len(lifecycle) != 2 {
 		t.Fatalf("expected two lifecycle observations, got %#v", lifecycle)
@@ -3508,7 +3334,7 @@ func TestSessionAdapterAmbiguousMalformedRawExportUsesSanitizedFallback(t *testi
 	}
 }
 
-func TestSessionAdapterAmbiguousMalformedExportRecoversWithinReconcileBudget(t *testing.T) {
+func TestSessionAdapterAmbiguousMalformedExportCannotRecoverWithinReconcileBudget(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	exporter := &fakeSessionExporter{
 		results: []sessionExportResult{
@@ -3522,13 +3348,10 @@ func TestSessionAdapterAmbiguousMalformedExportRecoversWithinReconcileBudget(t *
 		},
 	}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:               binaryPath,
-		FirstEventTimeout:        2 * time.Second,
-		StreamInactivityTimeout:  2 * time.Second,
-		MaxContinuationTurns:     1,
-		ReconcileTotalTimeout:    20 * time.Millisecond,
-		ReconcileBackoffSchedule: []time.Duration{1 * time.Millisecond},
-		SessionExporter:          exporter,
+		BinaryPath:              binaryPath,
+		FirstEventTimeout:       2 * time.Second,
+		StreamInactivityTimeout: 2 * time.Second,
+		MaxContinuationTurns:    1,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3539,28 +3362,20 @@ func TestSessionAdapterAmbiguousMalformedExportRecoversWithinReconcileBudget(t *
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_TOKENS", `{"input":11,"output":7,"total":18}`)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_reconcile_budget_recovery",
-		AttemptID:     "attempt_reconcile_budget_recovery",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "tool calls then recover after transient malformed export",
-		OccurredAt:    "2026-03-02T10:22:00Z",
-		InvocationID:  "invocation_reconcile_budget_recovery",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_reconcile_budget_recovery",
+		AttemptID:      "attempt_reconcile_budget_recovery",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "tool calls then recover after transient malformed export",
+		OccurredAt:     "2026-03-02T10:22:00Z",
+		InvocationID:   "invocation_reconcile_budget_recovery",
 	})
-	if err != nil {
-		t.Fatalf("expected transient malformed export recovery to succeed, got %v", err)
+	if err == nil {
+		t.Fatalf("expected export recovery to remain non-authoritative, got %#v", res)
 	}
-	if res.Outcome.State != string(attemptCompletionStateSuccess) {
-		t.Fatalf("expected success outcome, got %#v", res.Outcome)
-	}
-	if res.Outcome.EvidenceSource != string(completionEvidenceSourceExport) {
-		t.Fatalf("expected export evidence source after recovery, got %#v", res.Outcome)
-	}
-	if res.OutputText != "recovered after export persistence catch-up" {
-		t.Fatalf("expected recovered export output, got %q", res.OutputText)
-	}
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_reconcile_budget_recovery"), AttemptEventTypeSucceeded)
+	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_reconcile_budget_recovery"), AttemptEventTypeFailed)
 	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
@@ -3571,14 +3386,11 @@ func TestSessionAdapterAmbiguousMalformedExportRecoversWithinReconcileBudget(t *
 	if execPath["export_check_evidence_source"] != string(completionEvidenceSourceExport) {
 		t.Fatalf("expected export evidence source in diagnostics, got %#v", execPath["export_check_evidence_source"])
 	}
-	if execPath["export_check_attempts"] != float64(5) {
-		t.Fatalf("expected five export attempts in diagnostics, got %#v", execPath["export_check_attempts"])
+	if execPath["export_check_attempts"] != float64(1) {
+		t.Fatalf("expected one diagnostic export attempt, got %#v", execPath["export_check_attempts"])
 	}
-	if len(exporter.exportModes) != 5 {
-		t.Fatalf("expected five export attempts, got %#v", exporter.exportModes)
-	}
-	if exporter.exportModes[0] != sessionExportModeRaw || exporter.exportModes[1] != sessionExportModeSanitized || exporter.exportModes[2] != sessionExportModeRaw || exporter.exportModes[3] != sessionExportModeSanitized || exporter.exportModes[4] != sessionExportModeRaw {
-		t.Fatalf("expected raw/sanitized retries ending in raw recovery, got %#v", exporter.exportModes)
+	if len(exporter.exportModes) == 0 || exporter.exportModes[0] != sessionExportModeRaw {
+		t.Fatalf("expected diagnostic export evidence, got %#v", exporter.exportModes)
 	}
 }
 
@@ -3601,13 +3413,14 @@ func TestSessionAdapterAmbiguousEOFWithoutProviderSessionFailsWithoutExport(t *t
 	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_logical_only",
-		AttemptID:     "attempt_missing_provider_session",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "clean eof without provider session",
-		OccurredAt:    "2026-03-02T10:22:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_logical_only",
+		AttemptID:      "attempt_missing_provider_session",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "clean eof without provider session",
+		OccurredAt:     "2026-03-02T10:22:00Z",
 	})
 	if err == nil {
 		t.Fatal("expected incomplete terminal state error")
@@ -3639,7 +3452,7 @@ func TestSessionAdapterAmbiguousEOFWithoutProviderSessionFailsWithoutExport(t *t
 	}
 }
 
-func TestSessionAdapterStrongTerminalSuccessWithoutProviderSessionStaysSuccessful(t *testing.T) {
+func TestSessionAdapterOnlyStopIsTerminalSuccessWithoutProviderSession(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(successExportFixture("unexpected export"))}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
@@ -3661,19 +3474,29 @@ func TestSessionAdapterStrongTerminalSuccessWithoutProviderSessionStaysSuccessfu
 			t.Setenv("FAKE_OPENCODE_STEP_FINISH_REASON", finishReason)
 
 			res, execErr := adapter.Execute(context.Background(), ExecuteRequest{
-				SessionID:     "session_without_provider_session_" + finishReason,
-				AttemptID:     "attempt_without_provider_session_" + finishReason,
-				RunID:         "run_1",
-				NodeRunID:     "nr_1",
-				WorkspacePath: t.TempDir(),
-				Prompt:        finishReason + " without provider session",
-				OccurredAt:    "2026-03-02T10:22:01Z",
+				CompletionMode: CompletionModeServerResponse,
+				SessionID:      "session_without_provider_session_" + finishReason,
+				AttemptID:      "attempt_without_provider_session_" + finishReason,
+				RunID:          "run_1",
+				NodeRunID:      "nr_1",
+				WorkspacePath:  t.TempDir(),
+				Prompt:         finishReason + " without provider session",
+				OccurredAt:     "2026-03-02T10:22:01Z",
 			})
+			if finishReason != "stop" {
+				if execErr == nil {
+					t.Fatalf("expected non-stop finish %s to be rejected, got %#v", finishReason, res)
+				}
+				if res.Accepted || res.Outcome.State == string(attemptCompletionStateSuccess) {
+					t.Fatalf("expected non-stop finish %s to remain non-successful, got %#v", finishReason, res)
+				}
+				return
+			}
 			if execErr != nil {
-				t.Fatalf("expected terminal stream success for %s without provider session, got %v", finishReason, execErr)
+				t.Fatalf("expected stop terminal stream success without provider session, got %v", execErr)
 			}
 			if !res.Accepted {
-				t.Fatalf("expected accepted response for %s, got %#v", finishReason, res)
+				t.Fatalf("expected accepted response for stop, got %#v", res)
 			}
 			if res.ProviderSessionID != "" {
 				t.Fatalf("expected no provider session id for %s, got %q", finishReason, res.ProviderSessionID)
@@ -3717,13 +3540,14 @@ func TestSessionAdapterExporterErrorsExhaustToIncompleteTurn(t *testing.T) {
 	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
 
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_logical_only",
-		AttemptID:     "attempt_export_reconcile_exhausted",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "clean eof then exporter miss",
-		OccurredAt:    "2026-03-02T10:22:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_logical_only",
+		AttemptID:      "attempt_export_reconcile_exhausted",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "clean eof then exporter miss",
+		OccurredAt:     "2026-03-02T10:22:00Z",
 		OnLifecycle: func(observation ExecuteLifecycleObservation) {
 			lifecycle = append(lifecycle, observation)
 		},
@@ -3770,13 +3594,14 @@ func TestSessionAdapterAmbiguousMalformedExportPreservesObservedMetadata(t *test
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_TOKENS", `{"input":11,"output":7,"total":18}`)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_logical_only",
-		AttemptID:     "attempt_reconcile_error_metadata",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "tool calls then reconciliation error",
-		OccurredAt:    "2026-03-02T10:22:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_logical_only",
+		AttemptID:      "attempt_reconcile_error_metadata",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "tool calls then reconciliation error",
+		OccurredAt:     "2026-03-02T10:22:00Z",
 	})
 	if err == nil {
 		t.Fatal("expected incomplete terminal state error")
@@ -3847,14 +3672,15 @@ func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutR
 	t.Setenv("FAKE_OPENCODE_TEXT", reviewVerdict)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_test2_review",
-		AttemptID:     "attempt_test2_review",
-		RunID:         "run_test2_review",
-		NodeRunID:     "nr_test2_review",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "issue the final review verdict now",
-		OccurredAt:    "2026-03-02T10:22:00Z",
-		InvocationID:  "invocation_test2_review",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_test2_review",
+		AttemptID:      "attempt_test2_review",
+		RunID:          "run_test2_review",
+		NodeRunID:      "nr_test2_review",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "issue the final review verdict now",
+		OccurredAt:     "2026-03-02T10:22:00Z",
+		InvocationID:   "invocation_test2_review",
 	})
 	if err == nil {
 		t.Fatal("expected incomplete terminal state error")
@@ -3915,13 +3741,14 @@ func TestSessionAdapterPreservesContinuationObservedStateOnUpstreamError(t *test
 	t.Setenv("FAKE_OPENCODE_SUPPRESS_SESSION_EVENT", "1")
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_continuation_upstream_error",
-		AttemptID:     "attempt_continuation_upstream_error",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "tool calls then continuation upstream error",
-		OccurredAt:    "2026-03-03T11:10:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_continuation_upstream_error",
+		AttemptID:      "attempt_continuation_upstream_error",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "tool calls then continuation upstream error",
+		OccurredAt:     "2026-03-03T11:10:00Z",
 	})
 	if err == nil {
 		t.Fatal("expected upstream continuation error")
@@ -3986,13 +3813,14 @@ func TestSessionAdapterNonZeroExitPrefersStructuredUpstreamError(t *testing.T) {
 
 			attemptID := "attempt_" + tt.name
 			res, err := adapter.Execute(context.Background(), ExecuteRequest{
-				SessionID:     "session_" + tt.name,
-				AttemptID:     attemptID,
-				RunID:         "run_1",
-				NodeRunID:     "nr_1",
-				WorkspacePath: t.TempDir(),
-				Prompt:        "structured provider failure",
-				OccurredAt:    "2026-03-03T11:15:00Z",
+				CompletionMode: CompletionModeServerResponse,
+				SessionID:      "session_" + tt.name,
+				AttemptID:      attemptID,
+				RunID:          "run_1",
+				NodeRunID:      "nr_1",
+				WorkspacePath:  t.TempDir(),
+				Prompt:         "structured provider failure",
+				OccurredAt:     "2026-03-03T11:15:00Z",
 			})
 			if err == nil {
 				t.Fatal("expected structured provider failure")

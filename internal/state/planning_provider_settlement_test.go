@@ -32,8 +32,6 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		PlanningOperationID:          secondOperation.OperationID,
 		PlanningSessionID:            secondOperation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_receipt",
-		CompletionCapability:         "planning-capability-2",
-		IssuedAt:                     "2026-04-21T16:05:00Z",
 		CreatedAt:                    "2026-04-21T16:05:00Z",
 	}); err != nil {
 		t.Fatalf("create second planning provider invocation: %v", err)
@@ -59,6 +57,26 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 	}
 	if invocation.ProviderSessionID != "ses_planning_receipt_2" {
 		t.Fatalf("expected latest reusable provider session ses_planning_receipt_2, got %#v", invocation)
+	}
+	if invocation.CompletionMode != PlanningProviderCompletionModeServerResponse {
+		t.Fatalf("expected planning invocation server_response completion mode, got %#v", invocation)
+	}
+}
+
+func TestPlanningProviderInvocationSchemaRejectsReceiptRequiredMode(t *testing.T) {
+	t.Parallel()
+
+	store, operation := newPlanningProviderSettlementTestStore(t)
+	if _, err := store.db.Exec(`INSERT INTO planning_provider_invocations (
+		planning_provider_invocation_id,
+		planning_operation_id,
+		planning_session_id,
+		invocation_state,
+		completion_mode,
+		created_at,
+		updated_at
+	) VALUES (?, ?, ?, 'issued', 'receipt_required', '2026-04-21T16:00:00Z', '2026-04-21T16:00:00Z')`, "ppinv_invalid_mode", operation.OperationID, operation.PlanningSessionID); err == nil {
+		t.Fatal("expected planning provider invocation schema to reject receipt_required mode")
 	}
 }
 
@@ -357,8 +375,6 @@ func TestPlanningStoreActivatePlanningProviderInvocationOpensAndLinksOperation(t
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_activation",
-		CompletionCapability:         "planning-capability-activation",
-		IssuedAt:                     "2026-04-21T16:00:02Z",
 		CreatedAt:                    "2026-04-21T16:00:02Z",
 		OpenedAt:                     "2026-04-21T16:00:02Z",
 	})
@@ -392,8 +408,6 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_receipt",
-		CompletionCapability:         "planning-capability-conflict",
-		IssuedAt:                     "2026-04-21T16:00:04Z",
 		CreatedAt:                    "2026-04-21T16:00:04Z",
 		OpenedAt:                     "2026-04-21T16:00:04Z",
 	})
@@ -456,8 +470,6 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_receipt",
-		CompletionCapability:         "planning-capability-1",
-		IssuedAt:                     "2026-04-21T16:00:02Z",
 		CreatedAt:                    "2026-04-21T16:00:02Z",
 	}); err != nil {
 		t.Fatalf("create planning provider invocation: %v", err)

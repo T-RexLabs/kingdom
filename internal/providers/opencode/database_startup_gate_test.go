@@ -75,7 +75,8 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 		go func(index int) {
 			defer wg.Done()
 			_, err := adapter.Execute(context.Background(), ExecuteRequest{
-				SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index),
+				CompletionMode: CompletionModeServerResponse,
+				SessionID:      fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index),
 				WorkspacePath: dir, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z",
 			})
 			errs <- err
@@ -143,7 +144,7 @@ printf '{"type":"step_finish","sessionID":"ses_override","part":{"type":"step_fi
 	}
 	runDone := make(chan error, 1)
 	go func() {
-		_, err := adapter.Execute(context.Background(), ExecuteRequest{SessionID: "session-override", AttemptID: "attempt-override", RunID: "run-1", NodeRunID: "node-1", WorkspacePath: dir, DatabasePath: actualDatabase, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
+		_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: "session-override", AttemptID: "attempt-override", RunID: "run-1", NodeRunID: "node-1", WorkspacePath: dir, DatabasePath: actualDatabase, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
 		runDone <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -201,7 +202,7 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 	errs := make(chan error, 2)
 	for i, database := range []string{databaseOne, databaseTwo} {
 		go func(index int, databasePath string) {
-			_, err := adapter.Execute(context.Background(), ExecuteRequest{SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
+			_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
 			errs <- err
 		}(i, database)
 	}

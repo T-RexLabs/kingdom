@@ -187,7 +187,7 @@ func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 			WorkflowID: "royal-decree-v1",
 			Nodes: []Node{
 				{NodeID: "a", RequiredRole: "king", NodeClass: "decree_intake"},
-				{NodeID: "b", RequiredRole: "king", NodeClass: "plan_drafting"},
+				{NodeID: "b", RequiredRole: "king", NodeClass: "decree_intake"},
 			},
 			Edges: []Edge{
 				{From: "a", To: "b", On: "success"},

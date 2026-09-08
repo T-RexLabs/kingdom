@@ -126,14 +126,26 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 }
 
 func finalChecksForNodeClass(nodeClass string) string {
-	lines := []string{
-		"- Call `kingdom_complete_attempt` exactly once when your final response is complete.",
-		"- Put the full final canonical response in `final_text`.",
-		"- Do not rely on plain assistant text, stream endings, or process exit to finish the node.",
-		"- If your response is not final yet, do not call the tool.",
+	behavior := workflow.BehaviorForNode("", nodeClass)
+	lines := []string{}
+	switch behavior.ProviderCompletionMode {
+	case workflow.ProviderCompletionModeReceiptRequired:
+		lines = append(lines,
+			"- Call `kingdom_complete_attempt` exactly once when your final response is complete.",
+			"- Put the full final canonical response in `final_text`.",
+			"- Do not rely on plain assistant text, stream endings, or process exit to finish the node.",
+			"- If your response is not final yet, do not call the tool.",
+		)
+	case workflow.ProviderCompletionModeServerResponse:
+		lines = append(lines,
+			"- Return the complete final response directly in your final assistant message.",
+			"- Do not call `kingdom_complete_attempt`; Kingdom settles this node from the validated terminal provider response.",
+		)
+	default:
+		lines = append(lines, "- This is a runtime-owned transition; do not invoke provider completion tools.")
 	}
 	if strings.TrimSpace(nodeClass) == workflow.NodeClassExecutionReview || strings.TrimSpace(nodeClass) == workflow.NodeClassValidationGates {
-		lines = append(lines, "- Your first non-empty line in `final_text` must be `VERDICT: PASS` or `VERDICT: REWORK`.")
+		lines = append(lines, "- Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.")
 	}
 	return strings.Join(lines, "\n")
 }

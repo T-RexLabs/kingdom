@@ -143,8 +143,11 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "artifacts", "artifact_action") {
 		t.Fatal("expected artifacts.artifact_action column to exist after up migration")
 	}
-	if !indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
-		t.Fatal("expected planner receipt uniqueness index to exist after up migration")
+	if !columnExists(t, db, "planning_provider_invocations", "completion_mode") {
+		t.Fatal("expected planning_provider_invocations.completion_mode column to exist after up migration")
+	}
+	if indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
+		t.Fatal("expected planner receipt uniqueness index to be absent after up migration")
 	}
 	if !columnExists(t, db, "workflow_runs", "pending_approval_key") {
 		t.Fatal("expected workflow_runs.pending_approval_key column to exist after up migration")
@@ -295,7 +298,7 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("run_planning_outputs_lineage_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert attempt execution seed row for lineage constraint: %v", err)
 		}
@@ -312,7 +315,7 @@ func TestMigrationConstraints(t *testing.T) {
 		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_constraint', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_constraint_2', 'committed_success', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_constraint_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 
 		_, err := db.Exec(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_bad_attempt_lineage', 'run_1', 'plan_drafting', 'nr_plan_constraint_1', 'run_1:plan_drafting:2', 'agent_council', '', 'plan_revision', 'constraint', '2026-03-01T12:00:00Z')`)
 		if err == nil {
@@ -325,7 +328,7 @@ func TestMigrationConstraints(t *testing.T) {
 		mustExec(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_append_only', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_append_only', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_append_only', 'run_1', 'plan_drafting', 3,3, 'succeeded', 'council-member', 'agent_council_append_only', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:append_only', 'run_1', 'nr_plan_append_only', 'committed_success', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:append_only', 'run_1', 'nr_plan_append_only', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_append_only', 'run_1', 'plan_drafting', 'nr_plan_append_only', 'run_1:plan_drafting:append_only', 'agent_council_append_only', '', 'plan_revision', 'append only', '2026-03-01T12:00:00Z')`)
 
 		if _, err := db.Exec(`UPDATE run_planning_outputs SET content_markdown = 'mutated' WHERE planning_output_id = 'planout_append_only'`); err == nil {
@@ -359,14 +362,14 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("attempt_execution_state_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_bad_state', 'run_1', 'nr_1', 'unknown', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_bad_state', 'run_1', 'nr_1', 'unknown', 'provider_backed', 'server_response', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for attempt_executions.state")
 		}
 	})
 
 	t.Run("attempt_event_log_sequence_uniqueness", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_1', 'run_1', 'nr_1', 'queued', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_1', 'run_1', 'nr_1', 'queued', 'provider_backed', 'server_response', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert attempt execution seed row: %v", err)
 		}
@@ -1109,7 +1112,7 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 			t.Fatalf("apply baseline migration: %v", err)
 		}
 		seedMinimumGraph(t, db)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
 			Name: "0002_broken_fk_rebuild.up.sql",

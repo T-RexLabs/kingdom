@@ -41,7 +41,7 @@ func completionReceiptDirForInvocation(workspacePath, providerInvocationID strin
 	return resolvePathWithinRoot(strings.TrimSpace(workspacePath), completionReceiptInboxPath+"/"+sanitizeFileToken(providerInvocationID))
 }
 
-func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, workspacePath, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
+func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, workspacePath string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
 	if o == nil || o.executionStore == nil {
 		return "", "", "", "", fmt.Errorf("execution store is required for provider invocation activation")
 	}
@@ -51,16 +51,20 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		issuedAt = now.Format(time.RFC3339)
 	}
 	providerInvocationID := newProviderInvocationID(attemptID, now)
-	completionCapability, err := generateCompletionCapability()
-	if err != nil {
-		return "", "", "", "", err
-	}
-	receiptDir, err := completionReceiptDirForInvocation(workspacePath, providerInvocationID)
-	if err != nil {
-		return "", "", "", "", fmt.Errorf("resolve completion receipt dir: %w", err)
-	}
-	if err := os.MkdirAll(receiptDir, 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("create completion receipt dir: %w", err)
+	completionCapability := ""
+	receiptDir := ""
+	if completionMode == executionstore.ProviderCompletionModeReceiptRequired {
+		completionCapability, err = generateCompletionCapability()
+		if err != nil {
+			return "", "", "", "", err
+		}
+		receiptDir, err = completionReceiptDirForInvocation(workspacePath, providerInvocationID)
+		if err != nil {
+			return "", "", "", "", fmt.Errorf("resolve completion receipt dir: %w", err)
+		}
+		if err := os.MkdirAll(receiptDir, 0o755); err != nil {
+			return "", "", "", "", fmt.Errorf("create completion receipt dir: %w", err)
+		}
 	}
 	if _, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID:         providerInvocationID,
@@ -68,6 +72,7 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		RunID:                        run.RunID,
 		NodeRunID:                    attempt.NodeRunID,
 		LogicalSessionID:             sessionID,
+		CompletionMode:               completionMode,
 		CompletionCapability:         completionCapability,
 		IssuedAt:                     issuedAt,
 		CreatedAt:                    issuedAt,
@@ -79,8 +84,32 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 	return providerInvocationID, issuedAt, completionCapability, receiptDir, nil
 }
 
-func (o *orchestrationLoop) replaceProviderInvocationForRetry(ctx context.Context, result asyncExecutionResult, issuedAt string) (string, string, string, string, error) {
-	return o.activateProviderInvocationForExecution(ctx, result.run, result.attempt, result.attemptID, result.sessionID, result.workspacePath, issuedAt, result.providerInvocationID)
+func completionReceiptAcceptorForMode(job asyncExecutionResult, accept func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error)) func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
+	if job.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
+		return nil
+	}
+	return accept
+}
+
+func completionProtocolVersionForMode(mode executionstore.ProviderCompletionMode) string {
+	if mode == executionstore.ProviderCompletionModeReceiptRequired {
+		return opencode.CompletionProtocolVersion
+	}
+	return ""
+}
+
+func completionCapabilityForMode(mode executionstore.ProviderCompletionMode, capability string) string {
+	if mode == executionstore.ProviderCompletionModeReceiptRequired {
+		return strings.TrimSpace(capability)
+	}
+	return ""
+}
+
+func completionReceiptDirForMode(mode executionstore.ProviderCompletionMode, receiptDir string) string {
+	if mode == executionstore.ProviderCompletionModeReceiptRequired {
+		return strings.TrimSpace(receiptDir)
+	}
+	return ""
 }
 
 func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Context, job asyncExecutionResult) func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
@@ -291,8 +320,29 @@ func (o *orchestrationLoop) finalizeProviderSettlement(ctx context.Context, resu
 	settlementID := executionstore.ProviderCompletionSettlementID(result.providerInvocationID)
 	switch strings.TrimSpace(outcome.State) {
 	case "success":
-		if strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
-			return fmt.Errorf("completion receipt evidence id is required for provider success settlement")
+		primaryEvidenceID := strings.TrimSpace(result.completionReceiptEvidenceID)
+		if result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && primaryEvidenceID == "" {
+			return fmt.Errorf("completion receipt evidence id is required for receipt-required provider success settlement")
+		}
+		if result.completionMode == executionstore.ProviderCompletionModeServerResponse {
+			evidence, err := o.ensureTerminalProviderCompletionEvidenceWithRetry(settleCtx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+				ProviderInvocationID:    result.providerInvocationID,
+				AttemptID:               result.attemptID,
+				RunID:                   result.run.RunID,
+				NodeRunID:               result.attempt.NodeRunID,
+				State:                   "success",
+				OutputText:              result.outputText,
+				EvidenceSource:          "stream",
+				ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),
+				CreatedAt:               settledAt,
+			})
+			if err != nil {
+				return err
+			}
+			primaryEvidenceID = evidence.EvidenceID
+		}
+		if primaryEvidenceID == "" {
+			return fmt.Errorf("provider success settlement is missing primary evidence")
 		}
 		_, err := o.finalizeProviderCompletionSettlementWithRetry(settleCtx, executionstore.FinalizeProviderCompletionSettlementRequest{
 			SettlementID:            settlementID,
@@ -301,7 +351,7 @@ func (o *orchestrationLoop) finalizeProviderSettlement(ctx context.Context, resu
 			RunID:                   result.run.RunID,
 			NodeRunID:               result.attempt.NodeRunID,
 			Outcome:                 executionstore.ProviderCompletionOutcomeSuccess,
-			PrimaryEvidenceID:       result.completionReceiptEvidenceID,
+			PrimaryEvidenceID:       primaryEvidenceID,
 			FinalText:               strings.TrimSpace(result.outputText),
 			StructuredPayloadJSON:   firstNonEmptyString(strings.TrimSpace(result.completionStructuredPayloadJSON), "{}"),
 			ProviderDiagnosticsJSON: firstNonEmptyString(strings.TrimSpace(result.providerDiagnosticsJSON), "{}"),

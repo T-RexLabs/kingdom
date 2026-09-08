@@ -2,9 +2,7 @@ package state
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -21,10 +19,13 @@ const (
 	PlanningProviderInvocationStateSuperseded       PlanningProviderInvocationState = "superseded"
 )
 
+type PlanningProviderCompletionMode string
+
+const PlanningProviderCompletionModeServerResponse PlanningProviderCompletionMode = "server_response"
+
 type PlanningProviderCompletionEvidenceKind string
 
 const (
-	PlanningProviderCompletionEvidenceKindCompletionReceipt PlanningProviderCompletionEvidenceKind = "completion_receipt"
 	PlanningProviderCompletionEvidenceKindStreamObservation PlanningProviderCompletionEvidenceKind = "stream_observation"
 	PlanningProviderCompletionEvidenceKindExportDiagnostic  PlanningProviderCompletionEvidenceKind = "export_diagnostic"
 	PlanningProviderCompletionEvidenceKindRepairDiagnostic  PlanningProviderCompletionEvidenceKind = "repair_diagnostic"
@@ -45,9 +46,7 @@ type PlanningProviderInvocation struct {
 	LogicalSessionID             string
 	ProviderSessionID            string
 	InvocationState              PlanningProviderInvocationState
-	CompletionCapabilityHash     string
-	CompletionCapabilityIssuedAt string
-	CompletionCapabilityUsedAt   string
+	CompletionMode               PlanningProviderCompletionMode
 	OpenedAt                     string
 	SettledAt                    string
 	FailureReasonCode            string
@@ -87,8 +86,6 @@ type CreatePlanningProviderInvocationRequest struct {
 	PlanningOperationID          string
 	PlanningSessionID            string
 	LogicalSessionID             string
-	CompletionCapability         string
-	IssuedAt                     string
 	CreatedAt                    string
 }
 
@@ -105,8 +102,6 @@ type ActivatePlanningProviderInvocationRequest struct {
 	PlanningSessionID            string
 	LogicalSessionID             string
 	ProviderSessionID            string
-	CompletionCapability         string
-	IssuedAt                     string
 	CreatedAt                    string
 	OpenedAt                     string
 }
@@ -165,7 +160,7 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
 	}
-	normalized, capabilityHash, err := normalizeCreatePlanningProviderInvocationRequest(req)
+	normalized, err := normalizeCreatePlanningProviderInvocationRequest(req)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -179,7 +174,7 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 			_ = tx.Rollback()
 		}
 	}()
-	invocation, err := createPlanningProviderInvocationTx(ctx, tx, normalized, capabilityHash)
+	invocation, err := createPlanningProviderInvocationTx(ctx, tx, normalized)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -215,7 +210,7 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
 	}
-	createReq, capabilityHash, openReq, err := normalizeActivatePlanningProviderInvocationRequest(req)
+	createReq, openReq, err := normalizeActivatePlanningProviderInvocationRequest(req)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -230,7 +225,7 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 		}
 	}()
 
-	invocation, err := createPlanningProviderInvocationTx(ctx, tx, createReq, capabilityHash)
+	invocation, err := createPlanningProviderInvocationTx(ctx, tx, createReq)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -437,9 +432,8 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	}
 	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
 		// Planner success is settled server-side from the provider's terminal
-		// stop signal; the durable proof is a stream observation, not a
-		// model-invoked completion receipt. FinalText is the runtime-assembled
-		// output text carried on the settlement request.
+		// stop signal. The durable proof is the runtime-owned stream observation
+		// and its assembled final text.
 		if evidence.EvidenceKind != PlanningProviderCompletionEvidenceKindStreamObservation {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_stream_observation_evidence", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
@@ -531,26 +525,21 @@ func planningProviderError(operation, reason, invocationID, operationID, state s
 	}
 }
 
-func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, string, error) {
+func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, error) {
 	normalized := CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),
 		LogicalSessionID:             strings.TrimSpace(req.LogicalSessionID),
-		CompletionCapability:         strings.TrimSpace(req.CompletionCapability),
-		IssuedAt:                     strings.TrimSpace(req.IssuedAt),
 		CreatedAt:                    strings.TrimSpace(req.CreatedAt),
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" || normalized.PlanningSessionID == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider invocation, operation, and session ids are required")
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation, operation, and session ids are required")
 	}
-	if normalized.CompletionCapability == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider completion capability is required")
+	if normalized.CreatedAt == "" {
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation created_at is required")
 	}
-	if normalized.IssuedAt == "" || normalized.CreatedAt == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider invocation timestamps are required")
-	}
-	return normalized, hashPlanningProviderCapability(normalized.CompletionCapability), nil
+	return normalized, nil
 }
 
 func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProviderInvocationOpenRequest) (MarkPlanningProviderInvocationOpenRequest, error) {
@@ -569,32 +558,30 @@ func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProvider
 	return normalized, nil
 }
 
-func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, string, MarkPlanningProviderInvocationOpenRequest, error) {
-	createReq, capabilityHash, err := normalizeCreatePlanningProviderInvocationRequest(CreatePlanningProviderInvocationRequest{
+func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, MarkPlanningProviderInvocationOpenRequest, error) {
+	createReq, err := normalizeCreatePlanningProviderInvocationRequest(CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: req.PlanningProviderInvocationID,
 		PlanningOperationID:          req.PlanningOperationID,
 		PlanningSessionID:            req.PlanningSessionID,
 		LogicalSessionID:             req.LogicalSessionID,
-		CompletionCapability:         req.CompletionCapability,
-		IssuedAt:                     req.IssuedAt,
 		CreatedAt:                    req.CreatedAt,
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, "", MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
 	}
 	openReq, err := normalizeMarkPlanningProviderInvocationOpenRequest(MarkPlanningProviderInvocationOpenRequest{
 		PlanningProviderInvocationID: createReq.PlanningProviderInvocationID,
 		PlanningOperationID:          createReq.PlanningOperationID,
 		ProviderSessionID:            req.ProviderSessionID,
-		OpenedAt:                     firstNonEmptyPlanningProvider(req.OpenedAt, createReq.IssuedAt),
+		OpenedAt:                     firstNonEmptyPlanningProvider(req.OpenedAt, createReq.CreatedAt),
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, "", MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
 	}
-	return createReq, capabilityHash, openReq, nil
+	return createReq, openReq, nil
 }
 
-func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreatePlanningProviderInvocationRequest, capabilityHash string) (PlanningProviderInvocation, error) {
+func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreatePlanningProviderInvocationRequest) (PlanningProviderInvocation, error) {
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO planning_provider_invocations (
 		planning_provider_invocation_id,
 		planning_operation_id,
@@ -602,18 +589,16 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 		logical_session_id,
 		provider_session_id,
 		invocation_state,
-		completion_capability_hash,
-		completion_capability_issued_at,
+		completion_mode,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)`,
 		req.PlanningProviderInvocationID,
 		req.PlanningOperationID,
 		req.PlanningSessionID,
 		req.LogicalSessionID,
 		string(PlanningProviderInvocationStateIssued),
-		capabilityHash,
-		req.IssuedAt,
+		string(PlanningProviderCompletionModeServerResponse),
 		req.CreatedAt,
 		req.CreatedAt,
 	)
@@ -631,7 +616,7 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 	if !found {
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_not_found", req.PlanningProviderInvocationID, req.PlanningOperationID, "")
 	}
-	if rows == 0 && !samePlanningProviderInvocationCreate(invocation, req, capabilityHash) {
+	if rows == 0 && !samePlanningProviderInvocationCreate(invocation, req) {
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_identity_conflict", req.PlanningProviderInvocationID, req.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return invocation, nil
@@ -735,11 +720,6 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 	return normalized, nil
 }
 
-func hashPlanningProviderCapability(capability string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(capability)))
-	return hex.EncodeToString(sum[:])
-}
-
 func planningProviderInvocationStateForOutcome(outcome PlanningProviderCompletionOutcome) PlanningProviderInvocationState {
 	switch outcome {
 	case PlanningProviderCompletionOutcomeSuccess:
@@ -816,7 +796,6 @@ func loadPlanningProviderCompletionEvidenceTx(ctx context.Context, query sqlQuer
 func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, bool, error) {
 	var item PlanningProviderInvocation
 	var providerSessionID sql.NullString
-	var completionCapabilityUsedAt sql.NullString
 	var openedAt sql.NullString
 	var settledAt sql.NullString
 	err := row.Scan(
@@ -826,9 +805,7 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 		&item.LogicalSessionID,
 		&providerSessionID,
 		&item.InvocationState,
-		&item.CompletionCapabilityHash,
-		&item.CompletionCapabilityIssuedAt,
-		&completionCapabilityUsedAt,
+		&item.CompletionMode,
 		&openedAt,
 		&settledAt,
 		&item.FailureReasonCode,
@@ -843,7 +820,6 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 		return PlanningProviderInvocation{}, false, err
 	}
 	item.ProviderSessionID = strings.TrimSpace(providerSessionID.String)
-	item.CompletionCapabilityUsedAt = strings.TrimSpace(completionCapabilityUsedAt.String)
 	item.OpenedAt = strings.TrimSpace(openedAt.String)
 	item.SettledAt = strings.TrimSpace(settledAt.String)
 	return item, true, nil
@@ -895,13 +871,11 @@ func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCo
 	return item, true, nil
 }
 
-func samePlanningProviderInvocationCreate(invocation PlanningProviderInvocation, req CreatePlanningProviderInvocationRequest, capabilityHash string) bool {
+func samePlanningProviderInvocationCreate(invocation PlanningProviderInvocation, req CreatePlanningProviderInvocationRequest) bool {
 	return invocation.PlanningProviderInvocationID == req.PlanningProviderInvocationID &&
 		invocation.PlanningOperationID == req.PlanningOperationID &&
 		invocation.PlanningSessionID == req.PlanningSessionID &&
-		invocation.LogicalSessionID == req.LogicalSessionID &&
-		invocation.CompletionCapabilityHash == capabilityHash &&
-		invocation.CompletionCapabilityIssuedAt == req.IssuedAt
+		invocation.LogicalSessionID == req.LogicalSessionID
 }
 
 func samePlanningProviderSettlement(existing, candidate PlanningProviderCompletionSettlement) bool {
@@ -917,8 +891,7 @@ func samePlanningProviderSettlement(existing, candidate PlanningProviderCompleti
 
 func isValidPlanningProviderCompletionEvidenceKind(kind PlanningProviderCompletionEvidenceKind) bool {
 	switch kind {
-	case PlanningProviderCompletionEvidenceKindCompletionReceipt,
-		PlanningProviderCompletionEvidenceKindStreamObservation,
+	case PlanningProviderCompletionEvidenceKindStreamObservation,
 		PlanningProviderCompletionEvidenceKindExportDiagnostic,
 		PlanningProviderCompletionEvidenceKindRepairDiagnostic:
 		return true
@@ -962,9 +935,7 @@ const planningProviderInvocationSelect = `SELECT
 	logical_session_id,
 	provider_session_id,
 	invocation_state,
-	completion_capability_hash,
-	completion_capability_issued_at,
-	completion_capability_used_at,
+	completion_mode,
 	opened_at,
 	settled_at,
 	failure_reason_code,

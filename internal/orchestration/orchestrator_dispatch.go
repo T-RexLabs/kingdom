@@ -143,6 +143,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			RunID:                 run.RunID,
 			NodeRunID:             attempt.NodeRunID,
 			ExecutionMode:         executionSpec.Mode,
+			CompletionMode:        executionSpec.CompletionMode,
 			ProviderTimeoutMillis: providerTimeout,
 			SessionRef:            sessionID,
 			CreatedAt:             now,
@@ -151,6 +152,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		}
 	}
 	attempt.ExecutionMode = executionSpec.Mode
+	attempt.CompletionMode = executionSpec.CompletionMode
 	attempt.ProviderTimeoutMillis = providerTimeout
 	attempt.SessionRef = sessionID
 
@@ -268,7 +270,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		}
 		workspacePath = strings.TrimSpace(responseWorkspacePath)
 	}
-	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspacePath, now, "")
+	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspacePath, executionSpec.CompletionMode, now, "")
 	if invocationErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
 	}
@@ -307,6 +309,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		providerInvocationID: providerInvocationID,
 		providerInvocationAt: providerInvocationAt,
 		completionCapability: completionCapability,
+		completionMode:       executionSpec.CompletionMode,
 		completionReceiptDir: completionReceiptDir,
 		baseSnapshotID:       baseSnapshotID,
 		workspaceID:          run.RunID,
@@ -683,9 +686,10 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			OccurredAt:                job.occurredAt,
 			InvocationID:              job.providerInvocationID,
 			InvocationIssuedAt:        job.providerInvocationAt,
-			CompletionProtocolVersion: opencode.CompletionProtocolVersion,
-			CompletionCapability:      job.completionCapability,
-			CompletionReceiptDir:      job.completionReceiptDir,
+			CompletionProtocolVersion: completionProtocolVersionForMode(job.completionMode),
+			CompletionMode:            opencode.CompletionMode(job.completionMode),
+			CompletionCapability:      completionCapabilityForMode(job.completionMode, job.completionCapability),
+			CompletionReceiptDir:      completionReceiptDirForMode(job.completionMode, job.completionReceiptDir),
 			OnProcessStarted: func() {
 				launchObserved = true
 				launchObservedAt = o.now().UTC().Format(time.RFC3339)
@@ -696,12 +700,11 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			},
 			OnActivity:          o.providerExecutionActivityObserver(ctx, job),
 			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, job),
-			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, job),
+			OnCompletionReceipt: completionReceiptAcceptorForMode(job, o.providerCompletionReceiptAcceptor(ctx, job)),
 		})
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.launchObserved = launchObserved
 		job.launchObservedAt = strings.TrimSpace(launchObservedAt)
-		job = o.maybeRecoverMissingCompletionReceipt(ctx, job)
 
 		if o.executionStore != nil {
 			// Async completions must outlive the dispatch tick context because the

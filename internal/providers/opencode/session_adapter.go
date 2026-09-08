@@ -53,7 +53,6 @@ type SessionAdapter struct {
 	maxContinuationTurns    int
 	firstEventTimeout       time.Duration
 	streamInactivityTimeout time.Duration
-	reconciler              *sessionCompletionReconciler
 
 	logicalToActual map[string]string
 	attempts        map[string]*sessionAttemptRecord
@@ -217,8 +216,6 @@ func (r *startedOpencodeRun) databaseStartupObserved() {
 
 const completionReceiptObservationGracePeriod = 750 * time.Millisecond
 
-const missingCompletionReceiptRecoveryPrompt = "Kingdom has not yet received the required completion receipt for this active invocation.\n\nDo not change your prior answer.\nDo not perform any additional analysis.\nDo not create, edit, rename, or delete any files.\nDo not call any tool except `kingdom_complete_attempt`.\nCall `kingdom_complete_attempt` now.\nReuse your exact final response body in `final_text`."
-
 func (e *IncompleteTerminalStateError) Error() string {
 	return fmt.Sprintf("incomplete terminal state (reason=%q)", strings.TrimSpace(e.Reason))
 }
@@ -233,7 +230,6 @@ func executeResponseForCompletionResult(result attemptCompletionResult) ExecuteR
 		OutputText:                      strings.TrimSpace(result.OutputText),
 		Tokens:                          result.Tokens,
 		ProviderSessionID:               strings.TrimSpace(result.ProviderSessionID),
-		SuppressEmptyOutputRetry:        result.SuppressEmptyOutputRetry,
 		ProviderInvocationID:            strings.TrimSpace(result.ProviderInvocationID),
 		ProviderInvocationAt:            strings.TrimSpace(result.ProviderInvocationAt),
 		CompletionReceiptAccepted:       result.CompletionReceiptAccepted,
@@ -264,19 +260,25 @@ func withExecuteProviderDiagnostics(resp ExecuteResponse, diagnosticsJSON string
 	return resp
 }
 
-func appendPhasedExportChecks(dst []ExportCheck, phase ExportCheckPhase, outcome sessionCompletionReconcileOutcome, err error) []ExportCheck {
-	checks := append([]ExportCheck(nil), outcome.Checks...)
-	var wrapped *sessionCompletionReconcileError
-	if errors.As(err, &wrapped) {
-		checks = append(checks, wrapped.Checks...)
+func withInvocationStreamObservation(resp ExecuteResponse, observation InvocationStreamObservation) ExecuteResponse {
+	resp.StreamObservation = observation
+	return resp
+}
+
+func invocationToolObservations(states map[string]string, names map[string]string) []InvocationToolObservation {
+	if len(states) == 0 {
+		return nil
 	}
-	if len(checks) == 0 {
-		return dst
+	ids := make([]string, 0, len(states))
+	for id := range states {
+		ids = append(ids, id)
 	}
-	for idx := range checks {
-		checks[idx].Phase = phase
+	sort.Strings(ids)
+	tools := make([]InvocationToolObservation, 0, len(ids))
+	for _, id := range ids {
+		tools = append(tools, InvocationToolObservation{ID: id, Name: strings.TrimSpace(names[id]), Status: strings.TrimSpace(states[id])})
 	}
-	return append(dst, checks...)
+	return tools
 }
 
 func executeErrorForCompletionResult(result attemptCompletionResult) error {
@@ -325,6 +327,27 @@ func canonicalSettledOutputText(terminalText, latestContinuationText string, use
 		return trimmedTerminal
 	}
 	return firstNonEmpty(strings.TrimSpace(latestContinuationText), trimmedTerminal)
+}
+
+func shouldContinueLiveStream(reason stepFinishReasonEvidence) bool {
+	switch reason.Normalized {
+	case "tool-calls", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func pendingToolCount(states map[string]string) int {
+	pending := 0
+	for _, state := range states {
+		switch strings.ToLower(strings.TrimSpace(state)) {
+		case "completed", "error", "failed", "cancelled":
+		default:
+			pending++
+		}
+	}
+	return pending
 }
 
 func completionResultForAcceptedReceipt(accepted CompletionReceiptAcceptance, outputText string, tokens TokenUsage, providerSessionID, invocationID, invocationAt string) attemptCompletionResult {
@@ -420,8 +443,6 @@ func receiptRequiredDecision(decision attemptCompletionDecision, providerSession
 	decision.Result.ProviderInvocationAt = strings.TrimSpace(invocationAt)
 	decision.Result.OutputText = firstNonEmpty(strings.TrimSpace(decision.Result.OutputText), strings.TrimSpace(outputText))
 	decision.Result.EvidenceSource = completionEvidenceSourceStream
-	decision.ExportCheckPolicy = exportCheckPolicyRequired
-	decision.ExportCheckReason = firstNonEmpty(strings.TrimSpace(decision.ExportCheckReason), "missing_completion_receipt")
 	return decision
 }
 
@@ -634,7 +655,7 @@ const (
 )
 
 func completionReceiptModeEnabled(req ExecuteRequest) bool {
-	return req.OnCompletionReceipt != nil || strings.TrimSpace(req.CompletionReceiptDir) != "" || strings.TrimSpace(req.CompletionCapability) != ""
+	return req.CompletionMode == CompletionModeReceiptRequired
 }
 
 const completionAttemptEnvPrefix = "KINGDOM_COMPLETE_ATTEMPT_"
@@ -854,8 +875,6 @@ func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
 	if _, err := exec.LookPath(binaryPath); err != nil {
 		return nil, fmt.Errorf("resolve opencode binary %q: %w", binaryPath, err)
 	}
-	exporter := firstNonNilSessionExporter(cfg.SessionExporter, cliSessionExporter{binaryPath: binaryPath})
-
 	return &SessionAdapter{
 		binaryPath:              binaryPath,
 		workDir:                 strings.TrimSpace(cfg.WorkDir),
@@ -870,7 +889,6 @@ func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
 		maxContinuationTurns:    normalizeMaxContinuationTurns(cfg.MaxContinuationTurns),
 		firstEventTimeout:       cfg.FirstEventTimeout,
 		streamInactivityTimeout: cfg.StreamInactivityTimeout,
-		reconciler:              newSessionCompletionReconciler(sessionCompletionReconcilerConfig{Exporter: exporter, TotalTimeout: cfg.ReconcileTotalTimeout, BackoffSchedule: cfg.ReconcileBackoffSchedule, FallbackWorkDir: strings.TrimSpace(cfg.WorkDir)}),
 		logicalToActual:         make(map[string]string),
 		attempts:                make(map[string]*sessionAttemptRecord),
 		inFlight:                make(map[string]*exec.Cmd),
@@ -956,15 +974,43 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	var accumulatedTokens TokenUsage
 	exportChecks := make([]ExportCheck, 0)
 	stderrSnapshot := stderrCapture{}
-	finish := func(resp ExecuteResponse) ExecuteResponse {
-		resp = withExecuteExportChecks(resp, exportChecks)
-		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, exportChecks))
-	}
 	lastStepFinish := buildStepFinishReasonEvidence("", false)
 	upstreamErrorText := ""
 	terminalSuccessSeen := false
 	terminalFailureSeen := false
 	conflictingTerminalEvidence := false
+	toolStates := make(map[string]string)
+	toolNames := make(map[string]string)
+	finalStepID := ""
+	laterEventAfterTerminal := false
+	finish := func(resp ExecuteResponse) ExecuteResponse {
+		observation := InvocationStreamObservation{
+			ProviderSessionID:           strings.TrimSpace(actualSessionID),
+			FinalStepID:                 strings.TrimSpace(finalStepID),
+			FinalSequence:               diagnostics.EventCount,
+			RawFinishReason:             strings.TrimSpace(lastStepFinish.Raw),
+			NormalizedFinishReason:      strings.TrimSpace(lastStepFinish.Normalized),
+			CanonicalTerminalText:       strings.TrimSpace(stepText.terminalOutput()),
+			ToolCalls:                   invocationToolObservations(toolStates, toolNames),
+			PendingToolCount:            pendingToolCount(toolStates),
+			Tokens:                      accumulatedTokens,
+			ProcessExited:               execDiag.WaitReturned,
+			ProcessExitCode:             execDiag.ExitCode,
+			ProcessExitSignal:           execDiag.ExitSignal,
+			StdoutDrained:               execDiag.StdoutEOFSeen,
+			StderrDrained:               execDiag.StderrEOFSeen,
+			TimedOut:                    watchdog.Err() != nil,
+			Cancelled:                   isExecutionCancelled(attemptCtx.Err()),
+			ProviderError:               strings.TrimSpace(upstreamErrorText),
+			MalformedProtocolCount:      execDiag.StdoutMalformedLineCount,
+			ConflictingTerminalEvidence: conflictingTerminalEvidence,
+			LaterEventAfterTerminal:     laterEventAfterTerminal,
+			MeaningfulProgress:          len(textChunks) > 0 || accumulatedTokens.TotalTokens > 0 || len(toolStates) > 0,
+		}
+		resp = withInvocationStreamObservation(resp, observation)
+		resp = withExecuteExportChecks(resp, exportChecks)
+		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, exportChecks))
+	}
 	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		now := time.Now().UTC()
@@ -994,10 +1040,14 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			execDiag.UpstreamErrorText = upstreamErrorText
 		}
 
+		if terminalSuccessSeen || terminalFailureSeen {
+			laterEventAfterTerminal = true
+		}
 		if event.Type == "step_start" {
 			stepText.startStep()
 		}
 		if event.Type == "step_finish" {
+			finalStepID = strings.TrimSpace(event.Part.ID)
 			execDiag.StepFinishSeen = true
 			lastStepFinish = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
 			execDiag.LastStepFinishReason = strings.TrimSpace(lastStepFinish.Normalized)
@@ -1024,6 +1074,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			accumulatedTokens.ReasoningTokens += event.Part.Tokens.Reasoning
 			accumulatedTokens.CacheReadTokens += event.Part.Tokens.Cache.Read
 			accumulatedTokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
+		}
+		if strings.TrimSpace(event.Part.ID) != "" && (event.Type == "tool_use" || event.Part.Type == "tool") {
+			toolStates[event.Part.ID] = strings.ToLower(strings.TrimSpace(event.Part.State.Status))
+			toolNames[event.Part.ID] = strings.TrimSpace(event.Part.Tool)
 		}
 
 		emitActivityObservation(req, event)
@@ -1202,64 +1256,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
 	}
 
-	if execDiag.TerminalStateClass == "non_terminal" && !settledBeforeContinuation && !receiptRequired {
-		reconcileInvocationID := invocationID
-		if strings.TrimSpace(actualSessionID) != "" {
-			preContinuationOutcome, preContinuationErr := a.reconciler.Reconcile(attemptCtx, sessionCompletionReconcileRequest{
-				ProviderSessionID:   actualSessionID,
-				WorkDir:             firstNonEmpty(strings.TrimSpace(req.WorkspacePath), a.workDir),
-				ConfigDir:           firstNonEmpty(strings.TrimSpace(req.ConfigDir), a.configDir),
-				DatabasePath:        firstNonEmpty(strings.TrimSpace(req.DatabasePath), a.databasePath),
-				StreamOutputText:    partialCombinedText,
-				Tokens:              accumulatedTokens,
-				AttemptID:           strings.TrimSpace(req.AttemptID),
-				InvocationID:        reconcileInvocationID,
-				InvocationStartedAt: startAt,
-				ReceiptRequired:     false,
-			})
-			exportChecks = appendPhasedExportChecks(exportChecks, ExportCheckPhaseForegroundReconcile, preContinuationOutcome, preContinuationErr)
-			if preContinuationErr != nil {
-				if isExecutionCancelled(preContinuationErr) {
-					result := executionResultForCancellation(preContinuationErr, actualSessionID, "opencode run cancelled during continuation precheck")
-					result.OutputText = partialCombinedText
-					result.Tokens = accumulatedTokens
-					execDiag.CancelledEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
-						AttemptID:   req.AttemptID,
-						EventType:   AttemptEventTypeCancelled,
-						PayloadJSON: `{"reason":"opencode run cancelled during continuation precheck"}`,
-						OccurredAt:  time.Now().UTC().Format(time.RFC3339),
-					})
-					return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
-				}
-				if isExecutionTimedOut(preContinuationErr) {
-					result := executionResultForTimeout(preContinuationErr, actualSessionID)
-					result.OutputText = partialCombinedText
-					result.Tokens = accumulatedTokens
-					payload, _ := json.Marshal(buildTimeoutFailurePayload(preContinuationErr, diagnostics, execDiag))
-					execDiag.FailedEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
-						AttemptID:   req.AttemptID,
-						EventType:   AttemptEventTypeFailed,
-						PayloadJSON: string(payload),
-						OccurredAt:  time.Now().UTC().Format(time.RFC3339),
-					})
-					return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
-				}
-				return finish(executeResponseForObservedState(partialCombinedText, accumulatedTokens, actualSessionID)), preContinuationErr
-			}
-			if preContinuationOutcome.Status == sessionCompletionReconcileStatusResolved {
-				execDiag.ExportCheckAttempted = true
-				execDiag.ExportCheckStatus = strings.TrimSpace(string(preContinuationOutcome.Status))
-				execDiag.ExportCheckEvidenceSource = strings.TrimSpace(string(preContinuationOutcome.Result.EvidenceSource))
-				execDiag.ExportCheckLastError = strings.TrimSpace(firstNonEmpty(preContinuationOutcome.Diagnostic, preContinuationOutcome.Result.FailureText))
-				execDiag.ExportCheckAttempts = preContinuationOutcome.ExportAttempts
-				execDiag.ExportCheckElapsedMs = preContinuationOutcome.Elapsed.Milliseconds()
-				result = preContinuationOutcome.Result
-				settledBeforeContinuation = true
-			}
-		}
-	}
-
-	if execDiag.TerminalStateClass == "non_terminal" && !settledBeforeContinuation {
+	if shouldContinueLiveStream(lastStepFinish) && !settledBeforeContinuation {
 		execDiag.ContinuationTurnsMax = a.maxContinuationTurns - 1
 		remainingTurns := a.maxContinuationTurns - 1
 		for remainingTurns > 0 {
@@ -1425,7 +1422,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			LastStepFinish:              lastStepFinish,
 			UpstreamErrorText:           upstreamErrorText,
 			ConflictingTerminalEvidence: conflictingTerminalEvidence,
+			MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 			CleanEOF:                    waitErr == nil,
+			PendingToolCount:            pendingToolCount(toolStates),
+			LaterEventAfterTerminal:     laterEventAfterTerminal,
 		})
 		if receiptRequired && !receiptAccepted {
 			decision = receiptRequiredDecision(decision, actualSessionID, canonicalCombinedText, req.InvocationID, req.InvocationIssuedAt)
@@ -1435,161 +1435,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			decision.Result.ReasonCode = "provider_incomplete_turn"
 			decision.Result.FailureText = "planner terminal-success step contained no output"
 			decision.Result.OutputText = ""
-			decision.ExportCheckPolicy = exportCheckPolicyNone
-			decision.ExportCheckReason = ""
 		}
 		result = decision.Result
-		execDiag.ExportCheckPolicy = strings.TrimSpace(string(decision.ExportCheckPolicy))
-		execDiag.ExportCheckReason = strings.TrimSpace(decision.ExportCheckReason)
-	}
-	if !settledBeforeContinuation && decision.ExportCheckPolicy != exportCheckPolicyNone {
-		if strings.TrimSpace(actualSessionID) == "" {
-			missingSessionText := fmt.Sprintf("missing provider session id after ambiguous completion: %s", decision.ExportCheckReason)
-			execDiag.ExportCheckStatus = "missing_provider_session_id"
-			execDiag.ExportCheckLastError = strings.TrimSpace(firstNonEmpty(stderrText, missingSessionText))
-			result = attemptCompletionResult{
-				State:                attemptCompletionStateIncompleteTurn,
-				ReasonCode:           "provider_incomplete_turn",
-				FailureText:          firstNonEmpty(stderrText, missingSessionText),
-				OutputText:           canonicalCombinedText,
-				Tokens:               accumulatedTokens,
-				ProviderSessionID:    actualSessionID,
-				ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-				ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-				EvidenceSource:       completionEvidenceSourceStream,
-			}
-		} else {
-			execDiag.ExportCheckAttempted = true
-			reconcileInvocationID := invocationID
-			emitExecuteLifecycleObservation(req, ExecuteLifecycleObservation{
-				Phase:             ExecuteLifecyclePhaseProviderExportReconciliationStarted,
-				ProviderSessionID: actualSessionID,
-				AmbiguityReason:   decision.ExportCheckReason,
-			})
-			reconcileOutcome, reconcileErr := a.reconciler.Reconcile(attemptCtx, sessionCompletionReconcileRequest{
-				ProviderSessionID:   actualSessionID,
-				WorkDir:             firstNonEmpty(strings.TrimSpace(req.WorkspacePath), a.workDir),
-				ConfigDir:           firstNonEmpty(strings.TrimSpace(req.ConfigDir), a.configDir),
-				DatabasePath:        firstNonEmpty(strings.TrimSpace(req.DatabasePath), a.databasePath),
-				StreamOutputText:    canonicalCombinedText,
-				Tokens:              accumulatedTokens,
-				AttemptID:           strings.TrimSpace(req.AttemptID),
-				InvocationID:        reconcileInvocationID,
-				InvocationStartedAt: startAt,
-				ReceiptRequired:     receiptRequired,
-			})
-			exportChecks = appendPhasedExportChecks(exportChecks, ExportCheckPhaseForegroundReconcile, reconcileOutcome, reconcileErr)
-			if reconcileErr != nil {
-				execDiag.ExportCheckStatus = "reconcile_error"
-				execDiag.ExportCheckLastError = strings.TrimSpace(reconcileErr.Error())
-				emitExecuteLifecycleObservation(req, ExecuteLifecycleObservation{
-					Phase:             ExecuteLifecyclePhaseProviderExportReconciliationFailed,
-					ProviderSessionID: actualSessionID,
-					AmbiguityReason:   decision.ExportCheckReason,
-					Error:             reconcileErr.Error(),
-				})
-				if isExecutionCancelled(attemptCtx.Err()) || (!receiptRequired && isExecutionCancelled(reconcileErr)) {
-					cancelledResult := attemptCompletionResult{
-						State:             attemptCompletionStateCancelled,
-						ReasonCode:        "provider_cancelled",
-						FailureText:       firstNonEmpty(strings.TrimSpace(reconcileErr.Error()), "opencode run cancelled"),
-						ProviderSessionID: actualSessionID,
-						OutputText:        observedCombinedText,
-						Tokens:            accumulatedTokens,
-						EvidenceSource:    completionEvidenceSourceExport,
-					}
-					payload, _ := json.Marshal(map[string]any{
-						"error":                      cancelledResult.FailureText,
-						"stream_diagnostics":         diagnostics.toMap(),
-						"execution_path_diagnostics": execDiag.toMap(),
-					})
-					execDiag.CancelledEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{AttemptID: req.AttemptID, EventType: AttemptEventTypeCancelled, PayloadJSON: string(payload), OccurredAt: time.Now().UTC().Format(time.RFC3339)})
-					return finish(executeResponseForCompletionResult(cancelledResult)), context.Canceled
-				}
-				if isExecutionTimedOut(attemptCtx.Err()) || (!receiptRequired && isExecutionTimedOut(reconcileErr)) {
-					timeoutResult := executionResultForTimeout(firstNonNilError(attemptCtx.Err(), reconcileErr), actualSessionID)
-					timeoutResult.OutputText = observedCombinedText
-					timeoutResult.Tokens = accumulatedTokens
-					payload, _ := json.Marshal(buildTimeoutFailurePayload(firstNonNilError(attemptCtx.Err(), reconcileErr), diagnostics, execDiag))
-					execDiag.FailedEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{AttemptID: req.AttemptID, EventType: AttemptEventTypeFailed, PayloadJSON: string(payload), OccurredAt: time.Now().UTC().Format(time.RFC3339)})
-					return finish(executeResponseForCompletionResult(timeoutResult)), executeErrorForCompletionResult(timeoutResult)
-				}
-				if receiptRequired {
-					result = attemptCompletionResult{
-						State:                attemptCompletionStateIncompleteTurn,
-						ReasonCode:           "provider_incomplete_turn",
-						FailureText:          firstNonEmpty(strings.TrimSpace(result.FailureText), stderrText, "provider exited without an accepted kingdom_complete_attempt receipt"),
-						ProviderSessionID:    actualSessionID,
-						ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-						ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-						OutputText:           firstNonEmpty(strings.TrimSpace(result.OutputText), canonicalCombinedText),
-						Tokens:               accumulatedTokens,
-						EvidenceSource:       completionEvidenceSource(firstNonEmpty(strings.TrimSpace(string(result.EvidenceSource)), string(completionEvidenceSourceStream))),
-					}
-				} else {
-					payload, _ := json.Marshal(map[string]any{
-						"error":                      reconcileErr.Error(),
-						"stream_diagnostics":         diagnostics.toMap(),
-						"execution_path_diagnostics": execDiag.toMap(),
-					})
-					execDiag.FailedEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{AttemptID: req.AttemptID, EventType: AttemptEventTypeFailed, PayloadJSON: string(payload), OccurredAt: time.Now().UTC().Format(time.RFC3339)})
-					return finish(executeResponseForObservedState(observedCombinedText, accumulatedTokens, actualSessionID)), reconcileErr
-				}
-			} else {
-				execDiag.ExportCheckStatus = strings.TrimSpace(string(reconcileOutcome.Status))
-				execDiag.ExportCheckEvidenceSource = strings.TrimSpace(string(reconcileOutcome.Result.EvidenceSource))
-				execDiag.ExportCheckLastError = strings.TrimSpace(firstNonEmpty(reconcileOutcome.Diagnostic, reconcileOutcome.Result.FailureText))
-				execDiag.ExportCheckAttempts = reconcileOutcome.ExportAttempts
-				execDiag.ExportCheckElapsedMs = reconcileOutcome.Elapsed.Milliseconds()
-				if reconcileOutcome.Status == sessionCompletionReconcileStatusResolved {
-					phase := ExecuteLifecyclePhaseProviderExportReconciliationSucceeded
-					if !receiptRequired && reconcileOutcome.Result.State != attemptCompletionStateSuccess {
-						phase = ExecuteLifecyclePhaseProviderExportReconciliationFailed
-					}
-					emitExecuteLifecycleObservation(req, ExecuteLifecycleObservation{
-						Phase:              phase,
-						ProviderSessionID:  actualSessionID,
-						AmbiguityReason:    decision.ExportCheckReason,
-						ResolvedState:      string(reconcileOutcome.Result.State),
-						ResolvedReasonCode: strings.TrimSpace(reconcileOutcome.Result.ReasonCode),
-						EvidenceSource:     string(reconcileOutcome.Result.EvidenceSource),
-					})
-					result = reconcileOutcome.Result
-					result.ProviderInvocationID = strings.TrimSpace(req.InvocationID)
-					result.ProviderInvocationAt = strings.TrimSpace(req.InvocationIssuedAt)
-				} else {
-					if reconcileOutcome.Status == sessionCompletionReconcileStatusUnresolved {
-						emitExecuteLifecycleObservation(req, ExecuteLifecycleObservation{
-							Phase:             ExecuteLifecyclePhaseProviderExportReconciliationUnresolved,
-							ProviderSessionID: actualSessionID,
-							AmbiguityReason:   decision.ExportCheckReason,
-						})
-					} else {
-						emitExecuteLifecycleObservation(req, ExecuteLifecycleObservation{
-							Phase:             ExecuteLifecyclePhaseProviderExportReconciliationFailed,
-							ProviderSessionID: actualSessionID,
-							AmbiguityReason:   decision.ExportCheckReason,
-							Error:             firstNonEmpty(reconcileOutcome.Diagnostic, reconcileOutcome.Result.FailureText),
-						})
-					}
-					unresolvedText := fmt.Sprintf("incomplete terminal state after reconciliation: %s", decision.ExportCheckReason)
-					if reconcileOutcome.Status != sessionCompletionReconcileStatusUnresolved {
-						unresolvedText = firstNonEmpty(reconcileOutcome.Diagnostic, reconcileOutcome.Result.FailureText, unresolvedText)
-					}
-					result = attemptCompletionResult{
-						State:                attemptCompletionStateIncompleteTurn,
-						ReasonCode:           "provider_incomplete_turn",
-						FailureText:          firstNonEmpty(strings.TrimSpace(reconcileOutcome.Result.FailureText), strings.TrimSpace(reconcileOutcome.Diagnostic), stderrText, unresolvedText),
-						ProviderSessionID:    actualSessionID,
-						ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-						ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-						OutputText:           canonicalCombinedText,
-						Tokens:               accumulatedTokens,
-						EvidenceSource:       completionEvidenceSourceExport,
-					}
-				}
-			}
-		}
 	}
 	if completionReceiptModeEnabled(req) && !receiptAccepted {
 		if result.State == attemptCompletionStateSuccess || result.State == "" {
@@ -1613,7 +1460,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			if receiptRequired {
 				reason = firstNonEmpty(result.ReasonCode, reason)
 			} else {
-				reason = firstNonEmpty(execDiag.LastStepFinishReason, execDiag.LastStepFinishReasonKind, decision.ExportCheckReason, result.ReasonCode)
+				reason = firstNonEmpty(execDiag.LastStepFinishReason, execDiag.LastStepFinishReasonKind, result.ReasonCode)
 			}
 		}
 		errorText := firstNonEmpty(result.FailureText, stderrText, fmt.Sprintf("incomplete terminal state: %s", reason))
@@ -1998,233 +1845,6 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		result.LastReason = buildStepFinishReasonEvidence("", false)
 	}
 	return result, nil
-}
-
-func (a *SessionAdapter) RecoverMissingCompletionReceipt(ctx context.Context, req ExecuteRequest, finalText string) (ExecuteResponse, error) {
-	if err := validateExecuteRequest(req); err != nil {
-		return ExecuteResponse{}, err
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	expectedFinalText := strings.TrimSpace(finalText)
-	if expectedFinalText == "" {
-		result := attemptCompletionResult{
-			State:                attemptCompletionStateIncompleteTurn,
-			ReasonCode:           "provider_incomplete_turn",
-			FailureText:          "completion recovery requires non-empty final_text",
-			ProviderSessionID:    strings.TrimSpace(req.ProviderSessionID),
-			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-			EvidenceSource:       completionEvidenceSourceStream,
-		}
-		return executeResponseForCompletionResult(result), executeErrorForCompletionResult(result)
-	}
-
-	actualSessionID := firstNonEmpty(strings.TrimSpace(req.ProviderSessionID), a.actualSessionID(req.SessionID))
-	if actualSessionID == "" {
-		result := attemptCompletionResult{
-			State:                attemptCompletionStateIncompleteTurn,
-			ReasonCode:           "provider_incomplete_turn",
-			FailureText:          "completion recovery requires a provider session id",
-			OutputText:           expectedFinalText,
-			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-			EvidenceSource:       completionEvidenceSourceStream,
-		}
-		return executeResponseForCompletionResult(result), executeErrorForCompletionResult(result)
-	}
-
-	attemptCtx, cancelAttempt := context.WithCancel(ctx)
-	defer cancelAttempt()
-	attemptDone := a.beginAttemptOperation(req.AttemptID)
-	defer a.endAttemptOperation(req.AttemptID, attemptDone)
-	a.setAttemptCancel(req.AttemptID, cancelAttempt)
-	defer a.clearAttemptCancel(req.AttemptID)
-
-	wrappedReq := req
-	wrappedReq.ProviderSessionID = actualSessionID
-	wrappedReq.OnCompletionReceipt = expectedFinalTextRecoveryHandler(expectedFinalText, req.OnCompletionReceipt)
-
-	startedRun, err := a.startOpencodeRun(attemptCtx, wrappedReq, actualSessionID, promptWithProviderInvocationMetadata(missingCompletionReceiptRecoveryPrompt, req.AttemptID, req.InvocationID))
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-	defer startedRun.databaseStartupObserved()
-	cmd := startedRun.cmd
-	stdout := startedRun.stdout
-	stderr := startedRun.stderr
-	a.setInFlight(req.AttemptID, cmd)
-	defer terminateCommandProcessTree(cmd)
-	defer a.clearInFlight(req.AttemptID)
-
-	ctxCancelDone := make(chan struct{})
-	go func() {
-		select {
-		case <-attemptCtx.Done():
-			_ = terminateCommandProcessTree(cmd)
-		case <-ctxCancelDone:
-		}
-	}()
-	defer close(ctxCancelDone)
-
-	watchdog := startCommandWatchdog(cmd, a.firstEventTimeout, a.streamInactivityTimeout)
-	defer watchdog.Stop()
-	stderrDone := startStderrCapture(stderr)
-
-	result := continuationTurnResult{
-		TextChunks:        make([]string, 0),
-		LastReason:        buildStepFinishReasonEvidence("", false),
-		ProviderSessionID: actualSessionID,
-	}
-	providerSessionObserved := false
-	stderrSnapshot := stderrCapture{}
-	execDiag := executionPathDiagnostics{
-		AttemptID: strings.TrimSpace(req.AttemptID),
-		SessionID: actualSessionID,
-	}
-	finish := func(resp ExecuteResponse) ExecuteResponse {
-		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(wrappedReq, streamDiagnostics{}, execDiag, stderrSnapshot, nil))
-	}
-
-	streamErr := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
-		startedRun.databaseStartupObserved()
-		watchdog.Signal()
-		if strings.TrimSpace(event.SessionID) != "" {
-			result.ProviderSessionID = a.observeProviderSession(wrappedReq, result.ProviderSessionID, event.SessionID, &providerSessionObserved)
-		}
-		if strings.TrimSpace(event.ErrorText) != "" && strings.TrimSpace(event.Type) == "error" {
-			result.UpstreamErrorText = strings.TrimSpace(event.ErrorText)
-		}
-		if event.Type == "step_finish" {
-			result.LastReason = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
-			if event.Part.Tokens != nil {
-				result.Tokens.InputTokens += event.Part.Tokens.Input
-				result.Tokens.OutputTokens += event.Part.Tokens.Output
-				result.Tokens.TotalTokens += event.Part.Tokens.Total
-				result.Tokens.ReasoningTokens += event.Part.Tokens.Reasoning
-				result.Tokens.CacheReadTokens += event.Part.Tokens.Cache.Read
-				result.Tokens.CacheWriteTokens += event.Part.Tokens.Cache.Write
-			}
-		}
-		emitActivityObservation(wrappedReq, event)
-		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
-			result.TextChunks = append(result.TextChunks, event.Part.Text)
-			if wrappedReq.OnProgress != nil {
-				wrappedReq.OnProgress(event.Part.Text)
-			}
-			sum := sha256.Sum256([]byte(event.Part.Text))
-			payload, _ := json.Marshal(map[string]any{
-				"text": event.Part.Text,
-				"execution_path_diagnostics_snapshot": map[string]any{
-					"last_progress_text_len": len(event.Part.Text),
-					"last_progress_text_sha": fmt.Sprintf("%x", sum[:]),
-				},
-			})
-			a.appendEvent(req.AttemptID, AttemptStreamEvent{
-				AttemptID:   req.AttemptID,
-				EventType:   AttemptEventTypeProgress,
-				PayloadJSON: string(payload),
-				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
-			})
-		}
-		return nil
-	}, nil)
-	if streamErr != nil {
-		_ = terminateCommandProcessTree(cmd)
-	}
-	execDiag.CmdWaitStartedAt = time.Now().UTC().Format(time.RFC3339)
-	waitErr := cmd.Wait()
-	a.markInFlightWaitReturned(req.AttemptID, cmd)
-	execDiag.CmdWaitFinishedAt = time.Now().UTC().Format(time.RFC3339)
-	execDiag.WaitReturned = true
-	stderrSnapshot = <-stderrDone
-	result.Stderr = stderrSnapshot
-	execDiag.StderrLineCount = stderrSnapshot.lineCount
-	execDiag.LastStderrLineAt = stderrSnapshot.lastLineAt
-	execDiag.StderrEOFSeen = stderrSnapshot.eofSeen
-	if waitErr != nil {
-		execDiag.WaitError = waitErr.Error()
-	}
-	if strings.TrimSpace(stderrSnapshot.scannerError) != "" {
-		if strings.TrimSpace(execDiag.WaitError) == "" {
-			execDiag.WaitError = stderrSnapshot.scannerError
-		} else {
-			execDiag.WaitError += "; stderr_scan_error=" + stderrSnapshot.scannerError
-		}
-	}
-	if strings.TrimSpace(result.UpstreamErrorText) != "" {
-		execDiag.UpstreamErrorText = result.UpstreamErrorText
-	}
-	if timeoutErr := watchdog.Err(); timeoutErr != nil {
-		decorated := decorateTimeoutError(timeoutErr, streamDiagnostics{})
-		return finish(executeResponseForCompletionResult(executionResultForTimeout(decorated, result.ProviderSessionID))), decorated
-	}
-	if isExecutionCancelled(waitErr) || isExecutionCancelled(attemptCtx.Err()) {
-		cancelledResult := executionResultForCancellation(waitErr, result.ProviderSessionID, "opencode completion recovery cancelled")
-		cancelledResult.OutputText = expectedFinalText
-		cancelledResult.Tokens = result.Tokens
-		return finish(executeResponseForCompletionResult(cancelledResult)), executeErrorForCompletionResult(cancelledResult)
-	}
-	if isExecutionTimedOut(waitErr) || isExecutionTimedOut(attemptCtx.Err()) {
-		timeoutErr := firstNonNilError(waitErr, attemptCtx.Err())
-		timeoutResult := executionResultForTimeout(timeoutErr, result.ProviderSessionID)
-		timeoutResult.OutputText = expectedFinalText
-		timeoutResult.Tokens = result.Tokens
-		return finish(executeResponseForCompletionResult(timeoutResult)), executeErrorForCompletionResult(timeoutResult)
-	}
-	if streamErr != nil {
-		return finish(executeResponseForObservedState(expectedFinalText, result.Tokens, result.ProviderSessionID)), fmt.Errorf("read opencode completion recovery stream: %w", streamErr)
-	}
-	if waitErr != nil {
-		trimmed := strings.TrimSpace(string(stderrSnapshot.raw))
-		if trimmed == "" {
-			trimmed = waitErr.Error()
-		}
-		failedResult := executionResultForProcessError(waitErr, result.ProviderSessionID, result.UpstreamErrorText, trimmed)
-		failedResult.OutputText = expectedFinalText
-		failedResult.Tokens = result.Tokens
-		return finish(executeResponseForCompletionResult(failedResult)), executeErrorForCompletionResult(failedResult)
-	}
-	if strings.TrimSpace(result.UpstreamErrorText) != "" {
-		failedResult := executionResultForProcessError(errors.New(result.UpstreamErrorText), result.ProviderSessionID, result.UpstreamErrorText, "")
-		failedResult.OutputText = expectedFinalText
-		failedResult.Tokens = result.Tokens
-		return finish(executeResponseForCompletionResult(failedResult)), executeErrorForCompletionResult(failedResult)
-	}
-
-	if receiptResult, settled, _ := waitForCompletionReceiptSettlement(wrappedReq, expectedFinalText, result.Tokens, result.ProviderSessionID, completionReceiptObservationGracePeriod); settled {
-		if strings.TrimSpace(receiptResult.OutputText) == "" {
-			receiptResult.OutputText = expectedFinalText
-		}
-		return finish(executeResponseForCompletionResult(receiptResult)), executeErrorForCompletionResult(receiptResult)
-	}
-
-	incompleteResult := attemptCompletionResult{
-		State:                attemptCompletionStateIncompleteTurn,
-		ReasonCode:           "provider_incomplete_turn",
-		FailureText:          "provider exited without an accepted kingdom_complete_attempt receipt after recovery",
-		OutputText:           expectedFinalText,
-		Tokens:               result.Tokens,
-		ProviderSessionID:    result.ProviderSessionID,
-		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		EvidenceSource:       completionEvidenceSourceStream,
-	}
-	return finish(executeResponseForCompletionResult(incompleteResult)), executeErrorForCompletionResult(incompleteResult)
-}
-
-func expectedFinalTextRecoveryHandler(expectedFinalText string, next func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error)) func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-	trimmedExpected := strings.TrimSpace(expectedFinalText)
-	return func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
-		if strings.TrimSpace(receipt.FinalText) != trimmedExpected {
-			return CompletionReceiptAcceptance{Rejected: true, RejectedReason: "completion recovery final_text mismatch"}, nil
-		}
-		if next == nil {
-			return CompletionReceiptAcceptance{}, fmt.Errorf("completion receipt handler is required")
-		}
-		return next(receipt)
-	}
 }
 
 func (a *SessionAdapter) Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error) {
@@ -2648,11 +2268,11 @@ func normalizeStepFinishReason(reason string) string {
 
 func classifyStepFinishReason(reason string) stepFinishTerminalClass {
 	switch normalizeStepFinishReason(reason) {
-	case "tool-calls", "unknown":
+	case "tool-calls":
 		return stepFinishNonTerminal
 	case "error":
 		return stepFinishTerminalFailure
-	case "stop", "length", "content-filter", "other":
+	case "stop":
 		return stepFinishTerminalSuccessCandidate
 	default:
 		return stepFinishAmbiguous

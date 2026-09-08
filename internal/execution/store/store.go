@@ -37,6 +37,43 @@ func NormalizeExecutionMode(raw string) ExecutionMode {
 	}
 }
 
+// ProviderCompletionMode is the durable authority for how an execution
+// attempt may complete. It is selected before enqueue and never inferred from
+// capability presence or provider evidence.
+type ProviderCompletionMode string
+
+const (
+	ProviderCompletionModeNotApplicable   ProviderCompletionMode = "not_applicable"
+	ProviderCompletionModeServerResponse  ProviderCompletionMode = "server_response"
+	ProviderCompletionModeReceiptRequired ProviderCompletionMode = "receipt_required"
+)
+
+func ParseProviderCompletionMode(raw string) (ProviderCompletionMode, error) {
+	mode := ProviderCompletionMode(strings.TrimSpace(raw))
+	switch mode {
+	case ProviderCompletionModeNotApplicable, ProviderCompletionModeServerResponse, ProviderCompletionModeReceiptRequired:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid provider completion mode: %q", strings.TrimSpace(raw))
+	}
+}
+
+func validateAttemptCompletionMode(executionMode ExecutionMode, completionMode ProviderCompletionMode) error {
+	switch executionMode {
+	case ExecutionModeRuntimeOwned:
+		if completionMode != ProviderCompletionModeNotApplicable {
+			return fmt.Errorf("runtime-owned attempts require completion_mode %q", ProviderCompletionModeNotApplicable)
+		}
+	case ExecutionModeProviderBacked:
+		if completionMode != ProviderCompletionModeServerResponse && completionMode != ProviderCompletionModeReceiptRequired {
+			return fmt.Errorf("provider-backed attempts require completion_mode %q or %q", ProviderCompletionModeServerResponse, ProviderCompletionModeReceiptRequired)
+		}
+	default:
+		return fmt.Errorf("invalid execution mode: %q", executionMode)
+	}
+	return nil
+}
+
 func AttemptLaunchObserved(state string, startedAt string) bool {
 	if strings.TrimSpace(startedAt) != "" {
 		return true
@@ -73,6 +110,7 @@ type AttemptExecution struct {
 	NodeRunID                  string
 	State                      string
 	ExecutionMode              ExecutionMode
+	CompletionMode             ProviderCompletionMode
 	ProviderTimeoutMillis      int64
 	SessionRef                 string
 	ProviderSessionID          string
@@ -279,6 +317,7 @@ type EnqueueAttemptRequest struct {
 	RunID                 string
 	NodeRunID             string
 	ExecutionMode         ExecutionMode
+	CompletionMode        ProviderCompletionMode
 	ProviderTimeoutMillis int64
 	SessionRef            string
 	ProviderSessionID     string
@@ -303,18 +342,26 @@ func (s *Store) EnqueueAttempt(ctx context.Context, req EnqueueAttemptRequest) e
 		createdAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	executionMode := NormalizeExecutionMode(string(req.ExecutionMode))
+	completionMode, err := ParseProviderCompletionMode(string(req.CompletionMode))
+	if err != nil {
+		return fmt.Errorf("validate attempt completion mode: %w", err)
+	}
+	if err := validateAttemptCompletionMode(executionMode, completionMode); err != nil {
+		return err
+	}
 	providerTimeoutMillis := req.ProviderTimeoutMillis
 	if providerTimeoutMillis < 0 {
 		providerTimeoutMillis = 0
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
-		 VALUES (?, ?, ?, 'queued', ?, ?, '', NULL, 0, ?, ?, NULL, NULL, NULL, NULL, '', '', ?, ?)`,
+	result, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, provider_timeout_ms, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
+		 VALUES (?, ?, ?, 'queued', ?, ?, ?, '', NULL, 0, ?, ?, NULL, NULL, NULL, NULL, '', '', ?, ?)`,
 		strings.TrimSpace(req.AttemptID),
 		strings.TrimSpace(req.RunID),
 		strings.TrimSpace(req.NodeRunID),
 		string(executionMode),
+		string(completionMode),
 		providerTimeoutMillis,
 		strings.TrimSpace(req.SessionRef),
 		strings.TrimSpace(req.ProviderSessionID),
@@ -323,6 +370,19 @@ func (s *Store) EnqueueAttempt(ctx context.Context, req EnqueueAttemptRequest) e
 	)
 	if err != nil {
 		return fmt.Errorf("enqueue attempt %q: %w", req.AttemptID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read enqueue attempt rows affected for %q: %w", req.AttemptID, err)
+	}
+	if rows == 0 {
+		existing, found, err := s.GetAttempt(ctx, req.AttemptID)
+		if err != nil {
+			return err
+		}
+		if found && existing.CompletionMode != completionMode {
+			return fmt.Errorf("attempt %q completion_mode is immutable: existing=%q requested=%q", req.AttemptID, existing.CompletionMode, completionMode)
+		}
 	}
 	return nil
 }
@@ -336,7 +396,7 @@ func (s *Store) ListQueuedAttempts(ctx context.Context, limit int) ([]AttemptExe
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, session_ref, provider_session_id
+		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, provider_timeout_ms, session_ref, provider_session_id
 		 FROM attempt_executions
 		 WHERE state = 'queued'
 		 ORDER BY created_at ASC, attempt_id ASC
@@ -351,11 +411,12 @@ func (s *Store) ListQueuedAttempts(ctx context.Context, limit int) ([]AttemptExe
 	attempts := make([]AttemptExecution, 0)
 	for rows.Next() {
 		var rec AttemptExecution
-		var executionMode string
-		if err := rows.Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID); err != nil {
+		var executionMode, completionMode string
+		if err := rows.Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &completionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID); err != nil {
 			return nil, fmt.Errorf("scan queued attempt: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)
+		rec.CompletionMode = ProviderCompletionMode(completionMode)
 		attempts = append(attempts, rec)
 	}
 	if err := rows.Err(); err != nil {
@@ -375,15 +436,15 @@ func (s *Store) GetAttempt(ctx context.Context, attemptID string) (AttemptExecut
 	}
 
 	var rec AttemptExecution
-	var executionMode string
+	var executionMode, completionMode string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, provider_timeout_ms, session_ref, provider_session_id,
+		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, provider_timeout_ms, session_ref, provider_session_id,
 		        COALESCE(active_provider_invocation_id, ''), COALESCE(canonical_settlement_id, ''),
 		        COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(terminal_observed_at, ''), COALESCE(committed_at, ''), failure_code, failure_text,
 		        COALESCE(progress_event_type, ''), COALESCE(progress_reason_code, ''), COALESCE(progress_at, '')
 		 FROM attempt_executions WHERE attempt_id = ?`,
 		attemptID,
-	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.LaunchStartedAt, &rec.StartedAt, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText, &rec.ProgressEventType, &rec.ProgressReasonCode, &rec.ProgressAt)
+	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &completionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.LaunchStartedAt, &rec.StartedAt, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText, &rec.ProgressEventType, &rec.ProgressReasonCode, &rec.ProgressAt)
 	if err == sql.ErrNoRows {
 		return AttemptExecution{}, false, nil
 	}
@@ -391,6 +452,7 @@ func (s *Store) GetAttempt(ctx context.Context, attemptID string) (AttemptExecut
 		return AttemptExecution{}, false, fmt.Errorf("query attempt %q: %w", attemptID, err)
 	}
 	rec.ExecutionMode = NormalizeExecutionMode(executionMode)
+	rec.CompletionMode = ProviderCompletionMode(completionMode)
 	return rec, true, nil
 }
 
@@ -555,13 +617,13 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 	       COALESCE(lao.payload_json, '') AS payload_json,
 	       NULLIF(TRIM(ae.active_provider_invocation_id), '') AS active_provider_invocation_id,
-	       NULLIF(TRIM(api.completion_capability_issued_at), '') AS active_provider_invocation_at,
+	       NULLIF(TRIM(api.created_at), '') AS active_provider_invocation_at,
 	       NULLIF(TRIM(ae.canonical_settlement_id), '') AS canonical_settlement_id,
 	       NULLIF(TRIM(pcs.outcome), '') AS canonical_settlement_outcome,
 	       pcs.settled_at AS canonical_settlement_at,
 	       NULLIF(TRIM(pcs.structured_payload_json), '') AS canonical_structured_payload_json,
 	       NULLIF(TRIM(pcs.provider_invocation_id), '') AS canonical_provider_invocation_id,
-	       NULLIF(TRIM(cpi.completion_capability_issued_at), '') AS canonical_provider_invocation_at,
+	       NULLIF(TRIM(cpi.created_at), '') AS canonical_provider_invocation_at,
 	       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text
 	FROM attempt_executions ae
 	JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
@@ -676,10 +738,10 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 		       ae.terminal_observed_at,
 		       COALESCE(lao.payload_json, '') AS payload_json,
 		       NULLIF(TRIM(ae.active_provider_invocation_id), '') AS active_provider_invocation_id,
-		       NULLIF(TRIM(api.completion_capability_issued_at), '') AS active_provider_invocation_at,
+		       NULLIF(TRIM(api.created_at), '') AS active_provider_invocation_at,
 		       NULLIF(TRIM(ae.canonical_settlement_id), '') AS canonical_settlement_id,
 		       NULLIF(TRIM(pcs.provider_invocation_id), '') AS canonical_provider_invocation_id,
-		       NULLIF(TRIM(cpi.completion_capability_issued_at), '') AS canonical_provider_invocation_at,
+		       NULLIF(TRIM(cpi.created_at), '') AS canonical_provider_invocation_at,
 		       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text,
 		       ROW_NUMBER() OVER (
 		         PARTITION BY nr.node_id
@@ -1215,6 +1277,60 @@ type CommitTerminalRequest struct {
 	FailureCode        string
 	FailureText        string
 	ProviderSessionID  string
+}
+
+// commitTerminalTx is the transaction-scoped terminal write used by composite
+// authority operations. It intentionally contains no transaction lifecycle.
+func commitTerminalTx(ctx context.Context, tx *sql.Tx, req CommitTerminalRequest) error {
+	attemptID, runID, nodeRunID := strings.TrimSpace(req.AttemptID), strings.TrimSpace(req.RunID), strings.TrimSpace(req.NodeRunID)
+	terminalState, outboxID := strings.TrimSpace(req.TerminalState), strings.TrimSpace(req.OutboxID)
+	if attemptID == "" || runID == "" || nodeRunID == "" || terminalState == "" || outboxID == "" {
+		return fmt.Errorf("outbox_id, attempt_id, run_id, node_run_id, and terminal_state are required")
+	}
+	payload := strings.TrimSpace(req.PayloadJSON)
+	if payload == "" {
+		payload = `{}`
+	}
+	committedAt := strings.TrimSpace(req.CommittedAt)
+	if committedAt == "" {
+		committedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	terminalSeq := req.TerminalSeq
+	if terminalSeq <= 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`, attemptID).Scan(&terminalSeq); err != nil {
+			return fmt.Errorf("load terminal attempt seq: %w", err)
+		}
+	}
+	failureCode, failureText := strings.TrimSpace(req.FailureCode), strings.TrimSpace(req.FailureText)
+	if terminalState == "committed_success" {
+		failureCode, failureText = "", ""
+	}
+	eventType, reasonCode := terminalAttemptEventForState(terminalState, strings.TrimSpace(req.TerminalReasonCode), failureCode)
+	res, err := tx.ExecContext(ctx, `UPDATE attempt_executions SET state = ?, terminal_observed_at = ?, committed_at = ?, lease_owner = '', lease_expires_at = NULL, provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END, failure_code = ?, failure_text = ?, updated_at = ? WHERE attempt_id = ? AND run_id = ? AND node_run_id = ? AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')`, terminalState, committedAt, committedAt, strings.TrimSpace(req.ProviderSessionID), strings.TrimSpace(req.ProviderSessionID), failureCode, failureText, committedAt, attemptID, runID, nodeRunID)
+	if err != nil {
+		return fmt.Errorf("update attempt terminal state: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read terminal update rows affected: %w", err)
+	}
+	if rows == 0 {
+		var existing string
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&existing); err != nil {
+			return fmt.Errorf("load terminal attempt state: %w", err)
+		}
+		if existing != terminalState {
+			return fmt.Errorf("attempt %q already terminal in state %q", attemptID, existing)
+		}
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", attemptID, terminalSeq), attemptID, runID, nodeRunID, terminalSeq, eventType, reasonCode, payload, committedAt); err != nil {
+		return fmt.Errorf("insert terminal attempt event: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`, outboxID, attemptID, runID, nodeRunID, terminalSeq, terminalState, payload, committedAt, committedAt); err != nil {
+		return fmt.Errorf("insert attempt outbox record: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) CommitTerminal(ctx context.Context, req CommitTerminalRequest) error {

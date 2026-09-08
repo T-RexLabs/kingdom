@@ -10,8 +10,6 @@ import (
 	"kingdom/internal/core/workflow"
 )
 
-const MaxControlVerdictLines = 12
-
 const (
 	// ReworkReasonCodeExecutionReview and ReworkReasonCodeValidationGate are the
 	// failure codes an owner node writes when it asks for changes instead of
@@ -59,17 +57,19 @@ func (e *ReceiptContractError) Error() string {
 
 func FindNearTop(outputText string) (string, bool, error) {
 	verdict := ""
-	nonEmptySeen := 0
+	firstNonEmptySeen := false
 	for _, rawLine := range strings.Split(outputText, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
 		}
-		nonEmptySeen++
-		if nonEmptySeen > MaxControlVerdictLines {
-			break
-		}
 		match := controlVerdictPattern.FindStringSubmatch(line)
+		if !firstNonEmptySeen {
+			firstNonEmptySeen = true
+			if len(match) != 2 {
+				return "", false, nil
+			}
+		}
 		if len(match) != 2 {
 			continue
 		}
@@ -140,6 +140,10 @@ func receiptDecisionForOwner(structuredPayloadJSON, finalText, ownerLabel, inval
 }
 
 func settledReceiptVerdict(structuredPayloadJSON, finalText, ownerLabel, invalidReasonCode string) (string, error) {
+	textVerdict, err := ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
+	if err != nil {
+		return "", err
+	}
 	trimmedStructured := strings.TrimSpace(structuredPayloadJSON)
 	if trimmedStructured != "" {
 		var payload struct {
@@ -152,9 +156,18 @@ func settledReceiptVerdict(structuredPayloadJSON, finalText, ownerLabel, invalid
 			}
 		}
 		resolvedVerdict := strings.ToUpper(strings.TrimSpace(payload.Verdict))
-		if resolvedVerdict == "PASS" || resolvedVerdict == "REWORK" {
-			return resolvedVerdict, nil
+		if resolvedVerdict != "" && resolvedVerdict != "PASS" && resolvedVerdict != "REWORK" {
+			return "", &ReceiptContractError{
+				ReasonCode: strings.TrimSpace(invalidReasonCode),
+				message:    fmt.Sprintf("%s completion receipt structured verdict is invalid", strings.TrimSpace(ownerLabel)),
+			}
+		}
+		if resolvedVerdict != "" && resolvedVerdict != textVerdict {
+			return "", &ReceiptContractError{
+				ReasonCode: strings.TrimSpace(invalidReasonCode),
+				message:    fmt.Sprintf("%s completion receipt verdict conflicts with final text", strings.TrimSpace(ownerLabel)),
+			}
 		}
 	}
-	return ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
+	return textVerdict, nil
 }

@@ -110,21 +110,21 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	}
 
 	resp, err := a.adapter.Execute(ctx, opencode.ExecuteRequest{
-		SessionID:          sessionID,
-		AttemptID:          attemptID,
-		RunID:              "planner-" + input.SessionID,
-		NodeRunID:          attemptID,
-		Model:              input.ModelSelection.Model,
-		Agent:              "planner",
-		ForceNewSession:    forceNew,
-		WorkspacePath:      input.ProjectRoot,
-		ConfigDir:          bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
-		Prompt:             prompt,
-		OccurredAt:         time.Now().UTC().Format(time.RFC3339),
-		OnProgress:         onChunk,
-		ProviderSessionID:  providerSessionIDForInvocation(providerInvocation),
-		InvocationID:       invocationIDForPlanner(providerInvocation),
-		InvocationIssuedAt: invocationIssuedAtForPlanner(providerInvocation),
+		CompletionMode: opencode.CompletionModeServerResponse,
+		SessionID:         sessionID,
+		AttemptID:         attemptID,
+		RunID:             "planner-" + input.SessionID,
+		NodeRunID:         attemptID,
+		Model:             input.ModelSelection.Model,
+		Agent:             "planner",
+		ForceNewSession:   forceNew,
+		WorkspacePath:     input.ProjectRoot,
+		ConfigDir:         bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
+		Prompt:            prompt,
+		OccurredAt:        time.Now().UTC().Format(time.RFC3339),
+		OnProgress:        onChunk,
+		ProviderSessionID: providerSessionIDForInvocation(providerInvocation),
+		InvocationID:      invocationIDForPlanner(providerInvocation),
 		OnProviderSession: func(providerSessionID string) {
 			if providerInvocation != nil && providerInvocation.OnProviderSession != nil {
 				providerInvocation.OnProviderSession(providerSessionID)
@@ -180,13 +180,6 @@ func invocationIDForPlanner(invocation *ProviderInvocationContext) string {
 		return ""
 	}
 	return strings.TrimSpace(invocation.InvocationID)
-}
-
-func invocationIssuedAtForPlanner(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
-	}
-	return strings.TrimSpace(invocation.InvocationIssuedAt)
 }
 
 func (a *OpenCodeAgent) id(prefix string) string {

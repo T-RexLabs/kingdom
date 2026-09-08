@@ -102,8 +102,6 @@ func (o *orchestrationLoop) canonicalExecutionStore() *executionstore.Store {
 	return executionstore.New(o.db)
 }
 
-var emptyOutputRetryBackoffs = []time.Duration{1 * time.Second, 10 * time.Second}
-
 type runSnapshot struct {
 	RunID                 string
 	RunStatus             string
@@ -143,6 +141,7 @@ type nodeAttempt struct {
 	HasExecutionRecord    bool
 	DurableState          string
 	ExecutionMode         executionstore.ExecutionMode
+	CompletionMode        executionstore.ProviderCompletionMode
 	ProviderTimeoutMillis int64
 	SessionRef            string
 }
@@ -159,10 +158,12 @@ type asyncExecutionResult struct {
 	providerInvocationAt            string
 	launchObservedAt                string
 	completionCapability            string
+	completionMode                  executionstore.ProviderCompletionMode
 	completionReceiptDir            string
 	completionReceiptEvidenceID     string
 	completionStructuredPayloadJSON string
 	providerDiagnosticsJSON         string
+	providerStreamObservation       opencode.InvocationStreamObservation
 	baseSnapshotID                  string
 	resultSnapshotID                string
 	workspaceID                     string
@@ -177,7 +178,6 @@ type asyncExecutionResult struct {
 	tokens                          opencode.TokenUsage
 	outcome                         opencode.ExecutionOutcome
 	launchObserved                  bool
-	suppressEmptyOutputRetry        bool
 	err                             error
 }
 

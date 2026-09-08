@@ -46,11 +46,14 @@ type attemptCompletionEvidence struct {
 	LastStepFinish              stepFinishReasonEvidence
 	UpstreamErrorText           string
 	ConflictingTerminalEvidence bool
+	MalformedProtocol           bool
 	CleanEOF                    bool
 	Cancelled                   bool
 	Timeout                     bool
 	ProcessFailed               bool
 	FailureText                 string
+	PendingToolCount            int
+	LaterEventAfterTerminal     bool
 }
 
 type attemptCompletionResult struct {
@@ -61,7 +64,6 @@ type attemptCompletionResult struct {
 	Tokens                          TokenUsage
 	ProviderSessionID               string
 	EvidenceSource                  completionEvidenceSource
-	SuppressEmptyOutputRetry        bool
 	ProviderInvocationID            string
 	ProviderInvocationAt            string
 	CompletionReceiptAccepted       bool
@@ -69,17 +71,8 @@ type attemptCompletionResult struct {
 	CompletionStructuredPayloadJSON string
 }
 
-type exportCheckPolicy string
-
-const (
-	exportCheckPolicyNone     exportCheckPolicy = ""
-	exportCheckPolicyRequired exportCheckPolicy = "required"
-)
-
 type attemptCompletionDecision struct {
-	Result            attemptCompletionResult
-	ExportCheckPolicy exportCheckPolicy
-	ExportCheckReason string
+	Result attemptCompletionResult
 }
 
 type attemptCompletionAdjudicator struct{}
@@ -116,16 +109,33 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode run failed")
 		return attemptCompletionDecision{Result: result}
 	}
+	if e.MalformedProtocol {
+		result.State = attemptCompletionStateFailed
+		result.ReasonCode = "provider_malformed_protocol"
+		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode emitted malformed stream data")
+		return attemptCompletionDecision{Result: result}
+	}
 	if e.ConflictingTerminalEvidence {
-		return attemptCompletionDecision{
-			Result:            result,
-			ExportCheckPolicy: exportCheckPolicyRequired,
-			ExportCheckReason: "conflicting_terminal_evidence",
-		}
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode emitted conflicting terminal evidence"
+		return attemptCompletionDecision{Result: result}
 	}
 	if e.StepFinishSeen {
 		switch e.LastStepFinish.Class {
 		case stepFinishTerminalSuccessCandidate:
+			if e.PendingToolCount > 0 || e.LaterEventAfterTerminal {
+				result.State = attemptCompletionStateIncompleteTurn
+				result.ReasonCode = "provider_incomplete_turn"
+				result.FailureText = "opencode stream remained active after terminal response"
+				return attemptCompletionDecision{Result: result}
+			}
+			if strings.TrimSpace(result.OutputText) == "" {
+				result.State = attemptCompletionStateFailed
+				result.ReasonCode = "provider_empty_output"
+				result.FailureText = "provider returned an empty terminal response"
+				return attemptCompletionDecision{Result: result}
+			}
 			result.State = attemptCompletionStateSuccess
 			result.ReasonCode = "execution_completed"
 			return attemptCompletionDecision{Result: result}
@@ -135,25 +145,22 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 			result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
 			return attemptCompletionDecision{Result: result}
 		case stepFinishNonTerminal:
-			return attemptCompletionDecision{
-				Result:            result,
-				ExportCheckPolicy: exportCheckPolicyRequired,
-				ExportCheckReason: firstNonEmpty(strings.TrimSpace(e.LastStepFinish.Normalized), string(e.LastStepFinish.Kind), "non_terminal_finish_reason"),
-			}
+			result.State = attemptCompletionStateIncompleteTurn
+			result.ReasonCode = "provider_incomplete_turn"
+			result.FailureText = "opencode finished with a non-terminal reason"
+			return attemptCompletionDecision{Result: result}
 		case stepFinishAmbiguous:
-			return attemptCompletionDecision{
-				Result:            result,
-				ExportCheckPolicy: exportCheckPolicyRequired,
-				ExportCheckReason: firstNonEmpty(string(e.LastStepFinish.Kind), "ambiguous_finish_reason"),
-			}
+			result.State = attemptCompletionStateIncompleteTurn
+			result.ReasonCode = "provider_incomplete_turn"
+			result.FailureText = "opencode finished with an ambiguous reason"
+			return attemptCompletionDecision{Result: result}
 		}
 	}
 	if e.CleanEOF {
-		return attemptCompletionDecision{
-			Result:            result,
-			ExportCheckPolicy: exportCheckPolicyRequired,
-			ExportCheckReason: "clean_eof_without_terminal_evidence",
-		}
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode finished without terminal stream evidence"
+		return attemptCompletionDecision{Result: result}
 	}
 
 	result.State = attemptCompletionStateIncompleteTurn

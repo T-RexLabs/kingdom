@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,7 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 		RunID:             "run_1",
 		NodeRunID:         "nr_1",
 		ExecutionMode:     ExecutionModeProviderBacked,
+		CompletionMode:    ProviderCompletionModeReceiptRequired,
 		SessionRef:        "session_run_1_decree_intake_1",
 		ProviderSessionID: "",
 		CreatedAt:         "2026-03-01T12:00:01Z",
@@ -35,6 +37,7 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -48,6 +51,9 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 	if invocation.CompletionCapabilityHash == "" {
 		t.Fatal("expected completion capability hash to be stored")
 	}
+	if invocation.CompletionMode != ProviderCompletionModeReceiptRequired {
+		t.Fatalf("expected completion_mode=%q, got %q", ProviderCompletionModeReceiptRequired, invocation.CompletionMode)
+	}
 
 	idempotentInvocation, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
 		ProviderInvocationID: "invocation_1",
@@ -55,6 +61,7 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -108,6 +115,169 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 	}
 }
 
+func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:atomic_settlement:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{ProviderInvocationID: "invocation_atomic_1", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_atomic", CompletionMode: ProviderCompletionModeServerResponse, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		t.Fatalf("create invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{ProviderInvocationID: "invocation_atomic_1", AttemptID: attemptID, ProviderSessionID: "ses_atomic", OpenedAt: "2026-03-01T12:00:03Z"}); err != nil {
+		t.Fatalf("open invocation: %v", err)
+	}
+	settlement, err := s.SettleProviderCompletionAndTerminal(ctx, SettleProviderCompletionAndTerminalRequest{
+		Settlement:       FinalizeProviderCompletionSettlementRequest{SettlementID: "settlement_atomic_1", ProviderInvocationID: "invocation_atomic_1", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: ProviderCompletionOutcomeSuccess, FinalText: "canonical response", ProviderDiagnosticsJSON: `{}`, SettledAt: "2026-03-01T12:00:04Z"},
+		TerminalEvidence: &EnsureTerminalProviderCompletionEvidenceRequest{ProviderInvocationID: "invocation_atomic_1", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", State: "success", OutputText: "canonical response", EvidenceSource: "stream", ProviderDiagnosticsJSON: `{}`, CreatedAt: "2026-03-01T12:00:04Z"},
+		Terminal:         CommitTerminalRequest{OutboxID: "outbox_atomic_1", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_success", PayloadJSON: `{"output_text":"canonical response"}`, CommittedAt: "2026-03-01T12:00:04Z", ProviderSessionID: "ses_atomic"},
+	})
+	if err != nil {
+		t.Fatalf("atomic settlement: %v", err)
+	}
+	if settlement.PrimaryEvidenceID != TerminalProviderCompletionEvidenceID("invocation_atomic_1") {
+		t.Fatalf("unexpected primary evidence: %#v", settlement)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load attempt: found=%t err=%v", found, err)
+	}
+	if attempt.State != "committed_success" || attempt.CanonicalSettlementID != settlement.SettlementID {
+		t.Fatalf("expected committed settled attempt, got %#v", attempt)
+	}
+	var outboxCount, eventCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_outbox WHERE outbox_id = 'outbox_atomic_1'`).Scan(&outboxCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = 'attempt.succeeded'`, attemptID).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if outboxCount != 1 || eventCount != 1 {
+		t.Fatalf("expected terminal handoff and event, outbox=%d events=%d", outboxCount, eventCount)
+	}
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{ProviderInvocationID: "invocation_atomic_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_atomic", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:05Z"}); err != nil {
+		t.Fatalf("create stale invocation: %v", err)
+	}
+	_, err = s.SettleProviderCompletionAndTerminal(ctx, SettleProviderCompletionAndTerminalRequest{
+		Settlement: FinalizeProviderCompletionSettlementRequest{SettlementID: "settlement_atomic_stale", ProviderInvocationID: "invocation_atomic_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: ProviderCompletionOutcomeFailed, PrimaryEvidenceID: "unused", ProviderDiagnosticsJSON: `{}`, SettledAt: "2026-03-01T12:00:06Z"},
+		Terminal:   CommitTerminalRequest{OutboxID: "outbox_atomic_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_failure", PayloadJSON: `{}`, CommittedAt: "2026-03-01T12:00:06Z"},
+	})
+	var settlementErr *ProviderSettlementError
+	if !errors.As(err, &settlementErr) || settlementErr.Reason != "invocation_not_active" {
+		t.Fatalf("expected stale invocation to be rejected, got %v", err)
+	}
+}
+
+func TestStoreProviderInvocationCompletionModeContract(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const serverAttemptID = "run_1:server_response:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      serverAttemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeServerResponse,
+		CreatedAt:      "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue server-response attempt: %v", err)
+	}
+
+	serverInvocation, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_server_response",
+		AttemptID:            serverAttemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_server_response",
+		CompletionMode:       ProviderCompletionModeServerResponse,
+		CreatedAt:            "2026-03-01T12:00:02Z",
+	})
+	if err != nil {
+		t.Fatalf("create server-response invocation: %v", err)
+	}
+	if serverInvocation.CompletionMode != ProviderCompletionModeServerResponse || serverInvocation.CompletionCapabilityHash != "" || serverInvocation.CompletionCapabilityIssuedAt != "" {
+		t.Fatalf("expected capability-free server-response invocation, got %#v", serverInvocation)
+	}
+
+	tests := []struct {
+		name       string
+		mode       ProviderCompletionMode
+		capability string
+	}{
+		{name: "server response with capability", mode: ProviderCompletionModeServerResponse, capability: "forbidden"},
+		{name: "receipt required without capability", mode: ProviderCompletionModeReceiptRequired},
+		{name: "not applicable", mode: ProviderCompletionModeNotApplicable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+				ProviderInvocationID: "invocation_" + strings.NewReplacer(" ", "_", "-", "_").Replace(tc.name),
+				AttemptID:            serverAttemptID,
+				RunID:                "run_1",
+				NodeRunID:            "nr_1",
+				CompletionMode:       tc.mode,
+				CompletionCapability: tc.capability,
+				CreatedAt:            "2026-03-01T12:00:03Z",
+			})
+			if err == nil {
+				t.Fatal("expected invalid provider invocation completion contract to be rejected")
+			}
+		})
+	}
+}
+
+func TestStoreActivateProviderInvocationRejectsAttemptCompletionModeMismatch(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:receipt_required:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		CreatedAt:      "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue receipt-required attempt: %v", err)
+	}
+
+	_, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_mismatched_mode",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		CompletionMode:       ProviderCompletionModeServerResponse,
+		CreatedAt:            "2026-03-01T12:00:02Z",
+		OpenedAt:             "2026-03-01T12:00:02Z",
+	})
+	var settlementErr *ProviderSettlementError
+	if !errors.As(err, &settlementErr) || settlementErr.Reason != "completion_mode_mismatch" {
+		t.Fatalf("expected completion mode mismatch, got %v", err)
+	}
+	if _, found, err := s.GetProviderInvocation(ctx, "invocation_mismatched_mode"); err != nil {
+		t.Fatalf("get mismatched invocation: %v", err)
+	} else if found {
+		t.Fatal("expected mismatched activation to roll back invocation creation")
+	}
+}
+
 func TestStoreEnsureTerminalProviderCompletionEvidenceReusesExistingEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -119,12 +289,13 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceReusesExistingEvidence(t *
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -134,6 +305,7 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceReusesExistingEvidence(t *
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-ensure-terminal-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -209,12 +381,13 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -224,6 +397,7 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-unknown-terminal-source",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -267,12 +441,13 @@ func TestStoreFinalizeProviderCompletionSettlementPersistsProviderDiagnostics(t 
 	const providerInvocationID = "invocation_diagnostics_1"
 	const providerDiagnosticsJSON = `{"stderr_tail":"exit status 1"}`
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -282,6 +457,7 @@ func TestStoreFinalizeProviderCompletionSettlementPersistsProviderDiagnostics(t 
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-diagnostics-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -368,12 +544,13 @@ func TestStoreMarkProviderInvocationOpenRejectsProviderSessionLineageConflict(t 
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -383,6 +560,7 @@ func TestStoreMarkProviderInvocationOpenRejectsProviderSessionLineageConflict(t 
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-lineage-conflict",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -449,12 +627,13 @@ func TestStoreAcceptProviderCompletionReceiptIdempotentAndConflicting(t *testing
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -464,6 +643,7 @@ func TestStoreAcceptProviderCompletionReceiptIdempotentAndConflicting(t *testing
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-receipt-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -605,12 +785,13 @@ func TestStoreAcceptProviderCompletionReceiptRejectsDuplicateWhenInvocationNoLon
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -620,6 +801,7 @@ func TestStoreAcceptProviderCompletionReceiptRejectsDuplicateWhenInvocationNoLon
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-receipt-old",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -654,6 +836,7 @@ func TestStoreAcceptProviderCompletionReceiptRejectsDuplicateWhenInvocationNoLon
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-receipt-new",
 		IssuedAt:             "2026-03-01T12:00:05Z",
 		CreatedAt:            "2026-03-01T12:00:05Z",
@@ -699,12 +882,13 @@ func TestStoreObserveProviderCompletionReceiptAttemptPersistsEvidenceAndCounters
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -714,6 +898,7 @@ func TestStoreObserveProviderCompletionReceiptAttemptPersistsEvidenceAndCounters
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-receipt-attempt-obs",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -825,12 +1010,13 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesAttemptMismatch(t *testi
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -840,6 +1026,7 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesAttemptMismatch(t *testi
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-attempt-mismatch",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -914,12 +1101,13 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesCompletionCapabilityMism
 		s := New(db)
 		ctx := context.Background()
 		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-			AttemptID:     attemptID,
-			RunID:         "run_1",
-			NodeRunID:     "nr_1",
-			ExecutionMode: ExecutionModeProviderBacked,
-			SessionRef:    "session_run_1_decree_intake_1",
-			CreatedAt:     "2026-03-01T12:00:01Z",
+			AttemptID:      attemptID,
+			RunID:          "run_1",
+			NodeRunID:      "nr_1",
+			ExecutionMode:  ExecutionModeProviderBacked,
+			CompletionMode: ProviderCompletionModeReceiptRequired,
+			SessionRef:     "session_run_1_decree_intake_1",
+			CreatedAt:      "2026-03-01T12:00:01Z",
 		}); err != nil {
 			t.Fatalf("enqueue attempt: %v", err)
 		}
@@ -929,6 +1117,7 @@ func TestStoreAcceptProviderCompletionReceiptInvalidatesCompletionCapabilityMism
 			RunID:                "run_1",
 			NodeRunID:            "nr_1",
 			LogicalSessionID:     "session_run_1_decree_intake_1",
+			CompletionMode:       ProviderCompletionModeReceiptRequired,
 			CompletionCapability: capability,
 			IssuedAt:             "2026-03-01T12:00:02Z",
 			CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1037,12 +1226,13 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1052,6 +1242,7 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-old",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1073,6 +1264,7 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 		RunID:                        "run_1",
 		NodeRunID:                    "nr_1",
 		LogicalSessionID:             "session_run_1_decree_intake_1",
+		CompletionMode:               ProviderCompletionModeReceiptRequired,
 		CompletionCapability:         "capability-new",
 		IssuedAt:                     "2026-03-01T12:00:04Z",
 		CreatedAt:                    "2026-03-01T12:00:04Z",
@@ -1120,12 +1312,13 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1135,6 +1328,7 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-old",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1156,6 +1350,7 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 		RunID:                        "run_1",
 		NodeRunID:                    "nr_1",
 		LogicalSessionID:             "session_run_1_decree_intake_1",
+		CompletionMode:               ProviderCompletionModeReceiptRequired,
 		CompletionCapability:         "capability-new",
 		IssuedAt:                     "2026-03-01T12:00:04Z",
 		CreatedAt:                    "2026-03-01T12:00:04Z",
@@ -1194,12 +1389,13 @@ func TestStoreSupersedeProviderInvocationRejectsStaleReceipt(t *testing.T) {
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1210,6 +1406,7 @@ func TestStoreSupersedeProviderInvocationRejectsStaleReceipt(t *testing.T) {
 			RunID:                "run_1",
 			NodeRunID:            "nr_1",
 			LogicalSessionID:     "session_run_1_decree_intake_1",
+			CompletionMode:       ProviderCompletionModeReceiptRequired,
 			CompletionCapability: invocationID + "-capability",
 			IssuedAt:             "2026-03-01T12:00:02Z",
 			CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1296,12 +1493,13 @@ func TestStoreAcceptProviderCompletionReceiptRejectsTerminalSupersededAttempt(t 
 		t.Fatalf("insert superseded retry node run: %v", err)
 	}
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_retry_provider_2",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_2",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_retry_provider_2",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_2",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1311,6 +1509,7 @@ func TestStoreAcceptProviderCompletionReceiptRejectsTerminalSupersededAttempt(t 
 		RunID:                "run_1",
 		NodeRunID:            "nr_retry_provider_2",
 		LogicalSessionID:     "session_run_1_decree_intake_2",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-retry-2",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1371,12 +1570,13 @@ func TestStoreFinalizeProviderCompletionSettlementSuccessLinksCanonicalAttempt(t
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1386,6 +1586,7 @@ func TestStoreFinalizeProviderCompletionSettlementSuccessLinksCanonicalAttempt(t
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-success-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1501,12 +1702,13 @@ func TestStoreFinalizeProviderCompletionSettlementFailureFromDiagnosticEvidence(
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1516,6 +1718,7 @@ func TestStoreFinalizeProviderCompletionSettlementFailureFromDiagnosticEvidence(
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-failure-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1603,12 +1806,13 @@ func TestStoreReconcileProviderCompletionSettlementClearsStaleSuccessPayloadWhen
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1618,6 +1822,7 @@ func TestStoreReconcileProviderCompletionSettlementClearsStaleSuccessPayloadWhen
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-reconcile-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -1698,12 +1903,13 @@ func TestStoreReconcileProviderCompletionSettlementPreservesReceiptPayloadForSta
 	ctx := context.Background()
 	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeProviderBacked,
-		SessionRef:    "session_run_1_decree_intake_1",
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1713,6 +1919,7 @@ func TestStoreReconcileProviderCompletionSettlementPreservesReceiptPayloadForSta
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
 		LogicalSessionID:     "session_run_1_decree_intake_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: "capability-reconcile-failed-1",
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",

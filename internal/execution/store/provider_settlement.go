@@ -61,6 +61,7 @@ type ProviderInvocation struct {
 	LogicalSessionID              string
 	ProviderSessionID             string
 	InvocationState               ProviderInvocationState
+	CompletionMode                ProviderCompletionMode
 	CompletionCapabilityHash      string
 	CompletionCapabilityIssuedAt  string
 	CompletionCapabilityUsedAt    string
@@ -116,6 +117,7 @@ type CreateProviderInvocationRequest struct {
 	NodeRunID            string
 	LogicalSessionID     string
 	ProviderSessionID    string
+	CompletionMode       ProviderCompletionMode
 	CompletionCapability string
 	IssuedAt             string
 	CreatedAt            string
@@ -135,6 +137,7 @@ type ActivateProviderInvocationRequest struct {
 	NodeRunID                    string
 	LogicalSessionID             string
 	ProviderSessionID            string
+	CompletionMode               ProviderCompletionMode
 	CompletionCapability         string
 	IssuedAt                     string
 	CreatedAt                    string
@@ -225,6 +228,15 @@ type FinalizeProviderCompletionSettlementRequest struct {
 	FailureReasonCode       string
 	FailureReasonText       string
 	SettledAt               string
+}
+
+// SettleProviderCompletionAndTerminalRequest binds provider truth to the
+// durable terminal attempt record. Its outbox is deliberately only a handoff
+// for projections after the canonical result has committed.
+type SettleProviderCompletionAndTerminalRequest struct {
+	Settlement       FinalizeProviderCompletionSettlementRequest
+	TerminalEvidence *EnsureTerminalProviderCompletionEvidenceRequest
+	Terminal         CommitTerminalRequest
 }
 
 type ReconcileProviderCompletionSettlementRequest struct {
@@ -844,7 +856,104 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 			_ = tx.Rollback()
 		}
 	}()
+	settlement, err := finalizeProviderCompletionSettlementTx(ctx, tx, normalized)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("commit provider completion settlement transaction: %w", err)
+	}
+	committed = true
+	return settlement, nil
+}
 
+// SettleProviderCompletionAndTerminal commits settlement and terminal attempt
+// state in one SQLite transaction. A projection can therefore never observe a
+// terminal attempt without its canonical provider settlement.
+func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req SettleProviderCompletionAndTerminalRequest) (ProviderCompletionSettlement, error) {
+	if s == nil || s.db == nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("store database is required")
+	}
+	settlementReq := req.Settlement
+	terminal := req.Terminal
+	if strings.TrimSpace(terminal.AttemptID) == "" {
+		terminal.AttemptID = settlementReq.AttemptID
+	}
+	if strings.TrimSpace(terminal.RunID) == "" {
+		terminal.RunID = settlementReq.RunID
+	}
+	if strings.TrimSpace(terminal.NodeRunID) == "" {
+		terminal.NodeRunID = settlementReq.NodeRunID
+	}
+	if strings.TrimSpace(terminal.OutboxID) == "" || strings.TrimSpace(terminal.TerminalState) == "" {
+		return ProviderCompletionSettlement{}, fmt.Errorf("outbox_id and terminal_state are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("begin composite provider settlement transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	invocation, found, err := loadProviderInvocationTx(ctx, tx, settlementReq.ProviderInvocationID)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if !found {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_not_found", settlementReq.ProviderInvocationID, settlementReq.AttemptID, "")
+	}
+	if err := ensureInvocationLineage(invocation, settlementReq.AttemptID, settlementReq.RunID, settlementReq.NodeRunID, "settle_provider_completion_and_terminal"); err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	activeInvocationID, _, attemptFound, err := loadAttemptInvocationRefsTx(ctx, tx, invocation.AttemptID)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if !attemptFound {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if activeInvocationID != invocation.ProviderInvocationID {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_not_active", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if req.TerminalEvidence != nil {
+		evidenceReq, err := normalizeEnsureTerminalProviderCompletionEvidenceRequest(*req.TerminalEvidence)
+		if err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		evidence, err := insertProviderCompletionEvidenceTx(ctx, tx, evidenceReq)
+		if err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		if settlementReq.PrimaryEvidenceID != "" && settlementReq.PrimaryEvidenceID != evidence.EvidenceID {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "primary_evidence_conflict", settlementReq.ProviderInvocationID, settlementReq.AttemptID, "")
+		}
+		settlementReq.PrimaryEvidenceID = evidence.EvidenceID
+	}
+	settlementReq, err = normalizeFinalizeProviderCompletionSettlementRequest(settlementReq)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	settlement, err := finalizeProviderCompletionSettlementTx(ctx, tx, settlementReq)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if err := commitTerminalTx(ctx, tx, terminal); err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("commit composite provider settlement transaction: %w", err)
+	}
+	committed = true
+	return settlement, nil
+}
+
+// finalizeProviderCompletionSettlementTx owns only settlement rows. Callers that
+// need a larger authority boundary compose it with terminal-attempt writes in
+// their transaction; this helper never commits or rolls back that transaction.
+func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, normalized FinalizeProviderCompletionSettlementRequest) (ProviderCompletionSettlement, error) {
 	invocation, found, err := loadProviderInvocationTx(ctx, tx, normalized.ProviderInvocationID)
 	if err != nil {
 		return ProviderCompletionSettlement{}, err
@@ -882,20 +991,32 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 		CreatedAt:               normalized.SettledAt,
 	}
 	if normalized.Outcome == ProviderCompletionOutcomeSuccess {
-		if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
-			return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_kind_invalid", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+		switch invocation.CompletionMode {
+		case ProviderCompletionModeReceiptRequired:
+			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_kind_invalid", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+			receiptPayload, parseErr := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
+			if parseErr != nil {
+				return ProviderCompletionSettlement{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, parseErr)
+			}
+			settlement.FinalText = receiptPayload.FinalText
+			settlement.StructuredPayloadJSON = receiptPayload.StructuredPayloadJSON
+			if invocation.InvocationState != ProviderInvocationStateReceiptPersisted && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_receipt_persisted", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+		case ProviderCompletionModeServerResponse:
+			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindStreamObservation {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_kind_invalid", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+			if invocation.InvocationState != ProviderInvocationStateOpen && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+		default:
+			return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invalid_completion_mode", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 		}
-		receiptPayload, parseErr := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
-		if parseErr != nil {
-			return ProviderCompletionSettlement{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, parseErr)
-		}
-		settlement.FinalText = receiptPayload.FinalText
-		settlement.StructuredPayloadJSON = receiptPayload.StructuredPayloadJSON
 		settlement.FailureReasonCode = ""
 		settlement.FailureReasonText = ""
-		if invocation.InvocationState != ProviderInvocationStateReceiptPersisted && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
-			return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_receipt_persisted", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-		}
 	} else if err := ensureInvocationStateForNonSuccessSettlement(invocation, normalized.Outcome); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
@@ -910,10 +1031,6 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 		if err := linkAttemptCanonicalSettlementTx(ctx, tx, invocation.AttemptID, invocation.ProviderInvocationID, existingSettlement.SettlementID); err != nil {
 			return ProviderCompletionSettlement{}, err
 		}
-		if err := tx.Commit(); err != nil {
-			return ProviderCompletionSettlement{}, fmt.Errorf("commit provider completion settlement idempotent transaction: %w", err)
-		}
-		committed = true
 		return existingSettlement, nil
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_completion_settlements (
@@ -953,7 +1070,7 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 		SET invocation_state = ?,
 		    settled_at = ?,
-		    completion_capability_revoked_at = COALESCE(completion_capability_revoked_at, ?),
+		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
 		    failure_reason_code = ?,
 		    failure_reason_text = ?,
 		    updated_at = ?
@@ -971,10 +1088,6 @@ func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req Fi
 	if err := linkAttemptCanonicalSettlementTx(ctx, tx, invocation.AttemptID, invocation.ProviderInvocationID, settlement.SettlementID); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("commit provider completion settlement transaction: %w", err)
-	}
-	committed = true
 	return settlement, nil
 }
 
@@ -1021,7 +1134,7 @@ func (s *Store) ReconcileProviderCompletionSettlement(ctx context.Context, req R
 	if !found {
 		return ProviderCompletionSettlement{}, providerSettlementError("reconcile_provider_completion_settlement", "primary_evidence_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
-	payload, err := reconciledProviderCompletionSettlementPayload(settlement, primaryEvidence, normalized.Outcome)
+	payload, err := reconciledProviderCompletionSettlementPayload(settlement, primaryEvidence, normalized.Outcome, invocation.CompletionMode)
 	if err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
@@ -1061,7 +1174,7 @@ func (s *Store) ReconcileProviderCompletionSettlement(ctx context.Context, req R
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 		SET invocation_state = ?,
 		    settled_at = ?,
-		    completion_capability_revoked_at = COALESCE(completion_capability_revoked_at, ?),
+		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
 		    failure_reason_code = ?,
 		    failure_reason_text = ?,
 		    updated_at = ?
@@ -1091,19 +1204,26 @@ type reconciledProviderSettlementPayload struct {
 	StructuredPayloadJSON string
 }
 
-func reconciledProviderCompletionSettlementPayload(existing ProviderCompletionSettlement, primaryEvidence ProviderCompletionEvidence, outcome ProviderCompletionOutcome) (reconciledProviderSettlementPayload, error) {
+func reconciledProviderCompletionSettlementPayload(existing ProviderCompletionSettlement, primaryEvidence ProviderCompletionEvidence, outcome ProviderCompletionOutcome, completionMode ProviderCompletionMode) (reconciledProviderSettlementPayload, error) {
 	if outcome == ProviderCompletionOutcomeSuccess {
-		if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
-			return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "success_requires_receipt_evidence", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
+		switch completionMode {
+		case ProviderCompletionModeReceiptRequired:
+			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
+				return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "success_requires_receipt_evidence", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
+			}
+			receiptPayload, err := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
+			if err != nil {
+				return reconciledProviderSettlementPayload{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, err)
+			}
+			return reconciledProviderSettlementPayload{FinalText: receiptPayload.FinalText, StructuredPayloadJSON: receiptPayload.StructuredPayloadJSON}, nil
+		case ProviderCompletionModeServerResponse:
+			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindStreamObservation {
+				return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "success_requires_stream_evidence", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
+			}
+			return reconciledProviderSettlementPayload{FinalText: existing.FinalText, StructuredPayloadJSON: existing.StructuredPayloadJSON}, nil
+		default:
+			return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "invalid_completion_mode", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
 		}
-		receiptPayload, err := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
-		if err != nil {
-			return reconciledProviderSettlementPayload{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, err)
-		}
-		return reconciledProviderSettlementPayload{
-			FinalText:             receiptPayload.FinalText,
-			StructuredPayloadJSON: receiptPayload.StructuredPayloadJSON,
-		}, nil
 	}
 	if existing.Outcome != outcome || primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
 		return reconciledProviderSettlementPayload{StructuredPayloadJSON: "{}"}, nil
@@ -1119,6 +1239,16 @@ func reconciledProviderCompletionSettlementPayload(existing ProviderCompletionSe
 }
 
 func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProviderInvocationRequest, capabilityHash string) (ProviderInvocation, error) {
+	attemptCompletionMode, foundAttempt, err := loadAttemptCompletionModeTx(ctx, tx, req.AttemptID)
+	if err != nil {
+		return ProviderInvocation{}, err
+	}
+	if !foundAttempt {
+		return ProviderInvocation{}, providerSettlementError("create_provider_invocation", "attempt_not_found", req.ProviderInvocationID, req.AttemptID, "")
+	}
+	if attemptCompletionMode != req.CompletionMode {
+		return ProviderInvocation{}, providerSettlementError("create_provider_invocation", "completion_mode_mismatch", req.ProviderInvocationID, req.AttemptID, "")
+	}
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO provider_invocations (
 		provider_invocation_id,
 		attempt_id,
@@ -1127,11 +1257,12 @@ func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProvi
 		logical_session_id,
 		provider_session_id,
 		invocation_state,
+		completion_mode,
 		completion_capability_hash,
 		completion_capability_issued_at,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ProviderInvocationID,
 		req.AttemptID,
 		req.RunID,
@@ -1139,6 +1270,7 @@ func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProvi
 		req.LogicalSessionID,
 		req.ProviderSessionID,
 		string(ProviderInvocationStateIssued),
+		string(req.CompletionMode),
 		capabilityHash,
 		req.IssuedAt,
 		req.CreatedAt,
@@ -1201,7 +1333,7 @@ func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation Pr
 			if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 				SET invocation_state = 'superseded',
 				    superseded_by_invocation_id = ?,
-				    completion_capability_revoked_at = COALESCE(completion_capability_revoked_at, ?),
+				    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
 				    updated_at = ?
 				WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID, openReq.OpenedAt, openReq.OpenedAt, replacedInvocation.ProviderInvocationID); err != nil {
 				return fmt.Errorf("supersede provider invocation %q during activation: %w", replacedInvocation.ProviderInvocationID, err)
@@ -1367,7 +1499,7 @@ func (s *Store) SupersedeProviderInvocation(ctx context.Context, req SupersedePr
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 		SET invocation_state = 'superseded',
 		    superseded_by_invocation_id = ?,
-		    completion_capability_revoked_at = COALESCE(completion_capability_revoked_at, ?),
+		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
 		    updated_at = ?
 		WHERE provider_invocation_id = ?`,
 		replacement.ProviderInvocationID,
@@ -1442,6 +1574,7 @@ const providerInvocationSelect = `SELECT provider_invocation_id,
 	COALESCE(logical_session_id, ''),
 	COALESCE(provider_session_id, ''),
 	invocation_state,
+	completion_mode,
 	COALESCE(completion_capability_hash, ''),
 	COALESCE(completion_capability_issued_at, ''),
 	COALESCE(completion_capability_used_at, ''),
@@ -1494,7 +1627,7 @@ type providerInvocationScanner interface {
 
 func scanProviderInvocation(scanner providerInvocationScanner) (ProviderInvocation, bool, error) {
 	var invocation ProviderInvocation
-	var rawState string
+	var rawState, rawCompletionMode string
 	var rawLastReceiptDisposition string
 	err := scanner.Scan(
 		&invocation.ProviderInvocationID,
@@ -1504,6 +1637,7 @@ func scanProviderInvocation(scanner providerInvocationScanner) (ProviderInvocati
 		&invocation.LogicalSessionID,
 		&invocation.ProviderSessionID,
 		&rawState,
+		&rawCompletionMode,
 		&invocation.CompletionCapabilityHash,
 		&invocation.CompletionCapabilityIssuedAt,
 		&invocation.CompletionCapabilityUsedAt,
@@ -1529,6 +1663,7 @@ func scanProviderInvocation(scanner providerInvocationScanner) (ProviderInvocati
 		return ProviderInvocation{}, false, err
 	}
 	invocation.InvocationState = ProviderInvocationState(strings.TrimSpace(rawState))
+	invocation.CompletionMode = ProviderCompletionMode(strings.TrimSpace(rawCompletionMode))
 	invocation.LastReceiptDisposition = ProviderCompletionReceiptDisposition(strings.TrimSpace(rawLastReceiptDisposition))
 	return invocation, true, nil
 }
@@ -1704,6 +1839,22 @@ func loadAttemptInvocationRefsTx(ctx context.Context, tx *sql.Tx, attemptID stri
 	return active.String, canonical.String, true, nil
 }
 
+func loadAttemptCompletionModeTx(ctx context.Context, tx *sql.Tx, attemptID string) (ProviderCompletionMode, bool, error) {
+	var rawCompletionMode string
+	err := tx.QueryRowContext(ctx, `SELECT completion_mode FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&rawCompletionMode)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("load attempt completion mode for %q: %w", attemptID, err)
+	}
+	completionMode, err := ParseProviderCompletionMode(rawCompletionMode)
+	if err != nil {
+		return "", false, fmt.Errorf("invalid stored completion mode for attempt %q: %w", attemptID, err)
+	}
+	return completionMode, true, nil
+}
+
 func loadAttemptExecutionStateTx(ctx context.Context, tx *sql.Tx, attemptID string) (string, bool, error) {
 	var state sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state)
@@ -1785,7 +1936,7 @@ func invalidateProviderInvocationTx(ctx context.Context, tx *sql.Tx, providerInv
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 		SET invocation_state = 'invalid_handshake',
 		    invalid_reason = ?,
-		    completion_capability_revoked_at = COALESCE(completion_capability_revoked_at, ?),
+		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
 		    updated_at = ?
 		WHERE provider_invocation_id = ?`, invalidReason, updatedAt, updatedAt, providerInvocationID); err != nil {
 		return fmt.Errorf("invalidate provider invocation %q: %w", providerInvocationID, err)
@@ -1800,16 +1951,39 @@ func normalizeCreateProviderInvocationRequest(req CreateProviderInvocationReques
 	req.NodeRunID = strings.TrimSpace(req.NodeRunID)
 	req.LogicalSessionID = strings.TrimSpace(req.LogicalSessionID)
 	req.ProviderSessionID = strings.TrimSpace(req.ProviderSessionID)
+	completionMode, err := ParseProviderCompletionMode(string(req.CompletionMode))
+	if err != nil {
+		return CreateProviderInvocationRequest{}, "", fmt.Errorf("validate provider invocation completion mode: %w", err)
+	}
+	if completionMode == ProviderCompletionModeNotApplicable {
+		return CreateProviderInvocationRequest{}, "", fmt.Errorf("provider invocations do not support completion_mode %q", completionMode)
+	}
+	req.CompletionMode = completionMode
+	req.CompletionCapability = strings.TrimSpace(req.CompletionCapability)
 	req.IssuedAt = strings.TrimSpace(req.IssuedAt)
 	req.CreatedAt = strings.TrimSpace(req.CreatedAt)
-	if req.ProviderInvocationID == "" || req.AttemptID == "" || req.RunID == "" || req.NodeRunID == "" || strings.TrimSpace(req.CompletionCapability) == "" {
-		return CreateProviderInvocationRequest{}, "", fmt.Errorf("provider_invocation_id, attempt_id, run_id, node_run_id, and completion_capability are required")
+	if req.ProviderInvocationID == "" || req.AttemptID == "" || req.RunID == "" || req.NodeRunID == "" {
+		return CreateProviderInvocationRequest{}, "", fmt.Errorf("provider_invocation_id, attempt_id, run_id, and node_run_id are required")
 	}
-	if req.IssuedAt == "" {
+	switch req.CompletionMode {
+	case ProviderCompletionModeReceiptRequired:
+		if req.CompletionCapability == "" {
+			return CreateProviderInvocationRequest{}, "", fmt.Errorf("completion_capability is required for completion_mode %q", req.CompletionMode)
+		}
+	case ProviderCompletionModeServerResponse:
+		if req.CompletionCapability != "" {
+			return CreateProviderInvocationRequest{}, "", fmt.Errorf("completion_capability is forbidden for completion_mode %q", req.CompletionMode)
+		}
+	}
+	if req.IssuedAt == "" && req.CompletionMode == ProviderCompletionModeReceiptRequired {
 		req.IssuedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	if req.CreatedAt == "" {
-		req.CreatedAt = req.IssuedAt
+		req.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if req.CompletionMode == ProviderCompletionModeServerResponse {
+		req.IssuedAt = ""
+		return req, "", nil
 	}
 	return req, sha256Hex(req.CompletionCapability), nil
 }
@@ -1836,6 +2010,7 @@ func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRe
 		NodeRunID:            req.NodeRunID,
 		LogicalSessionID:     req.LogicalSessionID,
 		ProviderSessionID:    req.ProviderSessionID,
+		CompletionMode:       req.CompletionMode,
 		CompletionCapability: req.CompletionCapability,
 		IssuedAt:             req.IssuedAt,
 		CreatedAt:            req.CreatedAt,
@@ -2198,6 +2373,9 @@ func ensureInvocationStateForReceipt(invocation ProviderInvocation) error {
 }
 
 func validateProviderInvocationReceiptEligibilityTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation) error {
+	if invocation.CompletionMode != ProviderCompletionModeReceiptRequired {
+		return providerSettlementError("accept_provider_completion_receipt", "completion_receipt_not_supported", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
 	if err := ensureInvocationStateForReceipt(invocation); err != nil {
 		return err
 	}

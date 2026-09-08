@@ -442,6 +442,7 @@ CREATE TABLE attempt_executions (
   node_run_id TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('queued', 'starting', 'running', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')),
   execution_mode TEXT NOT NULL DEFAULT 'provider_backed' CHECK (execution_mode IN ('provider_backed', 'runtime_owned')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('not_applicable', 'server_response', 'receipt_required')),
   provider_timeout_ms INTEGER NOT NULL DEFAULT 0 CHECK (provider_timeout_ms >= 0),
   lease_owner TEXT NOT NULL DEFAULT '',
   lease_expires_at TEXT,
@@ -494,8 +495,9 @@ CREATE TABLE provider_invocations (
   logical_session_id TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
   invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalid_handshake')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('server_response', 'receipt_required')),
   completion_capability_hash TEXT NOT NULL DEFAULT '',
-  completion_capability_issued_at TEXT NOT NULL,
+  completion_capability_issued_at TEXT NOT NULL DEFAULT '',
   completion_capability_used_at TEXT,
   completion_capability_revoked_at TEXT,
   opened_at TEXT,
@@ -511,6 +513,11 @@ CREATE TABLE provider_invocations (
   failure_reason_text TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  CHECK (
+    (completion_mode = 'server_response' AND completion_capability_hash = '' AND completion_capability_issued_at = '')
+    OR
+    (completion_mode = 'receipt_required' AND completion_capability_hash <> '' AND completion_capability_issued_at <> '')
+  ),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
@@ -1147,14 +1154,10 @@ CREATE TABLE planning_provider_invocations (
   planning_session_id TEXT NOT NULL,
   logical_session_id TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
-  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalid_handshake')),
-  completion_capability_hash TEXT NOT NULL DEFAULT '',
-  completion_capability_issued_at TEXT NOT NULL,
-  completion_capability_used_at TEXT,
+  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
   opened_at TEXT,
-  receipt_persisted_at TEXT,
   settled_at TEXT,
-  invalid_reason TEXT NOT NULL DEFAULT '',
   failure_reason_code TEXT NOT NULL DEFAULT '',
   failure_reason_text TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -1175,7 +1178,7 @@ CREATE TABLE planning_provider_completion_evidence (
   planning_provider_invocation_id TEXT NOT NULL,
   planning_operation_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'stream_observation', 'export_diagnostic', 'repair_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic', 'repair_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),
@@ -1188,10 +1191,6 @@ ON planning_provider_completion_evidence (planning_provider_invocation_id, plann
 
 CREATE INDEX idx_planning_provider_completion_evidence_operation_kind_created
 ON planning_provider_completion_evidence (planning_operation_id, evidence_kind, created_at DESC, evidence_id);
-
-CREATE UNIQUE INDEX idx_planning_provider_completion_receipt_invocation
-ON planning_provider_completion_evidence (planning_provider_invocation_id)
-WHERE evidence_kind = 'completion_receipt';
 
 CREATE TABLE planning_provider_completion_settlements (
   settlement_id TEXT PRIMARY KEY,

@@ -917,11 +917,12 @@ func TestRuntimeForceClosePrefersPersistedProviderSessionID(t *testing.T) {
 	store := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -987,11 +988,12 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -1158,11 +1160,12 @@ func TestStartAsyncExecutionPreservesErrorResponseMetadataInDurableCompletion(t 
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -1237,11 +1240,12 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 	attemptID := "run_1:decree_intake:1"
 	workspacePath := t.TempDir()
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -1322,11 +1326,12 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 	execStore := executionstore.New(db)
 	attemptID := "run_startup_retry:advisor_consultation_noble:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_startup_retry",
-		NodeRunID:  "nr_startup_retry_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_startup_retry",
+		NodeRunID:      "nr_startup_retry_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1446,8 +1451,8 @@ func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_runtime_repair_review_1', 'run_runtime_repair', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_runtime_repair_reviewer', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_runtime_repair_validation_1', 'run_runtime_repair', 'validation_gates_qa_scout', 1,1, 'cancelled', 'intelligence-qa-scout', 'agent_runtime_repair_validator', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_runtime_repair_closure_1', 'run_runtime_repair', 'royal_closure', 1,1, 'cancelled', 'king', 'agent_runtime_repair_king', 1, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_runtime_repair:execution_review_shieldmaiden:1', 'run_runtime_repair', 'nr_runtime_repair_review_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_runtime_repair_review', '`+now+`', '`+now+`', '`+now+`', '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_runtime_repair:validation_gates_qa_scout:1', 'run_runtime_repair', 'nr_runtime_repair_validation_1', 'committed_cancelled', 'provider_backed', '', NULL, 1, 'session_runtime_repair_validation', '`+now+`', '`+now+`', '`+now+`', 'run_terminalized', 'run moved to failed', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_runtime_repair:execution_review_shieldmaiden:1', 'run_runtime_repair', 'nr_runtime_repair_review_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_runtime_repair_review', '`+now+`', '`+now+`', '`+now+`', '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_runtime_repair:validation_gates_qa_scout:1', 'run_runtime_repair', 'nr_runtime_repair_validation_1', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_runtime_repair_validation', '`+now+`', '`+now+`', '`+now+`', 'run_terminalized', 'run moved to failed', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_runtime_repair_validation_cancelled', 'run_runtime_repair', 'nr_runtime_repair_validation_1', 'node', 'running', 'cancelled', 'runtime_orchestrator', 'intelligence-qa-scout', 'state.run_terminalization', 'run_terminalized', 'run moved to failed; live child attempt quiesced', 'corr_runtime_repair_validation', 'caus_runtime_repair_validation', 'prev_runtime_repair_validation', 'entry_runtime_repair_validation', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_runtime_repair_closure_cancelled', 'run_runtime_repair', 'nr_runtime_repair_closure_1', 'node', 'running', 'cancelled', 'runtime_orchestrator', 'king', 'state.run_terminalization', 'run_terminalized', 'run moved to failed; live child attempt quiesced', 'corr_runtime_repair_closure', 'caus_runtime_repair_closure', 'prev_runtime_repair_closure', 'entry_runtime_repair_closure', '`+now+`')`)
 
@@ -1506,11 +1511,12 @@ func TestDrainAttemptCancelOutboxDispatchesProviderCancels(t *testing.T) {
 	store := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1574,11 +1580,12 @@ func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T)
 	store := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1635,11 +1642,12 @@ func TestDrainAttemptCancelOutboxTreatsAttemptNotFoundAsPublished(t *testing.T) 
 	store := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1689,7 +1697,7 @@ func TestDrainAttemptCancelOutboxProjectsBlockedSupersededRetryToCancelled(t *te
 	now := "2026-03-01T12:00:05Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_provider_blocked', 'run_1', 'decree_intake', 2, 2, 'blocked', 'king', 'agent_king', 1, '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_blocked', 'committed_cancelled', 'provider_backed', '', NULL, 0, 'session_retry_provider_blocked', 'ses_retry_provider_blocked', '2026-03-01T12:00:00Z', NULL, '`+now+`', '`+now+`', 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_blocked', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_blocked', 'ses_retry_provider_blocked', '2026-03-01T12:00:00Z', NULL, '`+now+`', '`+now+`', 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', '`+now+`', '`+now+`')`)
 
 	store := executionstore.New(db)
 	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
@@ -1747,11 +1755,12 @@ func TestDrainAttemptCancelOutboxSkipsRuntimeOwnedAttempts(t *testing.T) {
 	store := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: executionstore.ExecutionModeRuntimeOwned,
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeRuntimeOwned,
+		CompletionMode: executionstore.ProviderCompletionModeNotApplicable,
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue runtime-owned attempt: %v", err)
 	}
@@ -1829,13 +1838,14 @@ func TestRuntimeIngestAttemptStreamAndValidateOutput(t *testing.T) {
 	}
 
 	_, err = adapter.Execute(context.Background(), opencode.ExecuteRequest{
-		SessionID:     "sess_1",
-		AttemptID:     "att_stream",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "hello",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		SessionID:      "sess_1",
+		AttemptID:      "att_stream",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "hello",
+		OccurredAt:     "2026-03-01T12:00:00Z",
+		CompletionMode: opencode.CompletionModeServerResponse,
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -2137,7 +2147,7 @@ func TestOrchestrationTickPublishesDurableAttemptOutbox(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'terminal_observed', '', NULL, 1, 'session_run_1_decree_intake_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_decree_intake_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
 	rawPayload, err := json.Marshal(executionOutboxPayload{
 		Run:              runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
 		Node:             nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
@@ -2192,11 +2202,12 @@ func TestDrainExecutionOutboxProjectsCompletionAndMarksPublished(t *testing.T) {
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -2311,11 +2322,12 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -2398,6 +2410,7 @@ func TestDrainExecutionOutboxPrefersDurableFailureOverStaleSuccessPayload(t *tes
 		RunID:                 "run_1",
 		NodeRunID:             "nr_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 30000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             "2026-03-01T12:00:01Z",
@@ -2502,11 +2515,12 @@ func TestCompleteExecutionPersistsFailedBuilderArtifactsWithoutPublishing(t *tes
 	execStore := executionstore.New(db)
 	attemptID := "run_failed_builder:delegated_execution_berserker:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_failed_builder",
-		NodeRunID:  "nr_failed_builder_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_failed_builder",
+		NodeRunID:      "nr_failed_builder_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -2595,6 +2609,7 @@ func TestDrainExecutionOutboxReplaysProviderIncompleteTurnForOwnerNode(t *testin
 		RunID:                 "run_incomplete_replay",
 		NodeRunID:             "nr_incomplete_replay_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 30000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             now,
@@ -2772,7 +2787,7 @@ func TestPersistExecutionArtifactBuilderCleanSlatePersistsAllCreatedFiles(t *tes
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "src", "main.js"), []byte("console.log('hi')\n"), 0o644); err != nil {
 		t.Fatalf("write main.js: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_clean', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_clean', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime fs store: %v", err)
@@ -2857,7 +2872,7 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesDirectMode(t
 	if err := os.WriteFile(filepath.Join(seedRoot, "src", "main.js"), []byte("console.log('seed')\n"), 0o644); err != nil {
 		t.Fatalf("write seed main.js: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_seed', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_seed', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	workspaceRoot := t.TempDir()
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
@@ -3029,19 +3044,20 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	db := openTestDB(t)
 	applyMigration(t, db)
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_setup', 'noble-delegate', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_setup', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_setup', 'Receipt setup', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_setup', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_setup', NULL, 'decree_receipt_setup', 'wfdef_receipt_setup', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_setup_1', 'run_receipt_setup', 'advisor_consultation_noble', 1, 1, 'running', 'noble-delegate', 'agent_receipt_setup', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_setup_1', 'run_receipt_setup', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_setup', 1, '%s', NULL)`, now))
 	store := executionstore.New(db)
-	attemptID := "run_receipt_setup:advisor_consultation_noble:1"
+	attemptID := "run_receipt_setup:delegated_execution_berserker:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
 		RunID:                 "run_receipt_setup",
 		NodeRunID:             "nr_receipt_setup_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
 		ProviderTimeoutMillis: 60000,
 		SessionRef:            "session_receipt_setup",
 		CreatedAt:             now,
@@ -3051,7 +3067,7 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	workspaceRoot := t.TempDir()
 
-	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1"}, attemptID, "session_receipt_setup", workspaceRoot, "2026-03-01T12:00:00Z", "")
+	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1"}, attemptID, "session_receipt_setup", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
@@ -3082,19 +3098,20 @@ func TestProviderCompletionReceiptAcceptorPersistsValidatedReceipt(t *testing.T)
 	db := openTestDB(t)
 	applyMigration(t, db)
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_accept', 'reviewer-shieldmaiden', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_accept', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_accept', 'Receipt accept', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_accept', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_accept', NULL, 'decree_receipt_accept', 'wfdef_receipt_accept', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_accept_1', 'run_receipt_accept', 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent_receipt_accept', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_accept_1', 'run_receipt_accept', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_accept', 1, '%s', NULL)`, now))
 	store := executionstore.New(db)
-	attemptID := "run_receipt_accept:execution_review_shieldmaiden:1"
+	attemptID := "run_receipt_accept:delegated_execution_berserker:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
 		RunID:                 "run_receipt_accept",
 		NodeRunID:             "nr_receipt_accept_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
 		ProviderTimeoutMillis: 60000,
 		SessionRef:            "session_receipt_accept",
 		CreatedAt:             now,
@@ -3103,14 +3120,14 @@ func TestProviderCompletionReceiptAcceptorPersistsValidatedReceipt(t *testing.T)
 	}
 	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }}
 	workspaceRoot := t.TempDir()
-	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_accept"}, nodeAttempt{NodeRunID: "nr_receipt_accept_1"}, attemptID, "session_receipt_accept", workspaceRoot, "2026-03-01T12:00:00Z", "")
+	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_accept"}, nodeAttempt{NodeRunID: "nr_receipt_accept_1"}, attemptID, "session_receipt_accept", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	acceptor := loop.providerCompletionReceiptAcceptor(context.Background(), asyncExecutionResult{
 		run:                  runSnapshot{RunID: "run_receipt_accept"},
-		node:                 nodeDefinition{NodeID: "execution_review_shieldmaiden", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"},
-		attempt:              nodeAttempt{NodeRunID: "nr_receipt_accept_1", NodeID: "execution_review_shieldmaiden", Attempt: 1, RequiredRole: "reviewer-shieldmaiden"},
+		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
+		attempt:              nodeAttempt{NodeRunID: "nr_receipt_accept_1", NodeID: "delegated_execution_berserker", Attempt: 1, RequiredRole: "builder-berserker"},
 		attemptID:            attemptID,
 		providerInvocationID: providerInvocationID,
 	})
@@ -3119,8 +3136,8 @@ func TestProviderCompletionReceiptAcceptorPersistsValidatedReceipt(t *testing.T)
 		AttemptID:             attemptID,
 		InvocationID:          providerInvocationID,
 		CompletionCapability:  completionCapability,
-		FinalText:             "VERDICT: PASS\n\nReview complete.",
-		StructuredPayloadJSON: `{"verdict":"PASS"}`,
+		FinalText:             "Builder deliverable complete.",
+		StructuredPayloadJSON: `{}`,
 	})
 	if err != nil {
 		t.Fatalf("accept provider completion receipt: %v", err)
@@ -3158,19 +3175,20 @@ func TestProviderCompletionReceiptAcceptorRejectsAttemptMismatch(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_attempt_mismatch', 'reviewer-shieldmaiden', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_attempt_mismatch', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_attempt_mismatch', 'Receipt attempt mismatch', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_attempt_mismatch', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_attempt_mismatch', NULL, 'decree_receipt_attempt_mismatch', 'wfdef_receipt_attempt_mismatch', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_attempt_mismatch_1', 'run_receipt_attempt_mismatch', 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent_receipt_attempt_mismatch', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_attempt_mismatch_1', 'run_receipt_attempt_mismatch', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_attempt_mismatch', 1, '%s', NULL)`, now))
 	store := executionstore.New(db)
-	attemptID := "run_receipt_attempt_mismatch:execution_review_shieldmaiden:1"
+	attemptID := "run_receipt_attempt_mismatch:delegated_execution_berserker:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
 		RunID:                 "run_receipt_attempt_mismatch",
 		NodeRunID:             "nr_receipt_attempt_mismatch_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
 		ProviderTimeoutMillis: 60000,
 		SessionRef:            "session_receipt_attempt_mismatch",
 		CreatedAt:             now,
@@ -3179,24 +3197,24 @@ func TestProviderCompletionReceiptAcceptorRejectsAttemptMismatch(t *testing.T) {
 	}
 	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }}
 	workspaceRoot := t.TempDir()
-	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_attempt_mismatch"}, nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1"}, attemptID, "session_receipt_attempt_mismatch", workspaceRoot, "2026-03-01T12:00:00Z", "")
+	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_attempt_mismatch"}, nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1"}, attemptID, "session_receipt_attempt_mismatch", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	acceptor := loop.providerCompletionReceiptAcceptor(context.Background(), asyncExecutionResult{
 		run:                  runSnapshot{RunID: "run_receipt_attempt_mismatch"},
-		node:                 nodeDefinition{NodeID: "execution_review_shieldmaiden", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"},
-		attempt:              nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1", NodeID: "execution_review_shieldmaiden", Attempt: 1, RequiredRole: "reviewer-shieldmaiden"},
+		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
+		attempt:              nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1", NodeID: "delegated_execution_berserker", Attempt: 1, RequiredRole: "builder-berserker"},
 		attemptID:            attemptID,
 		providerInvocationID: providerInvocationID,
 	})
 	acceptance, err := acceptor(opencode.CompletionReceipt{
 		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		AttemptID:             "run_receipt_attempt_mismatch:execution_review_shieldmaiden:99",
+		AttemptID:             "run_receipt_attempt_mismatch:delegated_execution_berserker:99",
 		InvocationID:          providerInvocationID,
 		CompletionCapability:  completionCapability,
-		FinalText:             "VERDICT: PASS\n\nReview complete.",
-		StructuredPayloadJSON: `{"verdict":"PASS"}`,
+		FinalText:             "Builder deliverable complete.",
+		StructuredPayloadJSON: `{}`,
 	})
 	if err != nil {
 		t.Fatalf("accept provider completion receipt: %v", err)
@@ -3366,7 +3384,7 @@ func TestPersistExecutionArtifactUsesCanonicalSnapshotPaths(t *testing.T) {
 	mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_norm', 'builder-berserker', 'Builder', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_1', 'run_1', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_builder_norm', 1, '2026-03-01T12:00:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_builder_canonical', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_canonical', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime fs store: %v", err)
@@ -3646,8 +3664,8 @@ func TestPublishArtifactsDirectWithTrackingPreservesExternalChanges(t *testing.T
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_conflict', NULL, 'decree_conflict', 'wfdef_conflict', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_conflict_builder_1', 'run_conflict', 'delegated_execution_berserker', 1, 1, 'succeeded', 'builder-berserker', 'agent_conflict_builder', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_conflict_builder_2', 'run_conflict', 'delegated_execution_berserker', 2, 2, 'succeeded', 'builder-berserker', 'agent_conflict_builder', 1, '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:1', 'run_conflict', 'nr_conflict_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_conflict_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:2', 'run_conflict', 'nr_conflict_builder_2', 'committed_success', 'provider_backed', '', NULL, 1, 'session_conflict_2', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '', '', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:1', 'run_conflict', 'nr_conflict_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_conflict_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_conflict:delegated_execution_berserker:2', 'run_conflict', 'nr_conflict_builder_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_conflict_2', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '', '', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`)
 
 	projectRoot := t.TempDir()
 	destinationPath := filepath.Join(projectRoot, "deliverables", "index.html")
@@ -4039,7 +4057,7 @@ func TestDetectExecutionReviewReworkRequiresStrictReviewVerdict(t *testing.T) {
 		expectBad    bool
 	}{
 		{name: "pass verdict", output: "VERDICT: PASS\nLooks good."},
-		{name: "verdict near top", output: "Context line\nVERDICT: PASS\nLooks good."},
+		{name: "verdict after context", output: "Context line\nVERDICT: PASS\nLooks good.", expectBad: true},
 		{name: "rework verdict", output: "VERDICT: REWORK\nFix edge cases.", expectRework: true},
 		{name: "missing verdict", output: "Need more tests.", expectBad: true},
 		{name: "conflicting verdicts", output: "VERDICT: PASS\nVERDICT: REWORK", expectBad: true},
@@ -4474,6 +4492,7 @@ func TestDrainExecutionOutboxSettlesProviderFromDurableTerminalOutcome(t *testin
 		RunID:                 "run_durable_cancel",
 		NodeRunID:             "nr_durable_cancel_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 60000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             now,
@@ -4481,21 +4500,6 @@ func TestDrainExecutionOutboxSettlesProviderFromDurableTerminalOutcome(t *testin
 		t.Fatalf("enqueue attempt: %v", err)
 	}
 	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_durable_cancel", "nr_durable_cancel_1", sessionIDForAttempt(attemptID), "ses_durable_cancel", "pinv_durable_cancel", now)
-	accepted, err := execStore.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_durable_cancel",
-		ProviderInvocationID:  "pinv_durable_cancel",
-		AttemptID:             attemptID,
-		RunID:                 "run_durable_cancel",
-		NodeRunID:             "nr_durable_cancel_1",
-		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		CompletionCapability:  fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID)),
-		FinalText:             "Noble guidance completed before cancellation won.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:00:01Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
 
 	loop := orchestrationLoop{
 		db:             db,
@@ -4511,19 +4515,17 @@ func TestDrainExecutionOutboxSettlesProviderFromDurableTerminalOutcome(t *testin
 	}
 
 	job := asyncExecutionResult{
-		run:                             runSnapshot{RunID: "run_durable_cancel", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
-		node:                            nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
-		attempt:                         nodeAttempt{NodeRunID: "nr_durable_cancel_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_durable_cancel", RequiredRole: "noble-delegate"},
-		attemptID:                       attemptID,
-		sessionID:                       sessionIDForAttempt(attemptID),
-		providerSessionID:               "ses_durable_cancel",
-		providerInvocationID:            "pinv_durable_cancel",
-		completionReceiptEvidenceID:     accepted.Evidence.EvidenceID,
-		completionStructuredPayloadJSON: `{}`,
-		workspacePath:                   t.TempDir(),
-		delegator:                       "agent_chancellor_durable_cancel",
-		outputText:                      "Noble guidance completed before cancellation won.",
-		occurredAt:                      "2026-03-01T12:00:02Z",
+		run:                  runSnapshot{RunID: "run_durable_cancel", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
+		node:                 nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
+		attempt:              nodeAttempt{NodeRunID: "nr_durable_cancel_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_durable_cancel", RequiredRole: "noble-delegate"},
+		attemptID:            attemptID,
+		sessionID:            sessionIDForAttempt(attemptID),
+		providerSessionID:    "ses_durable_cancel",
+		providerInvocationID: "pinv_durable_cancel",
+		workspacePath:        t.TempDir(),
+		delegator:            "agent_chancellor_durable_cancel",
+		outputText:           "Noble guidance completed before cancellation won.",
+		occurredAt:           "2026-03-01T12:00:02Z",
 	}
 	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
 		t.Fatalf("commit execution completion: %v", err)
@@ -4576,8 +4578,9 @@ func TestDrainExecutionOutboxSettlesProviderFromDurableTerminalOutcome(t *testin
 	if settlement.Outcome != expectedOutcome {
 		t.Fatalf("expected provider settlement outcome %q to follow durable terminal truth %q, got %+v", expectedOutcome, attemptState, settlement)
 	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected provider settlement to reuse persisted receipt evidence %q, got %+v", accepted.Evidence.EvidenceID, settlement)
+	expectedEvidenceID := executionstore.TerminalProviderCompletionEvidenceID("pinv_durable_cancel")
+	if settlement.PrimaryEvidenceID != expectedEvidenceID {
+		t.Fatalf("expected provider settlement to use stream evidence %q, got %+v", expectedEvidenceID, settlement)
 	}
 	if attemptState == "committed_cancelled" {
 		if settlement.FinalText != "" {
@@ -4614,23 +4617,24 @@ func TestDrainExecutionOutboxRetainsTerminalObservedWhenProviderSettlementFails(
 	applyMigration(t, db)
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_settlement_retry', 'noble-delegate', 'Noble', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_settlement_retry', 'builder-berserker', 'Builder', 'busy', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_chancellor_settlement_retry', 'chancellor', 'Chancellor', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_settlement_retry', 'Settlement retry decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_settlement_retry', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_settlement_retry', NULL, 'decree_settlement_retry', 'wfdef_settlement_retry', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_settlement_retry', 'wfdef_settlement_retry', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_settlement_retry_1', 'run_settlement_retry', 'advisor_consultation_noble', 1,1, 'running', 'noble-delegate', 'agent_noble_settlement_retry', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_settlement_retry', 'wfdef_settlement_retry', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_settlement_retry_1', 'run_settlement_retry', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_noble_settlement_retry', 1, '%s', NULL)`, now))
 
 	execStore := executionstore.New(db)
-	attemptID := "run_settlement_retry:advisor_consultation_noble:1"
+	attemptID := "run_settlement_retry:delegated_execution_berserker:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
 		RunID:                 "run_settlement_retry",
 		NodeRunID:             "nr_settlement_retry_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
 		ProviderTimeoutMillis: 60000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             now,
@@ -4654,13 +4658,14 @@ func TestDrainExecutionOutboxRetainsTerminalObservedWhenProviderSettlementFails(
 
 	job := asyncExecutionResult{
 		run:                             runSnapshot{RunID: "run_settlement_retry", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
-		node:                            nodeDefinition{NodeID: "advisor_consultation_noble", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
-		attempt:                         nodeAttempt{NodeRunID: "nr_settlement_retry_1", NodeID: "advisor_consultation_noble", Attempt: 1, AgentID: "agent_noble_settlement_retry", RequiredRole: "noble-delegate"},
+		node:                            nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
+		attempt:                         nodeAttempt{NodeRunID: "nr_settlement_retry_1", NodeID: "delegated_execution_berserker", Attempt: 1, AgentID: "agent_noble_settlement_retry", RequiredRole: "builder-berserker"},
 		attemptID:                       attemptID,
 		sessionID:                       sessionIDForAttempt(attemptID),
 		providerSessionID:               "ses_settlement_retry",
 		providerInvocationID:            "pinv_settlement_retry",
 		providerInvocationAt:            now,
+		completionMode:                  executionstore.ProviderCompletionModeReceiptRequired,
 		completionReceiptEvidenceID:     "receipt_missing_settlement_retry",
 		completionStructuredPayloadJSON: `{}`,
 		workspacePath:                   t.TempDir(),
@@ -4733,11 +4738,12 @@ func TestDrainExecutionOutboxRetainsReplayEnvelopeAcrossProjectionRetry(t *testi
 	execStore := executionstore.New(db)
 	attemptID := "run_outbox_retry:advisor_consultation_noble:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_outbox_retry",
-		NodeRunID:  "nr_outbox_retry_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_outbox_retry",
+		NodeRunID:      "nr_outbox_retry_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -4852,11 +4858,12 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 	execStore := executionstore.New(db)
 	attemptID := "run_runtime_drain:advisor_consultation_noble:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_runtime_drain",
-		NodeRunID:  "nr_runtime_drain_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_runtime_drain",
+		NodeRunID:      "nr_runtime_drain_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -4957,11 +4964,12 @@ func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *
 	execStore := executionstore.New(db)
 	attemptID := "run_close_timeout:advisor_consultation_noble:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_close_timeout",
-		NodeRunID:  "nr_close_timeout_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_close_timeout",
+		NodeRunID:      "nr_close_timeout_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -5044,10 +5052,11 @@ func TestDrainExecutionOutboxDeadLettersMalformedPayloadAndContinues(t *testing.
 	validAttemptID := "run_1:decree_intake:1"
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:00:00Z', NULL)`)
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID: poisonAttemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_2",
-		CreatedAt: "2026-03-01T12:00:00Z",
+		AttemptID:      poisonAttemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		CreatedAt:      "2026-03-01T12:00:00Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue poison attempt: %v", err)
 	}
@@ -5056,10 +5065,11 @@ func TestDrainExecutionOutboxDeadLettersMalformedPayloadAndContinues(t *testing.
 	}
 
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID: validAttemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      validAttemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue valid attempt: %v", err)
 	}
@@ -5145,11 +5155,12 @@ func TestDrainExecutionOutboxSkipsObservedCompletionAfterRunTerminalization(t *t
 	execStore := executionstore.New(db)
 	attemptID := "run_terminalized_completion:advisor_consultation_noble:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_terminalized_completion",
-		NodeRunID:  "nr_terminalized_completion_1",
-		SessionRef: sessionIDForAttempt(attemptID),
-		CreatedAt:  now,
+		AttemptID:      attemptID,
+		RunID:          "run_terminalized_completion",
+		NodeRunID:      "nr_terminalized_completion_1",
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -5271,11 +5282,12 @@ func TestStartAsyncExecutionPersistsCompletionOutboxAfterDispatchContextCancella
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -5324,11 +5336,12 @@ func TestCommitRuntimeOwnedCompletionPersistsDurableHandoffAfterDispatchContextC
 	attemptID := "run_1:decree_intake:1"
 	now := "2026-03-01T12:00:01Z"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: executionstore.ExecutionModeRuntimeOwned,
-		CreatedAt:     now,
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeRuntimeOwned,
+		CompletionMode: executionstore.ProviderCompletionModeNotApplicable,
+		CreatedAt:      now,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -5415,11 +5428,12 @@ func TestCommitRuntimeOwnedCompletionFailsNodeWhenOutboxHandoffFails(t *testing.
 	attemptID := "run_1:decree_intake:1"
 	now := "2026-03-01T12:00:01Z"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: executionstore.ExecutionModeRuntimeOwned,
-		CreatedAt:     now,
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeRuntimeOwned,
+		CompletionMode: executionstore.ProviderCompletionModeNotApplicable,
+		CreatedAt:      now,
 	}); err != nil {
 		t.Fatalf("enqueue runtime-owned attempt: %v", err)
 	}
@@ -5523,11 +5537,12 @@ func TestCommitExecutionCompletionDetachedNoOpsAfterCommittedCancellation(t *tes
 	execStore := executionstore.New(db)
 	attemptID := "run_1:decree_intake:1"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("enqueue durable attempt execution: %v", err)
 	}
@@ -5658,6 +5673,7 @@ func TestExecutionOutboxPayloadRoundTripsProviderDiagnostics(t *testing.T) {
 }
 
 func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -5810,6 +5826,7 @@ func TestCompleteExecutionRetriesDelegatedExecutionEmptyOutputWithBackoffEvents(
 }
 
 func TestCompleteExecutionFailsDelegatedExecutionAfterTwoEmptyRetries(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -5904,6 +5921,7 @@ func TestCompleteExecutionFailsDelegatedExecutionAfterTwoEmptyRetries(t *testing
 }
 
 func TestCompleteExecutionFailsEmptyOutputExhaustionEvenWhenRetriesReturnSuccessOutcome(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -6002,6 +6020,7 @@ func TestCompleteExecutionFailsEmptyOutputExhaustionEvenWhenRetriesReturnSuccess
 }
 
 func TestDrainExecutionOutboxEmptyOutputRetryUsesPersistedProviderSessionID(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -6025,6 +6044,7 @@ func TestDrainExecutionOutboxEmptyOutputRetryUsesPersistedProviderSessionID(t *t
 		RunID:                 "run_retry_empty_replay",
 		NodeRunID:             "nr_retry_empty_replay_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 30000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             now,
@@ -6093,6 +6113,7 @@ func TestDrainExecutionOutboxEmptyOutputRetryUsesPersistedProviderSessionID(t *t
 }
 
 func TestCompleteExecutionRetriesAdvisorConsultationEmptyOutputBeforePersistingSnapshot(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -6170,6 +6191,7 @@ func TestCompleteExecutionRetriesAdvisorConsultationEmptyOutputBeforePersistingS
 }
 
 func TestCompleteExecutionRetriesValidationEmptyOutputBeforeMissingVerdictFailure(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; coverage now asserts terminal failure")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -6262,6 +6284,7 @@ func TestDrainExecutionOutboxSettlesAttemptExecutionAfterEmptyOutputExhaustion(t
 		RunID:                 "run_settle_empty",
 		NodeRunID:             "nr_settle_empty_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 30000,
 		SessionRef:            sessionIDForAttempt(attemptID),
 		CreatedAt:             now,
@@ -6340,33 +6363,8 @@ func TestDrainExecutionOutboxSettlesAttemptExecutionAfterEmptyOutputExhaustion(t
 	}
 }
 
-func TestShouldRetryEmptyOutputUsesOutputAndArtifactsOnly(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		outputText    string
-		artifactCount int
-		suppress      bool
-		expect        bool
-	}{
-		{name: "empty output retries", outputText: "", artifactCount: 0, suppress: false, expect: true},
-		{name: "non-empty output does not retry", outputText: "VERDICT: PASS", artifactCount: 0, suppress: false, expect: false},
-		{name: "artifacts suppress retry", outputText: "", artifactCount: 1, suppress: false, expect: false},
-		{name: "provider suppression disables retry", outputText: "", artifactCount: 0, suppress: true, expect: false},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldRetryEmptyOutput(tc.outputText, tc.artifactCount, tc.suppress); got != tc.expect {
-				t.Fatalf("expected retry=%v, got %v", tc.expect, got)
-			}
-		})
-	}
-}
-
 func TestCompleteExecutionSkipsEmptyOutputRetryWhenProviderSuppressesRetry(t *testing.T) {
+	t.Skip("same-attempt empty-output retries are removed; provider suppression is obsolete")
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -6397,18 +6395,17 @@ func TestCompleteExecutionSkipsEmptyOutputRetryWhenProviderSuppressesRetry(t *te
 	}
 
 	result := asyncExecutionResult{
-		run:                      runSnapshot{RunID: "run_retry_suppressed", RunStatus: "running", PlanState: "approved"},
-		node:                     nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
-		attempt:                  nodeAttempt{NodeRunID: "nr_retry_suppressed_1", NodeID: "delegated_execution_berserker", Attempt: 1, AgentID: "agent_builder", RequiredRole: "builder-berserker"},
-		attemptID:                "run_retry_suppressed:delegated_execution_berserker:1",
-		sessionID:                "session_retry_suppressed",
-		workspacePath:            t.TempDir(),
-		delegator:                "agent_council",
-		prompt:                   "build",
-		model:                    "github-copilot/gpt-5.3-codex",
-		agent:                    "builder",
-		outputText:               "",
-		suppressEmptyOutputRetry: true,
+		run:           runSnapshot{RunID: "run_retry_suppressed", RunStatus: "running", PlanState: "approved"},
+		node:          nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
+		attempt:       nodeAttempt{NodeRunID: "nr_retry_suppressed_1", NodeID: "delegated_execution_berserker", Attempt: 1, AgentID: "agent_builder", RequiredRole: "builder-berserker"},
+		attemptID:     "run_retry_suppressed:delegated_execution_berserker:1",
+		sessionID:     "session_retry_suppressed",
+		workspacePath: t.TempDir(),
+		delegator:     "agent_council",
+		prompt:        "build",
+		model:         "github-copilot/gpt-5.3-codex",
+		agent:         "builder",
+		outputText:    "",
 	}
 
 	if err := loop.completeExecution(context.Background(), result); err != nil {
@@ -6576,13 +6573,14 @@ func TestBuilderEvidenceManifestUsesCanonicalPathsWithoutHydratedPrefix(t *testi
 	applyMigration(t, db)
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_manifest_no_hydrated', 'Manifest decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_manifest_no_hydrated', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_manifest_no_hydrated', NULL, 'decree_manifest_no_hydrated', 'wfdef_manifest_no_hydrated', 'running', 'approved', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_manifest_no_hydrated_builder', 'wfdef_manifest_no_hydrated', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_manifest_no_hydrated_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_manifest_no_hydrated_builder_1', 'run_manifest_no_hydrated', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_manifest_no_hydrated_builder', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_no_hydrated:delegated_execution_berserker:1', 'run_manifest_no_hydrated', 'nr_manifest_no_hydrated_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_no_hydrated_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_no_hydrated:delegated_execution_berserker:1', 'run_manifest_no_hydrated', 'nr_manifest_no_hydrated_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_manifest_no_hydrated_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_no_hydrated_new', 'run_manifest_no_hydrated', 'nr_manifest_no_hydrated_builder_1', 'run_manifest_no_hydrated:delegated_execution_berserker:1', 'deliverable', 'write', 'bar.txt', 'text/plain', 'bar.txt', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 3, 'builder-berserker', '%s')`, now))
 	loop := orchestrationLoop{db: db}
 	manifest := loop.builderEvidenceManifestForRun(context.Background(), "run_manifest_no_hydrated")
@@ -6672,7 +6670,7 @@ func TestBuilderEvidenceManifestForRunIncludesLatestBuilderEvidence(t *testing.T
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_manifest', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_manifest', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_manifest_1', 'run_manifest', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_builder_manifest', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest:delegated_execution_berserker:1', 'run_manifest', 'nr_builder_manifest_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest:delegated_execution_berserker:1', 'run_manifest', 'nr_builder_manifest_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_manifest_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_1', 'run_manifest', 'nr_builder_manifest_1', 'run_manifest:delegated_execution_berserker:1', 'deliverable', 'server.js', 'application/javascript', 'src/server.js', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10, 'builder-berserker', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_2', 'run_manifest', 'nr_builder_manifest_1', 'run_manifest:delegated_execution_berserker:1', 'deliverable', 'auth-dashboard.test.js', 'application/javascript', 'test/auth-dashboard.test.js', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 10, 'builder-berserker', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_3', 'run_manifest', 'nr_builder_manifest_1', 'run_manifest:delegated_execution_berserker:1', 'deliverable', 'map.js', 'application/javascript', 'node_modules/loupe/lib/map.js', 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 10, 'builder-berserker', '%s')`, now))
@@ -6745,7 +6743,7 @@ func TestBuildNodePromptIncludesBuilderEvidenceManifestForExecutionReview(t *tes
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_prompt_manifest', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_prompt_manifest', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_prompt_manifest_1', 'run_prompt_manifest', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_builder_prompt_manifest', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_prompt_manifest:delegated_execution_berserker:1', 'run_prompt_manifest', 'nr_builder_prompt_manifest_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_prompt_manifest_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_prompt_manifest:delegated_execution_berserker:1', 'run_prompt_manifest', 'nr_builder_prompt_manifest_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_prompt_manifest_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_prompt_manifest_1', 'run_prompt_manifest', 'nr_builder_prompt_manifest_1', 'run_prompt_manifest:delegated_execution_berserker:1', 'deliverable', 'server.js', 'application/javascript', 'src/server.js', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 10, 'builder-berserker', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES ('msg_prompt_manifest_builder_response', 'run_prompt_manifest', 'agent_builder_prompt_manifest', 'agent_reviewer_prompt_manifest', 'thread_prompt_manifest', 'status_update', 'normal', '{"communication_type":"response_received","node_id":"delegated_execution_berserker","response_full":"Builder evidence is available."}', '%s', NULL)`, now))
 
@@ -6777,7 +6775,7 @@ func TestBuilderEvidenceManifestForRunCapsKeyFilesAtTenWithEllipsis(t *testing.T
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_manifest_cap_builder', 'wfdef_manifest_cap', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_manifest_cap', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_manifest_cap_1', 'run_manifest_cap', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_builder_manifest_cap', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_cap:delegated_execution_berserker:1', 'run_manifest_cap', 'nr_builder_manifest_cap_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_cap_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_cap:delegated_execution_berserker:1', 'run_manifest_cap', 'nr_builder_manifest_cap_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_manifest_cap_builder', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 
 	for idx := 0; idx < 12; idx++ {
 		artifactID := fmt.Sprintf("artifact_manifest_cap_%d", idx+1)
@@ -6825,8 +6823,8 @@ func TestBuilderEvidenceManifestForRunUsesLatestSuccessfulBuilderAttemptOnly(t *
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_manifest_latest_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_manifest_latest_builder_1', 'run_manifest_latest', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_manifest_latest_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_manifest_latest_builder_2', 'run_manifest_latest', 'delegated_execution_berserker', 2,2, 'succeeded', 'builder-berserker', 'agent_manifest_latest_builder', 1, '2026-03-01T12:10:00Z', '2026-03-01T12:11:00Z')`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:1', 'run_manifest_latest', 'nr_manifest_latest_builder_1', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_latest_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:2', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'committed_success', 'provider_backed', '', NULL, 1, 'session_manifest_latest_builder_2', '2026-03-01T12:10:00Z', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z', '', '', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z')`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:1', 'run_manifest_latest', 'nr_manifest_latest_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_manifest_latest_builder_1', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_manifest_latest:delegated_execution_berserker:2', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_manifest_latest_builder_2', '2026-03-01T12:10:00Z', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z', '', '', '2026-03-01T12:11:00Z', '2026-03-01T12:11:00Z')`)
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_latest_old', 'run_manifest_latest', 'nr_manifest_latest_builder_1', 'run_manifest_latest:delegated_execution_berserker:1', 'deliverable', 'foo.txt', 'text/plain', 'foo.txt', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 3, 'builder-berserker', '%s')`, now))
 	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_manifest_latest_new', 'run_manifest_latest', 'nr_manifest_latest_builder_2', 'run_manifest_latest:delegated_execution_berserker:2', 'deliverable', 'write', 'bar.txt', 'text/plain', 'bar.txt', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 3, 'builder-berserker', '2026-03-01T12:11:00Z')`)
 
@@ -7059,7 +7057,7 @@ func TestQueueExecutionReworkIfEligibleEnqueuesBuilderAndValidatorAttempts(t *te
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_rework_builder_1', 'run_rework', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_builder_seed', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_rework_review_1', 'run_rework', 'execution_review_shieldmaiden', 1,1, 'succeeded', 'reviewer-shieldmaiden', 'agent_reviewer_seed', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_rework_validator_1', 'run_rework', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validator_seed', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_rework:validation_gates_qa_scout:1', 'run_rework', 'nr_rework_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_rework:validation_gates_qa_scout:1', 'run_rework', 'nr_rework_validator_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, capReached, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_rework", RunStatus: "running"}, now, "validation_gates_qa_scout")
@@ -7156,7 +7154,7 @@ func TestQueueExecutionReworkIfEligibleRollsBackPartialWaveOnQueueFailure(t *tes
 		))
 	}
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_rework_partial_validator_1', 'run_rework_partial', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validator_partial', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_rework_partial:validation_gates_qa_scout:1', 'run_rework_partial', 'nr_rework_partial_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_rework_partial:validation_gates_qa_scout:1', 'run_rework_partial', 'nr_rework_partial_validator_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `CREATE TRIGGER fail_partial_rework_wave BEFORE INSERT ON node_runs
 		WHEN NEW.run_id = 'run_rework_partial' AND NEW.node_id = 'execution_review_shieldmaiden'
 		BEGIN
@@ -7265,19 +7263,19 @@ func TestClassWaveSettledForAttemptWithThreeValidators(t *testing.T) {
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-runesage', 'Runesage', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-loki-chaos', 'Loki Chaos', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_wave_settle_three', 'Wave settle three decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_wave_settle_three', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_wave_settle_three', NULL, 'decree_wave_settle_three', 'wfdef_wave_settle_three', 'running', 'approved', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_settle_three_qa', 'wfdef_wave_settle_three', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_settle_three_night', 'wfdef_wave_settle_three', 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_settle_three_rune', 'wfdef_wave_settle_three', 'validation_gates_runesage', 'intelligence-runesage', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_settle_three_rune', 'wfdef_wave_settle_three', 'validation_gates_runesage', 'intelligence-loki-chaos', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_settle_three_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_settle_three_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_settle_three_rune', 'intelligence-runesage', 'Rune', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_settle_three_rune', 'intelligence-loki-chaos', 'Loki', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_settle_three_qa_1', 'run_wave_settle_three', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_wave_settle_three_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_settle_three_night_1', 'run_wave_settle_three', 'validation_gates_nightraven', 1,1, 'succeeded', 'intelligence-nightraven', 'agent_wave_settle_three_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_settle_three_rune_1', 'run_wave_settle_three', 'validation_gates_runesage', 1,1, 'running', 'intelligence-runesage', 'agent_wave_settle_three_rune', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_settle_three_rune_1', 'run_wave_settle_three', 'validation_gates_runesage', 1,1, 'running', 'intelligence-loki-chaos', 'agent_wave_settle_three_rune', 1, '%s', NULL)`, now))
 
 	loop := orchestrationLoop{db: db}
 	settled, err := loop.classWaveSettledForWave(context.Background(), "run_wave_settle_three", "validation_gates", 1)
@@ -7345,6 +7343,7 @@ func seedBranchedValidationWaveRunForFinalization(t *testing.T, db *sql.DB, runI
 	workflowDefinitionID := "wfdef_" + runID
 	decreeID := "decree_" + runID
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
@@ -7354,7 +7353,7 @@ func seedBranchedValidationWaveRunForFinalization(t *testing.T, db *sql.DB, runI
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES (%q, 'branched-validation-finalization', '1', '{}', '%s')`, workflowDefinitionID, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES (%q, NULL, %q, %q, %q, 'approved', 1, 1, '%s', '%s')`, runID, decreeID, workflowDefinitionID, runStatus, now, now))
 	for _, node := range []struct{ id, role, class string }{
-		{"execution_kickoff", "builder-berserker", "execution_kickoff"},
+		{"execution_kickoff", "council-member", "execution_kickoff"},
 		{"delegated_execution_a", "builder-berserker", "delegated_execution"},
 		{"delegated_execution_b", "builder-berserker", "delegated_execution"},
 		{"validation_a_qa", "intelligence-qa-scout", "validation_gates"},
@@ -7374,17 +7373,17 @@ func seedBranchedValidationWaveRunForFinalization(t *testing.T, db *sql.DB, runI
 	} {
 		mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES (%q, %q, %q, %q, 'always', '%s')`, edge.id+"_"+runID, workflowDefinitionID, edge.from, edge.to, now))
 	}
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_kickoff_1', %q, 'execution_kickoff', 1,1, 'succeeded', 'builder-berserker', 'agent_builder', 1, '%s', '%s')`, runID, runID, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_kickoff_1', %q, 'execution_kickoff', 1,1, 'succeeded', 'council-member', 'agent_builder', 1, '%s', '%s')`, runID, runID, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_exec_a_1', %q, 'delegated_execution_a', 1,1, 'succeeded', 'builder-berserker', 'agent_builder', 1, '%s', '%s')`, runID, runID, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_exec_b_1', %q, 'delegated_execution_b', 1,1, 'succeeded', 'builder-berserker', 'agent_builder', 1, '%s', '%s')`, runID, runID, now, now))
 	// Scope A still has an older failed validator wave in progress.
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_val_a_qa_1', %q, 'validation_a_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_qa', 1, '%s', '%s')`, runID, runID, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_val_a_night_1', %q, 'validation_a_night', 1,1, 'running', 'intelligence-nightraven', 'agent_night', 1, '%s', NULL)`, runID, runID, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES (%q, %q, 'nr_%s_val_a_qa_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, runID+":validation_a_qa:1", runID, runID, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES (%q, %q, 'nr_%s_val_a_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, runID+":validation_a_qa:1", runID, runID, now, now, now, now, now))
 	// Scope B already advanced to a newer, fully settled failed wave.
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_val_b_qa_2', %q, 'validation_b_qa', 2,2, 'failed', 'intelligence-qa-scout', 'agent_qa', 1, '%s', '%s')`, runID, runID, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_%s_val_b_night_2', %q, 'validation_b_night', 2,2, 'succeeded', 'intelligence-nightraven', 'agent_night', 1, '%s', '%s')`, runID, runID, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES (%q, %q, 'nr_%s_val_b_qa_2', 'committed_failure', 'internal_error', 'scope B failed hard', '%s', '%s', '%s', '%s', '%s')`, runID+":validation_b_qa:2", runID, runID, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES (%q, %q, 'nr_%s_val_b_qa_2', 'committed_failure', 'provider_backed', 'server_response', 'internal_error', 'scope B failed hard', '%s', '%s', '%s', '%s', '%s')`, runID+":validation_b_qa:2", runID, runID, now, now, now, now, now))
 
 	return runSnapshot{RunID: runID, RunStatus: runStatus, PlanState: "approved", AutonomousApprovals: true, WorkflowDefinitionID: workflowDefinitionID}
 }
@@ -7443,6 +7442,7 @@ func TestIsNodeReadyAllowsReviewTriggeredRetryBeforeAnyValidatorFailure(t *testi
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_review_gate', 'Review gate decree', 'text', '{}', '%s')`, now))
@@ -7553,12 +7553,13 @@ func TestIsNodeReadyIgnoresUnsettledValidationFailuresFromOtherReplayAnchors(t *
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_ready_scope_gate', 'Ready scope gate decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_ready_scope_gate', 'ready-scope-gate', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_ready_scope_gate', NULL, 'decree_ready_scope_gate', 'wfdef_ready_scope_gate', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_ready_scope_kickoff', 'wfdef_ready_scope_gate', 'execution_kickoff', 'builder-berserker', 'execution_kickoff', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_ready_scope_kickoff', 'wfdef_ready_scope_gate', 'execution_kickoff', 'council-member', 'execution_kickoff', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_ready_scope_builder_a', 'wfdef_ready_scope_gate', 'delegated_execution_a', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_ready_scope_builder_b', 'wfdef_ready_scope_gate', 'delegated_execution_b', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_ready_scope_validation_a_qa', 'wfdef_ready_scope_gate', 'validation_a_qa', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
@@ -7577,9 +7578,9 @@ func TestIsNodeReadyIgnoresUnsettledValidationFailuresFromOtherReplayAnchors(t *
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_ready_scope_a_night_1', 'run_ready_scope_gate', 'validation_a_night', 1,1, 'running', 'intelligence-nightraven', 'agent_ready_scope_night', 1, '%s', NULL)`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_ready_scope_b_qa_1', 'run_ready_scope_gate', 'validation_b_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_ready_scope_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_ready_scope_b_night_1', 'run_ready_scope_gate', 'validation_b_night', 1,1, 'failed', 'intelligence-nightraven', 'agent_ready_scope_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_a_qa:1', 'run_ready_scope_gate', 'nr_ready_scope_a_qa_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_b_qa:1', 'run_ready_scope_gate', 'nr_ready_scope_b_qa_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_b_night:1', 'run_ready_scope_gate', 'nr_ready_scope_b_night_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_a_qa:1', 'run_ready_scope_gate', 'nr_ready_scope_a_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_b_qa:1', 'run_ready_scope_gate', 'nr_ready_scope_b_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_ready_scope_gate:validation_b_night:1', 'run_ready_scope_gate', 'nr_ready_scope_b_night_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	latest := map[string]nodeAttempt{
@@ -7678,26 +7679,26 @@ func TestIsNodeReadyBlocksRetryUntilThreeValidatorFailedWaveSettles(t *testing.T
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-runesage', 'Runesage', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-loki-chaos', 'Loki Chaos', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_wave_atomic_three', 'Wave atomic three decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_wave_atomic_three', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_wave_atomic_three', NULL, 'decree_wave_atomic_three', 'wfdef_wave_atomic_three', 'running', 'approved', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_atomic_three_exec', 'wfdef_wave_atomic_three', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_atomic_three_qa', 'wfdef_wave_atomic_three', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_atomic_three_night', 'wfdef_wave_atomic_three', 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_atomic_three_rune', 'wfdef_wave_atomic_three', 'validation_gates_runesage', 'intelligence-runesage', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_wave_atomic_three_rune', 'wfdef_wave_atomic_three', 'validation_gates_runesage', 'intelligence-loki-chaos', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_wave_atomic_three_qa', 'wfdef_wave_atomic_three', 'delegated_execution_berserker', 'validation_gates_qa_scout', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_wave_atomic_three_night', 'wfdef_wave_atomic_three', 'delegated_execution_berserker', 'validation_gates_nightraven', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_wave_atomic_three_rune', 'wfdef_wave_atomic_three', 'delegated_execution_berserker', 'validation_gates_runesage', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_atomic_three_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_atomic_three_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_atomic_three_rune', 'intelligence-runesage', 'Rune', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_atomic_three_rune', 'intelligence-loki-chaos', 'Loki', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_qa_1', 'run_wave_atomic_three', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_wave_atomic_three_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_night_1', 'run_wave_atomic_three', 'validation_gates_nightraven', 1,1, 'failed', 'intelligence-nightraven', 'agent_wave_atomic_three_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_rune_1', 'run_wave_atomic_three', 'validation_gates_runesage', 1,1, 'running', 'intelligence-runesage', 'agent_wave_atomic_three_rune', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_rune_1', 'run_wave_atomic_three', 'validation_gates_runesage', 1,1, 'running', 'intelligence-loki-chaos', 'agent_wave_atomic_three_rune', 1, '%s', NULL)`, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_qa_2', 'run_wave_atomic_three', 'validation_gates_qa_scout', 2,2, 'pending', 'intelligence-qa-scout', 'agent_wave_atomic_three_qa', 1, NULL, NULL)`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_night_2', 'run_wave_atomic_three', 'validation_gates_nightraven', 2,2, 'pending', 'intelligence-nightraven', 'agent_wave_atomic_three_night', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_rune_2', 'run_wave_atomic_three', 'validation_gates_runesage', 2,2, 'pending', 'intelligence-runesage', 'agent_wave_atomic_three_rune', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_wave_atomic_three_rune_2', 'run_wave_atomic_three', 'validation_gates_runesage', 2,2, 'pending', 'intelligence-loki-chaos', 'agent_wave_atomic_three_rune', 1, NULL, NULL)`)
 
 	loop := orchestrationLoop{db: db}
 	latest := map[string]nodeAttempt{
@@ -7791,7 +7792,7 @@ func TestQueueExecutionReviewReworkIfEligibleEnqueuesBuilderAndReviewerAttempts(
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_reviewer_seed', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_builder_1', 'run_review_rework', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_review_builder_seed', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_reviewer_1', 'run_review_rework', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_reviewer_seed', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework:execution_review_shieldmaiden:1', 'run_review_rework', 'nr_review_reviewer_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework:execution_review_shieldmaiden:1', 'run_review_rework', 'nr_review_reviewer_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_rework", RunStatus: "running"}, now, "execution_review_shieldmaiden")
@@ -7823,24 +7824,23 @@ func TestQueueExecutionReviewReworkIfEligibleUsesLatestAttemptWithinSameWave(t *
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Berserker', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Shieldmaiden Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-sentinel', 'Sentinel Reviewer', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_review_retry_wave', 'Review retry decree', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_review_retry_wave', 'royal-decree-v1', '1', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_review_retry_wave', NULL, 'decree_review_retry_wave', 'wfdef_review_retry_wave', 'running', 'approved', 0, 2, 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_retry_builder', 'wfdef_review_retry_wave', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_retry_primary', 'wfdef_review_retry_wave', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_retry_secondary', 'wfdef_review_retry_wave', 'execution_review_sentinel', 'reviewer-sentinel', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_retry_secondary', 'wfdef_review_retry_wave', 'execution_review_sentinel', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_review_retry_builder_primary', 'wfdef_review_retry_wave', 'delegated_execution_berserker', 'execution_review_shieldmaiden', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_review_retry_builder_secondary', 'wfdef_review_retry_wave', 'delegated_execution_berserker', 'execution_review_sentinel', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_retry_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_retry_primary', 'reviewer-shieldmaiden', 'Primary Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_retry_secondary', 'reviewer-sentinel', 'Secondary Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_retry_secondary', 'reviewer-shieldmaiden', 'Secondary Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_retry_builder_1', 'run_review_retry_wave', 'delegated_execution_berserker', 1, 1, 'succeeded', 'builder-berserker', 'agent_review_retry_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_retry_primary_1', 'run_review_retry_wave', 'execution_review_shieldmaiden', 1, 1, 'blocked', 'reviewer-shieldmaiden', 'agent_review_retry_primary', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_retry_primary_2', 'run_review_retry_wave', 'execution_review_shieldmaiden', 2, 1, 'failed', 'reviewer-shieldmaiden', 'agent_review_retry_primary', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_retry_secondary_1', 'run_review_retry_wave', 'execution_review_sentinel', 1, 1, 'failed', 'reviewer-sentinel', 'agent_review_retry_secondary', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_retry_wave:execution_review_shieldmaiden:2', 'run_review_retry_wave', 'nr_review_retry_primary_2', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_retry_wave:execution_review_sentinel:1', 'run_review_retry_wave', 'nr_review_retry_secondary_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_retry_secondary_1', 'run_review_retry_wave', 'execution_review_sentinel', 1, 1, 'failed', 'reviewer-shieldmaiden', 'agent_review_retry_secondary', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_retry_wave:execution_review_shieldmaiden:2', 'run_review_retry_wave', 'nr_review_retry_primary_2', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_retry_wave:execution_review_sentinel:1', 'run_review_retry_wave', 'nr_review_retry_secondary_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_retry_wave", RunStatus: "running"}, now, "execution_review_shieldmaiden")
@@ -7893,9 +7893,9 @@ func TestQueueExecutionReviewReworkIfEligibleDoesNotQueuePastCycleCap(t *testing
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_cap_reviewer_1', 'run_review_cap', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_cap_reviewer_2', 'run_review_cap', 'execution_review_shieldmaiden', 2,2, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_cap_reviewer_3', 'run_review_cap', 'execution_review_shieldmaiden', 3,3, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:1', 'run_review_cap', 'nr_review_cap_reviewer_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:2', 'run_review_cap', 'nr_review_cap_reviewer_2', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:3', 'run_review_cap', 'nr_review_cap_reviewer_3', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:1', 'run_review_cap', 'nr_review_cap_reviewer_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:2', 'run_review_cap', 'nr_review_cap_reviewer_2', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap:execution_review_shieldmaiden:3', 'run_review_cap', 'nr_review_cap_reviewer_3', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_cap", RunStatus: "running"}, now, "execution_review_shieldmaiden")
@@ -7927,7 +7927,7 @@ func TestQueueExecutionReviewReworkIfEligibleQueuesCurrentCycleBoundaryCap(t *te
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_boundary_cap_reviewer', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_boundary_cap_builder_1', 'run_review_boundary_cap', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_review_boundary_cap_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_boundary_cap_reviewer_1', 'run_review_boundary_cap', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_boundary_cap_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_boundary_cap:execution_review_shieldmaiden:1', 'run_review_boundary_cap', 'nr_review_boundary_cap_reviewer_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_boundary_cap:execution_review_shieldmaiden:1', 'run_review_boundary_cap', 'nr_review_boundary_cap_reviewer_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_boundary_cap", RunStatus: "running"}, now, "execution_review_shieldmaiden")
@@ -7975,9 +7975,9 @@ func TestQueueExecutionReworkIfEligibleDoesNotQueuePastCycleCap(t *testing.T) {
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_cap_validator_1', 'run_validation_cap', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_cap_validator_2', 'run_validation_cap', 'validation_gates_qa_scout', 2,2, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_cap_validator_3', 'run_validation_cap', 'validation_gates_qa_scout', 3,3, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:1', 'run_validation_cap', 'nr_validation_cap_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:2', 'run_validation_cap', 'nr_validation_cap_validator_2', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:3', 'run_validation_cap', 'nr_validation_cap_validator_3', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:1', 'run_validation_cap', 'nr_validation_cap_validator_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:2', 'run_validation_cap', 'nr_validation_cap_validator_2', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap:validation_gates_qa_scout:3', 'run_validation_cap', 'nr_validation_cap_validator_3', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_validation_cap", RunStatus: "running"}, now, "validation_gates_qa_scout")
@@ -8019,8 +8019,8 @@ func TestQueueExecutionReworkIfEligibleUsesLatestAttemptWithinSameWave(t *testin
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_retry_primary_1', 'run_validation_retry_wave', 'validation_gates_qa_scout', 1, 1, 'blocked', 'intelligence-qa-scout', 'agent_validation_retry_primary', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_retry_primary_2', 'run_validation_retry_wave', 'validation_gates_qa_scout', 2, 1, 'failed', 'intelligence-qa-scout', 'agent_validation_retry_primary', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_retry_secondary_1', 'run_validation_retry_wave', 'validation_gates_nightraven', 1, 1, 'failed', 'intelligence-nightraven', 'agent_validation_retry_secondary', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_retry_wave:validation_gates_qa_scout:2', 'run_validation_retry_wave', 'nr_validation_retry_primary_2', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_retry_wave:validation_gates_nightraven:1', 'run_validation_retry_wave', 'nr_validation_retry_secondary_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_retry_wave:validation_gates_qa_scout:2', 'run_validation_retry_wave', 'nr_validation_retry_primary_2', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_retry_wave:validation_gates_nightraven:1', 'run_validation_retry_wave', 'nr_validation_retry_secondary_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_validation_retry_wave", RunStatus: "running"}, now, "validation_gates_qa_scout")
@@ -8080,7 +8080,7 @@ func TestQueueExecutionReworkIfEligibleIgnoresAttemptOrdinalAtValidationBoundary
 	}
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_review_1', 'run_validation_boundary_cap', 'execution_review_shieldmaiden', 1,1, 'succeeded', 'reviewer-shieldmaiden', 'agent_validation_boundary_cap_review', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_validator_1', 'run_validation_boundary_cap', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_boundary_cap_validator', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_boundary_cap:validation_gates_qa_scout:1', 'run_validation_boundary_cap', 'nr_validation_boundary_cap_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_boundary_cap:validation_gates_qa_scout:1', 'run_validation_boundary_cap', 'nr_validation_boundary_cap_validator_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_validation_boundary_cap", RunStatus: "running"}, now, "validation_gates_qa_scout")
@@ -8132,8 +8132,8 @@ func TestQueueExecutionReviewReworkIfEligibleStopsAtCapAfterMixedReviewHistory(t
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_mixed_cap_review_1', 'run_review_mixed_cap', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_mixed_cap_review_2', 'run_review_mixed_cap', 'execution_review_shieldmaiden', 2,2, 'succeeded', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_mixed_cap_review_3', 'run_review_mixed_cap', 'execution_review_shieldmaiden', 3,3, 'failed', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_mixed_cap:execution_review_shieldmaiden:1', 'run_review_mixed_cap', 'nr_review_mixed_cap_review_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_mixed_cap:execution_review_shieldmaiden:3', 'run_review_mixed_cap', 'nr_review_mixed_cap_review_3', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_mixed_cap:execution_review_shieldmaiden:1', 'run_review_mixed_cap', 'nr_review_mixed_cap_review_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_mixed_cap:execution_review_shieldmaiden:3', 'run_review_mixed_cap', 'nr_review_mixed_cap_review_3', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_mixed_cap", RunStatus: "running"}, now, "execution_review_shieldmaiden")
@@ -8183,7 +8183,7 @@ func TestCanStartExecutionReviewCycleCountsOnlyFailedReviewCycles(t *testing.T) 
 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_rework_cycles_1', 'run_review_rework_cycles', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_rework_cycles_2', 'run_review_rework_cycles', 'execution_review_shieldmaiden', 2,2, 'succeeded', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:1', 'run_review_rework_cycles', 'nr_review_rework_cycles_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:1', 'run_review_rework_cycles', 'nr_review_rework_cycles_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	started, capReached, err = loop.canStartExecutionReviewCycle(context.Background(), "run_review_rework_cycles")
 	if err != nil {
@@ -8194,7 +8194,7 @@ func TestCanStartExecutionReviewCycleCountsOnlyFailedReviewCycles(t *testing.T) 
 	}
 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_rework_cycles_3', 'run_review_rework_cycles', 'execution_review_shieldmaiden', 3,3, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:3', 'run_review_rework_cycles', 'nr_review_rework_cycles_3', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:3', 'run_review_rework_cycles', 'nr_review_rework_cycles_3', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	started, capReached, err = loop.canStartExecutionReviewCycle(context.Background(), "run_review_rework_cycles")
 	if err != nil {
 		t.Fatalf("review cycle start at N failed cycles: %v", err)
@@ -8204,7 +8204,7 @@ func TestCanStartExecutionReviewCycleCountsOnlyFailedReviewCycles(t *testing.T) 
 	}
 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_rework_cycles_4', 'run_review_rework_cycles', 'execution_review_shieldmaiden', 4,4, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:4', 'run_review_rework_cycles', 'nr_review_rework_cycles_4', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_rework_cycles:execution_review_shieldmaiden:4', 'run_review_rework_cycles', 'nr_review_rework_cycles_4', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	started, capReached, err = loop.canStartExecutionReviewCycle(context.Background(), "run_review_rework_cycles")
 	if err != nil {
 		t.Fatalf("review cycle start at N+1 failed cycles: %v", err)
@@ -8231,7 +8231,7 @@ func TestCanStartExecutionReviewCycleIgnoresCapWhenRunUntilAllApproveEnabled(t *
 
 	for attempt := 1; attempt <= 4; attempt++ {
 		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_all_approve_review_%d', 'run_all_approve_review', 'execution_review_shieldmaiden', %d,%d, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_all_approve', 1, '%s', '%s')`, attempt, attempt, attempt, now, now))
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_all_approve_review:execution_review_shieldmaiden:%d', 'run_all_approve_review', 'nr_all_approve_review_%d', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, attempt, attempt, now, now, now, now, now))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_all_approve_review:execution_review_shieldmaiden:%d', 'run_all_approve_review', 'nr_all_approve_review_%d', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, attempt, attempt, now, now, now, now, now))
 	}
 
 	loop := orchestrationLoop{db: db}
@@ -8261,8 +8261,8 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_dispatch_review_cap', 'wfdef_dispatch_review_cap', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_1', 'run_dispatch_review_cap', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_2', 'run_dispatch_review_cap', 'custom_review_gate', 2,2, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap:custom_review_gate:1', 'run_dispatch_review_cap', 'nr_dispatch_review_cap_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap:custom_review_gate:2', 'run_dispatch_review_cap', 'nr_dispatch_review_cap_2', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap:custom_review_gate:1', 'run_dispatch_review_cap', 'nr_dispatch_review_cap_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap:custom_review_gate:2', 'run_dispatch_review_cap', 'nr_dispatch_review_cap_2', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_3', 'run_dispatch_review_cap', 'custom_review_gate', 3,3, 'ready', 'reviewer-shieldmaiden', 'agent_review_cap_reviewer', 1, NULL, NULL)`)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
@@ -8354,7 +8354,7 @@ func TestMaybeAutoSucceedLoopCappedReadyReviewNodeCountsOnlyCurrentWaveParticipa
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_review_cap_scope_a', 'wfdef_review_cap_scope', 'delegated_execution_berserker', 'execution_review_a', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_review_cap_scope_b', 'wfdef_review_cap_scope', 'delegated_execution_berserker', 'execution_review_b', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_cap_scope_a_1', 'run_review_cap_scope', 'execution_review_a', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_cap_scope', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap_scope:execution_review_a:1', 'run_review_cap_scope', 'nr_review_cap_scope_a_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_cap_scope:execution_review_a:1', 'run_review_cap_scope', 'nr_review_cap_scope_a_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	autoSucceeded, err := loop.maybeAutoSucceedLoopCappedReadyNode(context.Background(), runSnapshot{RunID: "run_review_cap_scope", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "execution_review_b", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"}, nodeAttempt{NodeRunID: "nr_review_cap_scope_b_2", NodeID: "execution_review_b", Attempt: 2, Wave: 2, NodeStatus: "ready", RequiredRole: "reviewer-shieldmaiden"}, now)
@@ -8382,7 +8382,7 @@ func TestDispatchNodeAttemptCompletesLoopCapAutoSuccessProjectionAfterConflict(t
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_dispatch_review_cap_conflict', NULL, 'decree_dispatch_review_cap_conflict', 'wfdef_dispatch_review_cap_conflict', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_dispatch_review_cap_conflict', 'wfdef_dispatch_review_cap_conflict', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_conflict_1', 'run_dispatch_review_cap_conflict', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_conflict_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap_conflict:custom_review_gate:1', 'run_dispatch_review_cap_conflict', 'nr_dispatch_review_cap_conflict_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap_conflict:custom_review_gate:1', 'run_dispatch_review_cap_conflict', 'nr_dispatch_review_cap_conflict_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_conflict_2', 'run_dispatch_review_cap_conflict', 'custom_review_gate', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review_conflict_reviewer', 1, NULL, NULL)`)
 
 	attempt := nodeAttempt{NodeRunID: "nr_dispatch_review_cap_conflict_2", NodeID: "custom_review_gate", Attempt: 2, Wave: 2, RequiredRole: "reviewer-shieldmaiden", AgentID: "agent_review_conflict_reviewer"}
@@ -8507,7 +8507,7 @@ func TestDispatchNodeAttemptRecreatesMissingLoopCapAutoSuccessOutboxAfterConflic
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_dispatch_review_cap_missing_outbox_conflict', NULL, 'decree_dispatch_review_cap_missing_outbox_conflict', 'wfdef_dispatch_review_cap_missing_outbox_conflict', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_dispatch_review_cap_missing_outbox_conflict', 'wfdef_dispatch_review_cap_missing_outbox_conflict', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_missing_outbox_conflict_1', 'run_dispatch_review_cap_missing_outbox_conflict', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_conflict_missing_outbox_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap_missing_outbox_conflict:custom_review_gate:1', 'run_dispatch_review_cap_missing_outbox_conflict', 'nr_dispatch_review_cap_missing_outbox_conflict_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_cap_missing_outbox_conflict:custom_review_gate:1', 'run_dispatch_review_cap_missing_outbox_conflict', 'nr_dispatch_review_cap_missing_outbox_conflict_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_cap_missing_outbox_conflict_2', 'run_dispatch_review_cap_missing_outbox_conflict', 'custom_review_gate', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review_conflict_missing_outbox_reviewer', 1, NULL, NULL)`)
 
 	attempt := nodeAttempt{NodeRunID: "nr_dispatch_review_cap_missing_outbox_conflict_2", NodeID: "custom_review_gate", Attempt: 2, Wave: 2, RequiredRole: "reviewer-shieldmaiden", AgentID: "agent_review_conflict_missing_outbox_reviewer"}
@@ -8621,8 +8621,8 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCapAfterMixedHisto
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_mixed_cap_1', 'run_dispatch_review_mixed_cap', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_mixed_cap_2', 'run_dispatch_review_mixed_cap', 'custom_review_gate', 2,2, 'succeeded', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_mixed_cap_3', 'run_dispatch_review_mixed_cap', 'custom_review_gate', 3,3, 'failed', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_mixed_cap:custom_review_gate:1', 'run_dispatch_review_mixed_cap', 'nr_dispatch_review_mixed_cap_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_mixed_cap:custom_review_gate:3', 'run_dispatch_review_mixed_cap', 'nr_dispatch_review_mixed_cap_3', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_mixed_cap:custom_review_gate:1', 'run_dispatch_review_mixed_cap', 'nr_dispatch_review_mixed_cap_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_review_mixed_cap:custom_review_gate:3', 'run_dispatch_review_mixed_cap', 'nr_dispatch_review_mixed_cap_3', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_review_mixed_cap_4', 'run_dispatch_review_mixed_cap', 'custom_review_gate', 4,4, 'ready', 'reviewer-shieldmaiden', 'agent_review_mixed_cap_reviewer', 1, NULL, NULL)`)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
@@ -8681,8 +8681,8 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_dispatch_validation_cap', 'wfdef_dispatch_validation_cap', 'custom_validation_gate', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_validation_cap_1', 'run_dispatch_validation_cap', 'custom_validation_gate', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_validation_cap_2', 'run_dispatch_validation_cap', 'custom_validation_gate', 2,2, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_validation_cap:custom_validation_gate:1', 'run_dispatch_validation_cap', 'nr_dispatch_validation_cap_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_validation_cap:custom_validation_gate:2', 'run_dispatch_validation_cap', 'nr_dispatch_validation_cap_2', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_validation_cap:custom_validation_gate:1', 'run_dispatch_validation_cap', 'nr_dispatch_validation_cap_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_dispatch_validation_cap:custom_validation_gate:2', 'run_dispatch_validation_cap', 'nr_dispatch_validation_cap_2', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dispatch_validation_cap_3', 'run_dispatch_validation_cap', 'custom_validation_gate', 3,3, 'ready', 'intelligence-qa-scout', 'agent_validation_cap_validator', 1, NULL, NULL)`)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"VERDICT: PASS"}}
@@ -8758,7 +8758,7 @@ func TestMaybeAutoSucceedLoopCappedReadyValidationNodeCountsOnlyCurrentWaveParti
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_validation_cap_scope_a', 'wfdef_validation_cap_scope', 'delegated_execution_berserker', 'validation_gates_a', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_validation_cap_scope_b', 'wfdef_validation_cap_scope', 'delegated_execution_berserker', 'validation_gates_b', 'always', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_cap_scope_a_1', 'run_validation_cap_scope', 'validation_gates_a', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_cap_scope', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap_scope:validation_gates_a:1', 'run_validation_cap_scope', 'nr_validation_cap_scope_a_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_cap_scope:validation_gates_a:1', 'run_validation_cap_scope', 'nr_validation_cap_scope_a_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	autoSucceeded, err := loop.maybeAutoSucceedLoopCappedReadyNode(context.Background(), runSnapshot{RunID: "run_validation_cap_scope", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "validation_gates_b", NodeClass: "validation_gates", RequiredRole: "intelligence-qa-scout"}, nodeAttempt{NodeRunID: "nr_validation_cap_scope_b_2", NodeID: "validation_gates_b", Attempt: 2, Wave: 2, NodeStatus: "ready", RequiredRole: "intelligence-qa-scout"}, now)
@@ -8857,7 +8857,7 @@ func TestCanStartExecutionReworkCycleCountsOnlyFailedValidationWaves(t *testing.
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_night_1', 'run_validation_rework_waves', 'validation_gates_nightraven', 1,1, 'succeeded', 'intelligence-nightraven', 'agent_validation_wave_night', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_qa_2', 'run_validation_rework_waves', 'validation_gates_qa_scout', 2,2, 'succeeded', 'intelligence-qa-scout', 'agent_validation_wave_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_night_2', 'run_validation_rework_waves', 'validation_gates_nightraven', 2,2, 'succeeded', 'intelligence-nightraven', 'agent_validation_wave_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:1', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:1', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	started, capReached, err = loop.canStartExecutionReworkCycle(context.Background(), "run_validation_rework_waves")
 	if err != nil {
@@ -8869,7 +8869,7 @@ func TestCanStartExecutionReworkCycleCountsOnlyFailedValidationWaves(t *testing.
 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_qa_3', 'run_validation_rework_waves', 'validation_gates_qa_scout', 3,3, 'failed', 'intelligence-qa-scout', 'agent_validation_wave_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_night_3', 'run_validation_rework_waves', 'validation_gates_nightraven', 3,3, 'succeeded', 'intelligence-nightraven', 'agent_validation_wave_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:3', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_3', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:3', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_3', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	started, capReached, err = loop.canStartExecutionReworkCycle(context.Background(), "run_validation_rework_waves")
 	if err != nil {
@@ -8881,7 +8881,7 @@ func TestCanStartExecutionReworkCycleCountsOnlyFailedValidationWaves(t *testing.
 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_qa_4', 'run_validation_rework_waves', 'validation_gates_qa_scout', 4,4, 'failed', 'intelligence-qa-scout', 'agent_validation_wave_qa', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_rework_waves_night_4', 'run_validation_rework_waves', 'validation_gates_nightraven', 4,4, 'succeeded', 'intelligence-nightraven', 'agent_validation_wave_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:4', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_4', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_rework_waves:validation_gates_qa_scout:4', 'run_validation_rework_waves', 'nr_validation_rework_waves_qa_4', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	started, capReached, err = loop.canStartExecutionReworkCycle(context.Background(), "run_validation_rework_waves")
 	if err != nil {
@@ -8928,8 +8928,8 @@ func TestValidationReworkWaveCountBeforeWaveIgnoresMixedWaveHardFailures(t *test
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_mixed_wave_night', 'wfdef_validation_mixed_wave', 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_mixed_wave_qa_1', 'run_validation_mixed_wave', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_wave_qa', 1, '%s', '%s')`, now, now))
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_mixed_wave_night_1', 'run_validation_mixed_wave', 'validation_gates_nightraven', 1,1, '%s', 'intelligence-nightraven', 'agent_validation_wave_night', 1, '%s', '%s')`, tc.otherNodeStatus, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_mixed_wave:validation_gates_qa_scout:1', 'run_validation_mixed_wave', 'nr_validation_mixed_wave_qa_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_mixed_wave:validation_gates_nightraven:1', 'run_validation_mixed_wave', 'nr_validation_mixed_wave_night_1', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s')`, tc.otherAttemptState, tc.otherFailureCode, tc.otherFailureText, now, now, now, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_mixed_wave:validation_gates_qa_scout:1', 'run_validation_mixed_wave', 'nr_validation_mixed_wave_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_mixed_wave:validation_gates_nightraven:1', 'run_validation_mixed_wave', 'nr_validation_mixed_wave_night_1', '%s', 'provider_backed', 'server_response', '%s', '%s', '%s', '%s', '%s', '%s', '%s')`, tc.otherAttemptState, tc.otherFailureCode, tc.otherFailureText, now, now, now, now, now))
 
 			loop := orchestrationLoop{db: db}
 			count, err := loop.validationReworkWaveCountBeforeWave(context.Background(), "run_validation_mixed_wave", 2)
@@ -8968,7 +8968,7 @@ func TestQueueExecutionReviewReworkIgnoresActiveUnrelatedReviewScope(t *testing.
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_active_review_b', 'wfdef_active_review', 'execution_review_b', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_review_a_1', 'run_active_review', 'execution_review_a', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_scope_a', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_review_b_1', 'run_active_review', 'execution_review_b', 1,1, 'running', 'reviewer-shieldmaiden', 'agent_review_scope_b', 1, '%s', NULL)`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_active_review:execution_review_a:1', 'run_active_review', 'nr_active_review_a_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_active_review:execution_review_a:1', 'run_active_review', 'nr_active_review_a_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_active_review", RunStatus: "running"}, now, "execution_review_a")
@@ -9006,7 +9006,7 @@ func TestQueueExecutionReviewReworkIfEligibleWaitsForAllReviewersToSettle(t *tes
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_wait_builder_1', 'run_review_wave_wait', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_review_wave_wait_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_wait_reviewer_a_1', 'run_review_wave_wait', 'execution_review_a', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_wave_wait_reviewer_a', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_wait_reviewer_b_1', 'run_review_wave_wait', 'execution_review_b', 1,1, 'running', 'reviewer-shieldmaiden', 'agent_review_wave_wait_reviewer_b', 1, '%s', NULL)`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_wave_wait:execution_review_a:1', 'run_review_wave_wait', 'nr_review_wave_wait_reviewer_a_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_wave_wait:execution_review_a:1', 'run_review_wave_wait', 'nr_review_wave_wait_reviewer_a_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_wave_wait", RunStatus: "running"}, now, "execution_review_a")
@@ -9048,7 +9048,7 @@ func TestQueueExecutionReviewReworkIfEligibleCountsOnlyWaveParticipants(t *testi
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_branch_runtime_reviewer', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_branch_runtime_builder_1', 'run_review_branch_runtime', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_review_branch_runtime_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_branch_runtime_a_1', 'run_review_branch_runtime', 'execution_review_a', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_branch_runtime_reviewer', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_branch_runtime:execution_review_a:1', 'run_review_branch_runtime', 'nr_review_branch_runtime_a_1', 'committed_failure', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_review_branch_runtime:execution_review_a:1', 'run_review_branch_runtime', 'nr_review_branch_runtime_a_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReviewReworkIfEligible(context.Background(), runSnapshot{RunID: "run_review_branch_runtime", RunStatus: "running"}, now, "execution_review_a")
@@ -9086,7 +9086,7 @@ func TestQueueExecutionReworkIfEligibleCountsOnlyWaveParticipants(t *testing.T) 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_branch_runtime_builder_1', 'run_validation_branch_runtime', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_validation_branch_runtime_builder', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_branch_runtime_review_1', 'run_validation_branch_runtime', 'execution_review_shieldmaiden', 1,1, 'succeeded', 'reviewer-shieldmaiden', 'agent_validation_branch_runtime_review', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_branch_runtime_a_1', 'run_validation_branch_runtime', 'validation_gates_a', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_branch_runtime_validator', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_branch_runtime:validation_gates_a:1', 'run_validation_branch_runtime', 'nr_validation_branch_runtime_a_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_branch_runtime:validation_gates_a:1', 'run_validation_branch_runtime', 'nr_validation_branch_runtime_a_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_validation_branch_runtime", RunStatus: "running"}, now, "validation_gates_a")
@@ -9119,7 +9119,7 @@ func TestQueueExecutionReworkIgnoresActiveUnrelatedExecutionScope(t *testing.T) 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_active_review_builder_validation', 'wfdef_active_review_builder', 'validation_gates_a', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_review_builder_exec_1', 'run_active_review_builder', 'delegated_execution_other', 1,1, 'running', 'builder-berserker', 'agent_builder_scope_other', 1, '%s', NULL)`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_review_builder_validation_1', 'run_active_review_builder', 'validation_gates_a', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_scope_a', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_active_review_builder:validation_gates_a:1', 'run_active_review_builder', 'nr_active_review_builder_validation_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_active_review_builder:validation_gates_a:1', 'run_active_review_builder', 'nr_active_review_builder_validation_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 
 	loop := orchestrationLoop{db: db}
 	queued, autoSucceededAtCap, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_active_review_builder", RunStatus: "running"}, now, "validation_gates_a")
@@ -10928,7 +10928,7 @@ func TestEnsureProviderInvokedEventRecordedSkipsTerminalAttempt(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
 
 	loop := orchestrationLoop{
 		db:     db,
@@ -10966,12 +10966,13 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 	attemptID := "run_1:decree_intake:1"
 	execStore := executionstore.New(db)
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    sessionIDForAttempt(attemptID),
-		CreatedAt:     "2026-03-01T12:00:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      "2026-03-01T12:00:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -11038,7 +11039,7 @@ func TestRecordExecutionLaunchAfterTerminalDoesNotAppendLifecycleEvent(t *testin
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal', 'run_1', 1, 'nr_1', 'run_1:decree_intake:1', 'v1', 'attempt.succeeded', 1, '{}', 'runtime', 'king', 'runtime', 'execution_completed', 'terminal', 'corr_terminal', 'caus_terminal', 'prev', 'entry', '2026-03-01T12:00:02Z')`)
 
 	loop := orchestrationLoop{db: db}
@@ -11481,7 +11482,7 @@ func TestApprovedPlanForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMissing(t 
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_missing_projection', 'wfdef_missing_projection', 'plan_drafting', 'council-member', 'plan_drafting', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_missing_projection', 'run_missing_projection', 'agent_council_missing_projection', 'agent_king_missing_projection', 'thread_missing_projection', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Canonical plan without persisted projection"}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_missing_projection', 'run_missing_projection', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council_missing_projection', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_missing_projection:plan_drafting:1', 'run_missing_projection', 'nr_missing_projection', 'committed_success', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_missing_projection:plan_drafting:1', 'run_missing_projection', 'nr_missing_projection', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_missing_projection', 'run_missing_projection', 'plan_drafting', 'nr_missing_projection', 'run_missing_projection:plan_drafting:1', 'agent_council_missing_projection', 'msg_missing_projection', 'plan_revision', 'Canonical plan without persisted projection', '%s')`, now))
 
 	loop := orchestrationLoop{db: db}
@@ -11540,7 +11541,7 @@ func TestLatestCouncilPlansForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMiss
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_history_projection', 'wfdef_history_projection', 'plan_drafting', 'council-member', 'plan_drafting', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_history_projection_old', 'run_history_projection', 'agent_council_history_projection', 'agent_king_history_projection', 'thread_history_projection', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Baseline plan"}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_history_projection', 'run_history_projection', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council_history_projection', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_history_projection:plan_drafting:1', 'run_history_projection', 'nr_history_projection', 'committed_success', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_history_projection:plan_drafting:1', 'run_history_projection', 'nr_history_projection', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_history_projection_old', 'run_history_projection', 'plan_drafting', 'nr_history_projection', 'run_history_projection:plan_drafting:1', 'agent_council_history_projection', 'msg_history_projection_old', 'plan_revision', 'Baseline plan', '%s')`, now))
 	if _, _, err := state.NewRunPlanRevisionStore(db).RefreshCurrentRunPlanRevision(context.Background(), "run_history_projection"); err != nil {
 		t.Fatalf("refresh baseline run plan revision: %v", err)
@@ -11548,7 +11549,7 @@ func TestLatestCouncilPlansForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMiss
 
 	later := "2026-03-01T12:05:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_history_projection_latest', 'run_history_projection', 'agent_council_history_projection', 'agent_king_history_projection', 'thread_history_projection', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest canonical plan"}', '%s')`, later))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_history_projection:plan_drafting:2', 'run_history_projection', 'nr_history_projection', 'committed_success', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, later, later, later, later, later))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_history_projection:plan_drafting:2', 'run_history_projection', 'nr_history_projection', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '%s', '%s', '%s', '', '', '%s', '%s')`, later, later, later, later, later))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_history_projection_latest', 'run_history_projection', 'plan_drafting', 'nr_history_projection', 'run_history_projection:plan_drafting:2', 'agent_council_history_projection', 'msg_history_projection_latest', 'plan_revision', 'Latest canonical plan', '%s')`, later))
 
 	loop := orchestrationLoop{db: db}
@@ -11648,7 +11649,7 @@ func seedCanonicalPlanningOutput(t *testing.T, db *sql.DB, planningOutputID, run
 	mustExec(t, db, fmt.Sprintf(`INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES (%q, %q, 0, %q)`, requiredRole, requiredRole, createdAt))
 	mustExec(t, db, fmt.Sprintf(`INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (%q, %q, %q, %q, %q, %q)`, "wn_"+planningOutputID, workflowDefinitionID, nodeID, requiredRole, nodeClass, createdAt))
 	mustExec(t, db, fmt.Sprintf(`INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (%q, %q, %q, %d,%d, 'succeeded', %q, %q, 1, %q, %q)`, nodeRunID, runID, nodeID, attemptNumber, attemptNumber, requiredRole, agentID, createdAt, createdAt))
-	mustExec(t, db, fmt.Sprintf(`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (%q, %q, %q, 'committed_success', '', NULL, 0, '', %q, %q, %q, '', '', %q, %q)`, attemptID, runID, nodeRunID, createdAt, createdAt, createdAt, createdAt, createdAt))
+	mustExec(t, db, fmt.Sprintf(`INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (%q, %q, %q, 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', %q, %q, %q, '', '', %q, %q)`, attemptID, runID, nodeRunID, createdAt, createdAt, createdAt, createdAt, createdAt))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES (%q, %q, %q, %q, %q, %q, %q, %q, %q, %q)`, planningOutputID, runID, nodeID, nodeRunID, attemptID, agentID, sourceMessageID, string(kind), content, createdAt))
 	if kind == state.RunPlanningOutputKindPlanRevision {
 		if _, _, err := state.NewRunPlanRevisionStore(db).RefreshCurrentRunPlanRevision(context.Background(), runID); err != nil {
@@ -11662,12 +11663,12 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	store := executionstore.New(db)
 	providerInvocationID := fmt.Sprintf("pinv_%s", sanitizeFileToken(attemptID))
 	providerSessionID := fmt.Sprintf("ses_%s", sanitizeFileToken(attemptID))
-	completionCapability := fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID))
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:         attemptID,
 		RunID:             runID,
 		NodeRunID:         nodeRunID,
 		ExecutionMode:     executionstore.ExecutionModeProviderBacked,
+		CompletionMode:    executionstore.ProviderCompletionModeServerResponse,
 		SessionRef:        sessionIDForAttempt(attemptID),
 		ProviderSessionID: providerSessionID,
 		CreatedAt:         createdAt,
@@ -11681,9 +11682,9 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     sessionIDForAttempt(attemptID),
 		ProviderSessionID:    providerSessionID,
-		CompletionCapability: completionCapability,
 		IssuedAt:             createdAt,
 		CreatedAt:            createdAt,
+		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 	}); err != nil {
 		t.Fatalf("create canonical provider invocation %q: %v", attemptID, err)
 	}
@@ -11696,36 +11697,20 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		t.Fatalf("mark canonical provider invocation open %q: %v", attemptID, err)
 	}
 	structuredPayloadJSON := canonicalStructuredPayloadForExecutionOutput(outputText)
-	primaryEvidenceID := fmt.Sprintf("evidence_terminal_%s", sanitizeFileToken(attemptID))
-	if strings.TrimSpace(outputText) != "" {
-		primaryEvidenceID = fmt.Sprintf("receipt_%s", sanitizeFileToken(attemptID))
-		if _, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-			EvidenceID:            primaryEvidenceID,
-			ProviderInvocationID:  providerInvocationID,
-			AttemptID:             attemptID,
-			RunID:                 runID,
-			NodeRunID:             nodeRunID,
-			ProtocolVersion:       opencode.CompletionProtocolVersion,
-			CompletionCapability:  completionCapability,
-			FinalText:             outputText,
-			StructuredPayloadJSON: structuredPayloadJSON,
-			ReceivedAt:            createdAt,
-		}); err != nil {
-			t.Fatalf("accept canonical completion receipt %q: %v", attemptID, err)
-		}
-	} else {
-		if _, err := store.AppendProviderCompletionEvidence(context.Background(), executionstore.AppendProviderCompletionEvidenceRequest{
-			EvidenceID:           primaryEvidenceID,
-			ProviderInvocationID: providerInvocationID,
-			AttemptID:            attemptID,
-			RunID:                runID,
-			NodeRunID:            nodeRunID,
-			EvidenceKind:         executionstore.ProviderCompletionEvidenceKindStreamObservation,
-			PayloadJSON:          fmt.Sprintf(`{"reason_code":%q}`, reasonCode),
-			CreatedAt:            createdAt,
-		}); err != nil {
-			t.Fatalf("append canonical completion evidence %q: %v", attemptID, err)
-		}
+	primaryEvidenceID := executionstore.TerminalProviderCompletionEvidenceID(providerInvocationID)
+	if _, err := store.EnsureTerminalProviderCompletionEvidence(context.Background(), executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		RunID:                runID,
+		NodeRunID:            nodeRunID,
+		State:                stateValue,
+		ReasonCode:           reasonCode,
+		FailureText:          failureText,
+		OutputText:           outputText,
+		EvidenceSource:       "stream",
+		CreatedAt:            createdAt,
+	}); err != nil {
+		t.Fatalf("append canonical stream evidence %q: %v", attemptID, err)
 	}
 	settlementOutcome := executionstore.ProviderCompletionOutcomeSuccess
 	switch strings.TrimSpace(stateValue) {
@@ -11767,7 +11752,17 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 	if store == nil {
 		t.Fatal("execution store is required")
 	}
-	completionCapability := fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID))
+	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("load attempt %q: %v", attemptID, err)
+	}
+	if !found {
+		t.Fatalf("expected attempt %q before creating provider invocation", attemptID)
+	}
+	completionCapability := ""
+	if attempt.CompletionMode == executionstore.ProviderCompletionModeReceiptRequired {
+		completionCapability = fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID))
+	}
 	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
@@ -11778,6 +11773,7 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 		CompletionCapability: completionCapability,
 		IssuedAt:             issuedAt,
 		CreatedAt:            issuedAt,
+		CompletionMode:       attempt.CompletionMode,
 	}); err != nil {
 		t.Fatalf("create provider invocation for %q: %v", attemptID, err)
 	}
@@ -13512,8 +13508,8 @@ func seedSupersededPlanCompletionRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan', NULL, 'decree_superseded_plan', 'wfdef_superseded_plan', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_1', 'run_superseded_plan', 'plan_drafting', 1,1, 'running', 'council-member', 'agent_council_plan', 1, '`+now+`', NULL)`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_2', 'run_superseded_plan', 'plan_drafting', 2,2, 'ready', 'council-member', 'agent_council_plan', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:1', 'run_superseded_plan', 'nr_superseded_plan_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:2', 'run_superseded_plan', 'nr_superseded_plan_2', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:1', 'run_superseded_plan', 'nr_superseded_plan_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan:plan_drafting:2', 'run_superseded_plan', 'nr_superseded_plan_2', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 }
 
 func seedSupersededPlanStartingRetryRun(t *testing.T, db *sql.DB) {
@@ -13530,8 +13526,8 @@ func seedSupersededPlanStartingRetryRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan_starting', NULL, 'decree_superseded_plan_starting', 'wfdef_superseded_plan_starting', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_starting_1', 'run_superseded_plan_starting', 'plan_drafting', 1,1, 'running', 'council-member', 'agent_council_plan_starting', 1, '`+now+`', NULL)`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_starting_2', 'run_superseded_plan_starting', 'plan_drafting', 2,2, 'starting', 'council-member', 'agent_council_plan_starting', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:1', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:2', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_2', 'starting', 'runtime_owned', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:1', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_starting:plan_drafting:2', 'run_superseded_plan_starting', 'nr_superseded_plan_starting_2', 'starting', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 }
 
 func seedSupersededPlanBlockedRetryRun(t *testing.T, db *sql.DB) {
@@ -13548,8 +13544,8 @@ func seedSupersededPlanBlockedRetryRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_plan_blocked', NULL, 'decree_superseded_plan_blocked', 'wfdef_superseded_plan_blocked', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_blocked_1', 'run_superseded_plan_blocked', 'plan_drafting', 1,1, 'blocked', 'council-member', 'agent_council_plan_blocked', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_plan_blocked_2', 'run_superseded_plan_blocked', 'plan_drafting', 2,2, 'ready', 'council-member', 'agent_council_plan_blocked', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:1', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:2', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_2', 'queued', 'runtime_owned', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:1', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_plan_blocked:plan_drafting:2', 'run_superseded_plan_blocked', 'nr_superseded_plan_blocked_2', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 }
 
 func seedLateSupersededDifferentAgentRun(t *testing.T, db *sql.DB) {
@@ -13567,8 +13563,8 @@ func seedLateSupersededDifferentAgentRun(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_superseded_agents', NULL, 'decree_superseded_agents', 'wfdef_superseded_agents', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_agents_1', 'run_superseded_agents', 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_council_old', 1, '`+now+`', NULL)`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_superseded_agents_2', 'run_superseded_agents', 'plan_drafting', 2, 2, 'running', 'council-member', 'agent_council_new', 1, '`+now+`', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:1', 'run_superseded_agents', 'nr_superseded_agents_1', 'running', 'runtime_owned', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:2', 'run_superseded_agents', 'nr_superseded_agents_2', 'running', 'runtime_owned', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', '2026-03-01T12:00:06Z', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:1', 'run_superseded_agents', 'nr_superseded_agents_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_superseded_agents:plan_drafting:2', 'run_superseded_agents', 'nr_superseded_agents_2', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', '2026-03-01T12:00:05Z', '2026-03-01T12:00:06Z', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 }
 
 func seedCanonicalRoleCoverageRun(t *testing.T, db *sql.DB) {
@@ -13672,19 +13668,6 @@ type outcomeSequenceExecutionAdapter struct {
 	responses []opencode.ExecuteResponse
 	calls     int
 	requests  []opencode.ExecuteRequest
-}
-
-type completionRecoveryTestAdapter struct {
-	mu                 sync.Mutex
-	executeResponse    opencode.ExecuteResponse
-	executeErr         error
-	recoveryResponse   opencode.ExecuteResponse
-	recoveryErr        error
-	recoveryWrites     map[string]string
-	recoveryActivities []opencode.ExecuteActivityObservation
-	recoveryCalls      int
-	recoveryRequests   []opencode.ExecuteRequest
-	recoveryTexts      []string
 }
 
 type lifecycleObservationExecutionAdapter struct{}
@@ -13923,62 +13906,6 @@ func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.Execute
 	return out
 }
 
-func (a *completionRecoveryTestAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.executeResponse, a.executeErr
-}
-
-func (a *completionRecoveryTestAdapter) RecoverMissingCompletionReceipt(_ context.Context, req opencode.ExecuteRequest, finalText string) (opencode.ExecuteResponse, error) {
-	for relativePath, content := range a.recoveryWrites {
-		absolutePath := filepath.Join(req.WorkspacePath, relativePath)
-		if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
-			return opencode.ExecuteResponse{}, err
-		}
-		if err := os.WriteFile(absolutePath, []byte(content), 0o644); err != nil {
-			return opencode.ExecuteResponse{}, err
-		}
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.recoveryCalls++
-	a.recoveryRequests = append(a.recoveryRequests, req)
-	a.recoveryTexts = append(a.recoveryTexts, strings.TrimSpace(finalText))
-	for _, observation := range a.recoveryActivities {
-		if req.OnActivity != nil {
-			req.OnActivity(observation)
-		}
-	}
-	return a.recoveryResponse, a.recoveryErr
-}
-
-func (a *completionRecoveryTestAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *completionRecoveryTestAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
-}
-
-func (a *completionRecoveryTestAdapter) recoveryCallsCount() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.recoveryCalls
-}
-
-func (a *completionRecoveryTestAdapter) recoveryRequestsSnapshot() []opencode.ExecuteRequest {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := make([]opencode.ExecuteRequest, len(a.recoveryRequests))
-	copy(out, a.recoveryRequests)
-	return out
-}
-
 func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	callOnProcessStarted(req)
 	a.mu.Lock()
@@ -14092,18 +14019,6 @@ func structuredPayloadJSONForTestOutput(outputText string) string {
 		break
 	}
 	return "{}"
-}
-
-func recoveryDiagnosticsJSONForTest(lastStepFinishReason, terminalStateClass, exportCheckReason string) string {
-	payload, _ := json.Marshal(map[string]any{
-		"completion_receipt_mode_enabled": true,
-		"execution_path_diagnostics": map[string]any{
-			"last_step_finish_reason": strings.TrimSpace(lastStepFinishReason),
-			"terminal_state_class":    strings.TrimSpace(terminalStateClass),
-			"export_check_reason":     strings.TrimSpace(exportCheckReason),
-		},
-	})
-	return string(payload)
 }
 
 func (a *lifecycleObservationExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
@@ -14436,12 +14351,19 @@ func TestDrainExecutionOutboxQueuesReviewReworkAtCurrentBoundaryCap(t *testing.T
 
 	execStore := executionstore.New(db)
 	attemptID := "run_review_batch:execution_review_shieldmaiden:1"
-	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_review_batch", NodeRunID: "nr_review_batch_review_1", SessionRef: sessionIDForAttempt(attemptID), CreatedAt: now}); err != nil {
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_review_batch",
+		NodeRunID:      "nr_review_batch_review_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	providerInvocationID := "pinv_review_batch_receipt"
-	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_review_batch", "nr_review_batch_review_1", sessionIDForAttempt(attemptID), "ses_review_batch_receipt", providerInvocationID, now)
-	accepted := acceptProviderCompletionReceiptForAttempt(t, execStore, attemptID, "run_review_batch", "nr_review_batch_review_1", providerInvocationID, "VERDICT: REWORK", "2026-03-01T12:00:02Z")
+	providerInvocationID := "pinv_review_batch_response"
+	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_review_batch", "nr_review_batch_review_1", sessionIDForAttempt(attemptID), "ses_review_batch_response", providerInvocationID, now)
 
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), mailbox: state.NewMailboxStore(db, nil), validator: state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)), executionStore: execStore, now: func() time.Time {
 		return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
@@ -14456,7 +14378,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAtCurrentBoundaryCap(t *testing.T
 		workspacePath:                   t.TempDir(),
 		delegator:                       "agent_review_batch_council",
 		providerInvocationID:            providerInvocationID,
-		completionReceiptEvidenceID:     accepted.Evidence.EvidenceID,
+		completionMode:                  executionstore.ProviderCompletionModeServerResponse,
 		completionStructuredPayloadJSON: structuredPayloadJSONForTestOutput("VERDICT: REWORK"),
 		outputText:                      "VERDICT: REWORK",
 		occurredAt:                      "2026-03-01T12:00:02Z",
@@ -14504,7 +14426,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAtCurrentBoundaryCap(t *testing.T
 	}
 }
 
-func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *testing.T) {
+func TestDrainExecutionOutboxQueuesReviewReworkFromServerResponse(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -14528,7 +14450,15 @@ func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *t
 
 	execStore := executionstore.New(db)
 	attemptID := "run_review_missing_receipt:execution_review_shieldmaiden:1"
-	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_review_missing_receipt", NodeRunID: "nr_review_missing_receipt_review_1", SessionRef: sessionIDForAttempt(attemptID), CreatedAt: now}); err != nil {
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_review_missing_receipt",
+		NodeRunID:      "nr_review_missing_receipt_review_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      now,
+	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
 	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_review_missing_receipt", "nr_review_missing_receipt_review_1", sessionIDForAttempt(attemptID), "ses_review_missing_receipt", "pinv_review_missing_receipt", now)
@@ -14546,10 +14476,11 @@ func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *t
 		workspacePath:        t.TempDir(),
 		delegator:            "agent_review_missing_receipt_council",
 		providerInvocationID: "pinv_review_missing_receipt",
+		completionMode:       executionstore.ProviderCompletionModeServerResponse,
 		outputText:           "VERDICT: REWORK",
 		occurredAt:           "2026-03-01T12:00:02Z",
 	}); err != nil {
-		t.Fatalf("commit review completion without receipt: %v", err)
+		t.Fatalf("commit review completion from server response: %v", err)
 	}
 	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
 		t.Fatalf("drain execution outbox: %v", err)
@@ -14559,249 +14490,16 @@ func TestDrainExecutionOutboxDoesNotQueueReviewReworkWithoutAcceptedReceipt(t *t
 	if err := db.QueryRow(`SELECT state, failure_code FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &failureCode); err != nil {
 		t.Fatalf("query review attempt execution: %v", err)
 	}
-	if attemptState != "committed_failure" || failureCode != "provider_incomplete_turn" {
-		t.Fatalf("expected committed failure with provider_incomplete_turn, got state=%q failure_code=%q", attemptState, failureCode)
+	if attemptState != "committed_failure" || failureCode != "execution_review_rework" {
+		t.Fatalf("expected committed failure with execution_review_rework, got state=%q failure_code=%q", attemptState, failureCode)
 	}
 
 	var queuedCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_review_missing_receipt' AND attempt > 1`).Scan(&queuedCount); err != nil {
 		t.Fatalf("count queued review retries: %v", err)
 	}
-	if queuedCount != 0 {
-		t.Fatalf("expected no review rework queue without accepted receipt, got %d queued nodes", queuedCount)
-	}
-}
-
-func TestMaybeRecoverMissingCompletionReceiptResponseOnlySucceeds(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_recovery_plan', 'council-member', 'Council Member', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_recovery_plan', 'recovery plan', 'recovery plan', '{}', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_recovery_plan', 'recovery-plan-flow', 'v1', '{}', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_recovery_plan', NULL, 'decree_recovery_plan', 'wfdef_recovery_plan', 'running', 'approved', 1, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_recovery_plan', 'wfdef_recovery_plan', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_recovery_plan_1', 'run_recovery_plan', 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_recovery_plan', 1, '`+now+`', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_recovery_plan:plan_drafting:1', 'run_recovery_plan', 'nr_recovery_plan_1', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session_recovery_plan', 'ses_recovery_plan', '`+now+`', '`+now+`', NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', '`+now+`', '`+now+`')`)
-
-	adapter := &completionRecoveryTestAdapter{
-		recoveryResponse: opencode.ExecuteResponse{
-			Accepted:                    true,
-			OutputText:                  "Recovered plan output.",
-			ProviderSessionID:           "ses_recovery_plan",
-			ProviderInvocationID:        "pinv_recovery_plan",
-			ProviderInvocationAt:        "2026-03-01T12:00:00Z",
-			CompletionReceiptAccepted:   true,
-			CompletionReceiptEvidenceID: "receipt_recovery_plan",
-			Outcome: opencode.ExecutionOutcome{
-				State:      "success",
-				ReasonCode: "execution_completed",
-			},
-		},
-		recoveryActivities: []opencode.ExecuteActivityObservation{{
-			Kind:           opencode.ExecuteActivityKindTool,
-			ProviderPartID: "tool_recovery_receipt",
-			OccurredAt:     "2026-03-01T12:00:09Z",
-			ToolName:       "write",
-			ToolStatus:     "completed",
-			ToolTitle:      "receipt.json",
-		}},
-	}
-	loop := orchestrationLoop{
-		adapter: adapter,
-		db:      db,
-		events:  state.NewAttemptEventIngestor(db, nil),
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
-		},
-	}
-
-	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_recovery_plan"},
-		node:                 nodeDefinition{NodeID: "plan_drafting", NodeClass: "plan_drafting", RequiredRole: "council-member"},
-		attempt:              nodeAttempt{NodeRunID: "nr_recovery_plan_1", NodeID: "plan_drafting", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
-		attemptID:            "run_recovery_plan:plan_drafting:1",
-		sessionID:            "session_recovery_plan",
-		providerSessionID:    "ses_recovery_plan",
-		providerInvocationID: "pinv_recovery_plan",
-		providerInvocationAt: "2026-03-01T12:00:00Z",
-		completionCapability: "cap_recovery_plan",
-		completionReceiptDir: t.TempDir(),
-		workspacePath:        t.TempDir(),
-		model:                "github-copilot/gpt-5.4-mini",
-		variant:              "low",
-		agent:                "council-member",
-		occurredAt:           "2026-03-01T12:00:00Z",
-		outputText:           "Recovered plan output.",
-		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
-			"stop",
-			"terminal_success_candidate",
-			"missing_completion_receipt",
-		),
-		err: &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
-	})
-
-	if result.err != nil {
-		t.Fatalf("expected recovery to succeed, got %v", result.err)
-	}
-	if result.completionReceiptEvidenceID != "receipt_recovery_plan" {
-		t.Fatalf("expected recovery evidence id, got %q", result.completionReceiptEvidenceID)
-	}
-	if adapter.recoveryCallsCount() != 1 {
-		t.Fatalf("expected one recovery attempt, got %d", adapter.recoveryCallsCount())
-	}
-	requests := adapter.recoveryRequestsSnapshot()
-	if len(requests) != 1 || requests[0].ProviderSessionID != "ses_recovery_plan" {
-		t.Fatalf("expected recovery to reuse provider session, got %#v", requests)
-	}
-	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-	if requests[0].ConfigDir != workspaceOpenCode.ConfigDir {
-		t.Fatalf("expected recovery config dir %q, got %q", workspaceOpenCode.ConfigDir, requests[0].ConfigDir)
-	}
-	if requests[0].DatabasePath != workspaceOpenCode.DatabasePath {
-		t.Fatalf("expected recovery database path %q, got %q", workspaceOpenCode.DatabasePath, requests[0].DatabasePath)
-	}
-
-	var activityCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_recovery_plan:plan_drafting:1' AND event_type = 'attempt.activity'`).Scan(&activityCount); err != nil {
-		t.Fatalf("count recovery activity events: %v", err)
-	}
-	if activityCount != 1 {
-		t.Fatalf("expected one persisted activity event from completion recovery, got %d", activityCount)
-	}
-	var activityID, activityKind, toolName string
-	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.activity_id'), json_extract(payload_json, '$.kind'), json_extract(payload_json, '$.tool_name') FROM events WHERE attempt_id = 'run_recovery_plan:plan_drafting:1' AND event_type = 'attempt.activity'`).Scan(&activityID, &activityKind, &toolName); err != nil {
-		t.Fatalf("read recovery activity payload: %v", err)
-	}
-	if activityID != "tool_recovery_receipt" || activityKind != "kingdom.tool" || toolName != "write" {
-		t.Fatalf("unexpected recovery activity payload: id=%q kind=%q tool=%q", activityID, activityKind, toolName)
-	}
-}
-
-func TestMaybeRecoverMissingCompletionReceiptSkipsInvalidReviewVerdict(t *testing.T) {
-	t.Parallel()
-
-	adapter := &completionRecoveryTestAdapter{}
-	loop := orchestrationLoop{
-		adapter: adapter,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
-		},
-	}
-
-	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_recovery_review"},
-		node:                 nodeDefinition{NodeID: "execution_review_shieldmaiden", NodeClass: "execution_review", RequiredRole: "reviewer-shieldmaiden"},
-		attempt:              nodeAttempt{NodeRunID: "nr_recovery_review_1", NodeID: "execution_review_shieldmaiden", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
-		attemptID:            "run_recovery_review:execution_review_shieldmaiden:1",
-		sessionID:            "session_recovery_review",
-		providerSessionID:    "ses_recovery_review",
-		providerInvocationID: "pinv_recovery_review",
-		providerInvocationAt: "2026-03-01T12:00:00Z",
-		completionCapability: "cap_recovery_review",
-		completionReceiptDir: t.TempDir(),
-		workspacePath:        t.TempDir(),
-		outputText:           "Review complete without a verdict line.",
-		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
-			"stop",
-			"terminal_success_candidate",
-			"missing_completion_receipt",
-		),
-		outcome: opencode.ExecutionOutcome{State: "incomplete_turn", ReasonCode: "provider_incomplete_turn"},
-		err:     &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
-	})
-
-	if adapter.recoveryCallsCount() != 0 {
-		t.Fatalf("expected review recovery to be skipped when original final_text is invalid, got %d calls", adapter.recoveryCallsCount())
-	}
-	if got := strings.TrimSpace(result.outputText); got != "Review complete without a verdict line." {
-		t.Fatalf("unexpected output after skipped recovery: %q", got)
-	}
-}
-
-func TestMaybeRecoverMissingCompletionReceiptRestoresWorkspaceOnMutation(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	fsStore, err := runtimefs.NewStore(db, t.TempDir())
-	if err != nil {
-		t.Fatalf("new runtimefs store: %v", err)
-	}
-	workspaceRoot := t.TempDir()
-	seedPath := filepath.Join(workspaceRoot, "src", "app.ts")
-	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
-		t.Fatalf("create workspace seed dir: %v", err)
-	}
-	if err := os.WriteFile(seedPath, []byte("export const value = 1;\n"), 0o644); err != nil {
-		t.Fatalf("write workspace seed file: %v", err)
-	}
-
-	adapter := &completionRecoveryTestAdapter{
-		recoveryResponse: opencode.ExecuteResponse{
-			Accepted:                    true,
-			OutputText:                  "Builder finished.",
-			ProviderSessionID:           "ses_recovery_builder",
-			ProviderInvocationID:        "pinv_recovery_builder",
-			ProviderInvocationAt:        "2026-03-01T12:00:00Z",
-			CompletionReceiptAccepted:   true,
-			CompletionReceiptEvidenceID: "receipt_recovery_builder",
-			Outcome: opencode.ExecutionOutcome{
-				State:      "success",
-				ReasonCode: "execution_completed",
-			},
-		},
-		recoveryWrites: map[string]string{"src/new.ts": "export const created = true;\n"},
-	}
-	loop := orchestrationLoop{
-		adapter: adapter,
-		fsStore: fsStore,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
-		},
-	}
-
-	result := loop.maybeRecoverMissingCompletionReceipt(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_1"},
-		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
-		attempt:              nodeAttempt{NodeRunID: "nr_recovery_builder_1", NodeID: "delegated_execution_berserker", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
-		attemptID:            "run_1:delegated_execution_berserker:1",
-		sessionID:            "session_recovery_builder",
-		providerSessionID:    "ses_recovery_builder",
-		providerInvocationID: "pinv_recovery_builder",
-		providerInvocationAt: "2026-03-01T12:00:00Z",
-		completionCapability: "cap_recovery_builder",
-		completionReceiptDir: t.TempDir(),
-		workspacePath:        workspaceRoot,
-		outputText:           "Builder finished.",
-		providerDiagnosticsJSON: recoveryDiagnosticsJSONForTest(
-			"stop",
-			"terminal_success_candidate",
-			"missing_completion_receipt",
-		),
-		outcome: opencode.ExecutionOutcome{State: "incomplete_turn", ReasonCode: "provider_incomplete_turn"},
-		err:     &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
-	})
-
-	var mutationErr *completionRecoveryWorkspaceMutationError
-	if !errors.As(result.err, &mutationErr) {
-		t.Fatalf("expected workspace mutation recovery error, got %v", result.err)
-	}
-	if _, err := os.Stat(filepath.Join(workspaceRoot, "src", "new.ts")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected recovery mutation to be rolled back, stat err=%v", err)
-	}
-	seedRaw, err := os.ReadFile(seedPath)
-	if err != nil {
-		t.Fatalf("read restored seed file: %v", err)
-	}
-	if string(seedRaw) != "export const value = 1;\n" {
-		t.Fatalf("expected workspace restore to preserve original content, got %q", string(seedRaw))
+	if queuedCount != 1 {
+		t.Fatalf("expected server-response review rework to queue the next review boundary, got %d queued nodes", queuedCount)
 	}
 }
 
@@ -14834,7 +14532,10 @@ func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t
 	execStore := executionstore.New(db)
 	reviewAttemptA := "run_review_wave_batch:execution_review_a:1"
 	reviewAttemptB := "run_review_wave_batch:execution_review_b:1"
-	for _, req := range []executionstore.EnqueueAttemptRequest{{AttemptID: reviewAttemptA, RunID: "run_review_wave_batch", NodeRunID: "nr_review_wave_batch_a_1", SessionRef: sessionIDForAttempt(reviewAttemptA), CreatedAt: now}, {AttemptID: reviewAttemptB, RunID: "run_review_wave_batch", NodeRunID: "nr_review_wave_batch_b_1", SessionRef: sessionIDForAttempt(reviewAttemptB), CreatedAt: now}} {
+	for _, req := range []executionstore.EnqueueAttemptRequest{
+		{AttemptID: reviewAttemptA, RunID: "run_review_wave_batch", NodeRunID: "nr_review_wave_batch_a_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionIDForAttempt(reviewAttemptA), CreatedAt: now},
+		{AttemptID: reviewAttemptB, RunID: "run_review_wave_batch", NodeRunID: "nr_review_wave_batch_b_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionIDForAttempt(reviewAttemptB), CreatedAt: now},
+	} {
 		if err := execStore.EnqueueAttempt(context.Background(), req); err != nil {
 			t.Fatalf("enqueue review attempt %q: %v", req.AttemptID, err)
 		}
@@ -14843,8 +14544,6 @@ func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t
 	providerInvocationB := "pinv_review_wave_batch_b"
 	seedOpenProviderInvocationForAttempt(t, execStore, reviewAttemptA, "run_review_wave_batch", "nr_review_wave_batch_a_1", sessionIDForAttempt(reviewAttemptA), "ses_review_wave_batch_a", providerInvocationA, now)
 	seedOpenProviderInvocationForAttempt(t, execStore, reviewAttemptB, "run_review_wave_batch", "nr_review_wave_batch_b_1", sessionIDForAttempt(reviewAttemptB), "ses_review_wave_batch_b", providerInvocationB, now)
-	acceptedReviewA := acceptProviderCompletionReceiptForAttempt(t, execStore, reviewAttemptA, "run_review_wave_batch", "nr_review_wave_batch_a_1", providerInvocationA, "VERDICT: REWORK", "2026-03-01T12:00:02Z")
-	acceptedReviewB := acceptProviderCompletionReceiptForAttempt(t, execStore, reviewAttemptB, "run_review_wave_batch", "nr_review_wave_batch_b_1", providerInvocationB, "VERDICT: PASS", "2026-03-01T12:00:03Z")
 
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), mailbox: state.NewMailboxStore(db, nil), validator: state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)), executionStore: execStore, now: func() time.Time {
 		return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
@@ -14859,7 +14558,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t
 		workspacePath:                   t.TempDir(),
 		delegator:                       "agent_review_wave_council",
 		providerInvocationID:            providerInvocationA,
-		completionReceiptEvidenceID:     acceptedReviewA.Evidence.EvidenceID,
+		completionMode:                  executionstore.ProviderCompletionModeServerResponse,
 		completionStructuredPayloadJSON: structuredPayloadJSONForTestOutput("VERDICT: REWORK"),
 		outputText:                      "VERDICT: REWORK",
 		occurredAt:                      "2026-03-01T12:00:02Z",
@@ -14887,7 +14586,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t
 		workspacePath:                   t.TempDir(),
 		delegator:                       "agent_review_wave_council",
 		providerInvocationID:            providerInvocationB,
-		completionReceiptEvidenceID:     acceptedReviewB.Evidence.EvidenceID,
+		completionMode:                  executionstore.ProviderCompletionModeServerResponse,
 		completionStructuredPayloadJSON: structuredPayloadJSONForTestOutput("VERDICT: PASS"),
 		outputText:                      "VERDICT: PASS",
 		occurredAt:                      "2026-03-01T12:00:03Z",
@@ -14969,7 +14668,10 @@ func TestDrainExecutionOutboxWaitsForValidationWaveAndQueuesBoundaryRework(t *te
 	execStore := executionstore.New(db)
 	qaAttemptID := "run_validation_batch:validation_gates_qa_scout:1"
 	nightAttemptID := "run_validation_batch:validation_gates_nightraven:1"
-	for _, req := range []executionstore.EnqueueAttemptRequest{{AttemptID: qaAttemptID, RunID: "run_validation_batch", NodeRunID: "nr_validation_batch_qa_1", SessionRef: sessionIDForAttempt(qaAttemptID), CreatedAt: now}, {AttemptID: nightAttemptID, RunID: "run_validation_batch", NodeRunID: "nr_validation_batch_night_1", SessionRef: sessionIDForAttempt(nightAttemptID), CreatedAt: now}} {
+	for _, req := range []executionstore.EnqueueAttemptRequest{
+		{AttemptID: qaAttemptID, RunID: "run_validation_batch", NodeRunID: "nr_validation_batch_qa_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionIDForAttempt(qaAttemptID), CreatedAt: now},
+		{AttemptID: nightAttemptID, RunID: "run_validation_batch", NodeRunID: "nr_validation_batch_night_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionIDForAttempt(nightAttemptID), CreatedAt: now},
+	} {
 		if err := execStore.EnqueueAttempt(context.Background(), req); err != nil {
 			t.Fatalf("enqueue validation attempt %q: %v", req.AttemptID, err)
 		}
@@ -14978,8 +14680,6 @@ func TestDrainExecutionOutboxWaitsForValidationWaveAndQueuesBoundaryRework(t *te
 	providerInvocationNight := "pinv_validation_batch_night"
 	seedOpenProviderInvocationForAttempt(t, execStore, qaAttemptID, "run_validation_batch", "nr_validation_batch_qa_1", sessionIDForAttempt(qaAttemptID), "ses_validation_batch_qa", providerInvocationQA, now)
 	seedOpenProviderInvocationForAttempt(t, execStore, nightAttemptID, "run_validation_batch", "nr_validation_batch_night_1", sessionIDForAttempt(nightAttemptID), "ses_validation_batch_night", providerInvocationNight, now)
-	acceptedQA := acceptProviderCompletionReceiptForAttempt(t, execStore, qaAttemptID, "run_validation_batch", "nr_validation_batch_qa_1", providerInvocationQA, "VERDICT: REWORK", "2026-03-01T12:00:02Z")
-	acceptedNight := acceptProviderCompletionReceiptForAttempt(t, execStore, nightAttemptID, "run_validation_batch", "nr_validation_batch_night_1", providerInvocationNight, "VERDICT: PASS", "2026-03-01T12:00:03Z")
 
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), mailbox: state.NewMailboxStore(db, nil), validator: state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)), executionStore: execStore, now: func() time.Time {
 		return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
@@ -14994,7 +14694,7 @@ func TestDrainExecutionOutboxWaitsForValidationWaveAndQueuesBoundaryRework(t *te
 		workspacePath:                   t.TempDir(),
 		delegator:                       "agent_validation_batch_council",
 		providerInvocationID:            providerInvocationQA,
-		completionReceiptEvidenceID:     acceptedQA.Evidence.EvidenceID,
+		completionMode:                  executionstore.ProviderCompletionModeServerResponse,
 		completionStructuredPayloadJSON: structuredPayloadJSONForTestOutput("VERDICT: REWORK"),
 		outputText:                      "VERDICT: REWORK",
 		occurredAt:                      "2026-03-01T12:00:02Z",
@@ -15022,7 +14722,7 @@ func TestDrainExecutionOutboxWaitsForValidationWaveAndQueuesBoundaryRework(t *te
 		workspacePath:                   t.TempDir(),
 		delegator:                       "agent_validation_batch_council",
 		providerInvocationID:            providerInvocationNight,
-		completionReceiptEvidenceID:     acceptedNight.Evidence.EvidenceID,
+		completionMode:                  executionstore.ProviderCompletionModeServerResponse,
 		completionStructuredPayloadJSON: structuredPayloadJSONForTestOutput("VERDICT: PASS"),
 		outputText:                      "VERDICT: PASS",
 		occurredAt:                      "2026-03-01T12:00:03Z",
@@ -15115,7 +14815,7 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_timeout_diag_1', 'wfdef_timeout_diag', 'decree_intake', 'king', 'decree_intake', '`+createdAt+`')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_timeout_diag', NULL, 'decree_timeout_diag', 'wfdef_timeout_diag', 'running', 'approved', 1, '`+createdAt+`', '`+createdAt+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_timeout_diag_1', 'run_timeout_diag', 'decree_intake', 1,1, 'running', 'king', 'agent_king', 1, '`+startedAt+`', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_timeout_diag', 'nr_timeout_diag_1', 'running', 'provider_backed', 'runtime_orchestrator', '`+now.Add(2*time.Minute).Format(time.RFC3339)+`', 1, '`+sessionID+`', '`+startedAt+`', NULL, NULL, '', '', '`+createdAt+`', '`+createdAt+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_timeout_diag', 'nr_timeout_diag_1', 'running', 'provider_backed', 'server_response', 'runtime_orchestrator', '`+now.Add(2*time.Minute).Format(time.RFC3339)+`', 1, '`+sessionID+`', '`+startedAt+`', NULL, NULL, '', '', '`+createdAt+`', '`+createdAt+`')`)
 }
 
 func seedTimeoutDiagnosticEvent(t *testing.T, db *sql.DB, eventType, reasonCode, payloadJSON, createdAt string) {

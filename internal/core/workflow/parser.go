@@ -12,6 +12,7 @@ const (
 	CodeDuplicateNodeID     = "duplicate_node_id"
 	CodeUnknownNodeRef      = "unknown_node_reference"
 	CodeInvalidRequiredRole = "invalid_required_role"
+	CodeInvalidNodeRolePair = "invalid_node_role_pair"
 	CodeDuplicateEdge       = "duplicate_edge"
 	CodeCycleDetected       = "cycle_detected"
 )
@@ -141,6 +142,15 @@ func (p *Parser) ParseDefinition(def Definition) (*Graph, error) {
 				Code:    CodeInvalidNodeClass,
 				Message: fmt.Sprintf("node_class %q is not allowed", node.NodeClass),
 				Field:   fmt.Sprintf("nodes[%d].node_class", idx),
+			})
+			continue
+		}
+
+		if _, err := BehaviorForNodeContract(node.NodeClass, node.RequiredRole); err != nil {
+			diagnostics = append(diagnostics, Diagnostic{
+				Code:    CodeInvalidNodeRolePair,
+				Message: err.Error(),
+				Field:   fmt.Sprintf("nodes[%d].required_role", idx),
 			})
 		}
 	}

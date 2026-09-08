@@ -32,11 +32,8 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 			t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "Call `kingdom_complete_attempt` exactly once when your final response is complete.") {
-		t.Fatalf("expected final checks completion reminder, got:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Put the full final canonical response in `final_text`.") {
-		t.Fatalf("expected final checks final_text reminder, got:\n%s", prompt)
+	if strings.Contains(prompt, "kingdom_complete_attempt") {
+		t.Fatalf("expected runtime-owned prompt to omit completion tool guidance, got:\n%s", prompt)
 	}
 	for _, forbidden := range []string{
 		"Use the tool's default `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided.",
@@ -86,6 +83,24 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Node Acceptance Intent:") {
 		t.Fatalf("expected node acceptance section removed from prompt, got:\n%s", prompt)
+	}
+}
+
+func TestBuildNodePromptRendersCompletionModeSpecificFinalChecks(t *testing.T) {
+	t.Parallel()
+
+	loop := &orchestrationLoop{}
+	builder := loop.buildNodePrompt(context.Background(), "run_1", "delegated_execution_berserker", "nr_builder", "builder-berserker", "delegated_execution", "Build a homepage", "council-member", "Plan", "Implement it.", "")
+	if !strings.Contains(builder, "Call `kingdom_complete_attempt` exactly once") || !strings.Contains(builder, "final_text") {
+		t.Fatalf("expected builder receipt instructions, got:\n%s", builder)
+	}
+
+	review := loop.buildNodePrompt(context.Background(), "run_1", "execution_review_shieldmaiden", "nr_review", "reviewer-shieldmaiden", "execution_review", "Build a homepage", "council-member", "Plan", "Review it.", "")
+	if strings.Contains(review, "Call `kingdom_complete_attempt`") || !strings.Contains(review, "Return the complete final response directly") {
+		t.Fatalf("expected server-response instructions without receipt tool, got:\n%s", review)
+	}
+	if !strings.Contains(review, "first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`") {
+		t.Fatalf("expected verdict contract in reviewer prompt, got:\n%s", review)
 	}
 }
 

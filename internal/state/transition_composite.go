@@ -2484,7 +2484,7 @@ func ensureAttemptExecutionRowForDirectTerminalTx(ctx context.Context, tx *sql.T
 		return nil
 	}
 
-	executionMode, err := loadExecutionModeForNodeRunTx(ctx, tx, runID, nodeRunID)
+	executionMode, completionMode, err := loadExecutionModesForNodeRunTx(ctx, tx, runID, nodeRunID)
 	if err != nil {
 		return err
 	}
@@ -2508,13 +2508,14 @@ func ensureAttemptExecutionRowForDirectTerminalTx(ctx context.Context, tx *sql.T
 		createdAt = strings.TrimSpace(startedAt)
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, '', NULL, 0, '', NULLIF(?, ''), NULLIF(?, ''), NULL, NULL, '', '', ?, ?)`,
+		`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, '', NULL, 0, '', NULLIF(?, ''), NULLIF(?, ''), NULL, NULL, '', '', ?, ?)`,
 		strings.TrimSpace(attemptID),
 		strings.TrimSpace(runID),
 		strings.TrimSpace(nodeRunID),
 		seedState,
 		string(executionMode),
+		string(completionMode),
 		strings.TrimSpace(launchStartedAt),
 		strings.TrimSpace(startedAt),
 		createdAt,
@@ -2526,7 +2527,7 @@ func ensureAttemptExecutionRowForDirectTerminalTx(ctx context.Context, tx *sql.T
 	return nil
 }
 
-func loadExecutionModeForNodeRunTx(ctx context.Context, tx *sql.Tx, runID, nodeRunID string) (executionstore.ExecutionMode, error) {
+func loadExecutionModesForNodeRunTx(ctx context.Context, tx *sql.Tx, runID, nodeRunID string) (executionstore.ExecutionMode, executionstore.ProviderCompletionMode, error) {
 	var nodeID string
 	var nodeClass string
 	err := tx.QueryRowContext(ctx, `
@@ -2538,12 +2539,26 @@ JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id 
 WHERE nr.run_id = ? AND nr.node_run_id = ?
 LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeRunID)).Scan(&nodeID, &nodeClass)
 	if err != nil {
-		return executionstore.ExecutionModeProviderBacked, fmt.Errorf("load node behavior for attempt execution fallback row: %w", err)
+		return "", "", fmt.Errorf("load node behavior for attempt execution fallback row: %w", err)
 	}
-	if workflow.BehaviorForNode(nodeID, nodeClass).ExecutionOwnership == workflow.NodeExecutionOwnershipRuntimeOwned {
-		return executionstore.ExecutionModeRuntimeOwned, nil
+	behavior := workflow.BehaviorForNode(nodeID, nodeClass)
+	completionMode, err := executionstore.ParseProviderCompletionMode(string(behavior.ProviderCompletionMode))
+	if err != nil {
+		return "", "", fmt.Errorf("resolve completion mode for attempt execution fallback row: %w", err)
 	}
-	return executionstore.ExecutionModeProviderBacked, nil
+	if behavior.ExecutionOwnership == workflow.NodeExecutionOwnershipRuntimeOwned {
+		if completionMode != executionstore.ProviderCompletionModeNotApplicable {
+			return "", "", fmt.Errorf("runtime-owned fallback node has completion mode %q", completionMode)
+		}
+		return executionstore.ExecutionModeRuntimeOwned, completionMode, nil
+	}
+	if behavior.ExecutionOwnership != workflow.NodeExecutionOwnershipProviderBacked {
+		return "", "", fmt.Errorf("unknown execution ownership for fallback node %q", nodeID)
+	}
+	if completionMode == executionstore.ProviderCompletionModeNotApplicable {
+		return "", "", fmt.Errorf("provider-backed fallback node has completion mode %q", completionMode)
+	}
+	return executionstore.ExecutionModeProviderBacked, completionMode, nil
 }
 
 func loadNodeRunStartedAtTx(ctx context.Context, tx *sql.Tx, runID, nodeRunID string) (string, error) {

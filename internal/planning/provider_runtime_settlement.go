@@ -2,8 +2,6 @@ package planning
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,14 +17,6 @@ var planningProviderInvocationIDCounter atomic.Uint64
 
 func newPlanningProviderInvocationID(operationID string, now time.Time) string {
 	return fmt.Sprintf("ppinv_%s_%d_%d", sanitizePlannerToken(operationID), now.UTC().UnixNano(), planningProviderInvocationIDCounter.Add(1))
-}
-
-func generatePlanningCompletionCapability() (string, error) {
-	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate planning completion capability: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func sanitizePlannerToken(raw string) string {
@@ -58,21 +48,12 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	invocationID := newPlanningProviderInvocationID(operation.OperationID, now)
 	logicalSessionID := planningLogicalSessionID(session.PlanningSessionID, operation.Type)
 	providerSessionID = strings.TrimSpace(providerSessionID)
-	// The completion capability anchors invocation identity/idempotency in the
-	// store; it is no longer a receipt secret since the planner settles
-	// server-side from the provider's terminal stop signal.
-	capability, err := generatePlanningCompletionCapability()
-	if err != nil {
-		return nil, err
-	}
 	if providerSessionID == "" {
 		if _, err := r.deps.store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
 			PlanningProviderInvocationID: invocationID,
 			PlanningOperationID:          operation.OperationID,
 			PlanningSessionID:            session.PlanningSessionID,
 			LogicalSessionID:             logicalSessionID,
-			CompletionCapability:         capability,
-			IssuedAt:                     issuedAt,
 			CreatedAt:                    issuedAt,
 		}); err != nil {
 			return nil, err
@@ -83,8 +64,6 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		PlanningSessionID:            session.PlanningSessionID,
 		LogicalSessionID:             logicalSessionID,
 		ProviderSessionID:            providerSessionID,
-		CompletionCapability:         capability,
-		IssuedAt:                     issuedAt,
 		CreatedAt:                    issuedAt,
 		OpenedAt:                     issuedAt,
 	}); err != nil {
@@ -98,11 +77,10 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	}
 	var invocationContext *ProviderInvocationContext
 	invocationContext = &ProviderInvocationContext{
-		AttemptID:          operation.OperationID,
-		LogicalSessionID:   logicalSessionID,
-		ProviderSessionID:  providerSessionID,
-		InvocationID:       invocationID,
-		InvocationIssuedAt: issuedAt,
+		AttemptID:         operation.OperationID,
+		LogicalSessionID:  logicalSessionID,
+		ProviderSessionID: providerSessionID,
+		InvocationID:      invocationID,
 		OnProviderSession: func(providerSessionID string) {
 			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
 			if trimmedProviderSessionID != "" {
@@ -142,9 +120,8 @@ func planningLogicalSessionID(sessionID string, operationType state.PlanningOper
 
 // providerSettlementForSuccess mints a server-side success settlement keyed on
 // the provider's adjudicated terminal outcome plus the assembled output text.
-// The durable evidence is a stream observation (the planner has no model-invoked
-// completion receipt); the store records both the evidence and settlement rows
-// atomically in the finalize transaction.
+// The durable evidence is a runtime-owned stream observation, recorded with the
+// settlement atomically in the finalize transaction.
 func providerSettlementForSuccess(invocationID string, metadata ProviderExecutionMetadata, settledAt string) *state.FinalizePlanningProviderSettlementRequest {
 	trimmedInvocationID := strings.TrimSpace(invocationID)
 	finalText := strings.TrimSpace(metadata.FinalText)

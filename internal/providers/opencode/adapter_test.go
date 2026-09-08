@@ -5,8 +5,126 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
+	validReceiptRequest := func() ExecuteRequest {
+		return ExecuteRequest{
+			CompletionMode:       CompletionModeReceiptRequired,
+			SessionID:            "session_1",
+			AttemptID:            "attempt_1",
+			RunID:                "run_1",
+			NodeRunID:            "node_run_1",
+			Prompt:               "complete this work",
+			OccurredAt:           "2026-03-01T12:00:00Z",
+			InvocationID:         "invocation_1",
+			CompletionCapability: "capability_1",
+			CompletionReceiptDir: t.TempDir(),
+			OnCompletionReceipt: func(CompletionReceipt) (CompletionReceiptAcceptance, error) {
+				return CompletionReceiptAcceptance{EvidenceID: "evidence_1"}, nil
+			},
+		}
+	}
+
+	tests := []struct {
+		name string
+		req  ExecuteRequest
+		want string
+	}{
+		{
+			name: "missing mode",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionMode = ""; return req }(),
+			want: "completion mode must be",
+		},
+		{
+			name: "unknown mode",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionMode = "unknown"; return req }(),
+			want: "completion mode must be",
+		},
+		{
+			name: "server response protocol",
+			req: func() ExecuteRequest {
+				req := validReceiptRequest()
+				req.CompletionMode = CompletionModeServerResponse
+				req.CompletionProtocolVersion = CompletionProtocolVersion
+				req.CompletionCapability = ""
+				req.CompletionReceiptDir = ""
+				req.OnCompletionReceipt = nil
+				return req
+			}(),
+			want: "completion protocol version",
+		},
+		{
+			name: "server response capability",
+			req: func() ExecuteRequest {
+				req := validReceiptRequest()
+				req.CompletionMode = CompletionModeServerResponse
+				req.CompletionReceiptDir = ""
+				req.OnCompletionReceipt = nil
+				return req
+			}(),
+			want: "completion capability",
+		},
+		{
+			name: "server response receipt directory",
+			req: func() ExecuteRequest {
+				req := validReceiptRequest()
+				req.CompletionMode = CompletionModeServerResponse
+				req.CompletionCapability = ""
+				req.OnCompletionReceipt = nil
+				return req
+			}(),
+			want: "completion receipt dir",
+		},
+		{
+			name: "server response receipt handler",
+			req: func() ExecuteRequest {
+				req := validReceiptRequest()
+				req.CompletionMode = CompletionModeServerResponse
+				req.CompletionCapability = ""
+				req.CompletionReceiptDir = ""
+				return req
+			}(),
+			want: "completion receipt handler",
+		},
+		{
+			name: "receipt required invocation",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.InvocationID = ""; return req }(),
+			want: "invocation id",
+		},
+		{
+			name: "receipt required capability",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionCapability = ""; return req }(),
+			want: "completion capability",
+		},
+		{
+			name: "receipt required receipt directory",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionReceiptDir = ""; return req }(),
+			want: "completion receipt dir",
+		},
+		{
+			name: "receipt required receipt handler",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.OnCompletionReceipt = nil; return req }(),
+			want: "completion receipt handler",
+		},
+		{
+			name: "receipt required attempt",
+			req:  func() ExecuteRequest { req := validReceiptRequest(); req.AttemptID = ""; return req }(),
+			want: "attempt id",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateExecuteRequest(test.req)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate execute request error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
 
 func TestMemoryAdapterExecuteCancelAndStreamContract(t *testing.T) {
 	t.Parallel()
@@ -14,13 +132,14 @@ func TestMemoryAdapterExecuteCancelAndStreamContract(t *testing.T) {
 	adapter := NewMemoryAdapter()
 
 	_, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_1",
-		AttemptID:     "attempt_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "build it",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_1",
+		AttemptID:      "attempt_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "build it",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -108,13 +227,14 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 	docWorkspace := t.TempDir()
 
 	_, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_doc",
-		AttemptID:     "attempt_doc",
-		RunID:         "run_1",
-		NodeRunID:     "nr_doc",
-		WorkspacePath: docWorkspace,
-		Prompt:        "RoleID: king",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_doc",
+		AttemptID:      "attempt_doc",
+		RunID:          "run_1",
+		NodeRunID:      "nr_doc",
+		WorkspacePath:  docWorkspace,
+		Prompt:         "RoleID: king",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute doc role: %v", err)
@@ -125,13 +245,14 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 
 	builderWorkspace := t.TempDir()
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_builder",
-		AttemptID:     "attempt_builder",
-		RunID:         "run_1",
-		NodeRunID:     "nr_builder",
-		WorkspacePath: builderWorkspace,
-		Prompt:        "RoleID: builder-berserker",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_builder",
+		AttemptID:      "attempt_builder",
+		RunID:          "run_1",
+		NodeRunID:      "nr_builder",
+		WorkspacePath:  builderWorkspace,
+		Prompt:         "RoleID: builder-berserker",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute builder role: %v", err)

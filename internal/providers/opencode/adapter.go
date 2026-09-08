@@ -77,26 +77,27 @@ type ExportCheck struct {
 }
 
 type ExecuteRequest struct {
-	SessionID                 string `json:"session_id"`
-	ProviderSessionID         string `json:"provider_session_id,omitempty"`
-	AttemptID                 string `json:"attempt_id"`
-	RunID                     string `json:"run_id"`
-	NodeRunID                 string `json:"node_run_id"`
-	Model                     string `json:"model,omitempty"`
-	Variant                   string `json:"variant,omitempty"`
-	Agent                     string `json:"agent,omitempty"`
-	ForceNewSession           bool   `json:"force_new_session,omitempty"`
-	WorkspacePath             string `json:"workspace_path"`
-	ConfigDir                 string `json:"config_dir,omitempty"`
-	DatabasePath              string `json:"database_path,omitempty"`
-	InlineConfigContent       string `json:"-"`
-	Prompt                    string `json:"prompt"`
-	OccurredAt                string `json:"occurred_at"`
-	InvocationID              string `json:"invocation_id,omitempty"`
-	InvocationIssuedAt        string `json:"invocation_issued_at,omitempty"`
-	CompletionProtocolVersion string `json:"completion_protocol_version,omitempty"`
-	CompletionCapability      string `json:"completion_capability,omitempty"`
-	CompletionReceiptDir      string `json:"completion_receipt_dir,omitempty"`
+	CompletionMode            CompletionMode `json:"completion_mode"`
+	SessionID                 string         `json:"session_id"`
+	ProviderSessionID         string         `json:"provider_session_id,omitempty"`
+	AttemptID                 string         `json:"attempt_id"`
+	RunID                     string         `json:"run_id"`
+	NodeRunID                 string         `json:"node_run_id"`
+	Model                     string         `json:"model,omitempty"`
+	Variant                   string         `json:"variant,omitempty"`
+	Agent                     string         `json:"agent,omitempty"`
+	ForceNewSession           bool           `json:"force_new_session,omitempty"`
+	WorkspacePath             string         `json:"workspace_path"`
+	ConfigDir                 string         `json:"config_dir,omitempty"`
+	DatabasePath              string         `json:"database_path,omitempty"`
+	InlineConfigContent       string         `json:"-"`
+	Prompt                    string         `json:"prompt"`
+	OccurredAt                string         `json:"occurred_at"`
+	InvocationID              string         `json:"invocation_id,omitempty"`
+	InvocationIssuedAt        string         `json:"invocation_issued_at,omitempty"`
+	CompletionProtocolVersion string         `json:"completion_protocol_version,omitempty"`
+	CompletionCapability      string         `json:"completion_capability,omitempty"`
+	CompletionReceiptDir      string         `json:"completion_receipt_dir,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
@@ -122,6 +123,15 @@ type ExecuteRequest struct {
 	// adapter returns success for runtime-backed execution.
 	OnCompletionReceipt func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) `json:"-"`
 }
+
+// CompletionMode defines the single, server-owned authority a provider
+// invocation uses to settle an attempt.
+type CompletionMode string
+
+const (
+	CompletionModeServerResponse  CompletionMode = "server_response"
+	CompletionModeReceiptRequired CompletionMode = "receipt_required"
+)
 
 type ExecuteLifecyclePhase string
 
@@ -199,6 +209,40 @@ type TokenUsage struct {
 	CacheWriteTokens int64 `json:"cache_write_tokens"`
 }
 
+// InvocationStreamObservation is the complete live-stream evidence for one
+// provider invocation. It is diagnostic evidence only until the execution
+// store validates its lineage and settles it transactionally.
+type InvocationStreamObservation struct {
+	ProviderSessionID           string                      `json:"provider_session_id,omitempty"`
+	FinalTurnID                 string                      `json:"final_turn_id,omitempty"`
+	FinalStepID                 string                      `json:"final_step_id,omitempty"`
+	FinalSequence               int                         `json:"final_sequence"`
+	RawFinishReason             string                      `json:"raw_finish_reason,omitempty"`
+	NormalizedFinishReason      string                      `json:"normalized_finish_reason,omitempty"`
+	CanonicalTerminalText       string                      `json:"canonical_terminal_text,omitempty"`
+	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
+	PendingToolCount            int                         `json:"pending_tool_count"`
+	Tokens                      TokenUsage                  `json:"tokens"`
+	ProcessExited               bool                        `json:"process_exited"`
+	ProcessExitCode             *int                        `json:"process_exit_code,omitempty"`
+	ProcessExitSignal           *int                        `json:"process_exit_signal,omitempty"`
+	StdoutDrained               bool                        `json:"stdout_drained"`
+	StderrDrained               bool                        `json:"stderr_drained"`
+	TimedOut                    bool                        `json:"timed_out"`
+	Cancelled                   bool                        `json:"cancelled"`
+	ProviderError               string                      `json:"provider_error,omitempty"`
+	MalformedProtocolCount      int                         `json:"malformed_protocol_count"`
+	ConflictingTerminalEvidence bool                        `json:"conflicting_terminal_evidence"`
+	LaterEventAfterTerminal     bool                        `json:"later_event_after_terminal"`
+	MeaningfulProgress          bool                        `json:"meaningful_progress"`
+}
+
+type InvocationToolObservation struct {
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
 type ExecutionOutcome struct {
@@ -209,19 +253,19 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted                        bool             `json:"accepted"`
-	OutputText                      string           `json:"output_text,omitempty"`
-	Tokens                          TokenUsage       `json:"tokens"`
-	ProviderSessionID               string           `json:"provider_session_id,omitempty"`
-	SuppressEmptyOutputRetry        bool             `json:"suppress_empty_output_retry,omitempty"`
-	ProviderInvocationID            string           `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt            string           `json:"provider_invocation_at,omitempty"`
-	Outcome                         ExecutionOutcome `json:"outcome,omitempty"`
-	CompletionReceiptAccepted       bool             `json:"completion_receipt_accepted,omitempty"`
-	CompletionReceiptEvidenceID     string           `json:"completion_receipt_evidence_id,omitempty"`
-	CompletionStructuredPayloadJSON string           `json:"completion_structured_payload_json,omitempty"`
-	ProviderDiagnosticsJSON         string           `json:"provider_diagnostics_json,omitempty"`
-	ExportChecks                    []ExportCheck    `json:"-"`
+	Accepted                        bool                        `json:"accepted"`
+	OutputText                      string                      `json:"output_text,omitempty"`
+	Tokens                          TokenUsage                  `json:"tokens"`
+	ProviderSessionID               string                      `json:"provider_session_id,omitempty"`
+	ProviderInvocationID            string                      `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt            string                      `json:"provider_invocation_at,omitempty"`
+	Outcome                         ExecutionOutcome            `json:"outcome,omitempty"`
+	CompletionReceiptAccepted       bool                        `json:"completion_receipt_accepted,omitempty"`
+	CompletionReceiptEvidenceID     string                      `json:"completion_receipt_evidence_id,omitempty"`
+	CompletionStructuredPayloadJSON string                      `json:"completion_structured_payload_json,omitempty"`
+	ProviderDiagnosticsJSON         string                      `json:"provider_diagnostics_json,omitempty"`
+	StreamObservation               InvocationStreamObservation `json:"stream_observation"`
+	ExportChecks                    []ExportCheck               `json:"-"`
 }
 
 type CancelRequest struct {
@@ -409,6 +453,36 @@ func (a *MemoryAdapter) PublishEvent(req AttemptStreamEvent) error {
 }
 
 func validateExecuteRequest(req ExecuteRequest) error {
+	switch req.CompletionMode {
+	case CompletionModeServerResponse:
+		if strings.TrimSpace(req.CompletionProtocolVersion) != "" {
+			return fmt.Errorf("completion protocol version is only valid for receipt_required completion mode")
+		}
+		if strings.TrimSpace(req.CompletionCapability) != "" {
+			return fmt.Errorf("completion capability is only valid for receipt_required completion mode")
+		}
+		if strings.TrimSpace(req.CompletionReceiptDir) != "" {
+			return fmt.Errorf("completion receipt dir is only valid for receipt_required completion mode")
+		}
+		if req.OnCompletionReceipt != nil {
+			return fmt.Errorf("completion receipt handler is only valid for receipt_required completion mode")
+		}
+	case CompletionModeReceiptRequired:
+		if strings.TrimSpace(req.InvocationID) == "" {
+			return fmt.Errorf("invocation id is required for receipt_required completion mode")
+		}
+		if strings.TrimSpace(req.CompletionCapability) == "" {
+			return fmt.Errorf("completion capability is required for receipt_required completion mode")
+		}
+		if strings.TrimSpace(req.CompletionReceiptDir) == "" {
+			return fmt.Errorf("completion receipt dir is required for receipt_required completion mode")
+		}
+		if req.OnCompletionReceipt == nil {
+			return fmt.Errorf("completion receipt handler is required for receipt_required completion mode")
+		}
+	default:
+		return fmt.Errorf("completion mode must be %q or %q", CompletionModeServerResponse, CompletionModeReceiptRequired)
+	}
 	if req.SessionID == "" {
 		return fmt.Errorf("session id is required")
 	}

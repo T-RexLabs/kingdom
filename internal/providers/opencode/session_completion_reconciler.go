@@ -327,7 +327,6 @@ func (r *sessionCompletionReconciler) reconcileExportModeOnce(ctx context.Contex
 				outcome.Result.ReasonCode = "execution_completed"
 			}
 			outcome.Result.OutputText = resolvedOutput
-			outcome.Result.SuppressEmptyOutputRetry = true
 			outcome.Status = sessionCompletionReconcileStatusResolved
 			outcome.Checks = []ExportCheck{buildExportCheck(req, mode, checkStartedAt, time.Now().UTC(), ExportCheckStatusResolvedSuccess, outcome.Status, outcome.Diagnostic, exportResult, scan, false)}
 			return outcome, nil
@@ -359,7 +358,6 @@ func (r *sessionCompletionReconciler) reconcileExportModeOnce(ctx context.Contex
 					outcome.Result.ReasonCode = "execution_completed"
 				}
 				outcome.Result.OutputText = resolvedOutput
-				outcome.Result.SuppressEmptyOutputRetry = true
 				outcome.Status = sessionCompletionReconcileStatusResolved
 				outcome.Checks = []ExportCheck{buildExportCheck(req, mode, checkStartedAt, time.Now().UTC(), ExportCheckStatusResolvedSuccess, outcome.Status, outcome.Diagnostic, exportResult, scan, true)}
 				return outcome, nil

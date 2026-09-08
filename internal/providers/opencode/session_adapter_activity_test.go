@@ -18,6 +18,7 @@ func observeActivityFromWire(t *testing.T, line string) (ExecuteActivityObservat
 	var observed ExecuteActivityObservation
 	emitted := false
 	emitActivityObservation(ExecuteRequest{
+		CompletionMode: CompletionModeServerResponse,
 		OnActivity: func(activity ExecuteActivityObservation) {
 			observed = activity
 			emitted = true

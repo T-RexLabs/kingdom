@@ -22,11 +22,12 @@ func TestStoreEnqueueAttemptIdempotent(t *testing.T) {
 	s := New(db)
 	ctx := context.Background()
 	req := EnqueueAttemptRequest{
-		AttemptID:  "run_1:decree_intake:1",
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      "run_1:decree_intake:1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}
 
 	if err := s.EnqueueAttempt(ctx, req); err != nil {
@@ -34,6 +35,11 @@ func TestStoreEnqueueAttemptIdempotent(t *testing.T) {
 	}
 	if err := s.EnqueueAttempt(ctx, req); err != nil {
 		t.Fatalf("enqueue attempt second call: %v", err)
+	}
+	conflicting := req
+	conflicting.CompletionMode = ProviderCompletionModeServerResponse
+	if err := s.EnqueueAttempt(ctx, conflicting); err == nil {
+		t.Fatal("expected completion-mode change on an existing attempt to be rejected")
 	}
 
 	var count int
@@ -55,11 +61,12 @@ func TestStoreEnqueueAttemptPersistsExecutionMode(t *testing.T) {
 	s := New(db)
 	ctx := context.Background()
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     "run_1:decree_intake:1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeRuntimeOwned,
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      "run_1:decree_intake:1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeRuntimeOwned,
+		CompletionMode: ProviderCompletionModeNotApplicable,
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue runtime-owned attempt: %v", err)
 	}
@@ -74,11 +81,48 @@ func TestStoreEnqueueAttemptPersistsExecutionMode(t *testing.T) {
 	if attempt.ExecutionMode != ExecutionModeRuntimeOwned {
 		t.Fatalf("expected execution_mode=%q, got %q", ExecutionModeRuntimeOwned, attempt.ExecutionMode)
 	}
+	if attempt.CompletionMode != ProviderCompletionModeNotApplicable {
+		t.Fatalf("expected completion_mode=%q, got %q", ProviderCompletionModeNotApplicable, attempt.CompletionMode)
+	}
 	if attempt.SessionRef != "" {
 		t.Fatalf("expected empty session_ref for runtime-owned attempt, got %q", attempt.SessionRef)
 	}
 	if attempt.ProviderSessionID != "" {
 		t.Fatalf("expected empty provider_session_id for runtime-owned attempt, got %q", attempt.ProviderSessionID)
+	}
+}
+
+func TestStoreEnqueueAttemptRequiresCompatibleExplicitCompletionMode(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	tests := []struct {
+		name           string
+		executionMode  ExecutionMode
+		completionMode ProviderCompletionMode
+	}{
+		{name: "missing", executionMode: ExecutionModeProviderBacked},
+		{name: "provider not applicable", executionMode: ExecutionModeProviderBacked, completionMode: ProviderCompletionModeNotApplicable},
+		{name: "runtime server response", executionMode: ExecutionModeRuntimeOwned, completionMode: ProviderCompletionModeServerResponse},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.EnqueueAttempt(context.Background(), EnqueueAttemptRequest{
+				AttemptID:      "run_1:decree_intake:" + strings.NewReplacer(" ", "_", "-", "_").Replace(tc.name),
+				RunID:          "run_1",
+				NodeRunID:      "nr_1",
+				ExecutionMode:  tc.executionMode,
+				CompletionMode: tc.completionMode,
+				CreatedAt:      "2026-03-01T12:00:01Z",
+			})
+			if err == nil {
+				t.Fatal("expected incompatible completion mode to be rejected")
+			}
+		})
 	}
 }
 
@@ -93,11 +137,12 @@ func TestStoreUpdateProviderSessionIDRoundTripsOnAttempt(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -140,20 +185,22 @@ func TestStoreUpdateProviderSessionIDDoesNotReorderRunExecutions(t *testing.T) {
 	s := New(db)
 	ctx := context.Background()
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:  "run_1:decree_intake:1",
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_decree_1",
-		CreatedAt:  "2026-03-01T12:00:00Z",
+		AttemptID:      "run_1:decree_intake:1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_decree_1",
+		CreatedAt:      "2026-03-01T12:00:00Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue first attempt: %v", err)
 	}
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:  "run_1:decree_intake:2",
-		RunID:      "run_1",
-		NodeRunID:  "nr_2",
-		SessionRef: "session_decree_2",
-		CreatedAt:  "2026-03-01T12:01:00Z",
+		AttemptID:      "run_1:decree_intake:2",
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		SessionRef:     "session_decree_2",
+		CreatedAt:      "2026-03-01T12:01:00Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue second attempt: %v", err)
 	}
@@ -212,11 +259,12 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 	s := New(db)
 	ctx := context.Background()
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:     "run_1:decree_intake:1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		ExecutionMode: ExecutionModeRuntimeOwned,
-		CreatedAt:     "2026-03-01T12:00:01Z",
+		AttemptID:      "run_1:decree_intake:1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeRuntimeOwned,
+		CompletionMode: ProviderCompletionModeNotApplicable,
+		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue runtime-owned attempt: %v", err)
 	}
@@ -225,6 +273,7 @@ func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.
 		RunID:             "run_1",
 		NodeRunID:         "nr_builder",
 		ExecutionMode:     ExecutionModeProviderBacked,
+		CompletionMode:    ProviderCompletionModeReceiptRequired,
 		SessionRef:        "session_builder_run_1",
 		ProviderSessionID: "ses_builder_run_1",
 		CreatedAt:         "2026-03-01T12:00:02Z",
@@ -312,6 +361,7 @@ func TestStoreListRunExecutionsOrdersByActivityAt(t *testing.T) {
 		RunID:             "run_1",
 		NodeRunID:         "nr_1",
 		ExecutionMode:     ExecutionModeProviderBacked,
+		CompletionMode:    ProviderCompletionModeReceiptRequired,
 		SessionRef:        "session_decree_1",
 		ProviderSessionID: "ses_decree_1",
 		CreatedAt:         "2026-03-01T12:00:00Z",
@@ -323,6 +373,7 @@ func TestStoreListRunExecutionsOrdersByActivityAt(t *testing.T) {
 		RunID:             "run_1",
 		NodeRunID:         "nr_2",
 		ExecutionMode:     ExecutionModeProviderBacked,
+		CompletionMode:    ProviderCompletionModeReceiptRequired,
 		SessionRef:        "session_decree_2",
 		ProviderSessionID: "ses_decree_2",
 		CreatedAt:         "2026-03-01T12:01:00Z",
@@ -547,10 +598,11 @@ func TestStoreAcquireLeaseHonorsExpiry(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -609,10 +661,11 @@ func TestStoreCommitTerminalWritesOutboxAndRejectsSecondTerminal(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -697,10 +750,11 @@ func TestStoreNextAttemptSeqAndQueuedListing(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -755,10 +809,11 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -807,10 +862,11 @@ func TestStoreRecordOutboxFailureAndMarkFailed(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -883,10 +939,11 @@ func TestStoreQueueAttemptCancelIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -929,10 +986,11 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1009,11 +1067,12 @@ func TestStoreListPendingAttemptCancelsPrefersProviderSessionID(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:  attemptID,
-		RunID:      "run_1",
-		NodeRunID:  "nr_1",
-		SessionRef: "session_run_1_decree_intake_1",
-		CreatedAt:  "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		SessionRef:     "session_run_1_decree_intake_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1061,10 +1120,11 @@ func TestStoreQueueOutboxIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1106,10 +1166,11 @@ func TestStoreFinalizeTerminalWritesSettledAttemptStateAndUpsertsLegacyEvent(t *
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1192,10 +1253,11 @@ func TestStoreFinalizeTerminalNoopsWhenAttemptAlreadyTerminalized(t *testing.T) 
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1279,10 +1341,11 @@ func TestStoreFinalizeTerminalPreservesSuccessReasonCodeInAttemptEventLog(t *tes
 	ctx := context.Background()
 	attemptID := "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID: attemptID,
-		RunID:     "run_1",
-		NodeRunID: "nr_1",
-		CreatedAt: "2026-03-01T12:00:01Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeReceiptRequired,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1350,6 +1413,7 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 		RunID:             runID,
 		NodeRunID:         nodeRunID,
 		ExecutionMode:     ExecutionModeProviderBacked,
+		CompletionMode:    ProviderCompletionModeReceiptRequired,
 		SessionRef:        "session_" + strings.NewReplacer(":", "_", "-", "_").Replace(attemptID),
 		ProviderSessionID: providerSessionID,
 		CreatedAt:         createdAt,
@@ -1363,6 +1427,7 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     "session_" + strings.NewReplacer(":", "_", "-", "_").Replace(attemptID),
 		ProviderSessionID:    providerSessionID,
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
 		CompletionCapability: completionCapability,
 		IssuedAt:             createdAt,
 		CreatedAt:            createdAt,

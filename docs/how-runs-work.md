@@ -228,14 +228,14 @@ Important runtime behavior:
 
 - `decree_intake`, `execution_kickoff`, `king_plan_decision`, and `royal_closure` are runtime-owned and deterministic; they do not open OpenCode sessions.
 - execution is session-based via `opencode run --format json`
-- runtime creates a provider invocation record and single-use completion capability before dispatching any provider-backed decree execution attempt
+- runtime creates a provider invocation record before dispatching every provider-backed decree execution attempt; only builder invocations receive a single-use completion capability
 - strict mode validates managed OpenCode assets, binary availability, and agent resolution
 - runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`
-- every provider-backed decree execution session must call `kingdom_complete_attempt` to request terminal success settlement
-- runtime settles provider-backed decree execution success only after validating the active attempt, invocation, completion capability, and any required node-specific fields from that tool call
+- builder sessions must call `kingdom_complete_attempt` to request terminal success settlement; all other provider-backed nodes settle from the server-observed terminal response
+- runtime validates active attempt and invocation lineage for every settlement, plus the completion capability and required node-specific fields for builder receipts
 - canonical settled response text is invocation-owned and single-turn; runtime must not concatenate multiple final answers or competing receipts into one settled response body
 - durable decree execution state is stored in `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_executions`, `attempt_event_log`, and `attempt_outbox`
-- clean provider-backed decree execution exit without a valid receipt is terminal failure for the provider-backed decree execution attempt
+- clean builder execution exit without a valid receipt is terminal failure; response-first nodes require a structurally valid terminal server response
 - stream evidence and `opencode export` remain diagnostic and repair inputs only for provider-backed decree execution; they can add operator-facing context for the active invocation but cannot create canonical success, alter receipt-driven settled output, or become a second authority path
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source

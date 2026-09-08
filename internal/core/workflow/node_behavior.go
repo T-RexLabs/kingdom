@@ -1,6 +1,9 @@
 package workflow
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 type NodeExecutionOwnership string
 
@@ -16,13 +19,81 @@ const (
 	NodeArtifactPersistenceDirect    NodeArtifactPersistence = "direct"
 )
 
+// ProviderCompletionMode is runtime-owned completion authority for a canonical
+// node class. It is deliberately not workflow-authored: a workflow may select
+// a canonical class and role only, never weaken that class's settlement rules.
+type ProviderCompletionMode string
+
+const (
+	ProviderCompletionModeNotApplicable   ProviderCompletionMode = "not_applicable"
+	ProviderCompletionModeServerResponse  ProviderCompletionMode = "server_response"
+	ProviderCompletionModeReceiptRequired ProviderCompletionMode = "receipt_required"
+)
+
 type NodeBehavior struct {
 	ExecutionOwnership           NodeExecutionOwnership
+	ProviderCompletionMode       ProviderCompletionMode
 	RequiresWorkspace            bool
 	ArtifactPersistence          NodeArtifactPersistence
 	ProjectArtifacts             bool
 	IncludeInExecutionAnalytics  bool
 	WaitsForRecordedPlanDecision bool
+}
+
+type canonicalNodeContract struct {
+	behavior      NodeBehavior
+	requiredRoles map[string]struct{}
+}
+
+func roleSet(roles ...string) map[string]struct{} {
+	set := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		set[role] = struct{}{}
+	}
+	return set
+}
+
+var canonicalNodeContracts = map[string]canonicalNodeContract{
+	NodeClassDecreeIntake: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
+		requiredRoles: roleSet("king"),
+	},
+	NodeClassAdvisorConsultation: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("noble-delegate", "clergy-delegate", "burgher-delegate", "peasant-delegate"),
+	},
+	NodeClassAdvisorySynthesis: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("chancellor"),
+	},
+	NodeClassPlanDrafting: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("council-member"),
+	},
+	NodeClassKingPlanDecision: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect, WaitsForRecordedPlanDecision: true},
+		requiredRoles: roleSet("king"),
+	},
+	NodeClassExecutionKickoff: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
+		requiredRoles: roleSet("council-member"),
+	},
+	NodeClassDelegatedExecution: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeReceiptRequired, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("builder-berserker"),
+	},
+	NodeClassExecutionReview: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("reviewer-shieldmaiden"),
+	},
+	NodeClassValidationGates: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		requiredRoles: roleSet("intelligence-qa-scout", "intelligence-nightraven", "intelligence-loki-chaos"),
+	},
+	NodeClassRoyalClosure: {
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
+		requiredRoles: roleSet("king"),
+	},
 }
 
 func CanonicalNodeClassForNodeID(nodeID string) string {
@@ -55,57 +126,25 @@ func ResolveNodeClass(nodeID, nodeClass string) string {
 }
 
 func BehaviorForNode(nodeID, nodeClass string) NodeBehavior {
-	switch ResolveNodeClass(nodeID, nodeClass) {
-	case NodeClassDecreeIntake:
-		return NodeBehavior{
-			ExecutionOwnership:          NodeExecutionOwnershipRuntimeOwned,
-			RequiresWorkspace:           false,
-			ArtifactPersistence:         NodeArtifactPersistenceDirect,
-			ProjectArtifacts:            false,
-			IncludeInExecutionAnalytics: false,
-		}
-	case NodeClassKingPlanDecision:
-		return NodeBehavior{
-			ExecutionOwnership:           NodeExecutionOwnershipRuntimeOwned,
-			RequiresWorkspace:            false,
-			ArtifactPersistence:          NodeArtifactPersistenceDirect,
-			ProjectArtifacts:             false,
-			IncludeInExecutionAnalytics:  false,
-			WaitsForRecordedPlanDecision: true,
-		}
-	case NodeClassExecutionKickoff:
-		return NodeBehavior{
-			ExecutionOwnership:          NodeExecutionOwnershipRuntimeOwned,
-			RequiresWorkspace:           false,
-			ArtifactPersistence:         NodeArtifactPersistenceDirect,
-			ProjectArtifacts:            false,
-			IncludeInExecutionAnalytics: false,
-		}
-	case NodeClassRoyalClosure:
-		return NodeBehavior{
-			ExecutionOwnership:          NodeExecutionOwnershipRuntimeOwned,
-			RequiresWorkspace:           false,
-			ArtifactPersistence:         NodeArtifactPersistenceDirect,
-			ProjectArtifacts:            false,
-			IncludeInExecutionAnalytics: false,
-		}
-	case NodeClassAdvisorConsultation, NodeClassAdvisorySynthesis, NodeClassPlanDrafting:
-		return NodeBehavior{
-			ExecutionOwnership:          NodeExecutionOwnershipProviderBacked,
-			RequiresWorkspace:           false,
-			ArtifactPersistence:         NodeArtifactPersistenceDirect,
-			ProjectArtifacts:            true,
-			IncludeInExecutionAnalytics: true,
-		}
-	default:
-		return NodeBehavior{
-			ExecutionOwnership:          NodeExecutionOwnershipProviderBacked,
-			RequiresWorkspace:           true,
-			ArtifactPersistence:         NodeArtifactPersistenceWorkspace,
-			ProjectArtifacts:            true,
-			IncludeInExecutionAnalytics: true,
-		}
+	contract, ok := canonicalNodeContracts[ResolveNodeClass(nodeID, nodeClass)]
+	if !ok {
+		return NodeBehavior{}
 	}
+	return contract.behavior
+}
+
+// BehaviorForNodeContract resolves the canonical behavior and validates that
+// the workflow's required role has authority for that node class.
+func BehaviorForNodeContract(nodeClass, requiredRole string) (NodeBehavior, error) {
+	resolvedClass := ResolveNodeClass("", nodeClass)
+	contract, ok := canonicalNodeContracts[resolvedClass]
+	if !ok {
+		return NodeBehavior{}, fmt.Errorf("node_class %q is not allowed", nodeClass)
+	}
+	if _, ok := contract.requiredRoles[strings.TrimSpace(requiredRole)]; !ok {
+		return NodeBehavior{}, fmt.Errorf("required_role %q is not allowed for node_class %q", requiredRole, resolvedClass)
+	}
+	return contract.behavior, nil
 }
 
 func ExecutionAnalyticsIncludedNodeClasses() []string {

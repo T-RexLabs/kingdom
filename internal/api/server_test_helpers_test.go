@@ -1125,7 +1125,7 @@ func seedPlanOutputForNode(t *testing.T, db *sql.DB, runID, nodeID, content stri
 
 func seedAttemptExecution(t *testing.T, db *sql.DB, attemptID, runID, nodeRunID, occurredAt string) {
 	t.Helper()
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_success', '', NULL, 0, '', ?, ?, ?, '', '', ?, ?)`,
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', ?, ?, ?, '', '', ?, ?)`,
 		attemptID,
 		runID,
 		nodeRunID,

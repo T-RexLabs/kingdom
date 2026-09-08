@@ -138,9 +138,6 @@ func TestSessionCompletionReconcilerUsesProviderSessionIDForExport(t *testing.T)
 	if outcome.Result.OutputText != "Recovered from export" {
 		t.Fatalf("expected recovered output text, got %q", outcome.Result.OutputText)
 	}
-	if !outcome.Result.SuppressEmptyOutputRetry {
-		t.Fatal("expected reconciled success to suppress empty output retry")
-	}
 }
 
 func TestSessionCompletionReconcilerPassesManagedPathsToExporter(t *testing.T) {
@@ -708,9 +705,6 @@ func TestSessionCompletionReconcilerBlankRecoveredOutputSuppressesRetry(t *testi
 	}
 	if outcome.Result.OutputText != "" {
 		t.Fatalf("expected blank recovered output, got %q", outcome.Result.OutputText)
-	}
-	if !outcome.Result.SuppressEmptyOutputRetry {
-		t.Fatal("expected blank recovered output to suppress empty output retry")
 	}
 }
 

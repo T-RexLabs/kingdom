@@ -9,6 +9,7 @@ type nodeArtifactPersistenceMode string
 
 type nodeExecutionSpec struct {
 	Mode                executionstore.ExecutionMode
+	CompletionMode      executionstore.ProviderCompletionMode
 	RequiresWorkspace   bool
 	ArtifactPersistence nodeArtifactPersistenceMode
 	ProjectArtifacts    bool
@@ -22,8 +23,12 @@ const (
 func executionSpecForNode(nodeID, nodeClass string) nodeExecutionSpec {
 	behavior := coreworkflow.BehaviorForNode(nodeID, nodeClass)
 	mode := executionstore.ExecutionModeProviderBacked
+	completionMode := executionstore.ProviderCompletionModeServerResponse
 	if behavior.ExecutionOwnership == coreworkflow.NodeExecutionOwnershipRuntimeOwned {
 		mode = executionstore.ExecutionModeRuntimeOwned
+		completionMode = executionstore.ProviderCompletionModeNotApplicable
+	} else if behavior.ProviderCompletionMode == coreworkflow.ProviderCompletionModeReceiptRequired {
+		completionMode = executionstore.ProviderCompletionModeReceiptRequired
 	}
 	persistence := nodeArtifactPersistenceWorkspace
 	if behavior.ArtifactPersistence == coreworkflow.NodeArtifactPersistenceDirect {
@@ -31,6 +36,7 @@ func executionSpecForNode(nodeID, nodeClass string) nodeExecutionSpec {
 	}
 	return nodeExecutionSpec{
 		Mode:                mode,
+		CompletionMode:      completionMode,
 		RequiresWorkspace:   behavior.RequiresWorkspace,
 		ArtifactPersistence: persistence,
 		ProjectArtifacts:    behavior.ProjectArtifacts,

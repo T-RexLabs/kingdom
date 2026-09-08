@@ -138,7 +138,7 @@ func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) 
 	now := "2026-03-01T12:05:30Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', '', NULL, 1, 'session_run_1_decree_intake_1', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_decree_intake_1', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -168,7 +168,7 @@ func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting', 'wfdef_starting', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting', NULL, 'decree_starting', 'wfdef_starting', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_1', 'run_starting', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting:advisor_consultation_noble:1', 'run_starting', 'nr_starting_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting:advisor_consultation_noble:1', 'run_starting', 'nr_starting_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -202,7 +202,7 @@ func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_lease', 'wfdef_starting_lease', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_lease', NULL, 'decree_starting_lease', 'wfdef_starting_lease', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_lease_1', 'run_starting_lease', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_lease:advisor_consultation_noble:1', 'run_starting_lease', 'nr_starting_lease_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_lease_1', '', '2026-03-01T12:09:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_lease:advisor_consultation_noble:1', 'run_starting_lease', 'nr_starting_lease_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_lease_1', '', '2026-03-01T12:09:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_lease_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -247,7 +247,7 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *t
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_stale', 'wfdef_starting_stale', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_stale', NULL, 'decree_starting_stale', 'wfdef_starting_stale', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_stale_1', 'run_starting_stale', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_stale:advisor_consultation_noble:1', 'run_starting_stale', 'nr_starting_stale_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_stale_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_stale:advisor_consultation_noble:1', 'run_starting_stale', 'nr_starting_stale_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_stale_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_stale_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -301,7 +301,7 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_expired', 'wfdef_starting_expired', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_expired', NULL, 'decree_starting_expired', 'wfdef_starting_expired', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_expired_1', 'run_starting_expired', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_expired:advisor_consultation_noble:1', 'run_starting_expired', 'nr_starting_expired_1', 'starting', 'provider_backed', '', NULL, 0, 'session_starting_expired_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_expired:advisor_consultation_noble:1', 'run_starting_expired', 'nr_starting_expired_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_expired_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_expired_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:13:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:13:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -378,12 +378,13 @@ func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *tes
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_stale_settlement', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_stale_settlement', 'caus_nr2_stale_settlement', 'prev_nr2_stale_settlement', 'entry_nr2_stale_settlement', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_stale_failure",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_stale_failure",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -392,6 +393,7 @@ func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *tes
 		ProviderInvocationID: "invocation_stale_failure",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2",
 		LogicalSessionID:     "session_reconcile_stale_failure",
 		CompletionCapability: "capability_stale_failure",
@@ -482,12 +484,13 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_receipt_recovery', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_receipt_recovery', 'caus_nr2_receipt_recovery', 'prev_nr2_receipt_recovery', 'entry_nr2_receipt_recovery', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_receipt_success",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_receipt_success",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -496,6 +499,7 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 		ProviderInvocationID: "invocation_stale_receipt_success",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2",
 		LogicalSessionID:     "session_reconcile_receipt_success",
 		CompletionCapability: "capability_stale_receipt_success",
@@ -598,12 +602,13 @@ func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_recent_receipt', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_recent_receipt', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_recent_receipt', 'caus_nr2_recent_receipt', 'prev_nr2_recent_receipt', 'entry_nr2_recent_receipt', '2026-03-01T12:12:20Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2_recent_receipt",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_recent_receipt_success",
-		CreatedAt:     "2026-03-01T12:12:20Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2_recent_receipt",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_recent_receipt_success",
+		CreatedAt:      "2026-03-01T12:12:20Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -612,6 +617,7 @@ func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *
 		ProviderInvocationID: "invocation_recent_receipt_success",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2_recent_receipt",
 		LogicalSessionID:     "session_recent_receipt_success",
 		CompletionCapability: "capability_recent_receipt_success",
@@ -707,12 +713,13 @@ func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettleme
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_review_receipt_rework_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_review_receipt_rework', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'reviewer-shieldmaiden', 'system', 'internal_error', 'seed', 'corr_review_receipt_rework', 'caus_review_receipt_rework', 'prev_review_receipt_rework', 'entry_review_receipt_rework', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_review_receipt_rework",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_review_receipt_rework",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_review_receipt_rework",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_review_receipt_rework",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -721,6 +728,7 @@ func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettleme
 		ProviderInvocationID: "invocation_review_receipt_rework",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_review_receipt_rework",
 		LogicalSessionID:     "session_review_receipt_rework",
 		CompletionCapability: "capability_review_receipt_rework",
@@ -813,12 +821,13 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_review_existing_settlement_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_review_existing_settlement', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'reviewer-shieldmaiden', 'system', 'internal_error', 'seed', 'corr_review_existing_settlement', 'caus_review_existing_settlement', 'prev_review_existing_settlement', 'entry_review_existing_settlement', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_review_existing_settlement",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_review_existing_settlement",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_review_existing_settlement",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_review_existing_settlement",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -827,6 +836,7 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 		ProviderInvocationID: "invocation_review_existing_settlement",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_review_existing_settlement",
 		LogicalSessionID:     "session_review_existing_settlement",
 		CompletionCapability: "capability_review_existing_settlement",
@@ -925,12 +935,13 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_recent_failure', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_recent_failure', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_recent_failure', 'caus_nr2_recent_failure', 'prev_nr2_recent_failure', 'entry_nr2_recent_failure', '2026-03-01T12:12:20Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2_recent_failure",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_recent_settled_failure",
-		CreatedAt:     "2026-03-01T12:12:20Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2_recent_failure",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_recent_settled_failure",
+		CreatedAt:      "2026-03-01T12:12:20Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -939,6 +950,7 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 		ProviderInvocationID: "invocation_recent_settled_failure",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2_recent_failure",
 		LogicalSessionID:     "session_recent_settled_failure",
 		CompletionCapability: "capability_recent_settled_failure",
@@ -1050,12 +1062,13 @@ func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLi
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_committed_success_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_committed_success_backfill', 'caus_nr2_committed_success_backfill', 'prev_nr2_committed_success_backfill', 'entry_nr2_committed_success_backfill', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_committed_success",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_committed_success",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1063,6 +1076,7 @@ func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLi
 		ProviderInvocationID: "invocation_committed_success_backfill",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2",
 		LogicalSessionID:     "session_reconcile_committed_success",
 		CompletionCapability: "capability_committed_success_backfill",
@@ -1159,12 +1173,13 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_invalid_handshake_conflict_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_invalid_handshake_conflict', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_invalid_handshake_conflict', 'caus_nr2_invalid_handshake_conflict', 'prev_nr2_invalid_handshake_conflict', 'entry_nr2_invalid_handshake_conflict', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2_invalid_handshake_conflict",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_invalid_handshake_conflict",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2_invalid_handshake_conflict",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_invalid_handshake_conflict",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1173,6 +1188,7 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 		ProviderInvocationID: "invocation_invalid_handshake_conflict",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2_invalid_handshake_conflict",
 		LogicalSessionID:     "session_invalid_handshake_conflict",
 		CompletionCapability: "capability_invalid_handshake_conflict",
@@ -1280,12 +1296,13 @@ func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_invalid_handshake_capability_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_invalid_handshake_capability', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_invalid_handshake_capability', 'caus_nr2_invalid_handshake_capability', 'prev_nr2_invalid_handshake_capability', 'entry_nr2_invalid_handshake_capability', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2_invalid_handshake_capability",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_invalid_handshake_capability",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2_invalid_handshake_capability",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_invalid_handshake_capability",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1294,6 +1311,7 @@ func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(
 		ProviderInvocationID: "invocation_invalid_handshake_capability",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2_invalid_handshake_capability",
 		LogicalSessionID:     "session_invalid_handshake_capability",
 		CompletionCapability: "capability_invalid_handshake_capability",
@@ -1385,12 +1403,13 @@ func TestReconcilerReusesExistingTerminalEvidenceWhenSettlementMissing(t *testin
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_existing_evidence_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_existing_evidence_backfill', 'caus_nr2_existing_evidence_backfill', 'prev_nr2_existing_evidence_backfill', 'entry_nr2_existing_evidence_backfill', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_existing_evidence",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_existing_evidence",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1398,6 +1417,7 @@ func TestReconcilerReusesExistingTerminalEvidenceWhenSettlementMissing(t *testin
 		ProviderInvocationID: "invocation_existing_evidence_backfill",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2",
 		LogicalSessionID:     "session_reconcile_existing_evidence",
 		CompletionCapability: "capability_existing_evidence_backfill",
@@ -1497,12 +1517,13 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_reconcile', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_reconcile', 'caus_nr2_settlement_reconcile', 'prev_nr2_settlement_reconcile', 'entry_nr2_settlement_reconcile', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_settlement_mismatch",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_settlement_mismatch",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1510,6 +1531,7 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 		ProviderInvocationID: "invocation_settlement_mismatch",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2",
 		LogicalSessionID:     "session_reconcile_settlement_mismatch",
 		CompletionCapability: "capability_settlement_mismatch",
@@ -1616,12 +1638,13 @@ func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTr
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_pinned', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_pinned', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_pinned', 'caus_nr2_settlement_pinned', 'prev_nr2_settlement_pinned', 'entry_nr2_settlement_pinned', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_2_pinned",
-		ExecutionMode: executionstore.ExecutionModeProviderBacked,
-		SessionRef:    "session_reconcile_settlement_pinned",
-		CreatedAt:     "2026-03-01T12:08:00Z",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_2_pinned",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_reconcile_settlement_pinned",
+		CreatedAt:      "2026-03-01T12:08:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
@@ -1629,6 +1652,7 @@ func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTr
 		ProviderInvocationID: "invocation_settlement_pinned",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
 		NodeRunID:            "nr_2_pinned",
 		LogicalSessionID:     "session_reconcile_settlement_pinned",
 		CompletionCapability: "capability_settlement_pinned",
@@ -2114,7 +2138,7 @@ func TestReconcilerRecoverAttemptSkipsTerminalObservedExecutionState(t *testing.
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_terminal_observed', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal_observed_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_terminal_observed', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_terminal_observed', 'caus_terminal_observed_started', 'prev_terminal_observed_started', 'entry_terminal_observed_started', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_terminal_observed', 'terminal_observed', '', NULL, 1, 'session_run_1_decree_intake_2', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z', NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_terminal_observed', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_decree_intake_2', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z', NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)

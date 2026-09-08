@@ -28,13 +28,12 @@ type ProviderActivity struct {
 }
 
 type ProviderInvocationContext struct {
-	AttemptID          string
-	LogicalSessionID   string
-	ProviderSessionID  string
-	InvocationID       string
-	InvocationIssuedAt string
-	OnProviderSession  func(sessionID string)
-	OnActivity         func(activity ProviderActivity)
+	AttemptID         string
+	LogicalSessionID  string
+	ProviderSessionID string
+	InvocationID      string
+	OnProviderSession func(sessionID string)
+	OnActivity        func(activity ProviderActivity)
 }
 
 type AgentContext struct {
@@ -89,7 +88,7 @@ func executionError(metadata ProviderExecutionMetadata, err error) error {
 // requirePlannerTurnSettled gates canonical persistence on the provider's own
 // structural stop signal: the adjudicated terminal outcome must be success and
 // the assembled output text must be non-empty. The planner settles server-side
-// from this signal — there is no model-invoked completion receipt.
+// from this signal.
 func requirePlannerTurnSettled(metadata ProviderExecutionMetadata) error {
 	if metadata.OutcomeState != "success" {
 		return fmt.Errorf("planner provider execution did not settle success")

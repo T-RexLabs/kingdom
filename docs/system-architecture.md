@@ -27,9 +27,9 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - New run creation requires an explicit global model selection.
 - Optional per-role model overrides are allowed, and `/roles` is the source of truth for selector visibility, grouping, and ordering.
 - Runtime execution is host-launched and session-based via `opencode run --format json`; Kingdom does not currently execute attempts inside containers.
-- Every provider-backed decree execution attempt gets a runtime-owned invocation identity and single-use completion capability before provider dispatch.
-- Provider-backed decree execution success requires a valid `kingdom_complete_attempt` receipt for the active invocation.
-- Clean provider-backed decree execution exit without a valid completion receipt is terminal failure.
+- Every provider-backed decree execution attempt gets a runtime-owned invocation identity before provider dispatch; only builders get a single-use completion capability.
+- Builder success requires a valid `kingdom_complete_attempt` receipt for the active invocation; response-first nodes settle from server-observed terminal responses.
+- Clean builder execution exit without a valid completion receipt is terminal failure.
 - `opencode export` is diagnostic and repair evidence only for provider-backed decree execution; it is not canonical success authority.
 - `kd init` installs Kingdom-managed OpenCode role profiles and managed tools into project `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`; runtime/API startup validates those managed assets read-only and fails fast on drift, and Kingdom launches OpenCode with that overlay plus a Kingdom-owned OpenCode database under `.kingdom/opencode/` so agent resolution remains deterministic without leaking Kingdom-managed sessions or assets into normal user-run `opencode` sessions.
 - Runtime defaults to headless OpenCode execution with skip-permissions enabled so provider prompts do not block autonomous runs.
@@ -167,14 +167,14 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Runtime resolves one shared execution target per run and restores trusted runtime-owned snapshot state before mutating attempts.
 - OpenCode sessions run on the host against that workspace for provider-backed decree execution nodes.
 - Session identity is stable per run/node lineage and reused where the runtime contract requires it.
-- Runtime issues one invocation-scoped completion capability per provider-backed decree execution attempt and validates receipt usage server-side.
+- Runtime issues one invocation-scoped completion capability only for builder attempts and validates receipt usage server-side.
 - Strict startup validates managed OpenCode assets, binary availability, and agent resolution when `provider.strict=true`. Agent validation runs against an isolated database copy so it can never write to Kingdom's own.
 - After the listener is up, `kd summon` warms the provider surfaces an operator would otherwise wait on: the OpenCode model catalog, and the planner agent resolved against the real managed OpenCode database so that database is created and migrated before the first planner turn. Warming never gates readiness and never fails startup; a failure leaves the cost to be paid lazily and is reported through the model catalog notice.
 - Runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown` until terminal success or failure.
 - Provider-backed decree execution wall-clock budgets gate silence recovery, not active work: real provider activity and active completion-settlement observation suppress terminal timeout until the inactivity window is exceeded.
-- All provider-backed decree execution sessions must call `kingdom_complete_attempt` to request terminal success settlement.
-- Canonical provider settlement for a provider-backed decree execution attempt is runtime-owned and invocation-scoped; success requires one valid receipt accepted for the active invocation, and runtime must not merge multiple final assistant answers or competing receipts into one settled output.
-- Stream output, `step_finish.reason`, mailbox projections, artifact presence, and provider export reads can inform diagnostics and repair for provider-backed decree execution, but none of them can create canonical success without a valid runtime receipt.
+- Only builder execution sessions may call `kingdom_complete_attempt` to request terminal success settlement.
+- Canonical provider settlement is runtime-owned and invocation-scoped: builders require one valid receipt accepted for the active invocation, while response-first nodes require server-observed terminal output. Runtime must not merge competing outputs into one settled response.
+- Stream output and `step_finish.reason` are canonical only for response-first settlement; mailbox projections, artifact presence, and provider export reads remain diagnostic and cannot repair settlement.
 
 ### State and Audit Plane
 

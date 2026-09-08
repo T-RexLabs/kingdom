@@ -11,41 +11,40 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
-	"kingdom/internal/bootstrapassets"
 	coreverdict "kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
-	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 )
 
 type executionOutboxPayload struct {
-	Run                             runSnapshot               `json:"run"`
-	Node                            nodeDefinition            `json:"node"`
-	Attempt                         nodeAttempt               `json:"attempt"`
-	AttemptID                       string                    `json:"attempt_id"`
-	LogicalSessionID                string                    `json:"logical_session_id"`
-	ProviderSessionID               string                    `json:"provider_session_id,omitempty"`
-	ProviderInvocationID            string                    `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt            string                    `json:"provider_invocation_at,omitempty"`
-	CompletionReceiptEvidenceID     string                    `json:"completion_receipt_evidence_id,omitempty"`
-	CompletionStructuredPayloadJSON string                    `json:"completion_structured_payload_json,omitempty"`
-	ProviderDiagnosticsJSON         string                    `json:"provider_diagnostics_json,omitempty"`
-	BaseSnapshotID                  string                    `json:"base_snapshot_id,omitempty"`
-	ResultSnapshotID                string                    `json:"result_snapshot_id,omitempty"`
-	WorkspaceID                     string                    `json:"workspace_id"`
-	Workspace                       string                    `json:"workspace_path"`
-	Delegator                       string                    `json:"delegator"`
-	Prompt                          string                    `json:"prompt"`
-	Model                           string                    `json:"model"`
-	Variant                         string                    `json:"variant"`
-	Agent                           string                    `json:"agent"`
-	OccurredAt                      string                    `json:"occurred_at"`
-	OutputText                      string                    `json:"output_text"`
-	Tokens                          opencode.TokenUsage       `json:"tokens"`
-	Outcome                         opencode.ExecutionOutcome `json:"outcome,omitempty"`
-	SuppressEmptyOutputRetry        bool                      `json:"suppress_empty_output_retry,omitempty"`
+	Run                             runSnapshot                           `json:"run"`
+	Node                            nodeDefinition                        `json:"node"`
+	Attempt                         nodeAttempt                           `json:"attempt"`
+	AttemptID                       string                                `json:"attempt_id"`
+	CompletionMode                  executionstore.ProviderCompletionMode `json:"completion_mode"`
+	LogicalSessionID                string                                `json:"logical_session_id"`
+	ProviderSessionID               string                                `json:"provider_session_id,omitempty"`
+	ProviderInvocationID            string                                `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt            string                                `json:"provider_invocation_at,omitempty"`
+	CompletionReceiptEvidenceID     string                                `json:"completion_receipt_evidence_id,omitempty"`
+	CompletionStructuredPayloadJSON string                                `json:"completion_structured_payload_json,omitempty"`
+	ProviderDiagnosticsJSON         string                                `json:"provider_diagnostics_json,omitempty"`
+	ProviderStreamObservation       opencode.InvocationStreamObservation  `json:"provider_stream_observation"`
+	BaseSnapshotID                  string                                `json:"base_snapshot_id,omitempty"`
+	ResultSnapshotID                string                                `json:"result_snapshot_id,omitempty"`
+	WorkspaceID                     string                                `json:"workspace_id"`
+	Workspace                       string                                `json:"workspace_path"`
+	Delegator                       string                                `json:"delegator"`
+	Prompt                          string                                `json:"prompt"`
+	Model                           string                                `json:"model"`
+	Variant                         string                                `json:"variant"`
+	Agent                           string                                `json:"agent"`
+	OccurredAt                      string                                `json:"occurred_at"`
+	OutputText                      string                                `json:"output_text"`
+	Tokens                          opencode.TokenUsage                   `json:"tokens"`
+	Outcome                         opencode.ExecutionOutcome             `json:"outcome,omitempty"`
 }
 
 type completionProjectionDecision struct {
@@ -54,29 +53,6 @@ type completionProjectionDecision struct {
 	AllowDownstreamEffects  bool
 	AllowCanonicalArtifacts bool
 	AllowCanonicalMailbox   bool
-}
-
-type missingCompletionReceiptRecoveryAdapter interface {
-	RecoverMissingCompletionReceipt(ctx context.Context, req opencode.ExecuteRequest, finalText string) (opencode.ExecuteResponse, error)
-}
-
-type completionRecoveryDecision struct {
-	Eligible         bool
-	WorkspaceGuarded bool
-	SkipReason       string
-}
-
-type completionRecoverySnapshotGuard struct {
-	PreSnapshotID string
-}
-
-type completionRecoveryProviderDiagnostics struct {
-	CompletionReceiptModeEnabled bool `json:"completion_receipt_mode_enabled"`
-	ExecutionPathDiagnostics     struct {
-		LastStepFinishReason string `json:"last_step_finish_reason"`
-		TerminalStateClass   string `json:"terminal_state_class"`
-		ExportCheckReason    string `json:"export_check_reason"`
-	} `json:"execution_path_diagnostics"`
 }
 
 func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, error) {
@@ -143,6 +119,7 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		Node:                            result.node,
 		Attempt:                         result.attempt,
 		AttemptID:                       result.attemptID,
+		CompletionMode:                  result.completionMode,
 		LogicalSessionID:                result.sessionID,
 		ProviderSessionID:               strings.TrimSpace(result.providerSessionID),
 		ProviderInvocationID:            strings.TrimSpace(result.providerInvocationID),
@@ -150,6 +127,7 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
 		ProviderDiagnosticsJSON:         strings.TrimSpace(result.providerDiagnosticsJSON),
+		ProviderStreamObservation:       result.providerStreamObservation,
 		BaseSnapshotID:                  strings.TrimSpace(result.baseSnapshotID),
 		ResultSnapshotID:                strings.TrimSpace(result.resultSnapshotID),
 		WorkspaceID:                     result.workspaceID,
@@ -163,7 +141,6 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		OutputText:                      strings.TrimSpace(result.outputText),
 		Tokens:                          result.tokens,
 		Outcome:                         result.outcome,
-		SuppressEmptyOutputRetry:        result.suppressEmptyOutputRetry,
 	}
 }
 
@@ -320,6 +297,7 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		node:                            payload.Node,
 		attempt:                         payload.Attempt,
 		attemptID:                       payload.AttemptID,
+		completionMode:                  payload.CompletionMode,
 		sessionID:                       strings.TrimSpace(payload.LogicalSessionID),
 		providerSessionID:               payload.ProviderSessionID,
 		providerInvocationID:            payload.ProviderInvocationID,
@@ -327,6 +305,7 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
 		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
 		providerDiagnosticsJSON:         payload.ProviderDiagnosticsJSON,
+		providerStreamObservation:       payload.ProviderStreamObservation,
 		baseSnapshotID:                  payload.BaseSnapshotID,
 		resultSnapshotID:                payload.ResultSnapshotID,
 		workspaceID:                     payload.WorkspaceID,
@@ -340,7 +319,6 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		outputText:                      strings.TrimSpace(payload.OutputText),
 		tokens:                          payload.Tokens,
 		outcome:                         payload.Outcome,
-		suppressEmptyOutputRetry:        payload.SuppressEmptyOutputRetry,
 	}
 	result.outcome = hydrateExecutionOutcomeFromDurableState(result.outcome, rec.AttemptState, rec.FailureCode, rec.FailureText)
 	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
@@ -359,238 +337,10 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 	result.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
 	result.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
 	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
+	result.providerStreamObservation = response.StreamObservation
 	result.outcome = response.Outcome
-	result.suppressEmptyOutputRetry = response.SuppressEmptyOutputRetry
 	result.tokens = response.Tokens
 	result.err = execErr
-}
-
-func decodeCompletionRecoveryProviderDiagnostics(raw string) (completionRecoveryProviderDiagnostics, bool) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || trimmed == "{}" {
-		return completionRecoveryProviderDiagnostics{}, false
-	}
-	var diagnostics completionRecoveryProviderDiagnostics
-	if err := json.Unmarshal([]byte(trimmed), &diagnostics); err != nil {
-		return completionRecoveryProviderDiagnostics{}, false
-	}
-	return diagnostics, true
-}
-
-func (o *orchestrationLoop) shouldAttemptCompletionRecovery(result asyncExecutionResult) completionRecoveryDecision {
-	if result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
-		return completionRecoveryDecision{SkipReason: "execution_mode_not_provider_backed"}
-	}
-	if strings.TrimSpace(result.providerInvocationID) == "" {
-		return completionRecoveryDecision{SkipReason: "missing_provider_invocation_id"}
-	}
-	if strings.TrimSpace(result.providerSessionID) == "" {
-		return completionRecoveryDecision{SkipReason: "missing_provider_session_id"}
-	}
-	if strings.TrimSpace(result.completionCapability) == "" {
-		return completionRecoveryDecision{SkipReason: "missing_completion_capability"}
-	}
-	if strings.TrimSpace(result.completionReceiptDir) == "" {
-		return completionRecoveryDecision{SkipReason: "missing_completion_receipt_dir"}
-	}
-	if strings.TrimSpace(result.completionReceiptEvidenceID) != "" {
-		return completionRecoveryDecision{SkipReason: "completion_receipt_already_accepted"}
-	}
-	outcome := normalizeExecutionOutcome(result.outcome, result.err)
-	if strings.TrimSpace(outcome.State) != "incomplete_turn" || currentExecutionReasonCode(outcome, result.err) != "provider_incomplete_turn" {
-		return completionRecoveryDecision{SkipReason: "reason_not_provider_incomplete_turn"}
-	}
-	if strings.TrimSpace(result.outputText) == "" {
-		return completionRecoveryDecision{SkipReason: "missing_output_text"}
-	}
-	if _, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter); !ok {
-		return completionRecoveryDecision{SkipReason: "adapter_missing_recovery_support"}
-	}
-	diagnostics, ok := decodeCompletionRecoveryProviderDiagnostics(result.providerDiagnosticsJSON)
-	if !ok {
-		return completionRecoveryDecision{SkipReason: "missing_provider_diagnostics"}
-	}
-	if !diagnostics.CompletionReceiptModeEnabled {
-		return completionRecoveryDecision{SkipReason: "completion_receipt_mode_disabled"}
-	}
-	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.ExportCheckReason) != "missing_completion_receipt" {
-		return completionRecoveryDecision{SkipReason: "export_check_reason_not_missing_completion_receipt"}
-	}
-	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.TerminalStateClass) != "terminal_success_candidate" {
-		return completionRecoveryDecision{SkipReason: "terminal_state_not_success_candidate"}
-	}
-	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.LastStepFinishReason) != "stop" {
-		return completionRecoveryDecision{SkipReason: "step_finish_reason_not_stop"}
-	}
-
-	switch resolvedNodeClass(result.node.NodeID, result.node.NodeClass) {
-	case workflow.NodeClassAdvisorConsultation, workflow.NodeClassAdvisorySynthesis, workflow.NodeClassPlanDrafting:
-		return completionRecoveryDecision{Eligible: true}
-	case workflow.NodeClassDelegatedExecution:
-		if o == nil || o.fsStore == nil {
-			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
-		}
-		if strings.TrimSpace(result.workspacePath) == "" {
-			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
-		}
-		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
-	case workflow.NodeClassExecutionReview, workflow.NodeClassValidationGates:
-		if _, err := validateProviderCompletionReceiptForNode(result.node, result.outputText, ""); err != nil {
-			return completionRecoveryDecision{SkipReason: "original_final_text_failed_contract"}
-		}
-		if o == nil || o.fsStore == nil {
-			return completionRecoveryDecision{SkipReason: "missing_runtime_filesystem_store"}
-		}
-		if strings.TrimSpace(result.workspacePath) == "" {
-			return completionRecoveryDecision{SkipReason: "missing_workspace_path"}
-		}
-		return completionRecoveryDecision{Eligible: true, WorkspaceGuarded: true}
-	default:
-		return completionRecoveryDecision{SkipReason: "node_class_not_recoverable"}
-	}
-}
-
-func (o *orchestrationLoop) beginCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision) (*completionRecoverySnapshotGuard, error) {
-	if !decision.WorkspaceGuarded {
-		return nil, nil
-	}
-	if o == nil || o.fsStore == nil {
-		return nil, fmt.Errorf("runtime filesystem store is required for completion recovery guard")
-	}
-	createdAt := o.now().UTC().Format(time.RFC3339)
-	snapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
-		SnapshotID:   composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_pre", o.now().UTC()),
-		RunID:        result.run.RunID,
-		SnapshotKind: "attempt_result",
-		RootPath:     result.workspacePath,
-		CreatedAt:    createdAt,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("capture pre-recovery snapshot: %w", err)
-	}
-	return &completionRecoverySnapshotGuard{PreSnapshotID: snapshot.SnapshotID}, nil
-}
-
-func (o *orchestrationLoop) finishCompletionRecoveryGuard(ctx context.Context, result asyncExecutionResult, decision completionRecoveryDecision, guard *completionRecoverySnapshotGuard) error {
-	if !decision.WorkspaceGuarded || guard == nil {
-		return nil
-	}
-	if o == nil || o.fsStore == nil {
-		return fmt.Errorf("runtime filesystem store is required for completion recovery guard")
-	}
-	createdAt := o.now().UTC().Format(time.RFC3339)
-	postSnapshot, err := o.fsStore.CaptureSnapshot(ctx, runtimefs.CaptureSnapshotRequest{
-		SnapshotID:       composeRuntimeSnapshotID(result.run.RunID, "completion_recovery_post", o.now().UTC()),
-		RunID:            result.run.RunID,
-		ParentSnapshotID: strings.TrimSpace(guard.PreSnapshotID),
-		SnapshotKind:     "attempt_result",
-		RootPath:         result.workspacePath,
-		CreatedAt:        createdAt,
-	})
-	if err != nil {
-		return fmt.Errorf("capture post-recovery snapshot: %w", err)
-	}
-	diffs, err := o.fsStore.DiffSnapshots(ctx, strings.TrimSpace(guard.PreSnapshotID), postSnapshot.SnapshotID)
-	if err != nil {
-		return fmt.Errorf("diff recovery snapshots: %w", err)
-	}
-	if len(diffs) == 0 {
-		return nil
-	}
-	if err := o.fsStore.RestoreSnapshot(ctx, strings.TrimSpace(guard.PreSnapshotID), result.workspacePath); err != nil {
-		return fmt.Errorf("restore pre-recovery snapshot after workspace mutation: %w", err)
-	}
-	paths := make([]string, 0, len(diffs))
-	for _, diff := range diffs {
-		if trimmed := strings.TrimSpace(diff.Path); trimmed != "" {
-			paths = append(paths, trimmed)
-		}
-	}
-	return &completionRecoveryWorkspaceMutationError{Paths: paths}
-}
-
-func (o *orchestrationLoop) maybeRecoverMissingCompletionReceipt(ctx context.Context, result asyncExecutionResult) asyncExecutionResult {
-	decision := o.shouldAttemptCompletionRecovery(result)
-	now := o.now().UTC().Format(time.RFC3339)
-	if !decision.Eligible {
-		if shouldEmitCompletionRecoverySkip(decision.SkipReason) {
-			o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": decision.SkipReason})
-		}
-		return result
-	}
-
-	recoveryAdapter, ok := o.adapter.(missingCompletionReceiptRecoveryAdapter)
-	if !ok {
-		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_skipped", now, map[string]any{"reason": "adapter_missing_recovery_support"})
-		return result
-	}
-
-	guard, guardErr := o.beginCompletionRecoveryGuard(ctx, result, decision)
-	if guardErr != nil {
-		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": guardErr.Error()})
-		result.err = guardErr
-		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
-		return result
-	}
-
-	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_attempted", now, map[string]any{"workspace_guarded": decision.WorkspaceGuarded})
-	workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-	recoveryReq, progressWriter := o.attachDurableProgressWriter(ctx, result, opencode.ExecuteRequest{
-		SessionID:                 result.sessionID,
-		ProviderSessionID:         result.providerSessionID,
-		AttemptID:                 result.attemptID,
-		RunID:                     result.run.RunID,
-		NodeRunID:                 result.attempt.NodeRunID,
-		Model:                     result.model,
-		Variant:                   result.variant,
-		Agent:                     result.agent,
-		WorkspacePath:             result.workspacePath,
-		ConfigDir:                 workspaceOpenCode.ConfigDir,
-		DatabasePath:              workspaceOpenCode.DatabasePath,
-		Prompt:                    firstNonEmptyString(strings.TrimSpace(result.prompt), "completion receipt recovery"),
-		OccurredAt:                result.occurredAt,
-		InvocationID:              result.providerInvocationID,
-		InvocationIssuedAt:        result.providerInvocationAt,
-		CompletionProtocolVersion: opencode.CompletionProtocolVersion,
-		CompletionCapability:      result.completionCapability,
-		CompletionReceiptDir:      result.completionReceiptDir,
-		OnActivity:                o.providerExecutionActivityObserver(ctx, result),
-		OnCompletionReceipt:       o.providerCompletionReceiptAcceptor(ctx, result),
-	})
-	recoveryResponse, recoveryErr := recoveryAdapter.RecoverMissingCompletionReceipt(ctx, recoveryReq, result.outputText)
-	recoveryErr = closeDurableProgressWriter(progressWriter, recoveryErr)
-	applyExecuteResponseToAsyncResult(&result, recoveryResponse, recoveryErr)
-
-	if guardErr := o.finishCompletionRecoveryGuard(ctx, result, decision, guard); guardErr != nil {
-		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_rejected_workspace_mutated", now, map[string]any{"error": guardErr.Error()})
-		result.err = guardErr
-		result.outcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, guardErr)
-		return result
-	}
-
-	if recoveryErr != nil {
-		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
-		return result
-	}
-	if strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
-		recoveryErr = &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"}
-		result.err = recoveryErr
-		result.outcome = normalizeExecutionOutcome(result.outcome, recoveryErr)
-		o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_failed", now, map[string]any{"error": recoveryErr.Error()})
-		return result
-	}
-
-	o.emitCompletionLifecycleObservation(ctx, result, "completion_recovery_succeeded", now, map[string]any{"completion_receipt_evidence_id": result.completionReceiptEvidenceID})
-	return result
-}
-
-func shouldEmitCompletionRecoverySkip(reason string) bool {
-	switch strings.TrimSpace(reason) {
-	case "", "execution_mode_not_provider_backed", "reason_not_provider_incomplete_turn", "completion_receipt_already_accepted":
-		return false
-	default:
-		return true
-	}
 }
 
 func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) opencode.ExecutionOutcome {
@@ -766,6 +516,10 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		persistedAttemptExecution = persisted
 		hasPersistedAttemptExecution = true
 		result.attempt.ExecutionMode = persisted.ExecutionMode
+		if result.completionMode != "" && result.completionMode != persisted.CompletionMode {
+			return fmt.Errorf("outbox completion mode %q does not match persisted attempt completion mode %q", result.completionMode, persisted.CompletionMode)
+		}
+		result.completionMode = persisted.CompletionMode
 		result.attempt.ProviderTimeoutMillis = persisted.ProviderTimeoutMillis
 		if strings.TrimSpace(result.attempt.SessionRef) == "" {
 			result.attempt.SessionRef = persisted.SessionRef
@@ -783,28 +537,19 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	execErr := result.err
 	currentOutcome := normalizeExecutionOutcome(result.outcome, execErr)
 	hasCanonicalSettlement := hasPersistedAttemptExecution && strings.TrimSpace(persistedAttemptExecution.CanonicalSettlementID) != ""
-	if execErr == nil {
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
-		if countErr != nil {
-			execErr = countErr
-			currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, execErr)
-		}
-		if execErr != nil {
-			currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, execErr)
-		}
-		if execErr == nil && shouldRetryEmptyOutput(result.outputText, artifactCount, result.suppressEmptyOutputRetry) && canRetryExecution(result, o.adapter != nil) {
-			result, execErr = o.retryExecutionOnEmptyOutput(ctx, result, now)
-			if execErr == nil {
-				originalOutputText = strings.TrimSpace(result.outputText)
-				currentOutcome = normalizeExecutionOutcome(result.outcome, nil)
-			} else {
-				currentOutcome = normalizeExecutionOutcome(result.outcome, execErr)
-			}
-		}
-	}
 	alreadyAutoSucceededAtLoopCap := execErr == nil && workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), currentExecutionReasonCode(currentOutcome, nil))
 	currentNodeClass := resolvedNodeClass(result.node.NodeID, result.node.NodeClass)
-	if execErr == nil && !alreadyAutoSucceededAtLoopCap && strings.TrimSpace(result.completionReceiptEvidenceID) != "" {
+	usesCompletionEvidence := result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && strings.TrimSpace(result.completionReceiptEvidenceID) != ""
+	usesServerResponse := result.completionMode == executionstore.ProviderCompletionModeServerResponse
+	if execErr == nil && usesServerResponse && strings.TrimSpace(result.outputText) == "" {
+		execErr = &providerEmptyOutputError{NodeID: result.node.NodeID, AttemptID: result.attemptID}
+		currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{
+			State:       "failed",
+			ReasonCode:  "provider_empty_output",
+			FailureText: "provider returned an empty terminal response",
+		}, execErr)
+	}
+	if execErr == nil && !alreadyAutoSucceededAtLoopCap && (usesCompletionEvidence || usesServerResponse) {
 		failureOutcome, handled, verdictErr := receiptDecisionFailureOutcome(result.node.NodeID, result.node.NodeClass, result.outputText, result.completionStructuredPayloadJSON)
 		if verdictErr != nil {
 			execErr = verdictErr
@@ -814,7 +559,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			execErr = errorFromExecutionOutcome(currentOutcome)
 		}
 	}
-	if execErr == nil && result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(result.providerInvocationID) != "" && strings.TrimSpace(result.completionReceiptEvidenceID) == "" && !hasCanonicalSettlement {
+	if execErr == nil && result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && strings.TrimSpace(result.providerInvocationID) != "" && strings.TrimSpace(result.completionReceiptEvidenceID) == "" && !hasCanonicalSettlement {
 		execErr = &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"}
 		currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{
 			State:       "incomplete_turn",
@@ -1468,13 +1213,6 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	})
 }
 
-func shouldRetryEmptyOutput(outputText string, artifactCount int, suppress bool) bool {
-	if suppress {
-		return false
-	}
-	return strings.TrimSpace(outputText) == "" && artifactCount == 0
-}
-
 func isDurableExecutionTerminalState(state string) bool {
 	switch strings.TrimSpace(state) {
 	case "committed_success", "committed_failure", "committed_cancelled":
@@ -1482,230 +1220,6 @@ func isDurableExecutionTerminalState(state string) bool {
 	default:
 		return false
 	}
-}
-
-func (o *orchestrationLoop) retryArtifactCountForExecution(ctx context.Context, node nodeDefinition, workspacePath, baseSnapshotID string) (int, error) {
-	if isImplementationRole(node.RequiredRole) {
-		if strings.TrimSpace(workspacePath) == "" {
-			return 0, fmt.Errorf("workspace path is required for implementation artifact retry evaluation")
-		}
-		if o == nil || o.fsStore == nil || strings.TrimSpace(baseSnapshotID) == "" {
-			discoveredArtifacts, err := discoverWorkspaceArtifacts(workspacePath)
-			if err != nil {
-				return 0, err
-			}
-			return len(discoveredArtifacts), nil
-		}
-		return o.fsStore.CountChangesAgainstSnapshot(ctx, workspacePath, baseSnapshotID)
-	}
-	return 0, nil
-}
-
-func canRetryExecution(result asyncExecutionResult, adapterReady bool) bool {
-	if !adapterReady {
-		return false
-	}
-	if strings.TrimSpace(result.prompt) == "" {
-		return false
-	}
-	if strings.TrimSpace(result.workspacePath) == "" {
-		return false
-	}
-	return true
-}
-
-func (o *orchestrationLoop) retryExecutionOnEmptyOutput(ctx context.Context, result asyncExecutionResult, occurredAt string) (asyncExecutionResult, error) {
-	if o == nil || o.adapter == nil {
-		return result, &providerEmptyOutputError{NodeID: result.node.NodeID, AttemptID: result.attemptID}
-	}
-
-	totalRetries := len(emptyOutputRetryBackoffs)
-	if totalRetries == 0 {
-		return result, &providerEmptyOutputError{NodeID: result.node.NodeID, AttemptID: result.attemptID}
-	}
-
-	for idx, delay := range emptyOutputRetryBackoffs {
-		retryNumber := idx + 1
-		now := o.now().UTC().Format(time.RFC3339)
-		forceNewSession := retryNumber == totalRetries
-		o.emitEmptyOutputRetryEvent(ctx, result, retryNumber, totalRetries, delay, forceNewSession, now)
-		if err := sleepWithContext(ctx, o.sleep, delay); err != nil {
-			return result, err
-		}
-		if o.executionStore != nil {
-			providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.replaceProviderInvocationForRetry(ctx, result, now)
-			if invocationErr != nil {
-				return result, invocationErr
-			}
-			result.providerInvocationID = providerInvocationID
-			result.providerInvocationAt = providerInvocationAt
-			result.completionCapability = completionCapability
-			result.completionReceiptDir = completionReceiptDir
-			result.completionReceiptEvidenceID = ""
-			result.completionStructuredPayloadJSON = ""
-		}
-
-		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(result.workspacePath)
-		retryResponse, retryErr := o.executeWithDurableProgress(ctx, result, opencode.ExecuteRequest{
-			SessionID:                 result.sessionID,
-			ProviderSessionID:         result.providerSessionID,
-			AttemptID:                 result.attemptID,
-			RunID:                     result.run.RunID,
-			NodeRunID:                 result.attempt.NodeRunID,
-			Model:                     result.model,
-			Variant:                   result.variant,
-			Agent:                     result.agent,
-			WorkspacePath:             result.workspacePath,
-			ConfigDir:                 workspaceOpenCode.ConfigDir,
-			DatabasePath:              workspaceOpenCode.DatabasePath,
-			Prompt:                    result.prompt,
-			ForceNewSession:           forceNewSession,
-			OccurredAt:                now,
-			InvocationID:              result.providerInvocationID,
-			InvocationIssuedAt:        result.providerInvocationAt,
-			CompletionProtocolVersion: opencode.CompletionProtocolVersion,
-			CompletionCapability:      result.completionCapability,
-			CompletionReceiptDir:      result.completionReceiptDir,
-			OnProviderSession: func(providerSessionID string) {
-				o.observeProviderSessionForInvocation(ctx, result.attemptID, result.providerInvocationID, providerSessionID)
-			},
-			OnActivity:          o.providerExecutionActivityObserver(ctx, result),
-			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, result),
-			OnCompletionReceipt: o.providerCompletionReceiptAcceptor(ctx, result),
-		})
-		result.outcome = retryResponse.Outcome
-		if retryErr != nil {
-			result.outcome = normalizeExecutionOutcome(result.outcome, retryErr)
-			return result, retryErr
-		}
-
-		result.tokens.InputTokens += retryResponse.Tokens.InputTokens
-		result.tokens.OutputTokens += retryResponse.Tokens.OutputTokens
-		result.tokens.TotalTokens += retryResponse.Tokens.TotalTokens
-		result.tokens.ReasoningTokens += retryResponse.Tokens.ReasoningTokens
-		result.tokens.CacheReadTokens += retryResponse.Tokens.CacheReadTokens
-		result.tokens.CacheWriteTokens += retryResponse.Tokens.CacheWriteTokens
-		if strings.TrimSpace(retryResponse.ProviderSessionID) != "" {
-			result.providerSessionID = strings.TrimSpace(retryResponse.ProviderSessionID)
-		}
-		result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(retryResponse.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
-		result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(retryResponse.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
-		result.completionReceiptEvidenceID = strings.TrimSpace(retryResponse.CompletionReceiptEvidenceID)
-		result.completionStructuredPayloadJSON = strings.TrimSpace(retryResponse.CompletionStructuredPayloadJSON)
-		result.suppressEmptyOutputRetry = retryResponse.SuppressEmptyOutputRetry
-		result.outputText = strings.TrimSpace(retryResponse.OutputText)
-		artifactCount, countErr := o.retryArtifactCountForExecution(ctx, result.node, result.workspacePath, result.baseSnapshotID)
-		if countErr != nil {
-			return result, countErr
-		}
-		if !shouldRetryEmptyOutput(result.outputText, artifactCount, result.suppressEmptyOutputRetry) {
-			o.emitEmptyOutputRetryRecoveredEvent(ctx, result, retryNumber, totalRetries, now)
-			return result, nil
-		}
-	}
-
-	o.emitEmptyOutputRetriesExhaustedEvent(ctx, result, totalRetries, o.now().UTC().Format(time.RFC3339))
-	exhaustedErr := &providerEmptyOutputError{NodeID: result.node.NodeID, AttemptID: result.attemptID}
-	result.outcome = normalizeExecutionOutcome(result.outcome, exhaustedErr)
-	return result, exhaustedErr
-}
-
-func (o *orchestrationLoop) emitEmptyOutputRetryEvent(ctx context.Context, result asyncExecutionResult, retryNumber, retryMax int, delay time.Duration, forceNewSession bool, createdAt string) {
-	if o == nil || o.events == nil {
-		return
-	}
-	retryMode := "same_session"
-	if forceNewSession {
-		retryMode = "fresh_session"
-	}
-	payload, err := marshalAsyncExecutionAttemptEventPayload(result, "provider_empty_output_retry", map[string]any{
-		"retry_index":   retryNumber,
-		"retry_max":     retryMax,
-		"delay_seconds": int(delay.Seconds()),
-		"retry_mode":    retryMode,
-	})
-	if err != nil {
-		return
-	}
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_retry_%d", result.run.RunID, result.attempt.NodeID, result.attempt.Attempt, retryNumber),
-		RunID:           result.run.RunID,
-		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: true},
-		AttemptID:       result.attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.retrying",
-		Seq:             o.nextEventSeq(ctx, result.attemptID),
-		PayloadJSON:     payload,
-		ActorID:         "runtime_orchestrator",
-		RoleID:          result.node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_empty_output_retry",
-		ReasonText:      fmt.Sprintf("retrying empty provider output after %ds (%s)", int(delay.Seconds()), retryMode),
-		CorrelationID:   "corr_orch_" + result.run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_retry_%d", result.run.RunID, result.attempt.NodeRunID, retryNumber),
-		CreatedAt:       createdAt,
-	})
-}
-
-func (o *orchestrationLoop) emitEmptyOutputRetryRecoveredEvent(ctx context.Context, result asyncExecutionResult, retryNumber, retryMax int, createdAt string) {
-	if o == nil || o.events == nil {
-		return
-	}
-	payload, err := marshalAsyncExecutionAttemptEventPayload(result, "provider_output_recovered", map[string]any{
-		"retry_index": retryNumber,
-		"retry_max":   retryMax,
-	})
-	if err != nil {
-		return
-	}
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_retry_recovered_%d", result.run.RunID, result.attempt.NodeID, result.attempt.Attempt, retryNumber),
-		RunID:           result.run.RunID,
-		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: true},
-		AttemptID:       result.attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.retry_recovered",
-		Seq:             o.nextEventSeq(ctx, result.attemptID),
-		PayloadJSON:     payload,
-		ActorID:         "runtime_orchestrator",
-		RoleID:          result.node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_output_recovered",
-		ReasonText:      "provider output recovered after empty-output retry",
-		CorrelationID:   "corr_orch_" + result.run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_retry_recovered_%d", result.run.RunID, result.attempt.NodeRunID, retryNumber),
-		CreatedAt:       createdAt,
-	})
-}
-
-func (o *orchestrationLoop) emitEmptyOutputRetriesExhaustedEvent(ctx context.Context, result asyncExecutionResult, retryMax int, createdAt string) {
-	if o == nil || o.events == nil {
-		return
-	}
-	payload, err := marshalAsyncExecutionAttemptEventPayload(result, "provider_empty_output_exhausted", map[string]any{
-		"retry_max": retryMax,
-	})
-	if err != nil {
-		return
-	}
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_retry_exhausted", result.run.RunID, result.attempt.NodeID, result.attempt.Attempt),
-		RunID:           result.run.RunID,
-		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: true},
-		AttemptID:       result.attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.retry_exhausted",
-		Seq:             o.nextEventSeq(ctx, result.attemptID),
-		PayloadJSON:     payload,
-		ActorID:         "runtime_orchestrator",
-		RoleID:          result.node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_empty_output_exhausted",
-		ReasonText:      fmt.Sprintf("provider returned empty output after %d retries", retryMax),
-		CorrelationID:   "corr_orch_" + result.run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_retry_exhausted", result.run.RunID, result.attempt.NodeRunID),
-		CreatedAt:       createdAt,
-	})
 }
 func sleepWithContext(ctx context.Context, sleepFn func(time.Duration), d time.Duration) error {
 	if d <= 0 {
@@ -1733,24 +1247,7 @@ type providerEmptyOutputError struct {
 }
 
 func (e *providerEmptyOutputError) Error() string {
-	return fmt.Sprintf("provider returned empty output after retries (node=%s attempt=%s)", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
-}
-
-type completionRecoveryWorkspaceMutationError struct {
-	Paths []string
-}
-
-func (e *completionRecoveryWorkspaceMutationError) Error() string {
-	paths := make([]string, 0, len(e.Paths))
-	for _, path := range e.Paths {
-		if trimmed := strings.TrimSpace(path); trimmed != "" {
-			paths = append(paths, trimmed)
-		}
-	}
-	if len(paths) == 0 {
-		return "completion recovery mutated the workspace"
-	}
-	return fmt.Sprintf("completion recovery mutated the workspace: %s", strings.Join(paths, ", "))
+	return fmt.Sprintf("provider returned empty output (node=%s attempt=%s)", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
 }
 
 func classifyExecutionReasonCode(err error) string {
@@ -1780,10 +1277,6 @@ func classifyExecutionReasonCode(err error) string {
 	var emptyOutputErr *providerEmptyOutputError
 	if errors.As(err, &emptyOutputErr) {
 		return "provider_empty_output"
-	}
-	var recoveryMutationErr *completionRecoveryWorkspaceMutationError
-	if errors.As(err, &recoveryMutationErr) {
-		return "completion_recovery_workspace_mutated"
 	}
 	var incompleteTurnErr *opencode.IncompleteTerminalStateError
 	if errors.As(err, &incompleteTurnErr) {
