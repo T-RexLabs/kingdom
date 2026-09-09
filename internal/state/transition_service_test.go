@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"kingdom/internal/core/providerexecution"
 	executionstore "kingdom/internal/execution/store"
 )
 
@@ -1398,6 +1399,128 @@ func TestTransitionServiceAllowsReadyToFailedWithoutStartedAt(t *testing.T) {
 	}
 }
 
+func TestTransitionServiceRecordDirectExecutionTerminalRejectsActiveUnsettledProviderInvocation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	store := executionstore.New(db)
+	const attemptID = "att_1"
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue provider-backed attempt: %v", err)
+	}
+	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_direct_terminal_guard",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
+		CompletionCapability: "capability-direct-terminal-guard",
+		CreatedAt:            "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_direct_terminal_guard",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_direct_terminal_guard",
+		OpenedAt:             "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("open provider invocation: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:02Z' WHERE attempt_id = 'att_1'`)
+
+	req := baseTransitionRequest(EntityTypeNode, "running", "failed")
+	req.NodeRunID = sql.NullString{String: "nr_1", Valid: true}
+	req.EventID = "evt_direct_terminal_guard"
+	req.TransitionID = "tr_direct_terminal_guard"
+	req.AttemptID = attemptID
+	req.EventSeq = 2
+	req.ReasonCode = "agent_unresponsive"
+	req.ReasonText = "generic recovery must not win provider terminal authority"
+	req.OccurredAt = "2026-03-01T12:10:00Z"
+	req.EventType = "attempt.failed"
+
+	err := NewTransitionService(db, nil).RecordDirectExecutionTerminal(context.Background(), DirectExecutionTerminalRequest{Transition: req})
+	if err == nil || !strings.Contains(err.Error(), "canonical provider settlement") {
+		t.Fatalf("expected canonical provider settlement guard, got %v", err)
+	}
+	if got := queryNodeStatus(t, db, "nr_1"); got != "running" {
+		t.Fatalf("direct terminal rejection changed node state to %q", got)
+	}
+	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
+	if err != nil || !found {
+		t.Fatalf("load guarded attempt: found=%t err=%v", found, err)
+	}
+	if attempt.State != "running" || attempt.CanonicalSettlementID != "" {
+		t.Fatalf("direct terminal rejection changed provider attempt truth: %#v", attempt)
+	}
+	if queryTransitionByID(t, db, req.TransitionID) {
+		t.Fatal("direct terminal rejection persisted its transition")
+	}
+}
+
+func TestTransitionServiceRecordDirectExecutionTerminalPreservesNonProviderAuthority(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		executionMode  executionstore.ExecutionMode
+		completionMode executionstore.ProviderCompletionMode
+	}{
+		{name: "runtime owned", executionMode: executionstore.ExecutionModeRuntimeOwned, completionMode: executionstore.ProviderCompletionModeNotApplicable},
+		{name: "provider setup failure before invocation", executionMode: executionstore.ExecutionModeProviderBacked, completionMode: executionstore.ProviderCompletionModeServerResponse},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL WHERE node_run_id = 'nr_1'`)
+			store := executionstore.New(db)
+			if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+				AttemptID:      "att_1",
+				RunID:          "run_1",
+				NodeRunID:      "nr_1",
+				ExecutionMode:  tc.executionMode,
+				CompletionMode: tc.completionMode,
+				CreatedAt:      "2026-03-01T12:00:00Z",
+			}); err != nil {
+				t.Fatalf("enqueue attempt: %v", err)
+			}
+
+			req := baseTransitionRequest(EntityTypeNode, "ready", "failed")
+			req.NodeRunID = sql.NullString{String: "nr_1", Valid: true}
+			req.EventID = "evt_direct_terminal_allowed"
+			req.TransitionID = "tr_direct_terminal_allowed"
+			req.AttemptID = "att_1"
+			req.EventSeq = 2
+			req.ReasonCode = "execution_setup_failed"
+			req.ReasonText = "setup failed before provider invocation"
+			req.OccurredAt = "2026-03-01T12:10:00Z"
+			req.EventType = "attempt.failed"
+			if err := NewTransitionService(db, nil).RecordDirectExecutionTerminal(context.Background(), DirectExecutionTerminalRequest{Transition: req}); err != nil {
+				t.Fatalf("record direct terminal: %v", err)
+			}
+			attempt, found, err := store.GetAttempt(context.Background(), "att_1")
+			if err != nil || !found {
+				t.Fatalf("load terminal attempt: found=%t err=%v", found, err)
+			}
+			if attempt.State != "committed_failure" {
+				t.Fatalf("expected preserved direct terminal authority, got %#v", attempt)
+			}
+		})
+	}
+}
+
 func TestTransitionServiceNodeTransitionUpdatesRunUpdatedAt(t *testing.T) {
 	t.Parallel()
 
@@ -1542,6 +1665,73 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 		if status != tc.want {
 			t.Fatalf("expected agent %s status %q, got %q", tc.agentID, tc.want, status)
 		}
+	}
+}
+
+func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomically(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	ctx := context.Background()
+	execStore := executionstore.New(db)
+	const attemptID = "run_1:decree_intake:1"
+	const invocationID = "invocation_run_cancel"
+	if err := execStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_run_cancel", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+	claim, acquired, err := execStore.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker_run_cancel", LeaseUntil: "2099-03-01T12:10:00Z", ClaimedAt: "2026-03-01T12:00:01Z"})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
+	if _, err := execStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_run_cancel", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: "ses_run_cancel", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		t.Fatalf("activate provider invocation: %v", err)
+	}
+
+	svc := NewTransitionService(db, nil)
+	transition := baseTransitionRequest(EntityTypeRun, "running", "cancelled")
+	transition.ReasonCode = "run_cancelled_by_user"
+	transition.ReasonText = "run cancelled by user"
+	transition.OccurredAt = "2026-03-01T12:00:03Z"
+	if err := svc.TerminalizeRunAndCancelLiveNodes(ctx, RunTerminalizationRequest{Transition: transition}); err != nil {
+		t.Fatalf("terminalize run: %v", err)
+	}
+
+	attempt, found, err := execStore.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load cancellation-pending attempt: found=%t err=%v", found, err)
+	}
+	if attempt.State != "running" || attempt.CanonicalSettlementID != "" || attempt.LeaseOwner != "worker_run_cancel" {
+		t.Fatalf("run cancellation revoked provider settlement authority early: %#v", attempt)
+	}
+
+	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses_run_cancel", Cancelled: true, Tokens: providerexecution.TokenUsage{InputTokens: 9, OutputTokens: 3, TotalTokens: 12, ReasoningTokens: 2}}
+	settlement, err := svc.SettleProviderExecution(ctx, executionstore.SettleProviderCompletionAndTerminalRequest{
+		Settlement:           executionstore.FinalizeProviderCompletionSettlementRequest{SettlementID: executionstore.ProviderCompletionSettlementID(invocationID), ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: executionstore.ProviderCompletionOutcomeCancelled, ProviderDiagnosticsJSON: `{}`, FailureReasonCode: "provider_cancelled", FailureReasonText: "run cancelled by user", SettledAt: "2026-03-01T12:00:04Z"},
+		StreamObservation:    &observation,
+		ExpectedLeaseOwner:   "worker_run_cancel",
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "king", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
+		Terminal:             executionstore.CommitTerminalRequest{OutboxID: "outbox_run_cancel", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_cancelled", PayloadJSON: `{}`, CommittedAt: "2026-03-01T12:00:04Z", TerminalReasonCode: "provider_cancelled", FailureCode: "provider_cancelled", FailureText: "run cancelled by user", ProviderSessionID: "ses_run_cancel"},
+	})
+	if err != nil {
+		t.Fatalf("settle cancelled provider invocation: %v", err)
+	}
+	attempt, found, err = execStore.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load settled cancelled attempt: found=%t err=%v", found, err)
+	}
+	if attempt.State != "committed_cancelled" || attempt.CanonicalSettlementID != settlement.SettlementID || attempt.LeaseOwner != "" {
+		t.Fatalf("cancelled provider invocation did not settle atomically: %#v", attempt)
+	}
+	var totalTokens int64
+	if err := db.QueryRow(`SELECT total_tokens FROM token_usage WHERE provider_invocation_id = ?`, invocationID).Scan(&totalTokens); err != nil {
+		t.Fatalf("load cancelled invocation usage: %v", err)
+	}
+	if totalTokens != 12 {
+		t.Fatalf("expected cancelled invocation usage 12, got %d", totalTokens)
 	}
 }
 

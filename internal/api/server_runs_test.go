@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	coreverdict "kingdom/internal/core/verdict"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
@@ -3077,7 +3078,17 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	if _, err := execStore.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
+	claim, acquired, err := execStore.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-review-detail",
+		LeaseUntil: "2099-12-31T23:59:59Z",
+		ClaimedAt:  now,
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, now, attemptID)
+	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID: "inv-review-detail",
 		AttemptID:            attemptID,
 		RunID:                runID,
@@ -3087,49 +3098,45 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:59:59Z",
 		CreatedAt:            "2026-03-01T12:59:59Z",
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := execStore.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{
-		ProviderInvocationID: "inv-review-detail",
-		AttemptID:            attemptID,
-		ProviderSessionID:    "ses-review-detail",
 		OpenedAt:             now,
 	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
+		t.Fatalf("activate provider invocation: %v", err)
 	}
-	if _, err := execStore.EnsureTerminalProviderCompletionEvidence(context.Background(), executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
-		ProviderInvocationID: "inv-review-detail",
-		AttemptID:            attemptID,
-		RunID:                runID,
-		NodeRunID:            "nr-review-detail",
-		State:                "failed",
-		ReasonCode:           "execution_review_rework",
-		FailureText:          "review requested rework",
-		OutputText:           "VERDICT: REWORK\n\nCanonical reviewer response.",
-		EvidenceSource:       "stream",
-		CreatedAt:            now,
+	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses-review-detail", CanonicalTerminalText: "VERDICT: REWORK\n\nCanonical reviewer response."}
+	if _, err := execStore.SettleProviderCompletionAndTerminal(context.Background(), executionstore.SettleProviderCompletionAndTerminalRequest{
+		Settlement: executionstore.FinalizeProviderCompletionSettlementRequest{
+			SettlementID:          "settlement-review-detail",
+			ProviderInvocationID:  "inv-review-detail",
+			AttemptID:             attemptID,
+			RunID:                 runID,
+			NodeRunID:             "nr-review-detail",
+			Outcome:               executionstore.ProviderCompletionOutcomeFailed,
+			FinalText:             "VERDICT: REWORK\n\nCanonical reviewer response.",
+			StructuredPayloadJSON: `{"verdict":"REWORK"}`,
+			FailureReasonCode:     "execution_review_rework",
+			FailureReasonText:     "review requested rework",
+			SettledAt:             now,
+		},
+		StreamObservation:    &observation,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "reviewer-shieldmaiden"},
+		Terminal: executionstore.CommitTerminalRequest{
+			OutboxID:           "outbox-review-detail",
+			AttemptID:          attemptID,
+			RunID:              runID,
+			NodeRunID:          "nr-review-detail",
+			TerminalState:      "committed_failure",
+			PayloadJSON:        `{"provider_invocation_id":"inv-review-stale","provider_invocation_at":"2026-03-01T12:58:00Z","output_text":"VERDICT: PASS\n\nStale reviewer response."}`,
+			TerminalReasonCode: "execution_review_rework",
+			FailureCode:        "execution_review_rework",
+			FailureText:        "review requested rework",
+			ProviderSessionID:  "ses-review-detail",
+		},
 	}); err != nil {
-		t.Fatalf("persist terminal provider stream evidence: %v", err)
+		t.Fatalf("settle provider completion and terminal: %v", err)
 	}
-	if _, err := execStore.FinalizeProviderCompletionSettlement(context.Background(), executionstore.FinalizeProviderCompletionSettlementRequest{
-		SettlementID:          "settlement-review-detail",
-		ProviderInvocationID:  "inv-review-detail",
-		AttemptID:             attemptID,
-		RunID:                 runID,
-		NodeRunID:             "nr-review-detail",
-		Outcome:               executionstore.ProviderCompletionOutcomeFailed,
-		PrimaryEvidenceID:     executionstore.TerminalProviderCompletionEvidenceID("inv-review-detail"),
-		FinalText:             "VERDICT: REWORK\n\nCanonical reviewer response.",
-		StructuredPayloadJSON: `{"verdict":"REWORK"}`,
-		FailureReasonCode:     "execution_review_rework",
-		FailureReasonText:     "review requested rework",
-		SettledAt:             now,
-	}); err != nil {
-		t.Fatalf("finalize provider completion settlement: %v", err)
-	}
-	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = ?, committed_at = ?, failure_code = 'execution_review_rework', failure_text = 'review requested rework', created_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, now, now, attemptID)
-	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES ('outbox-review-detail', ?, ?, 'nr-review-detail', 1, 'committed_failure', ?, 'published', 1, '', ?, ?, ?)`, attemptID, runID, `{"provider_invocation_id":"inv-review-stale","provider_invocation_at":"2026-03-01T12:58:00Z","output_text":"VERDICT: PASS\n\nStale reviewer response."}`, now, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_outbox SET status = 'published', publish_attempts = 1, published_at = ? WHERE outbox_id = 'outbox-review-detail'`, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 	if res.Code != http.StatusOK {
@@ -3187,7 +3194,7 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	}
 }
 
-func TestServerGetRunExecutionReturnsPendingObservedOutputDetail(t *testing.T) {
+func TestServerGetRunExecutionIgnoresPendingOutboxOutputWithoutCanonicalSettlement(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -3218,17 +3225,17 @@ func TestServerGetRunExecutionReturnsPendingObservedOutputDetail(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode pending run execution detail payload: %v", err)
 	}
-	if payload.OutputStatus != "observed" {
-		t.Fatalf("expected observed output status, got %#v", payload.OutputStatus)
+	if payload.OutputStatus != "none" {
+		t.Fatalf("expected no authoritative output status, got %#v", payload.OutputStatus)
 	}
-	if payload.OutputText == nil || *payload.OutputText != "Context summary\nVERDICT: PASS\n\nCaptured reviewer response." {
-		t.Fatalf("expected observed output text, got %#v", payload.OutputText)
+	if payload.OutputText != nil {
+		t.Fatalf("expected pending outbox output to be ignored, got %#v", payload.OutputText)
 	}
-	if payload.OutputVerdict == nil || *payload.OutputVerdict != "PASS" {
-		t.Fatalf("expected observed verdict PASS, got %#v", payload.OutputVerdict)
+	if payload.OutputVerdict != nil {
+		t.Fatalf("expected pending outbox verdict to be ignored, got %#v", payload.OutputVerdict)
 	}
-	if payload.OutputVerdictStatus == nil || *payload.OutputVerdictStatus != "observed" {
-		t.Fatalf("expected observed verdict status, got %#v", payload.OutputVerdictStatus)
+	if payload.OutputVerdictStatus != nil {
+		t.Fatalf("expected pending outbox verdict status to be omitted, got %#v", payload.OutputVerdictStatus)
 	}
 	if payload.FailureCode != nil {
 		t.Fatalf("expected no durable failure code while settlement is pending, got %#v", payload.FailureCode)

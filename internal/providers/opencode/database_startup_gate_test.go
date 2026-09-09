@@ -125,10 +125,10 @@ printf '{"type":"step_finish","sessionID":"ses_override","part":{"type":"step_fi
 	t.Setenv("RUN_STARTED", runStarted)
 	exportDone := make(chan error, 1)
 	go func() {
-		_, err := (cliSessionExporter{binaryPath: binary}).Export(context.Background(), sessionExportRequest{ProviderSessionID: "ses_export", DatabasePath: actualDatabase})
+		_, err := (cliSessionDiagnosticExporter{binaryPath: binary}).Export(context.Background(), sessionDiagnosticExportRequest{ProviderSessionID: "ses_export", DatabasePath: actualDatabase})
 		exportDone <- err
 	}()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if _, err := os.Stat(exportStarted); err == nil {
 			break

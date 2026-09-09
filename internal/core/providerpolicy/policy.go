@@ -33,15 +33,13 @@ type AgentPolicy struct {
 }
 
 type Timeouts struct {
-	StrictStartupTotalTimeout          string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
-	CompletionReconcileTotalTimeout    string            `yaml:"completion_reconcile_total_timeout" json:"completion_reconcile_total_timeout"`
-	CompletionReconcileBackoffSchedule []string          `yaml:"completion_reconcile_backoff_schedule" json:"completion_reconcile_backoff_schedule"`
-	DispatchAckTimeout                 string            `yaml:"dispatch_ack_timeout" json:"dispatch_ack_timeout"`
-	FirstEventTimeout                  string            `yaml:"first_event_timeout" json:"first_event_timeout"`
-	StreamInactivityTimeout            string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
-	CancelGraceTimeout                 string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
-	CancelForceTimeout                 string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
-	NodeWallClock                      map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
+	StrictStartupTotalTimeout string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
+	DispatchAckTimeout        string            `yaml:"dispatch_ack_timeout" json:"dispatch_ack_timeout"`
+	FirstEventTimeout         string            `yaml:"first_event_timeout" json:"first_event_timeout"`
+	StreamInactivityTimeout   string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
+	CancelGraceTimeout        string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
+	CancelForceTimeout        string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
+	NodeWallClock             map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
 }
 
 type RetryBoundaries struct {
@@ -131,19 +129,6 @@ func normalizeAndValidate(policy *Policy) error {
 	if err := validateTimeout(policy.Timeouts.DispatchAckTimeout, "dispatch_ack_timeout"); err != nil {
 		return err
 	}
-	if err := validateTimeout(policy.Timeouts.CompletionReconcileTotalTimeout, "completion_reconcile_total_timeout"); err != nil {
-		return err
-	}
-	if len(policy.Timeouts.CompletionReconcileBackoffSchedule) == 0 {
-		return fmt.Errorf("provider policy timeouts.completion_reconcile_backoff_schedule is required")
-	}
-	for i, raw := range policy.Timeouts.CompletionReconcileBackoffSchedule {
-		trimmed := strings.TrimSpace(raw)
-		policy.Timeouts.CompletionReconcileBackoffSchedule[i] = trimmed
-		if err := validateTimeout(trimmed, fmt.Sprintf("timeouts.completion_reconcile_backoff_schedule[%d]", i)); err != nil {
-			return err
-		}
-	}
 	if err := validateTimeout(policy.Timeouts.FirstEventTimeout, "first_event_timeout"); err != nil {
 		return err
 	}
@@ -204,10 +189,6 @@ func normalizeAndValidate(policy *Policy) error {
 
 	return nil
 }
-func (p Policy) CompletionReconcileBackoffDurations() ([]time.Duration, error) {
-	return parseDurationSchedule(p.Timeouts.CompletionReconcileBackoffSchedule, "completion reconcile backoff schedule")
-}
-
 func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, error) {
 	firstEventTimeout, err := parseDuration(p.Timeouts.FirstEventTimeout, "first_event_timeout")
 	if err != nil {

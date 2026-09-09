@@ -37,48 +37,45 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 	if binaryPath == "" {
 		binaryPath = "opencode"
 	}
-	exporter := cliSessionExporter{binaryPath: binaryPath}
+	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath}
 	return inspectSessionActivityWithExporter(ctx, req, exporter)
 }
 
-func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter SessionExporter) ([]SessionActivityItem, error) {
-	result, err := exporter.Export(ctx, sessionExportRequest{
+func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter) ([]SessionActivityItem, error) {
+	result, err := exporter.Export(ctx, sessionDiagnosticExportRequest{
 		ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
 		WorkDir:           strings.TrimSpace(req.WorkDir),
 		ConfigDir:         strings.TrimSpace(req.ConfigDir),
 		DatabasePath:      strings.TrimSpace(req.DatabasePath),
-		Mode:              sessionExportModeRaw,
+		Mode:              sessionDiagnosticExportModeRaw,
 	})
 	if err != nil {
 		return nil, err
 	}
-	parseReq := sessionCompletionReconcileRequest{
-		ProviderSessionID:   strings.TrimSpace(req.ProviderSessionID),
+	parseReq := sessionActivityScope{
 		AttemptID:           strings.TrimSpace(req.AttemptID),
 		InvocationID:        strings.TrimSpace(req.InvocationID),
 		InvocationStartedAt: req.InvocationStartedAt,
 	}
 	items := parseSessionActivityExport(result.Stdout, parseReq)
 	if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-		items = parseSessionActivityExport(result.Stdout, sessionCompletionReconcileRequest{
-			ProviderSessionID:   strings.TrimSpace(req.ProviderSessionID),
+		items = parseSessionActivityExport(result.Stdout, sessionActivityScope{
 			AttemptID:           strings.TrimSpace(req.AttemptID),
 			InvocationStartedAt: req.InvocationStartedAt,
 		})
 	}
 	if len(items) == 0 {
-		sanitizedResult, sanitizedErr := exporter.Export(ctx, sessionExportRequest{
+		sanitizedResult, sanitizedErr := exporter.Export(ctx, sessionDiagnosticExportRequest{
 			ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
 			WorkDir:           strings.TrimSpace(req.WorkDir),
 			ConfigDir:         strings.TrimSpace(req.ConfigDir),
 			DatabasePath:      strings.TrimSpace(req.DatabasePath),
-			Mode:              sessionExportModeSanitized,
+			Mode:              sessionDiagnosticExportModeSanitized,
 		})
 		if sanitizedErr == nil {
 			items = parseSessionActivityExport(sanitizedResult.Stdout, parseReq)
 			if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-				items = parseSessionActivityExport(sanitizedResult.Stdout, sessionCompletionReconcileRequest{
-					ProviderSessionID:   strings.TrimSpace(req.ProviderSessionID),
+				items = parseSessionActivityExport(sanitizedResult.Stdout, sessionActivityScope{
 					AttemptID:           strings.TrimSpace(req.AttemptID),
 					InvocationStartedAt: req.InvocationStartedAt,
 				})
@@ -88,7 +85,7 @@ func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivity
 	return items, nil
 }
 
-func parseSessionActivityExport(raw []byte, req sessionCompletionReconcileRequest) []SessionActivityItem {
+func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionActivityItem {
 	var payload struct {
 		Messages []map[string]any `json:"messages"`
 	}
@@ -97,15 +94,15 @@ func parseSessionActivityExport(raw []byte, req sessionCompletionReconcileReques
 	}
 
 	trimmedInvocationID := strings.TrimSpace(req.InvocationID)
-	currentBoundary := exportInvocationBoundary{}
+	currentBoundary := sessionActivityInvocationBoundary{}
 	haveBoundary := trimmedInvocationID == ""
 	items := make([]SessionActivityItem, 0)
 
 	for _, node := range payload.Messages {
-		metadata, metadataSeparate := exportMessageMetadata(node)
+		metadata, metadataSeparate := sessionDiagnosticMessageMetadata(node)
 		role := strings.ToLower(strings.TrimSpace(stringValue(metadata["role"])))
 		if role == "user" {
-			boundary, foundBoundary := invocationBoundaryFromMap(node)
+			boundary, foundBoundary := sessionActivityInvocationBoundaryFromMap(node)
 			if foundBoundary {
 				currentBoundary = boundary
 				haveBoundary = true
@@ -116,14 +113,14 @@ func parseSessionActivityExport(raw []byte, req sessionCompletionReconcileReques
 			continue
 		}
 		if trimmedInvocationID != "" {
-			if !boundaryMatchesReconcileRequest(currentBoundary, req) {
+			if !sessionActivityBoundaryMatchesScope(currentBoundary, req) {
 				continue
 			}
 		} else if !req.InvocationStartedAt.IsZero() && assistantCompletedBeforeInvocation(metadata, req.InvocationStartedAt) {
 			continue
 		}
-		fallbackOccurredAt := nestedStringValue(metadata, "time", "completed")
-		for _, contentNode := range assistantMessageContentNodes(node, metadata, metadataSeparate) {
+		fallbackOccurredAt := sessionDiagnosticNestedStringValue(metadata, "time", "completed")
+		for _, contentNode := range sessionDiagnosticMessageContentNodes(node, metadata, metadataSeparate) {
 			items = append(items, collectSessionActivityItems(contentNode, fallbackOccurredAt)...)
 		}
 	}
@@ -138,7 +135,7 @@ func parseSessionActivityExport(raw []byte, req sessionCompletionReconcileReques
 }
 
 func assistantCompletedBeforeInvocation(metadata map[string]any, startedAt time.Time) bool {
-	completedAt, ok := parseExportedTimestamp(nestedStringValue(metadata, "time", "completed"))
+	completedAt, ok := parseSessionDiagnosticTimestamp(sessionDiagnosticNestedStringValue(metadata, "time", "completed"))
 	if !ok {
 		return false
 	}
@@ -185,8 +182,8 @@ func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string)
 		if toolName == "" || toolName == "kingdom_complete_attempt" {
 			return SessionActivityItem{}, false
 		}
-		status := extractToolState(node)
-		toolTitle := nestedStringValue(node, "state", "title")
+		status := sessionDiagnosticToolState(node)
+		toolTitle := sessionDiagnosticNestedStringValue(node, "state", "title")
 		input := formatActivityValue(nestedAny(node, "state", "input"))
 		label := acp.ToolActivityLabel(toolName, status, toolTitle, input)
 		output := formatActivityValue(nestedAny(node, "state", "output"))
@@ -201,18 +198,18 @@ func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string)
 
 func redactedReasoningDetail(node map[string]any) string {
 	return reasoningDetailFromMetadata(
-		nestedStringValue(node, "metadata", "redacted"),
-		nestedStringValue(node, "metadata", "openai", "reasoningEncryptedContent"),
+		sessionDiagnosticNestedStringValue(node, "metadata", "redacted"),
+		sessionDiagnosticNestedStringValue(node, "metadata", "openai", "reasoningEncryptedContent"),
 	)
 }
 
 func activityTimestampRFC3339(node map[string]any, fallback string) string {
 	for _, candidate := range []string{
-		nestedStringValue(node, "time", "end"),
-		nestedStringValue(node, "time", "start"),
+		sessionDiagnosticNestedStringValue(node, "time", "end"),
+		sessionDiagnosticNestedStringValue(node, "time", "start"),
 		strings.TrimSpace(fallback),
 	} {
-		if parsed, ok := parseExportedTimestamp(candidate); ok {
+		if parsed, ok := parseSessionDiagnosticTimestamp(candidate); ok {
 			return parsed.UTC().Format(time.RFC3339)
 		}
 	}

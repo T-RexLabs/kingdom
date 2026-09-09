@@ -236,7 +236,7 @@ Important runtime behavior:
 - canonical settled response text is invocation-owned and single-turn; runtime must not concatenate multiple final answers or competing receipts into one settled response body
 - durable decree execution state is stored in `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_executions`, `attempt_event_log`, and `attempt_outbox`
 - clean builder execution exit without a valid receipt is terminal failure; response-first nodes require a structurally valid terminal server response
-- stream evidence and `opencode export` remain diagnostic and repair inputs only for provider-backed decree execution; they can add operator-facing context for the active invocation but cannot create canonical success, alter receipt-driven settled output, or become a second authority path
+- `opencode export` is diagnostic only for provider-backed decree execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
 

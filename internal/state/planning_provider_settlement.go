@@ -28,7 +28,6 @@ type PlanningProviderCompletionEvidenceKind string
 const (
 	PlanningProviderCompletionEvidenceKindStreamObservation PlanningProviderCompletionEvidenceKind = "stream_observation"
 	PlanningProviderCompletionEvidenceKindExportDiagnostic  PlanningProviderCompletionEvidenceKind = "export_diagnostic"
-	PlanningProviderCompletionEvidenceKindRepairDiagnostic  PlanningProviderCompletionEvidenceKind = "repair_diagnostic"
 )
 
 type PlanningProviderCompletionOutcome string
@@ -892,8 +891,7 @@ func samePlanningProviderSettlement(existing, candidate PlanningProviderCompleti
 func isValidPlanningProviderCompletionEvidenceKind(kind PlanningProviderCompletionEvidenceKind) bool {
 	switch kind {
 	case PlanningProviderCompletionEvidenceKindStreamObservation,
-		PlanningProviderCompletionEvidenceKindExportDiagnostic,
-		PlanningProviderCompletionEvidenceKindRepairDiagnostic:
+		PlanningProviderCompletionEvidenceKindExportDiagnostic:
 		return true
 	default:
 		return false

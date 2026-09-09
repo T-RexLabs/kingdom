@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,7 +19,8 @@ import (
 )
 
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 type ExecutionMode string
@@ -112,6 +114,9 @@ type AttemptExecution struct {
 	ExecutionMode              ExecutionMode
 	CompletionMode             ProviderCompletionMode
 	ProviderTimeoutMillis      int64
+	LeaseOwner                 string
+	LeaseExpiresAt             string
+	LeaseVersion               int64
 	SessionRef                 string
 	ProviderSessionID          string
 	ActiveProviderInvocationID string
@@ -309,7 +314,14 @@ type QueueAttemptCancelRequest struct {
 }
 
 func New(db *sql.DB) *Store {
-	return &Store{db: db}
+	return &Store{db: db, now: time.Now}
+}
+
+func (s *Store) currentTime() time.Time {
+	if s != nil && s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 type EnqueueAttemptRequest struct {
@@ -438,13 +450,14 @@ func (s *Store) GetAttempt(ctx context.Context, attemptID string) (AttemptExecut
 	var rec AttemptExecution
 	var executionMode, completionMode string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, provider_timeout_ms, session_ref, provider_session_id,
+		`SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, provider_timeout_ms,
+		        lease_owner, COALESCE(lease_expires_at, ''), lease_version, session_ref, provider_session_id,
 		        COALESCE(active_provider_invocation_id, ''), COALESCE(canonical_settlement_id, ''),
 		        COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(terminal_observed_at, ''), COALESCE(committed_at, ''), failure_code, failure_text,
 		        COALESCE(progress_event_type, ''), COALESCE(progress_reason_code, ''), COALESCE(progress_at, '')
 		 FROM attempt_executions WHERE attempt_id = ?`,
 		attemptID,
-	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &completionMode, &rec.ProviderTimeoutMillis, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.LaunchStartedAt, &rec.StartedAt, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText, &rec.ProgressEventType, &rec.ProgressReasonCode, &rec.ProgressAt)
+	).Scan(&rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.State, &executionMode, &completionMode, &rec.ProviderTimeoutMillis, &rec.LeaseOwner, &rec.LeaseExpiresAt, &rec.LeaseVersion, &rec.SessionRef, &rec.ProviderSessionID, &rec.ActiveProviderInvocationID, &rec.CanonicalSettlementID, &rec.LaunchStartedAt, &rec.StartedAt, &rec.TerminalObservedAt, &rec.CommittedAt, &rec.FailureCode, &rec.FailureText, &rec.ProgressEventType, &rec.ProgressReasonCode, &rec.ProgressAt)
 	if err == sql.ErrNoRows {
 		return AttemptExecution{}, false, nil
 	}
@@ -896,6 +909,10 @@ func hydrateRunExecutionProjectionSnapshot(executionMode ExecutionMode, attemptS
 	if executionMode != ExecutionModeProviderBacked {
 		return snapshot
 	}
+	// Provider outbox payloads are projection envelopes, never output authority.
+	snapshot.ObservedOutputText = sql.NullString{}
+	snapshot.ObservedControlVerdict = sql.NullString{}
+	snapshot.OutcomeReasonCode = sql.NullString{}
 	if activeProviderInvocationID.Valid {
 		snapshot.ProviderInvocationID = activeProviderInvocationID
 	}
@@ -911,8 +928,6 @@ func hydrateRunExecutionProjectionSnapshot(executionMode ExecutionMode, attemptS
 	if canonicalProviderInvocationAt.Valid {
 		snapshot.ProviderInvocationAt = canonicalProviderInvocationAt
 	}
-	snapshot.ObservedOutputText = sql.NullString{}
-	snapshot.ObservedControlVerdict = sql.NullString{}
 	if canonicalFinalText.Valid {
 		snapshot.ObservedOutputText = canonicalFinalText
 		if verdict := observedControlVerdict(canonicalFinalText.String); verdict != "" {
@@ -1032,6 +1047,171 @@ type AcquireLeaseRequest struct {
 	StateOnLease string
 }
 
+type ClaimQueuedProviderAttemptRequest struct {
+	AttemptID  string
+	LeaseOwner string
+	LeaseUntil string
+	ClaimedAt  string
+}
+
+type RenewProviderAttemptLeaseRequest struct {
+	AttemptID    string
+	LeaseOwner   string
+	LeaseVersion int64
+	LeaseUntil   string
+	RenewedAt    string
+}
+
+// ClaimQueuedProviderAttempt fences dispatch ownership without advancing the
+// provider lifecycle. In particular, started_at remains provider-observed data.
+func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedProviderAttemptRequest) (AttemptExecution, bool, error) {
+	if s == nil || s.db == nil {
+		return AttemptExecution{}, false, fmt.Errorf("store database is required")
+	}
+	attemptID := strings.TrimSpace(req.AttemptID)
+	owner := strings.TrimSpace(req.LeaseOwner)
+	leaseUntil := strings.TrimSpace(req.LeaseUntil)
+	claimedAt := strings.TrimSpace(req.ClaimedAt)
+	if attemptID == "" || owner == "" || leaseUntil == "" {
+		return AttemptExecution{}, false, fmt.Errorf("attempt_id, lease_owner, and lease_until are required")
+	}
+	if claimedAt == "" {
+		claimedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	claimedTime, err := time.Parse(time.RFC3339Nano, claimedAt)
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("parse claimed_at: %w", err)
+	}
+	leaseUntilTime, err := time.Parse(time.RFC3339Nano, leaseUntil)
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("parse lease_until: %w", err)
+	}
+	if !leaseUntilTime.After(claimedTime) {
+		return AttemptExecution{}, false, fmt.Errorf("lease_until must be after claimed_at")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("begin queued provider attempt claim transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+		SET lease_owner = ?,
+		    lease_expires_at = ?,
+		    lease_version = lease_version + 1,
+		    updated_at = ?
+		WHERE attempt_id = ?
+		  AND state = 'queued'
+		  AND execution_mode = 'provider_backed'
+		  AND (
+		    lease_owner = '' OR
+		    lease_expires_at IS NULL OR
+		    julianday(lease_expires_at) <= julianday(?)
+		  )`, owner, leaseUntil, claimedAt, attemptID, claimedAt)
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("claim queued provider attempt %q: %w", attemptID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("read queued provider attempt claim rows affected: %w", err)
+	}
+	if rows == 0 {
+		if err := tx.Commit(); err != nil {
+			return AttemptExecution{}, false, fmt.Errorf("commit lost queued provider attempt claim: %w", err)
+		}
+		committed = true
+		return AttemptExecution{}, false, nil
+	}
+
+	var claim AttemptExecution
+	var executionMode, completionMode string
+	err = tx.QueryRowContext(ctx, `SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode,
+		provider_timeout_ms, lease_owner, COALESCE(lease_expires_at, ''), lease_version,
+		session_ref, provider_session_id, COALESCE(launch_started_at, ''), COALESCE(started_at, '')
+		FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(
+		&claim.AttemptID, &claim.RunID, &claim.NodeRunID, &claim.State, &executionMode, &completionMode,
+		&claim.ProviderTimeoutMillis, &claim.LeaseOwner, &claim.LeaseExpiresAt, &claim.LeaseVersion,
+		&claim.SessionRef, &claim.ProviderSessionID, &claim.LaunchStartedAt, &claim.StartedAt,
+	)
+	if err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("load queued provider attempt claim %q: %w", attemptID, err)
+	}
+	claim.ExecutionMode = NormalizeExecutionMode(executionMode)
+	claim.CompletionMode = ProviderCompletionMode(completionMode)
+	if claim.LeaseOwner == "" || claim.LeaseVersion <= 0 {
+		return AttemptExecution{}, false, fmt.Errorf("queued provider attempt %q returned invalid lease lineage", attemptID)
+	}
+	if err := tx.Commit(); err != nil {
+		return AttemptExecution{}, false, fmt.Errorf("commit queued provider attempt claim: %w", err)
+	}
+	committed = true
+	return claim, true, nil
+}
+
+// RenewProviderAttemptLease extends an active provider execution lease without
+// changing its generation. A missing, cleared, expired, or replaced lease is
+// reported as a lost renewal rather than being recreated.
+func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProviderAttemptLeaseRequest) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("store database is required")
+	}
+	attemptID := strings.TrimSpace(req.AttemptID)
+	owner := strings.TrimSpace(req.LeaseOwner)
+	leaseUntil := strings.TrimSpace(req.LeaseUntil)
+	renewedAt := strings.TrimSpace(req.RenewedAt)
+	if attemptID == "" || owner == "" || leaseUntil == "" {
+		return false, fmt.Errorf("attempt_id, lease_owner, and lease_until are required")
+	}
+	if req.LeaseVersion <= 0 {
+		return false, fmt.Errorf("lease_version must be positive")
+	}
+	if renewedAt == "" {
+		renewedAt = s.currentTime().UTC().Format(time.RFC3339Nano)
+	}
+	renewedTime, err := time.Parse(time.RFC3339Nano, renewedAt)
+	if err != nil {
+		return false, fmt.Errorf("parse renewed_at: %w", err)
+	}
+	leaseUntilTime, err := time.Parse(time.RFC3339Nano, leaseUntil)
+	if err != nil {
+		return false, fmt.Errorf("parse lease_until: %w", err)
+	}
+	if !leaseUntilTime.After(renewedTime) {
+		return false, fmt.Errorf("lease_until must be after renewed_at")
+	}
+
+	result, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET lease_expires_at = ?
+		WHERE attempt_id = ?
+		  AND execution_mode = 'provider_backed'
+		  AND state IN ('starting', 'running')
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND lease_expires_at IS NOT NULL
+		  AND julianday(lease_expires_at) > julianday(?)
+		  AND julianday(?) > julianday(lease_expires_at)`,
+		leaseUntil,
+		attemptID,
+		owner,
+		req.LeaseVersion,
+		renewedAt,
+		leaseUntil,
+	)
+	if err != nil {
+		return false, fmt.Errorf("renew provider attempt lease %q: %w", attemptID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read provider attempt lease renewal rows affected: %w", err)
+	}
+	return rows == 1, nil
+}
+
 func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
@@ -1060,6 +1240,7 @@ func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool
 		     started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
 		     updated_at = ?
 		 WHERE attempt_id = ?
+		   AND execution_mode = 'provider_backed'
 		   AND state IN ('queued', 'starting', 'running')
 		   AND (
 		     lease_owner = '' OR
@@ -1297,8 +1478,13 @@ func commitTerminalTx(ctx context.Context, tx *sql.Tx, req CommitTerminalRequest
 	}
 	terminalSeq := req.TerminalSeq
 	if terminalSeq <= 0 {
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`, attemptID).Scan(&terminalSeq); err != nil {
-			return fmt.Errorf("load terminal attempt seq: %w", err)
+		if err := tx.QueryRowContext(ctx, `SELECT terminal_seq FROM attempt_outbox WHERE outbox_id = ?`, outboxID).Scan(&terminalSeq); err != nil {
+			if err != sql.ErrNoRows {
+				return fmt.Errorf("load existing terminal outbox sequence: %w", err)
+			}
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`, attemptID).Scan(&terminalSeq); err != nil {
+				return fmt.Errorf("load terminal attempt seq: %w", err)
+			}
 		}
 	}
 	failureCode, failureText := strings.TrimSpace(req.FailureCode), strings.TrimSpace(req.FailureText)
@@ -1315,12 +1501,29 @@ func commitTerminalTx(ctx context.Context, tx *sql.Tx, req CommitTerminalRequest
 		return fmt.Errorf("read terminal update rows affected: %w", err)
 	}
 	if rows == 0 {
-		var existing string
-		if err := tx.QueryRowContext(ctx, `SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&existing); err != nil {
+		var existingState, existingRunID, existingNodeRunID, existingCommittedAt, existingFailureCode, existingFailureText, existingProviderSessionID string
+		if err := tx.QueryRowContext(ctx, `SELECT state, run_id, node_run_id, COALESCE(committed_at, ''), failure_code, failure_text, provider_session_id FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&existingState, &existingRunID, &existingNodeRunID, &existingCommittedAt, &existingFailureCode, &existingFailureText, &existingProviderSessionID); err != nil {
 			return fmt.Errorf("load terminal attempt state: %w", err)
 		}
-		if existing != terminalState {
-			return fmt.Errorf("attempt %q already terminal in state %q", attemptID, existing)
+		if existingState != terminalState || existingRunID != runID || existingNodeRunID != nodeRunID || existingCommittedAt != committedAt || existingFailureCode != failureCode || existingFailureText != failureText || (strings.TrimSpace(req.ProviderSessionID) != "" && existingProviderSessionID != strings.TrimSpace(req.ProviderSessionID)) {
+			return providerSettlementError("commit_terminal", "terminal_replay_conflict", "", attemptID, existingState)
+		}
+		eventID := fmt.Sprintf("attempt_event:%s:%d", attemptID, terminalSeq)
+		var existingEventAttemptID, existingEventRunID, existingEventNodeRunID, existingEventType, existingReasonCode, existingEventPayload, existingEventCreatedAt string
+		var existingEventSeq int
+		if err := tx.QueryRowContext(ctx, `SELECT attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at FROM attempt_event_log WHERE attempt_event_id = ?`, eventID).Scan(&existingEventAttemptID, &existingEventRunID, &existingEventNodeRunID, &existingEventSeq, &existingEventType, &existingReasonCode, &existingEventPayload, &existingEventCreatedAt); err != nil {
+			return providerSettlementError("commit_terminal", "terminal_event_replay_conflict", "", attemptID, existingState)
+		}
+		if existingEventAttemptID != attemptID || existingEventRunID != runID || existingEventNodeRunID != nodeRunID || existingEventSeq != terminalSeq || existingEventType != eventType || existingReasonCode != reasonCode || existingEventPayload != payload || existingEventCreatedAt != committedAt {
+			return providerSettlementError("commit_terminal", "terminal_event_replay_conflict", "", attemptID, existingState)
+		}
+		var existingOutboxAttemptID, existingOutboxRunID, existingOutboxNodeRunID, existingOutboxState, existingOutboxPayload, existingOutboxCreatedAt string
+		var existingOutboxSeq int
+		if err := tx.QueryRowContext(ctx, `SELECT attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, created_at FROM attempt_outbox WHERE outbox_id = ?`, outboxID).Scan(&existingOutboxAttemptID, &existingOutboxRunID, &existingOutboxNodeRunID, &existingOutboxSeq, &existingOutboxState, &existingOutboxPayload, &existingOutboxCreatedAt); err != nil {
+			return providerSettlementError("commit_terminal", "terminal_outbox_replay_conflict", "", attemptID, existingState)
+		}
+		if existingOutboxAttemptID != attemptID || existingOutboxRunID != runID || existingOutboxNodeRunID != nodeRunID || existingOutboxSeq != terminalSeq || existingOutboxState != terminalState || existingOutboxPayload != payload || existingOutboxCreatedAt != committedAt {
+			return providerSettlementError("commit_terminal", "terminal_outbox_replay_conflict", "", attemptID, existingState)
 		}
 		return nil
 	}
@@ -1330,125 +1533,6 @@ func commitTerminalTx(ctx context.Context, tx *sql.Tx, req CommitTerminalRequest
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`, outboxID, attemptID, runID, nodeRunID, terminalSeq, terminalState, payload, committedAt, committedAt); err != nil {
 		return fmt.Errorf("insert attempt outbox record: %w", err)
 	}
-	return nil
-}
-
-func (s *Store) CommitTerminal(ctx context.Context, req CommitTerminalRequest) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("store database is required")
-	}
-	attemptID := strings.TrimSpace(req.AttemptID)
-	runID := strings.TrimSpace(req.RunID)
-	nodeRunID := strings.TrimSpace(req.NodeRunID)
-	terminalState := strings.TrimSpace(req.TerminalState)
-	outboxID := strings.TrimSpace(req.OutboxID)
-	payload := strings.TrimSpace(req.PayloadJSON)
-	if attemptID == "" || runID == "" || nodeRunID == "" || terminalState == "" || outboxID == "" {
-		return fmt.Errorf("outbox_id, attempt_id, run_id, node_run_id, and terminal_state are required")
-	}
-	if payload == "" {
-		payload = `{}`
-	}
-	committedAt := strings.TrimSpace(req.CommittedAt)
-	if committedAt == "" {
-		committedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin terminal commit transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	terminalSeq := req.TerminalSeq
-	if terminalSeq <= 0 {
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`,
-			attemptID,
-		).Scan(&terminalSeq); err != nil {
-			return fmt.Errorf("load terminal attempt seq: %w", err)
-		}
-	}
-
-	terminalEventType, terminalReasonCode := terminalAttemptEventForState(terminalState, strings.TrimSpace(req.TerminalReasonCode), strings.TrimSpace(req.FailureCode))
-
-	res, err := tx.ExecContext(ctx,
-		`UPDATE attempt_executions
-		 SET state = ?,
-		     terminal_observed_at = ?,
-		     committed_at = ?,
-		     lease_owner = '',
-		     lease_expires_at = NULL,
-		     provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-		     failure_code = ?,
-		     failure_text = ?,
-		     updated_at = ?
-		 WHERE attempt_id = ?
-		   AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')`,
-		terminalState,
-		committedAt,
-		committedAt,
-		strings.TrimSpace(req.ProviderSessionID),
-		strings.TrimSpace(req.ProviderSessionID),
-		strings.TrimSpace(req.FailureCode),
-		strings.TrimSpace(req.FailureText),
-		committedAt,
-		attemptID,
-	)
-	if err != nil {
-		return fmt.Errorf("update attempt terminal state: %w", err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read terminal update rows affected: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("attempt %q is already terminal or missing", attemptID)
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		fmt.Sprintf("attempt_event:%s:%d", attemptID, terminalSeq),
-		attemptID,
-		runID,
-		nodeRunID,
-		terminalSeq,
-		terminalEventType,
-		terminalReasonCode,
-		payload,
-		committedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("insert terminal attempt event: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`,
-		outboxID,
-		attemptID,
-		runID,
-		nodeRunID,
-		terminalSeq,
-		terminalState,
-		payload,
-		committedAt,
-		committedAt,
-	)
-	if err != nil {
-		return fmt.Errorf("insert attempt outbox record: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit terminal transaction: %w", err)
-	}
-	committed = true
 	return nil
 }
 
@@ -1489,6 +1573,9 @@ func (s *Store) CommitRecoveredTerminal(ctx context.Context, req CommitRecovered
 			_ = tx.Rollback()
 		}
 	}()
+	if err := ensureRecoveredTerminalProviderAuthorityTx(ctx, tx, attemptID, runID, nodeRunID); err != nil {
+		return result, err
+	}
 
 	var terminalSeq int
 	if err := tx.QueryRowContext(ctx,
@@ -1590,6 +1677,40 @@ func (s *Store) CommitRecoveredTerminal(ctx context.Context, req CommitRecovered
 	result.Applied = true
 	result.AttemptState = terminalState
 	return result, nil
+}
+
+func ensureRecoveredTerminalProviderAuthorityTx(ctx context.Context, tx *sql.Tx, attemptID, runID, nodeRunID string) error {
+	var executionMode string
+	var activeProviderInvocationID string
+	var canonicalSettlementID string
+	var canonicalMatches int
+	err := tx.QueryRowContext(ctx, `SELECT ae.execution_mode,
+		COALESCE(ae.active_provider_invocation_id, ''),
+		COALESCE(ae.canonical_settlement_id, ''),
+		EXISTS(
+			SELECT 1
+			FROM provider_completion_settlements pcs
+			WHERE pcs.settlement_id = ae.canonical_settlement_id
+			  AND pcs.provider_invocation_id = ae.active_provider_invocation_id
+			  AND pcs.attempt_id = ae.attempt_id
+		)
+		FROM attempt_executions ae
+		WHERE ae.attempt_id = ? AND ae.run_id = ? AND ae.node_run_id = ?`, attemptID, runID, nodeRunID).Scan(
+		&executionMode,
+		&activeProviderInvocationID,
+		&canonicalSettlementID,
+		&canonicalMatches,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load recovered terminal provider authority: %w", err)
+	}
+	if NormalizeExecutionMode(executionMode) == ExecutionModeProviderBacked && strings.TrimSpace(activeProviderInvocationID) != "" && (strings.TrimSpace(canonicalSettlementID) == "" || canonicalMatches == 0) {
+		return providerSettlementError("commit_recovered_terminal", "canonical_settlement_required", activeProviderInvocationID, attemptID, "")
+	}
+	return nil
 }
 
 func (s *Store) FinalizeTerminal(ctx context.Context, req FinalizeTerminalRequest) (FinalizeTerminalResult, error) {

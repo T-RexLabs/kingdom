@@ -189,10 +189,22 @@ func (o *orchestrationLoop) emitTimeoutWarningIfNeeded(ctx context.Context, run 
 }
 
 func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, now string, elapsed, timeout time.Duration) error {
+	if !o.claimExecutionSettlement(attemptID, "timeout") {
+		return nil
+	}
+	defer o.releaseExecutionSettlement(attemptID, "timeout")
+
 	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID, now)
 	if err != nil {
 		return err
 	}
+	resultWait := o.cancelForce
+	if resultWait <= 0 {
+		resultWait = 10 * time.Second
+	}
+	resultCtx, cancelResultWait := context.WithTimeout(context.WithoutCancel(ctx), resultWait)
+	cancelledExecution, executionReturned := o.awaitExecutionResult(resultCtx, attemptID)
+	cancelResultWait()
 	executionDiagnostics := o.collectAttemptExecutionDiagnostics(ctx, attemptID, o.preferredAttemptSessionID(ctx, attemptID), now)
 	reasonCode := "timeout"
 	reasonText := "node attempt exceeded node wall-clock timeout"
@@ -207,7 +219,9 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		}).Error()
 	}
 
-	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, reasonCode, map[string]any{
+	diagnosticsRaw, err := json.Marshal(map[string]any{
+		"reason_code":           reasonCode,
+		"reason_text":           reasonText,
 		"error":                 errorText,
 		"elapsed_ms":            elapsed.Milliseconds(),
 		"timeout_ms":            timeout.Milliseconds(),
@@ -215,36 +229,41 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 		"cancel_diagnostics":    cancelDiagnostics,
 	})
 	if err != nil {
-		return fmt.Errorf("marshal timeout failure payload: %w", err)
+		return fmt.Errorf("marshal timeout provider diagnostics: %w", err)
 	}
-
-	err = func() error {
-		o.eventSeqMu.Lock()
-		defer o.eventSeqMu.Unlock()
-		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
-			TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
-			EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_timeout_failed", run.RunID, attempt.NodeID, attempt.Attempt),
-			RunID:           run.RunID,
-			NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
-			Entity:          state.EntityTypeNode,
-			FromState:       "running",
-			ToState:         "failed",
-			ActorID:         "runtime_orchestrator",
-			RoleID:          attempt.RequiredRole,
-			AuthoritySource: "runtime.timeout",
-			ReasonCode:      reasonCode,
-			ReasonText:      reasonText,
-			CorrelationID:   "corr_orch_" + run.RunID,
-			CausationID:     fmt.Sprintf("caus_orch_%s_%s_timeout_failed", run.RunID, attempt.NodeRunID),
-			OccurredAt:      now,
-			AttemptID:       attemptID,
-			SchemaVersion:   "v1",
-			EventType:       "attempt.failed",
-			EventSeq:        o.nextEventSeq(ctx, attemptID),
-			PayloadJSON:     string(payloadRaw),
-		}})
-	}()
-	if err != nil {
+	result := asyncExecutionResult{
+		run:                     run,
+		node:                    nodeDefinition{NodeID: attempt.NodeID, RequiredRole: attempt.RequiredRole},
+		attempt:                 attempt,
+		attemptID:               attemptID,
+		sessionID:               attempt.SessionRef,
+		providerSessionID:       attempt.ProviderSessionID,
+		providerInvocationID:    attempt.ProviderInvocationID,
+		completionMode:          attempt.CompletionMode,
+		expectedLeaseOwner:      attempt.LeaseOwner,
+		expectedLeaseVersion:    attempt.LeaseVersion,
+		providerDiagnosticsJSON: string(diagnosticsRaw),
+		providerStreamObservation: opencode.InvocationStreamObservation{
+			ProviderSessionID: attempt.ProviderSessionID,
+			TimedOut:          true,
+		},
+		occurredAt: now,
+		outcome: opencode.ExecutionOutcome{
+			State:          "failed",
+			ReasonCode:     reasonCode,
+			FailureText:    errorText,
+			EvidenceSource: "stream",
+		},
+		err: errors.New(errorText),
+	}
+	if executionReturned {
+		result.providerStreamObservation = cancelledExecution.providerStreamObservation
+		result.providerStreamObservation.TimedOut = true
+		result.providerStreamObservation.ProviderSessionID = firstNonEmptyString(result.providerStreamObservation.ProviderSessionID, attempt.ProviderSessionID)
+		result.providerSessionID = firstNonEmptyString(cancelledExecution.providerSessionID, attempt.ProviderSessionID)
+		result.tokens = cancelledExecution.tokens
+	}
+	if err := o.commitProviderExecutionCompletion(ctx, result); err != nil {
 		return err
 	}
 	if o.registry != nil && attempt.AgentID != "" {

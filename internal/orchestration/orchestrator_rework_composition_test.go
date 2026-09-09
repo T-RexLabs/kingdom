@@ -42,7 +42,8 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	step, ok := a.steps[req.AttemptID]
 	a.mu.Unlock()
 	if !ok {
-		return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
+		output := `{"summary":"ok"}`
+		return opencode.ExecuteResponse{Accepted: true, OutputText: output, ProviderInvocationID: req.InvocationID, ProviderInvocationAt: req.InvocationIssuedAt, StreamObservation: testSuccessfulExecuteObservation(req, output)}, nil
 	}
 	if step.block != nil {
 		select {
@@ -54,7 +55,13 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if step.err != nil {
 		return opencode.ExecuteResponse{}, step.err
 	}
-	response := opencode.ExecuteResponse{Accepted: true, OutputText: step.output}
+	response := opencode.ExecuteResponse{
+		Accepted:             true,
+		OutputText:           step.output,
+		ProviderInvocationID: req.InvocationID,
+		ProviderInvocationAt: req.InvocationIssuedAt,
+		StreamObservation:    testSuccessfulExecuteObservation(req, step.output),
+	}
 	if req.OnCompletionReceipt != nil && strings.TrimSpace(req.InvocationID) != "" && strings.TrimSpace(req.CompletionCapability) != "" && strings.TrimSpace(step.output) != "" {
 		acceptance, err := req.OnCompletionReceipt(opencode.CompletionReceipt{
 			ProtocolVersion:       opencode.CompletionProtocolVersion,
@@ -70,8 +77,6 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 		response.CompletionReceiptAccepted = true
 		response.CompletionReceiptEvidenceID = acceptance.EvidenceID
 		response.CompletionStructuredPayloadJSON = acceptance.StructuredPayloadJSON
-		response.ProviderInvocationID = req.InvocationID
-		response.ProviderInvocationAt = req.InvocationIssuedAt
 	}
 	return response, nil
 }

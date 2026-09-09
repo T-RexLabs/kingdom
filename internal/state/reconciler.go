@@ -13,7 +13,6 @@ import (
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
-	coreverdict "kingdom/internal/core/verdict"
 	executionstore "kingdom/internal/execution/store"
 )
 
@@ -123,10 +122,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 		if recovery.failed {
 			result.AttemptsFailed++
 		}
-	}
-
-	if err := r.finalizeDurableTerminalProviderSettlements(ctx, nowTime); err != nil {
-		return ReconcileResult{}, err
 	}
 
 	if err := r.projectDurableTerminalNodes(ctx, nowTime); err != nil {
@@ -266,275 +261,6 @@ func (r *Reconciler) projectDurableTerminalNodes(ctx context.Context, nowTime ti
 		}
 	}
 	return nil
-}
-
-func (r *Reconciler) finalizeDurableTerminalProviderSettlements(ctx context.Context, nowTime time.Time) error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	rows, err := r.db.QueryContext(ctx, `SELECT ae.attempt_id,
-	       ae.run_id,
-	       ae.node_run_id,
-	       ae.state,
-	       ae.execution_mode,
-	       ae.provider_timeout_ms,
-	       ae.session_ref,
-	       ae.provider_session_id,
-	       COALESCE(ae.active_provider_invocation_id, ''),
-	       COALESCE(ae.canonical_settlement_id, ''),
-	       COALESCE(ae.terminal_observed_at, ''),
-	       COALESCE(ae.committed_at, ''),
-	       COALESCE(ae.failure_code, ''),
-	       COALESCE(ae.failure_text, '')
-	FROM attempt_executions ae
-	LEFT JOIN provider_completion_settlements pcs ON pcs.provider_invocation_id = ae.active_provider_invocation_id
-	WHERE ae.execution_mode = 'provider_backed'
-	  AND ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
-	  AND COALESCE(TRIM(ae.active_provider_invocation_id), '') <> ''
-	  AND (
-		  COALESCE(TRIM(ae.canonical_settlement_id), '') = ''
-		  OR pcs.settlement_id IS NULL
-		  OR COALESCE(TRIM(ae.canonical_settlement_id), '') <> COALESCE(TRIM(pcs.settlement_id), '')
-		  OR COALESCE(TRIM(pcs.outcome), '') <> CASE ae.state
-			WHEN 'committed_success' THEN 'success'
-			WHEN 'committed_failure' THEN 'failed'
-			ELSE 'cancelled'
-		  END
-		  OR COALESCE(TRIM(pcs.failure_reason_code), '') <> CASE
-			WHEN ae.state = 'committed_success' THEN ''
-			ELSE COALESCE(TRIM(ae.failure_code), '')
-		  END
-		  OR COALESCE(TRIM(pcs.failure_reason_text), '') <> CASE
-			WHEN ae.state = 'committed_success' THEN ''
-			ELSE COALESCE(TRIM(ae.failure_text), '')
-		  END
-	  )
-	ORDER BY COALESCE(ae.committed_at, ae.terminal_observed_at, ae.updated_at, ae.created_at) ASC,
-	         ae.attempt_id ASC`)
-	if err != nil {
-		return fmt.Errorf("query durable terminal provider settlements: %w", err)
-	}
-	defer rows.Close()
-
-	attempts := make([]executionstore.AttemptExecution, 0)
-	for rows.Next() {
-		var attempt executionstore.AttemptExecution
-		var executionMode string
-		if err := rows.Scan(
-			&attempt.AttemptID,
-			&attempt.RunID,
-			&attempt.NodeRunID,
-			&attempt.State,
-			&executionMode,
-			&attempt.ProviderTimeoutMillis,
-			&attempt.SessionRef,
-			&attempt.ProviderSessionID,
-			&attempt.ActiveProviderInvocationID,
-			&attempt.CanonicalSettlementID,
-			&attempt.TerminalObservedAt,
-			&attempt.CommittedAt,
-			&attempt.FailureCode,
-			&attempt.FailureText,
-		); err != nil {
-			return fmt.Errorf("scan durable terminal provider settlement attempt: %w", err)
-		}
-		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
-		attempts = append(attempts, attempt)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate durable terminal provider settlement attempts: %w", err)
-	}
-
-	for _, attempt := range attempts {
-		if err := r.finalizeDurableTerminalProviderSettlement(ctx, attempt, nowTime); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *Reconciler) finalizeDurableTerminalProviderSettlement(ctx context.Context, attempt executionstore.AttemptExecution, nowTime time.Time) error {
-	if r == nil || r.db == nil {
-		return nil
-	}
-	store := executionstore.New(r.db)
-	if err := r.reconcileDurableAttemptProviderSettlement(ctx, store, attempt, nowTime); err != nil {
-		return fmt.Errorf("reconcile provider settlement for durable attempt %q: %w", attempt.AttemptID, err)
-	}
-	return nil
-}
-
-func (r *Reconciler) reconcileDurableAttemptProviderSettlement(ctx context.Context, store *executionstore.Store, attempt executionstore.AttemptExecution, nowTime time.Time) error {
-	if store == nil || attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(attempt.ActiveProviderInvocationID) == "" {
-		return nil
-	}
-	outcome, ok := providerSettlementOutcomeForAttemptState(attempt.State)
-	if !ok {
-		return nil
-	}
-	_, found, err := store.GetProviderCompletionSettlementByInvocation(ctx, attempt.ActiveProviderInvocationID)
-	if err != nil {
-		return fmt.Errorf("load provider settlement for stale attempt %q: %w", attempt.AttemptID, err)
-	}
-	if found {
-		_, err := r.reconcileProviderCompletionSettlementWithRetry(ctx, store, executionstore.ReconcileProviderCompletionSettlementRequest{
-			ProviderInvocationID: attempt.ActiveProviderInvocationID,
-			AttemptID:            attempt.AttemptID,
-			RunID:                attempt.RunID,
-			NodeRunID:            attempt.NodeRunID,
-			Outcome:              outcome,
-			FailureReasonCode:    strings.TrimSpace(attempt.FailureCode),
-			FailureReasonText:    strings.TrimSpace(attempt.FailureText),
-			SettledAt:            settledAtForDurableAttempt(attempt, nowTime),
-		})
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-
-	settledAt := settledAtForDurableAttempt(attempt, nowTime)
-	primaryEvidenceID, err := r.primaryEvidenceForDurableAttemptSettlement(ctx, store, attempt, outcome, settledAt)
-	if err != nil {
-		return err
-	}
-	if _, err := r.finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
-		SettlementID:          executionstore.ProviderCompletionSettlementID(attempt.ActiveProviderInvocationID),
-		ProviderInvocationID:  attempt.ActiveProviderInvocationID,
-		AttemptID:             attempt.AttemptID,
-		RunID:                 attempt.RunID,
-		NodeRunID:             attempt.NodeRunID,
-		Outcome:               outcome,
-		PrimaryEvidenceID:     primaryEvidenceID,
-		FailureReasonCode:     strings.TrimSpace(attempt.FailureCode),
-		FailureReasonText:     strings.TrimSpace(attempt.FailureText),
-		StructuredPayloadJSON: "{}",
-		SettledAt:             settledAt,
-	}); err != nil {
-		return fmt.Errorf("finalize provider settlement for attempt %q: %w", attempt.AttemptID, err)
-	}
-	return nil
-}
-
-func (r *Reconciler) finalizeProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.FinalizeProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
-	return finalizeProviderCompletionSettlementWithRetry(ctx, store, req)
-}
-
-func (r *Reconciler) reconcileProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.ReconcileProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
-	return reconcileProviderCompletionSettlementWithRetry(ctx, store, req)
-}
-
-func finalizeProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.FinalizeProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
-	var settlement executionstore.ProviderCompletionSettlement
-	err := retrySQLiteBusy(ctx, func() error {
-		result, err := store.FinalizeProviderCompletionSettlement(ctx, req)
-		if err == nil {
-			settlement = result
-		}
-		return err
-	})
-	return settlement, err
-}
-
-func reconcileProviderCompletionSettlementWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.ReconcileProviderCompletionSettlementRequest) (executionstore.ProviderCompletionSettlement, error) {
-	var settlement executionstore.ProviderCompletionSettlement
-	err := retrySQLiteBusy(ctx, func() error {
-		result, err := store.ReconcileProviderCompletionSettlement(ctx, req)
-		if err == nil {
-			settlement = result
-		}
-		return err
-	})
-	return settlement, err
-}
-
-func ensureTerminalProviderCompletionEvidenceWithRetry(ctx context.Context, store *executionstore.Store, req executionstore.EnsureTerminalProviderCompletionEvidenceRequest) (executionstore.ProviderCompletionEvidence, error) {
-	var evidence executionstore.ProviderCompletionEvidence
-	err := retrySQLiteBusy(ctx, func() error {
-		result, err := store.EnsureTerminalProviderCompletionEvidence(ctx, req)
-		if err == nil {
-			evidence = result
-		}
-		return err
-	})
-	return evidence, err
-}
-
-func providerSettlementOutcomeForAttemptState(state string) (executionstore.ProviderCompletionOutcome, bool) {
-	switch strings.TrimSpace(state) {
-	case "committed_success":
-		return executionstore.ProviderCompletionOutcomeSuccess, true
-	case "committed_failure":
-		return executionstore.ProviderCompletionOutcomeFailed, true
-	case "committed_cancelled":
-		return executionstore.ProviderCompletionOutcomeCancelled, true
-	default:
-		return "", false
-	}
-}
-
-func settledAtForDurableAttempt(attempt executionstore.AttemptExecution, nowTime time.Time) string {
-	settledAt := strings.TrimSpace(attempt.CommittedAt)
-	if settledAt == "" {
-		settledAt = strings.TrimSpace(attempt.TerminalObservedAt)
-	}
-	if settledAt == "" {
-		settledAt = nowTime.UTC().Format(time.RFC3339)
-	}
-	return settledAt
-}
-
-func (r *Reconciler) primaryEvidenceForDurableAttemptSettlement(ctx context.Context, store *executionstore.Store, attempt executionstore.AttemptExecution, outcome executionstore.ProviderCompletionOutcome, settledAt string) (string, error) {
-	evidence, found, err := latestCompletionReceiptEvidence(ctx, store, attempt.ActiveProviderInvocationID)
-	if err != nil {
-		return "", fmt.Errorf("load receipt evidence for durable attempt %q: %w", attempt.AttemptID, err)
-	}
-	if found {
-		return evidence.EvidenceID, nil
-	}
-	if outcome == executionstore.ProviderCompletionOutcomeSuccess {
-		return "", fmt.Errorf("durable provider success for attempt %q is missing accepted receipt evidence", attempt.AttemptID)
-	}
-	evidence, err = ensureTerminalProviderCompletionEvidenceWithRetry(ctx, store, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
-		ProviderInvocationID: attempt.ActiveProviderInvocationID,
-		AttemptID:            attempt.AttemptID,
-		RunID:                attempt.RunID,
-		NodeRunID:            attempt.NodeRunID,
-		State:                providerSettlementDiagnosticState(attempt.State),
-		ReasonCode:           attempt.FailureCode,
-		FailureText:          attempt.FailureText,
-		EvidenceSource:       "stream",
-		CreatedAt:            settledAt,
-	})
-	if err != nil {
-		return "", fmt.Errorf("append provider settlement evidence for attempt %q: %w", attempt.AttemptID, err)
-	}
-	return evidence.EvidenceID, nil
-}
-
-func latestCompletionReceiptEvidence(ctx context.Context, store *executionstore.Store, providerInvocationID string) (executionstore.ProviderCompletionEvidence, bool, error) {
-	if store == nil || strings.TrimSpace(providerInvocationID) == "" {
-		return executionstore.ProviderCompletionEvidence{}, false, nil
-	}
-	evidence, err := store.ListProviderCompletionEvidence(ctx, providerInvocationID)
-	if err != nil {
-		return executionstore.ProviderCompletionEvidence{}, false, err
-	}
-	for idx := len(evidence) - 1; idx >= 0; idx-- {
-		if evidence[idx].EvidenceKind == executionstore.ProviderCompletionEvidenceKindCompletionReceipt {
-			return evidence[idx], true, nil
-		}
-	}
-	return executionstore.ProviderCompletionEvidence{}, false, nil
-}
-
-func providerSettlementDiagnosticState(attemptState string) string {
-	switch strings.TrimSpace(attemptState) {
-	case "committed_cancelled":
-		return "cancelled"
-	default:
-		return "failed"
-	}
 }
 
 func (r *Reconciler) sessionLeaseAttemptState(ctx context.Context, sessionID string) (string, string, string, bool, error) {
@@ -735,15 +461,21 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 		return false, nil
 	}
 	var state sql.NullString
+	var executionMode sql.NullString
+	var activeProviderInvocationID sql.NullString
+	var canonicalSettlementID sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		`SELECT state
+		`SELECT state,
+		        execution_mode,
+		        COALESCE(active_provider_invocation_id, ''),
+		        COALESCE(canonical_settlement_id, '')
 		 FROM attempt_executions
 		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
 		 LIMIT 1`,
 		trimmedAttemptID,
 		strings.TrimSpace(attempt.RunID),
 		strings.TrimSpace(attempt.NodeRunID),
-	).Scan(&state)
+	).Scan(&state, &executionMode, &activeProviderInvocationID, &canonicalSettlementID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -753,9 +485,13 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 	switch strings.TrimSpace(state.String) {
 	case "terminal_observed", "committed_success", "committed_failure", "committed_cancelled":
 		return true, nil
-	default:
-		return false, nil
 	}
+	if executionstore.NormalizeExecutionMode(executionMode.String) == executionstore.ExecutionModeProviderBacked &&
+		strings.TrimSpace(activeProviderInvocationID.String) != "" &&
+		strings.TrimSpace(canonicalSettlementID.String) == "" {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Reconciler) convergeProviderSettledAttempts(ctx context.Context, nowTime time.Time) error {
@@ -766,15 +502,11 @@ func (r *Reconciler) convergeProviderSettledAttempts(ctx context.Context, nowTim
 	       nr.node_id
 	FROM attempt_executions ae
 	JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
-	LEFT JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
 	LEFT JOIN provider_completion_settlements pcs ON pcs.provider_invocation_id = ae.active_provider_invocation_id
 	WHERE ae.execution_mode = 'provider_backed'
 	  AND ae.state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')
 	  AND COALESCE(TRIM(ae.active_provider_invocation_id), '') <> ''
-	  AND (
-		pcs.settlement_id IS NOT NULL
-		OR COALESCE(TRIM(pi.invocation_state), '') IN ('receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'invalid_handshake')
-	  )
+	  AND pcs.settlement_id IS NOT NULL
 	ORDER BY COALESCE(ae.updated_at, ae.started_at, ae.created_at) ASC,
 	         ae.attempt_id ASC`)
 	if err != nil {
@@ -827,73 +559,13 @@ func (r *Reconciler) convergeProviderBackedAttemptFromSettlement(ctx context.Con
 		return false, nil
 	}
 	providerSessionID := strings.TrimSpace(persisted.ProviderSessionID)
-	nodeClass, err := r.loadRunNodeClass(ctx, persisted.RunID, nodeID)
-	if err != nil {
-		return false, fmt.Errorf("load node class for provider settlement recovery attempt %q: %w", trimmedAttemptID, err)
-	}
 
 	settlement, foundSettlement, err := store.GetProviderCompletionSettlementByInvocation(ctx, providerInvocationID)
 	if err != nil {
 		return false, fmt.Errorf("load provider settlement for stale recovery attempt %q: %w", trimmedAttemptID, err)
 	}
-	if foundSettlement {
-		settlement, err = reconcileRecoveredReceiptSettlement(ctx, store, persisted, nodeID, nodeClass, settlement, nowTime)
-		if err != nil {
-			return false, fmt.Errorf("reconcile recovered provider settlement for attempt %q: %w", trimmedAttemptID, err)
-		}
-	}
 	if !foundSettlement {
-		invocation, foundInvocation, err := store.GetProviderInvocation(ctx, providerInvocationID)
-		if err != nil {
-			return false, fmt.Errorf("load provider invocation %q for stale recovery attempt %q: %w", providerInvocationID, trimmedAttemptID, err)
-		}
-		if !foundInvocation {
-			return false, nil
-		}
-		providerSessionID = firstNonEmptyTrimmed(providerSessionID, strings.TrimSpace(invocation.ProviderSessionID))
-		switch invocation.InvocationState {
-		case executionstore.ProviderInvocationStateReceiptPersisted, executionstore.ProviderInvocationStateSettledSuccess:
-			receiptEvidence, foundReceipt, err := store.GetProviderCompletionReceiptEvidence(ctx, providerInvocationID)
-			if err != nil {
-				return false, fmt.Errorf("load provider completion receipt evidence for stale recovery attempt %q: %w", trimmedAttemptID, err)
-			}
-			if !foundReceipt {
-				return false, fmt.Errorf("provider completion receipt evidence missing for stale recovery attempt %q invocation %q", trimmedAttemptID, providerInvocationID)
-			}
-			receiptPayload, err := executionstore.ParseProviderCompletionReceiptEvidencePayload(receiptEvidence.PayloadJSON)
-			if err != nil {
-				return false, fmt.Errorf("parse provider completion receipt evidence for stale recovery attempt %q: %w", trimmedAttemptID, err)
-			}
-			recoveredOutcome, failureReasonCode, failureReasonText, err := recoveredReceiptSettlementOutcome(nodeID, nodeClass, receiptPayload.FinalText, receiptPayload.StructuredPayloadJSON)
-			if err != nil {
-				return false, fmt.Errorf("adjudicate recovered provider receipt for stale recovery attempt %q: %w", trimmedAttemptID, err)
-			}
-			settledAt := firstNonEmptyTrimmed(strings.TrimSpace(receiptEvidence.CreatedAt), strings.TrimSpace(invocation.ReceiptPersistedAt), nowTime.UTC().Format(time.RFC3339))
-			settlement, err = finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
-				SettlementID:          executionstore.ProviderCompletionSettlementID(providerInvocationID),
-				ProviderInvocationID:  providerInvocationID,
-				AttemptID:             persisted.AttemptID,
-				RunID:                 persisted.RunID,
-				NodeRunID:             persisted.NodeRunID,
-				Outcome:               recoveredOutcome,
-				PrimaryEvidenceID:     receiptEvidence.EvidenceID,
-				FinalText:             receiptPayload.FinalText,
-				StructuredPayloadJSON: receiptPayload.StructuredPayloadJSON,
-				FailureReasonCode:     failureReasonCode,
-				FailureReasonText:     failureReasonText,
-				SettledAt:             settledAt,
-			})
-			if err != nil {
-				return false, fmt.Errorf("finalize provider settlement for stale recovery attempt %q: %w", trimmedAttemptID, err)
-			}
-		case executionstore.ProviderInvocationStateInvalidHandshake:
-			settlement, err = reconcileInvalidHandshakeProviderSettlement(ctx, store, persisted, invocation, nowTime)
-			if err != nil {
-				return false, fmt.Errorf("finalize invalid-handshake provider settlement for stale recovery attempt %q: %w", trimmedAttemptID, err)
-			}
-		default:
-			return false, nil
-		}
+		return false, nil
 	}
 	terminalState, reasonCode := recoveredAttemptTerminalStateForSettlement(settlement)
 	payload := map[string]any{
@@ -930,134 +602,7 @@ func (r *Reconciler) convergeProviderBackedAttemptFromSettlement(ctx context.Con
 	if !isAttemptExecutionTerminalState(commitResult.AttemptState) {
 		return false, nil
 	}
-	reconciledAttempt, found, err := store.GetAttempt(ctx, trimmedAttemptID)
-	if err != nil {
-		return false, fmt.Errorf("reload recovered attempt %q after terminal commit: %w", trimmedAttemptID, err)
-	}
-	if !found {
-		return false, fmt.Errorf("recovered attempt %q not found after terminal commit", trimmedAttemptID)
-	}
-	if err := r.reconcileDurableAttemptProviderSettlement(ctx, store, reconciledAttempt, nowTime); err != nil {
-		return false, fmt.Errorf("reconcile provider settlement after recovered terminal commit for attempt %q: %w", trimmedAttemptID, err)
-	}
 	return true, nil
-}
-
-func (r *Reconciler) loadRunNodeClass(ctx context.Context, runID, nodeID string) (string, error) {
-	if r == nil || r.db == nil {
-		return "", nil
-	}
-	trimmedRunID := strings.TrimSpace(runID)
-	trimmedNodeID := strings.TrimSpace(nodeID)
-	if trimmedRunID == "" || trimmedNodeID == "" {
-		return "", nil
-	}
-	var nodeClass sql.NullString
-	err := r.db.QueryRowContext(ctx, `SELECT NULLIF(TRIM(wn.node_class), '')
-FROM workflow_runs wr
-JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id
-WHERE wr.run_id = ? AND wn.node_id = ?
-LIMIT 1`, trimmedRunID, trimmedNodeID).Scan(&nodeClass)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(nodeClass.String), nil
-}
-
-func reconcileRecoveredReceiptSettlement(ctx context.Context, store *executionstore.Store, attempt executionstore.AttemptExecution, nodeID, nodeClass string, settlement executionstore.ProviderCompletionSettlement, nowTime time.Time) (executionstore.ProviderCompletionSettlement, error) {
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
-		return settlement, nil
-	}
-	recoveredOutcome, failureReasonCode, failureReasonText, err := recoveredReceiptSettlementOutcome(nodeID, nodeClass, settlement.FinalText, settlement.StructuredPayloadJSON)
-	if err != nil {
-		return executionstore.ProviderCompletionSettlement{}, err
-	}
-	if recoveredOutcome == executionstore.ProviderCompletionOutcomeSuccess {
-		return settlement, nil
-	}
-	return reconcileProviderCompletionSettlementWithRetry(ctx, store, executionstore.ReconcileProviderCompletionSettlementRequest{
-		ProviderInvocationID: settlement.ProviderInvocationID,
-		AttemptID:            attempt.AttemptID,
-		RunID:                attempt.RunID,
-		NodeRunID:            attempt.NodeRunID,
-		Outcome:              recoveredOutcome,
-		FailureReasonCode:    failureReasonCode,
-		FailureReasonText:    failureReasonText,
-		SettledAt:            firstNonEmptyTrimmed(strings.TrimSpace(settlement.SettledAt), nowTime.UTC().Format(time.RFC3339)),
-	})
-}
-
-func reconcileInvalidHandshakeProviderSettlement(ctx context.Context, store *executionstore.Store, attempt executionstore.AttemptExecution, invocation executionstore.ProviderInvocation, nowTime time.Time) (executionstore.ProviderCompletionSettlement, error) {
-	failureReasonCode, failureReasonText := invalidHandshakeFailure(invocation.InvalidReason)
-	outputText := ""
-	if receiptEvidence, foundReceipt, err := store.GetProviderCompletionReceiptEvidence(ctx, invocation.ProviderInvocationID); err != nil {
-		return executionstore.ProviderCompletionSettlement{}, fmt.Errorf("load provider completion receipt evidence for invalid handshake %q: %w", invocation.ProviderInvocationID, err)
-	} else if foundReceipt {
-		receiptPayload, parseErr := executionstore.ParseProviderCompletionReceiptEvidencePayload(receiptEvidence.PayloadJSON)
-		if parseErr != nil {
-			return executionstore.ProviderCompletionSettlement{}, fmt.Errorf("parse provider completion receipt evidence for invalid handshake %q: %w", invocation.ProviderInvocationID, parseErr)
-		}
-		outputText = receiptPayload.FinalText
-	}
-	settledAt := firstNonEmptyTrimmed(strings.TrimSpace(invocation.UpdatedAt), strings.TrimSpace(invocation.ReceiptPersistedAt), nowTime.UTC().Format(time.RFC3339))
-	terminalEvidence, err := ensureTerminalProviderCompletionEvidenceWithRetry(ctx, store, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
-		ProviderInvocationID: invocation.ProviderInvocationID,
-		AttemptID:            attempt.AttemptID,
-		RunID:                attempt.RunID,
-		NodeRunID:            attempt.NodeRunID,
-		State:                "failed",
-		ReasonCode:           failureReasonCode,
-		FailureText:          failureReasonText,
-		OutputText:           outputText,
-		CreatedAt:            settledAt,
-	})
-	if err != nil {
-		return executionstore.ProviderCompletionSettlement{}, fmt.Errorf("ensure terminal provider evidence for invalid handshake %q: %w", invocation.ProviderInvocationID, err)
-	}
-	return finalizeProviderCompletionSettlementWithRetry(ctx, store, executionstore.FinalizeProviderCompletionSettlementRequest{
-		SettlementID:          executionstore.ProviderCompletionSettlementID(invocation.ProviderInvocationID),
-		ProviderInvocationID:  invocation.ProviderInvocationID,
-		AttemptID:             attempt.AttemptID,
-		RunID:                 attempt.RunID,
-		NodeRunID:             attempt.NodeRunID,
-		Outcome:               executionstore.ProviderCompletionOutcomeFailed,
-		PrimaryEvidenceID:     terminalEvidence.EvidenceID,
-		FailureReasonCode:     failureReasonCode,
-		FailureReasonText:     failureReasonText,
-		StructuredPayloadJSON: `{}`,
-		SettledAt:             settledAt,
-	})
-}
-
-func invalidHandshakeFailure(invalidReason string) (string, string) {
-	switch strings.TrimSpace(invalidReason) {
-	case "completion_receipt_conflict":
-		return "provider_incomplete_turn", "conflicting provider completion receipts invalidated the invocation"
-	case "completion_capability_mismatch":
-		return "provider_incomplete_turn", "provider completion capability mismatch invalidated the invocation"
-	case "attempt_lineage_mismatch":
-		return "provider_incomplete_turn", "provider completion attempt identity did not match the active invocation"
-	default:
-		return "provider_incomplete_turn", "provider completion handshake invalidated the invocation"
-	}
-}
-
-func recoveredReceiptSettlementOutcome(nodeID, nodeClass, finalText, structuredPayloadJSON string) (executionstore.ProviderCompletionOutcome, string, string, error) {
-	decision, handled, err := coreverdict.ReceiptDecisionForNode(nodeID, nodeClass, structuredPayloadJSON, finalText)
-	if err != nil {
-		var contractErr *coreverdict.ReceiptContractError
-		if errors.As(err, &contractErr) {
-			return executionstore.ProviderCompletionOutcomeFailed, strings.TrimSpace(contractErr.ReasonCode), strings.TrimSpace(contractErr.Error()), nil
-		}
-		return "", "", "", err
-	}
-	if handled && strings.TrimSpace(decision.FailureReasonCode) != "" {
-		return executionstore.ProviderCompletionOutcomeFailed, strings.TrimSpace(decision.FailureReasonCode), strings.TrimSpace(decision.FailureReasonText), nil
-	}
-	return executionstore.ProviderCompletionOutcomeSuccess, "", "", nil
 }
 
 func recoveredAttemptTerminalStateForSettlement(settlement executionstore.ProviderCompletionSettlement) (string, string) {

@@ -468,6 +468,12 @@ func TestSessionAdapterAcceptsCompletionReceiptWhenReceiptModeEnabled(t *testing
 	if !res.CompletionReceiptAccepted {
 		t.Fatal("expected completion receipt to be accepted")
 	}
+	if !res.Accepted || res.Outcome.State != string(attemptCompletionStateSuccess) || res.Outcome.ReasonCode != "execution_completed" {
+		t.Fatalf("expected normal process exit to preserve receipt-backed success, got %#v", res)
+	}
+	if res.StreamObservation.TimedOut {
+		t.Fatalf("expected normal process exit not to report a timeout, got %#v", res.StreamObservation)
+	}
 	if res.CompletionReceiptEvidenceID != "evidence_receipt_success" {
 		t.Fatalf("expected completion receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
 	}
@@ -891,7 +897,7 @@ func TestSessionAdapterAcceptsIdempotentDuplicateDuringQuiescenceWindow(t *testi
 	}
 }
 
-func TestSessionAdapterAcceptedReceiptWinsOverPostReceiptWatchdogTimeout(t *testing.T) {
+func TestSessionAdapterWatchdogTimeoutOverridesAcceptedReceipt(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
@@ -912,7 +918,7 @@ func TestSessionAdapterAcceptedReceiptWinsOverPostReceiptWatchdogTimeout(t *test
 		RunID:                     "run_1",
 		NodeRunID:                 "nr_1",
 		WorkspacePath:             t.TempDir(),
-		Prompt:                    "accepted receipt should beat watchdog timeout",
+		Prompt:                    "watchdog timeout should override accepted receipt",
 		OccurredAt:                "2026-03-02T10:00:00Z",
 		InvocationID:              "invocation_receipt_timeout_precedence",
 		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
@@ -923,20 +929,193 @@ func TestSessionAdapterAcceptedReceiptWinsOverPostReceiptWatchdogTimeout(t *test
 			return CompletionReceiptAcceptance{EvidenceID: "evidence_receipt_timeout_precedence"}, nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if err == nil {
+		t.Fatal("expected watchdog timeout to fail execution")
 	}
 	if !res.CompletionReceiptAccepted {
-		t.Fatal("expected completion receipt to be accepted")
+		t.Fatal("expected accepted receipt to remain as candidate metadata")
 	}
 	if res.CompletionReceiptEvidenceID != "evidence_receipt_timeout_precedence" {
-		t.Fatalf("expected completion receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
+		t.Fatalf("expected candidate completion receipt evidence id, got %q", res.CompletionReceiptEvidenceID)
 	}
-	if res.Outcome.State != string(attemptCompletionStateSuccess) {
-		t.Fatalf("expected receipt-backed success outcome, got %#v", res.Outcome)
+	if res.Accepted {
+		t.Fatalf("expected timeout response not to be accepted, got %#v", res)
 	}
-	if res.Outcome.ReasonCode != "execution_completed" {
-		t.Fatalf("expected execution_completed reason code, got %#v", res.Outcome)
+	if res.Outcome.State != string(attemptCompletionStateFailed) || res.Outcome.ReasonCode != "provider_timeout" || res.Outcome.EvidenceSource != string(completionEvidenceSourceStream) {
+		t.Fatalf("expected stream-backed timeout failure outcome, got %#v", res.Outcome)
+	}
+	if !res.StreamObservation.TimedOut {
+		t.Fatalf("expected timeout stream observation, got %#v", res.StreamObservation)
+	}
+}
+
+func TestSessionAdapterAcceptedReceiptCannotMaskProcessOrProviderFailure(t *testing.T) {
+	tests := []struct {
+		name                string
+		env                 map[string]string
+		wantReason          string
+		wantProviderError   bool
+		wantProcessExitCode int
+	}{
+		{
+			name: "nonzero_exit",
+			env: map[string]string{
+				"FAKE_OPENCODE_EXIT_CODE_AFTER_EARLY_RECEIPT": "23",
+			},
+			wantReason:          "provider_process_failed",
+			wantProcessExitCode: 23,
+		},
+		{
+			name: "structured_provider_error",
+			env: map[string]string{
+				"FAKE_OPENCODE_STRUCTURED_ERROR_EXIT": "1",
+			},
+			wantReason:          "provider_upstream_error",
+			wantProviderError:   true,
+			wantProcessExitCode: 17,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binaryPath, _ := writeFakeOpenCodeBinary(t)
+			adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+			if err != nil {
+				t.Fatalf("new session adapter: %v", err)
+			}
+
+			t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
+			t.Setenv("FAKE_OPENCODE_EMIT_EARLY_COMPLETION_RECEIPT", "1")
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			attemptID := "attempt_receipt_" + tt.name
+			res, execErr := adapter.Execute(context.Background(), acceptedReceiptExecuteRequest(t, attemptID, t.TempDir()))
+			if execErr == nil {
+				t.Fatal("expected fatal process evidence to reject receipt-backed success")
+			}
+			assertAcceptedReceiptFailure(t, res, tt.wantReason)
+			if !res.StreamObservation.ProcessExited || res.StreamObservation.ProcessExitCode == nil || *res.StreamObservation.ProcessExitCode != tt.wantProcessExitCode {
+				t.Fatalf("expected process exit code %d, got %#v", tt.wantProcessExitCode, res.StreamObservation)
+			}
+			if !res.StreamObservation.StdoutDrained || !res.StreamObservation.StderrDrained {
+				t.Fatalf("expected failed process streams to be drained, got %#v", res.StreamObservation)
+			}
+			if tt.wantProviderError && strings.TrimSpace(res.StreamObservation.ProviderError) == "" {
+				t.Fatalf("expected structured provider error observation, got %#v", res.StreamObservation)
+			}
+		})
+	}
+}
+
+func TestSessionAdapterAcceptedReceiptCannotMaskMalformedStream(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_STDOUT_BANNER", "warning: malformed provider banner")
+	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
+	t.Setenv("FAKE_OPENCODE_EMIT_EARLY_COMPLETION_RECEIPT", "1")
+	res, execErr := adapter.Execute(context.Background(), acceptedReceiptExecuteRequest(t, "attempt_receipt_malformed_stream", t.TempDir()))
+	if execErr == nil {
+		t.Fatal("expected malformed stream evidence to reject receipt-backed success")
+	}
+	assertAcceptedReceiptFailure(t, res, "provider_malformed_protocol")
+	if res.StreamObservation.MalformedProtocolCount == 0 {
+		t.Fatalf("expected malformed protocol observation, got %#v", res.StreamObservation)
+	}
+}
+
+func TestSessionAdapterAcceptedReceiptCannotMaskConflictingLaterTerminalEvidence(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
+	t.Setenv("FAKE_OPENCODE_CONFLICTING_TERMINAL_AFTER_RECEIPT", "1")
+	res, execErr := adapter.Execute(context.Background(), acceptedReceiptExecuteRequest(t, "attempt_receipt_terminal_conflict", t.TempDir()))
+	if execErr == nil {
+		t.Fatal("expected conflicting later terminal evidence to reject receipt-backed success")
+	}
+	assertAcceptedReceiptFailure(t, res, "provider_incomplete_turn")
+	if !res.StreamObservation.ConflictingTerminalEvidence || !res.StreamObservation.LaterEventAfterTerminal {
+		t.Fatalf("expected conflicting later terminal observation, got %#v", res.StreamObservation)
+	}
+}
+
+func TestSessionAdapterAcceptedReceiptCannotMaskCancellation(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	receiptDir := t.TempDir()
+	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
+	t.Setenv("FAKE_OPENCODE_EMIT_EARLY_COMPLETION_RECEIPT", "1")
+	t.Setenv("FAKE_OPENCODE_SLEEP_MS", "3000")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type executeResult struct {
+		response ExecuteResponse
+		err      error
+	}
+	resultCh := make(chan executeResult, 1)
+	req := acceptedReceiptExecuteRequest(t, "attempt_receipt_cancelled", receiptDir)
+	go func() {
+		res, execErr := adapter.Execute(ctx, req)
+		resultCh <- executeResult{response: res, err: execErr}
+	}()
+
+	testutil.Eventually(t, 2*time.Second, 25*time.Millisecond, func() error {
+		entries, readErr := os.ReadDir(receiptDir)
+		if readErr != nil {
+			return readErr
+		}
+		if len(entries) == 0 {
+			return fmt.Errorf("early receipt not written")
+		}
+		return nil
+	})
+	cancel()
+
+	select {
+	case result := <-resultCh:
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", result.err)
+		}
+		assertAcceptedReceiptFailure(t, result.response, "provider_cancelled")
+		if !result.response.StreamObservation.Cancelled {
+			t.Fatalf("expected cancelled stream observation, got %#v", result.response.StreamObservation)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for cancelled receipt-backed execution")
+	}
+}
+
+func TestSessionAdapterAcceptedReceiptCannotMaskContinuationFailure(t *testing.T) {
+	binaryPath, _ := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
+	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", t.TempDir())
+	t.Setenv("FAKE_OPENCODE_CONTINUATION_ERROR_AFTER_TEXT", "1")
+	t.Setenv("FAKE_OPENCODE_CONTINUATION_EMIT_COMPLETION_RECEIPT", "1")
+	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
+	res, execErr := adapter.Execute(context.Background(), acceptedReceiptExecuteRequest(t, "attempt_receipt_continuation_failure", t.TempDir()))
+	if execErr == nil {
+		t.Fatal("expected continuation failure to reject receipt-backed success")
+	}
+	assertAcceptedReceiptFailure(t, res, "provider_upstream_error")
+	if !strings.Contains(res.StreamObservation.ProviderError, "continuation upstream exploded") {
+		t.Fatalf("expected continuation provider error observation, got %#v", res.StreamObservation)
 	}
 }
 
@@ -976,10 +1155,8 @@ func TestSessionAdapterRequiresDurableReceiptAcceptance(t *testing.T) {
 	}
 }
 
-func TestSessionAdapterAcceptedReceiptIgnores65536ByteTruncatedExport(t *testing.T) {
+func TestSessionAdapterAcceptedReceiptDoesNotInvokeDiagnosticExport(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	truncatedExport := strings.Repeat("{", 65536)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(truncatedExport)}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
@@ -1024,9 +1201,6 @@ func TestSessionAdapterAcceptedReceiptIgnores65536ByteTruncatedExport(t *testing
 	}
 	if res.Outcome.State != string(attemptCompletionStateSuccess) || res.Outcome.EvidenceSource != string(completionEvidenceSourceReceipt) {
 		t.Fatalf("expected receipt-backed success outcome, got %#v", res.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 0 {
-		t.Fatalf("expected no export calls after accepted receipt, got %#v", exporter.providerSessionIDs)
 	}
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
 	if readErr != nil {
@@ -2024,8 +2198,8 @@ func TestSessionAdapterRejectsEmptyTerminalStepOutput(t *testing.T) {
 	if res.OutputText != "" {
 		t.Fatalf("expected no fallback to nonterminal text, got %q", res.OutputText)
 	}
-	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected incomplete terminal outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "provider_empty_output" {
+		t.Fatalf("expected empty-output terminal outcome, got %#v", res.Outcome)
 	}
 }
 
@@ -2077,7 +2251,6 @@ func TestSessionAdapterSettlesAcrossToolCallsProcessBoundary(t *testing.T) {
 
 func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_tool_calls_pre_resolved", "invocation_tool_calls_settled", "canonical settled output"))}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
@@ -2113,17 +2286,10 @@ func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 	if invocations != 3 {
 		t.Fatalf("expected only bounded live-stream continuations, got %d args=%q", invocations, string(argsLogRaw))
 	}
-	if len(exporter.providerSessionIDs) != 0 {
-		t.Fatalf("export must not be read for completion, got %#v", exporter.providerSessionIDs)
-	}
 }
 
-func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalformed(t *testing.T) {
+func TestSessionAdapterContinuationUsesLatestLiveTurnTextWithoutExport(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{
-		results:          []sessionExportResult{exportResultFixture(`{"messages":[`)},
-		sanitizedResults: []sessionExportResult{exportResultFixture(`{"messages":[`)},
-	}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       5 * time.Second,
@@ -2149,14 +2315,14 @@ func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalform
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		WorkspacePath:  t.TempDir(),
-		Prompt:         "tool calls continuation with malformed export",
+		Prompt:         "tool calls continuation stays stream authoritative",
 		OccurredAt:     "2026-03-02T10:19:20Z",
 	})
 	if err != nil {
-		t.Fatalf("execute should fall back to stream success after malformed export: %v", err)
+		t.Fatalf("execute should settle from the terminal continuation stream: %v", err)
 	}
 	if res.OutputText != continuedVerdict {
-		t.Fatalf("expected fallback canonical output to use only the latest continuation turn, got %q", res.OutputText)
+		t.Fatalf("expected canonical output to use only the latest continuation turn, got %q", res.OutputText)
 	}
 	if strings.Contains(res.OutputText, "Initial reviewer body") {
 		t.Fatalf("expected initial tool-call turn text to be excluded from canonical output, got %q", res.OutputText)
@@ -2172,9 +2338,6 @@ func TestSessionAdapterContinuationUsesLatestTurnTextWhenPrecheckExportIsMalform
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
 	if invocations != 2 {
 		t.Fatalf("expected exactly 2 run invocations across the continuation boundary, got %d args=%q", invocations, string(argsLogRaw))
-	}
-	if len(exporter.exportModes) != 0 {
-		t.Fatalf("export must not be read before continuation, got %#v", exporter.exportModes)
 	}
 }
 
@@ -2534,7 +2697,6 @@ func TestSessionAdapterHandlesLargeToolEventWithoutScannerOverflow(t *testing.T)
 
 func TestSessionAdapterStopFinishSettlesStreamSuccessWithoutExportConfirmation(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(`{"messages":[`)}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
@@ -2552,35 +2714,20 @@ func TestSessionAdapterStopFinishSettlesStreamSuccessWithoutExportConfirmation(t
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		WorkspacePath:  t.TempDir(),
-		Prompt:         "require durable export confirmation",
+		Prompt:         "settle from terminal stream evidence",
 		OccurredAt:     "2026-03-02T10:21:30Z",
 	})
 	if err != nil {
-		t.Fatalf("expected clear stream success to survive malformed export, got %v", err)
+		t.Fatalf("expected clear stream success, got %v", err)
 	}
 	if res.Outcome.State != string(attemptCompletionStateSuccess) {
 		t.Fatalf("expected success outcome, got %#v", res.Outcome)
 	}
 	if res.OutputText != "hello from fake" {
-		t.Fatalf("expected stream output fallback, got %q", res.OutputText)
+		t.Fatalf("expected terminal stream output, got %q", res.OutputText)
 	}
 	if res.Outcome.EvidenceSource != string(completionEvidenceSourceStream) {
 		t.Fatalf("expected stream evidence source, got %#v", res.Outcome)
-	}
-
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_stop_confirmation"), AttemptEventTypeSucceeded)
-	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
-	}
-	if execPath["export_check_attempted"] != false {
-		t.Fatalf("expected export_check_attempted=false, got %#v", execPath["export_check_attempted"])
-	}
-	if execPath["export_check_status"] != "" {
-		t.Fatalf("expected no export check status for stop success, got %#v", execPath["export_check_status"])
-	}
-	if len(exporter.providerSessionIDs) != 0 {
-		t.Fatalf("expected stop success to skip exporter calls, got %#v", exporter.providerSessionIDs)
 	}
 
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
@@ -2589,643 +2736,6 @@ func TestSessionAdapterStopFinishSettlesStreamSuccessWithoutExportConfirmation(t
 	}
 	if strings.Contains(string(argsLogRaw), "export ses_") {
 		t.Fatalf("expected no export confirmation call, args log=%q", string(argsLogRaw))
-	}
-}
-
-func TestSessionAdapterRequiredReconcileCancellationReturnsCancelled(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exportStarted := make(chan struct{})
-	exporter := &fakeSessionExporter{exportFn: func(ctx context.Context, _ sessionExportRequest) (sessionExportResult, error) {
-		close(exportStarted)
-		<-ctx.Done()
-		return sessionExportResult{}, ctx.Err()
-	}}
-	_ = exporter
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	workspacePath := t.TempDir()
-
-	type executeResult struct {
-		response ExecuteResponse
-		err      error
-	}
-	resultCh := make(chan executeResult, 1)
-	go func() {
-		res, execErr := adapter.Execute(ctx, ExecuteRequest{
-			CompletionMode: CompletionModeServerResponse,
-			SessionID:      "session_required_reconcile_cancel",
-			AttemptID:      "attempt_required_reconcile_cancel",
-			RunID:          "run_1",
-			NodeRunID:      "nr_1",
-			WorkspacePath:  workspacePath,
-			Prompt:         "tool calls then cancel required reconcile",
-			OccurredAt:     "2026-03-02T10:21:34Z",
-		})
-		resultCh <- executeResult{response: res, err: execErr}
-	}()
-
-	select {
-	case <-exportStarted:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for required reconciliation to start")
-	}
-	cancel()
-
-	select {
-	case outcome := <-resultCh:
-		if !errors.Is(outcome.err, context.Canceled) {
-			t.Fatalf("expected context.Canceled from required reconcile cancellation, got %v", outcome.err)
-		}
-		if outcome.response.Outcome.State != string(attemptCompletionStateCancelled) {
-			t.Fatalf("expected cancelled outcome, got %#v", outcome.response.Outcome)
-		}
-		if outcome.response.Outcome.ReasonCode != "provider_cancelled" {
-			t.Fatalf("expected provider_cancelled reason code, got %#v", outcome.response.Outcome)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for execute to finish")
-	}
-
-	events := eventsFromAttempt(t, adapter, "attempt_required_reconcile_cancel")
-	if len(events) == 0 {
-		t.Fatal("expected terminal cancellation event to be recorded")
-	}
-	if got := events[len(events)-1].EventType; got != AttemptEventTypeCancelled {
-		t.Fatalf("expected cancelled terminal event, got %q", got)
-	}
-}
-
-func TestSessionAdapterRequiredReconcileDeadlineReturnsTimeoutFailure(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exportStarted := make(chan struct{})
-	exporter := &fakeSessionExporter{exportFn: func(ctx context.Context, _ sessionExportRequest) (sessionExportResult, error) {
-		close(exportStarted)
-		<-ctx.Done()
-		return sessionExportResult{}, ctx.Err()
-	}}
-	_ = exporter
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	type executeResult struct {
-		response ExecuteResponse
-		err      error
-	}
-	resultCh := make(chan executeResult, 1)
-	go func() {
-		res, execErr := adapter.Execute(ctx, ExecuteRequest{
-			CompletionMode: CompletionModeServerResponse,
-			SessionID:      "session_required_reconcile_timeout",
-			AttemptID:      "attempt_required_reconcile_timeout",
-			RunID:          "run_1",
-			NodeRunID:      "nr_1",
-			WorkspacePath:  t.TempDir(),
-			Prompt:         "tool calls then time out required reconcile",
-			OccurredAt:     "2026-03-02T10:21:35Z",
-		})
-		resultCh <- executeResult{response: res, err: execErr}
-	}()
-
-	select {
-	case <-exportStarted:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for required reconciliation to start")
-	}
-
-	select {
-	case outcome := <-resultCh:
-		if outcome.err == nil {
-			t.Fatal("expected timeout failure from required reconcile deadline")
-		}
-		if outcome.response.Outcome.State != string(attemptCompletionStateFailed) {
-			t.Fatalf("expected failed outcome, got %#v", outcome.response.Outcome)
-		}
-		if outcome.response.Outcome.ReasonCode != "provider_timeout" {
-			t.Fatalf("expected provider_timeout reason code, got %#v", outcome.response.Outcome)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for execute to finish")
-	}
-
-	events := eventsFromAttempt(t, adapter, "attempt_required_reconcile_timeout")
-	if len(events) == 0 {
-		t.Fatal("expected terminal failure event to be recorded")
-	}
-	if got := events[len(events)-1].EventType; got != AttemptEventTypeFailed {
-		t.Fatalf("expected failed terminal event, got %q", got)
-	}
-}
-
-func TestSessionAdapterReconcilesAmbiguousEOFViaExportUsingProviderSessionID(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EXPORT_STDERR", "Exporting session: ses_fake_created")
-	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", invocationSuccessExportFixtureWithAttempt("attempt_export_reconcile", "invocation_export_reconcile", "Recovered adapter output"))
-	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_logical_only",
-		AttemptID:      "attempt_export_reconcile",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "clean eof then export reconcile",
-		OccurredAt:     "2026-03-02T10:22:00Z",
-		InvocationID:   "invocation_export_reconcile",
-		OnLifecycle: func(observation ExecuteLifecycleObservation) {
-			lifecycle = append(lifecycle, observation)
-		},
-	})
-	if err != nil {
-		t.Fatalf("execute with export reconciliation: %v", err)
-	}
-	if res.OutputText != "Recovered adapter output" {
-		t.Fatalf("expected recovered output text, got %q", res.OutputText)
-	}
-	if res.ProviderSessionID != "ses_fake_created" {
-		t.Fatalf("expected provider session id ses_fake_created, got %q", res.ProviderSessionID)
-	}
-	if len(res.ExportChecks) != 1 || res.ExportChecks[0].Phase != ExportCheckPhaseForegroundReconcile || res.ExportChecks[0].Status != ExportCheckStatusResolvedSuccess {
-		t.Fatalf("expected one foreground export check, got %#v", res.ExportChecks)
-	}
-	if len(lifecycle) != 2 {
-		t.Fatalf("expected two lifecycle observations, got %#v", lifecycle)
-	}
-	if lifecycle[0].Phase != ExecuteLifecyclePhaseProviderExportReconciliationStarted {
-		t.Fatalf("expected first lifecycle phase %q, got %#v", ExecuteLifecyclePhaseProviderExportReconciliationStarted, lifecycle[0].Phase)
-	}
-	if lifecycle[0].ProviderSessionID != "ses_fake_created" {
-		t.Fatalf("expected lifecycle provider session id ses_fake_created, got %#v", lifecycle[0].ProviderSessionID)
-	}
-	if lifecycle[0].AmbiguityReason != "clean_eof_without_terminal_evidence" {
-		t.Fatalf("expected lifecycle ambiguity reason clean_eof_without_terminal_evidence, got %#v", lifecycle[0].AmbiguityReason)
-	}
-	if lifecycle[1].Phase != ExecuteLifecyclePhaseProviderExportReconciliationSucceeded {
-		t.Fatalf("expected second lifecycle phase %q, got %#v", ExecuteLifecyclePhaseProviderExportReconciliationSucceeded, lifecycle[1].Phase)
-	}
-	if lifecycle[1].ResolvedState != string(attemptCompletionStateSuccess) {
-		t.Fatalf("expected resolved state success, got %#v", lifecycle[1].ResolvedState)
-	}
-	if lifecycle[1].ResolvedReasonCode != "execution_completed" {
-		t.Fatalf("expected resolved reason code execution_completed, got %#v", lifecycle[1].ResolvedReasonCode)
-	}
-	if lifecycle[1].EvidenceSource != string(completionEvidenceSourceExport) {
-		t.Fatalf("expected evidence source export, got %#v", lifecycle[1].EvidenceSource)
-	}
-
-	argsLogRaw, readErr := os.ReadFile(argsLogPath)
-	if readErr != nil {
-		t.Fatalf("read args log: %v", readErr)
-	}
-	argsLog := string(argsLogRaw)
-	if !strings.Contains(argsLog, "export ses_fake_created") {
-		t.Fatalf("expected export to use provider session id, args log=%q", argsLog)
-	}
-	if strings.Contains(argsLog, "export session_logical_only") {
-		t.Fatalf("expected export not to use logical session id, args log=%q", argsLog)
-	}
-}
-
-func TestSessionAdapterDoesNotResolveRetryFromOlderAssistantTurnInReusedProviderSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	completedAt := time.Now().UTC().Add(5 * time.Second)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(invocationSuccessExportFixtureAtAndAttempt("attempt_retry_shared_1", "invocation_first", "first retry output", completedAt.UnixMilli())),
-		exportResultFixture(invocationSuccessExportFixtureAtAndAttempt("attempt_retry_shared_1", "invocation_first", "first retry output", completedAt.UnixMilli())),
-	}}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared")
-
-	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared",
-		AttemptID:      "attempt_retry_shared_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "first retry reconcile",
-		OccurredAt:     "2026-03-02T10:22:00Z",
-		InvocationID:   "invocation_first",
-	})
-	if err != nil {
-		t.Fatalf("first execute should reconcile successfully: %v", err)
-	}
-	if firstRes.ProviderSessionID != "ses_retry_shared" {
-		t.Fatalf("expected observed provider session id, got %q", firstRes.ProviderSessionID)
-	}
-
-	secondRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared",
-		AttemptID:      "attempt_retry_shared_2",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "second retry reconcile should not reuse older turn",
-		OccurredAt:     "2026-03-02T10:23:00Z",
-		InvocationID:   "invocation_second",
-	})
-	if err == nil {
-		t.Fatal("expected stale reused-session reconciliation to fail")
-	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if secondRes.ProviderSessionID != "ses_retry_shared" {
-		t.Fatalf("expected provider session id to remain reused session, got %q", secondRes.ProviderSessionID)
-	}
-	if secondRes.Outcome.ReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected provider_incomplete_turn for stale reused-session reconciliation, got %#v", secondRes.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 2 || exporter.providerSessionIDs[0] != "ses_retry_shared" || exporter.providerSessionIDs[1] != "ses_retry_shared" {
-		t.Fatalf("expected both export attempts to use reused provider session id, got %#v", exporter.providerSessionIDs)
-	}
-
-	argsLogRaw, readErr := os.ReadFile(argsLogPath)
-	if readErr != nil {
-		t.Fatalf("read args log: %v", readErr)
-	}
-	argsLog := string(argsLogRaw)
-	if strings.Count(argsLog, "--session ses_retry_shared") != 1 {
-		t.Fatalf("expected exactly one reused-session continuation invocation, args log=%q", argsLog)
-	}
-}
-
-func TestSessionAdapterDoesNotResolveLatePersistedPriorInvocationInReusedProviderSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	firstCompletedAt := time.Now().UTC().Add(5 * time.Second)
-	latePersistedAt := firstCompletedAt.Add(30 * time.Second)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(invocationOwnershipExportFixtureWithAttempts("attempt_old", "invocation_older", firstCompletedAt.Add(-time.Minute).UnixMilli(), "older output", "attempt_retry_shared_late_1", "invocation_first", "first retry output")),
-		exportResultFixture(invocationOwnershipExportFixtureWithAttempts("attempt_retry_shared_late_1", "invocation_first", latePersistedAt.UnixMilli(), "late prior output", "attempt_retry_shared_late_2", "invocation_second", "")),
-	}}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_late")
-
-	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_late",
-		AttemptID:      "attempt_retry_shared_late_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "first retry reconcile",
-		OccurredAt:     "2026-03-02T10:22:00Z",
-		InvocationID:   "invocation_first",
-	})
-	if err != nil {
-		t.Fatalf("first execute should reconcile successfully: %v", err)
-	}
-	if firstRes.ProviderSessionID != "ses_retry_shared_late" {
-		t.Fatalf("expected observed provider session id, got %q", firstRes.ProviderSessionID)
-	}
-
-	secondRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_late",
-		AttemptID:      "attempt_retry_shared_late_2",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "second retry reconcile should ignore late prior invocation output",
-		OccurredAt:     "2026-03-02T10:23:00Z",
-		InvocationID:   "invocation_second",
-	})
-	if err == nil {
-		t.Fatal("expected late persisted prior invocation reconciliation to fail")
-	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if secondRes.ProviderSessionID != "ses_retry_shared_late" {
-		t.Fatalf("expected provider session id to remain reused session, got %q", secondRes.ProviderSessionID)
-	}
-	if secondRes.Outcome.ReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected provider_incomplete_turn for late persisted prior invocation, got %#v", secondRes.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 2 || exporter.providerSessionIDs[0] != "ses_retry_shared_late" || exporter.providerSessionIDs[1] != "ses_retry_shared_late" {
-		t.Fatalf("expected both export attempts to use reused provider session id, got %#v", exporter.providerSessionIDs)
-	}
-}
-
-func TestSessionAdapterDoesNotResolveLaterInvocationOutputInReusedProviderSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_retry_shared_window_0", "invocation_first", "bootstrap output")),
-		exportResultFixture(invocationWindowBleedExportFixture("invocation_second", "", "invocation_third", "later invocation output", "stop")),
-	}}
-	_ = exporter
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_window")
-
-	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_window",
-		AttemptID:      "attempt_retry_shared_window_0",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "bootstrap reused provider session",
-		OccurredAt:     "2026-03-02T10:23:00Z",
-		InvocationID:   "invocation_first",
-	})
-	if err != nil {
-		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
-	}
-	if firstRes.ProviderSessionID != "ses_retry_shared_window" {
-		t.Fatalf("expected bootstrap provider session id to persist, got %q", firstRes.ProviderSessionID)
-	}
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_window",
-		AttemptID:      "attempt_retry_shared_window_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "second invocation should ignore later invocation output",
-		OccurredAt:     "2026-03-02T10:24:00Z",
-		InvocationID:   "invocation_second",
-	})
-	if err == nil {
-		t.Fatal("expected later invocation output reconciliation to fail")
-	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if res.ProviderSessionID != "ses_retry_shared_window" {
-		t.Fatalf("expected provider session id to remain reused session, got %q", res.ProviderSessionID)
-	}
-	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected provider_incomplete_turn for later invocation output, got %#v", res.Outcome)
-	}
-}
-
-func TestSessionAdapterReconcilesReusedSessionAfterSameInvocationContinuationPrompt(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(continuedInvocationOwnershipExportFixtureWithAttempt("attempt_retry_shared_continued_1", "invocation_second", "tool work pending", "continued current output")),
-	}}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_continued")
-
-	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_continued",
-		AttemptID:      "attempt_retry_shared_continued_0",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "bootstrap reused provider session",
-		OccurredAt:     "2026-03-02T10:23:00Z",
-		InvocationID:   "invocation_first",
-	})
-	if err != nil {
-		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
-	}
-	if firstRes.ProviderSessionID != "ses_retry_shared_continued" {
-		t.Fatalf("expected bootstrap provider session id to persist, got %q", firstRes.ProviderSessionID)
-	}
-
-	stateDir := t.TempDir()
-	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_THEN_STOP", "1")
-	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_STATE_DIR", stateDir)
-	t.Setenv("FAKE_OPENCODE_CONTINUATION_EXIT_BEFORE_STEP_FINISH", "1")
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_continued",
-		AttemptID:      "attempt_retry_shared_continued_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "second invocation should reconcile continuation output",
-		OccurredAt:     "2026-03-02T10:24:00Z",
-		InvocationID:   "invocation_second",
-	})
-	if err != nil {
-		t.Fatalf("expected same-invocation continuation reconciliation to succeed: %v", err)
-	}
-	if res.ProviderSessionID != "ses_retry_shared_continued" {
-		t.Fatalf("expected provider session id to remain reused session, got %q", res.ProviderSessionID)
-	}
-	if res.OutputText != "continued current output" {
-		t.Fatalf("expected reconciled continuation output, got %q", res.OutputText)
-	}
-	if res.Outcome.ReasonCode != "execution_completed" {
-		t.Fatalf("expected execution_completed after reconciliation, got %#v", res.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 1 || exporter.providerSessionIDs[0] != "ses_retry_shared_continued" {
-		t.Fatalf("expected pre-continuation reconcile to use reused provider session id once, got %#v", exporter.providerSessionIDs)
-	}
-
-	argsLogRaw, readErr := os.ReadFile(argsLogPath)
-	if readErr != nil {
-		t.Fatalf("read args log: %v", readErr)
-	}
-	argsLog := string(argsLogRaw)
-	if strings.Count(argsLog, "KingdomProviderInvocationID: invocation_second") != 1 {
-		t.Fatalf("expected pre-continuation reconciliation to settle without emitting an explicit continuation prompt, args log=%q", argsLog)
-	}
-}
-
-func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestampInReusedProviderSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	skewedCompletedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_retry_shared_skewed_0", "invocation_first", "bootstrap output")),
-		exportResultFixture(invocationOwnershipExportFixtureWithCurrentCompletedAtAndAttempts("attempt_retry_shared_skewed_0", "invocation_first", skewedCompletedAt.Add(-time.Minute).UnixMilli(), "older output", "attempt_retry_shared_skewed_1", "invocation_second", "current output", skewedCompletedAt.Format(time.RFC3339))),
-	}}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_retry_shared_skewed")
-
-	firstRes, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_skewed",
-		AttemptID:      "attempt_retry_shared_skewed_0",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "bootstrap reused provider session",
-		OccurredAt:     "2026-03-02T10:23:00Z",
-		InvocationID:   "invocation_first",
-	})
-	if err != nil {
-		t.Fatalf("bootstrap execute should reconcile successfully: %v", err)
-	}
-	if firstRes.ProviderSessionID != "ses_retry_shared_skewed" {
-		t.Fatalf("expected bootstrap provider session id to persist, got %q", firstRes.ProviderSessionID)
-	}
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_retry_shared_skewed",
-		AttemptID:      "attempt_retry_shared_skewed_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "second invocation should reconcile marker-owned output despite skewed completion timestamp",
-		OccurredAt:     "2026-03-02T10:24:00Z",
-		InvocationID:   "invocation_second",
-	})
-	if err != nil {
-		t.Fatalf("expected skewed-timestamp reconciliation to succeed: %v", err)
-	}
-	if res.ProviderSessionID != "ses_retry_shared_skewed" {
-		t.Fatalf("expected provider session id to remain reused session, got %q", res.ProviderSessionID)
-	}
-	if res.OutputText != "current output" {
-		t.Fatalf("expected marker-owned output, got %q", res.OutputText)
-	}
-	if res.Outcome.ReasonCode != "execution_completed" {
-		t.Fatalf("expected execution_completed after reconciliation, got %#v", res.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 2 || exporter.providerSessionIDs[0] != "ses_retry_shared_skewed" || exporter.providerSessionIDs[1] != "ses_retry_shared_skewed" {
-		t.Fatalf("expected both export attempts to use reused provider session id, got %#v", exporter.providerSessionIDs)
-	}
-
-	argsLogRaw, readErr := os.ReadFile(argsLogPath)
-	if readErr != nil {
-		t.Fatalf("read args log: %v", readErr)
-	}
-	argsLog := string(argsLogRaw)
-	if strings.Count(argsLog, "KingdomProviderInvocationID: invocation_second") != 1 {
-		t.Fatalf("expected pre-continuation reconciliation to settle without emitting an explicit continuation prompt, args log=%q", argsLog)
-	}
-}
-
-func TestSessionAdapterReconcilesMarkerOwnedTurnDespiteEarlierCompletedTimestampInFreshProviderSession(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	skewedCompletedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{
-		exportResultFixture(invocationOwnershipExportFixtureWithCurrentCompletedAtAndAttempts("attempt_old", "invocation_old", skewedCompletedAt.Add(-time.Minute).UnixMilli(), "older output", "attempt_fresh_skewed_1", "invocation_fresh", "current output", skewedCompletedAt.Format(time.RFC3339))),
-	}}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	t.Setenv("FAKE_OPENCODE_EMIT_SESSION_ID", "ses_fresh_skewed")
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_fresh_skewed",
-		AttemptID:      "attempt_fresh_skewed_1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "fresh invocation should reconcile marker-owned output despite skewed completion timestamp",
-		OccurredAt:     "2026-03-02T10:24:00Z",
-		InvocationID:   "invocation_fresh",
-	})
-	if err != nil {
-		t.Fatalf("expected skewed-timestamp fresh-session reconciliation to succeed: %v", err)
-	}
-	if res.ProviderSessionID != "ses_fresh_skewed" {
-		t.Fatalf("expected fresh provider session id to persist, got %q", res.ProviderSessionID)
-	}
-	if res.OutputText != "current output" {
-		t.Fatalf("expected marker-owned output, got %q", res.OutputText)
-	}
-	if res.Outcome.ReasonCode != "execution_completed" {
-		t.Fatalf("expected execution_completed after reconciliation, got %#v", res.Outcome)
-	}
-	if len(exporter.providerSessionIDs) != 1 || exporter.providerSessionIDs[0] != "ses_fresh_skewed" {
-		t.Fatalf("expected export to use fresh provider session id, got %#v", exporter.providerSessionIDs)
 	}
 }
 
@@ -3255,7 +2765,7 @@ func TestSessionAdapterRejectsMalformedStdoutBeforeValidJsonEvents(t *testing.T)
 	}
 }
 
-func TestSessionAdapterSkipsBannerStdoutLinesDuringContinuation(t *testing.T) {
+func TestSessionAdapterRejectsBannerStdoutLinesDuringContinuation(t *testing.T) {
 	binaryPath, _ := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
 	if err != nil {
@@ -3274,29 +2784,23 @@ func TestSessionAdapterSkipsBannerStdoutLinesDuringContinuation(t *testing.T) {
 		RunID:          "run_1",
 		NodeRunID:      "nr_banner_continuation",
 		WorkspacePath:  t.TempDir(),
-		Prompt:         "ignore continuation banner stdout",
+		Prompt:         "reject continuation banner stdout",
 		OccurredAt:     "2026-03-02T10:26:00Z",
 	})
-	if err != nil {
-		t.Fatalf("execute should tolerate continuation banner stdout: %v", err)
+	if err == nil {
+		t.Fatal("expected malformed continuation stdout to reject completion")
 	}
-	if !strings.Contains(res.OutputText, "continued after tool calls") {
-		t.Fatalf("expected continuation output after banner, got %q", res.OutputText)
+	if res.Outcome.ReasonCode != "provider_malformed_protocol" {
+		t.Fatalf("expected malformed protocol outcome, got %#v", res.Outcome)
 	}
 }
 
-func TestSessionAdapterAmbiguousMalformedExportCannotAuthorizeSuccess(t *testing.T) {
+func TestSessionAdapterExportCannotAuthorizeAmbiguousEOF(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{
-		results:          []sessionExportResult{exportResultFixture(`{"messages":[`)},
-		sanitizedResults: []sessionExportResult{exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_ambiguous_sanitized_fallback", "invocation_ambiguous_sanitized_fallback", "sanitized ambiguous recovery"))},
-	}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3304,105 +2808,46 @@ func TestSessionAdapterAmbiguousMalformedExportCannotAuthorizeSuccess(t *testing
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
 
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_ambiguous_sanitized_fallback",
-		AttemptID:      "attempt_ambiguous_sanitized_fallback",
+		SessionID:      "session_ambiguous_eof",
+		AttemptID:      "attempt_ambiguous_eof",
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		WorkspacePath:  t.TempDir(),
-		Prompt:         "ambiguous export sanitized fallback",
+		Prompt:         "ambiguous eof must not consult export",
 		OccurredAt:     "2026-03-02T10:22:02Z",
-		InvocationID:   "invocation_ambiguous_sanitized_fallback",
-		OnLifecycle: func(observation ExecuteLifecycleObservation) {
-			lifecycle = append(lifecycle, observation)
-		},
+		InvocationID:   "invocation_ambiguous_eof",
 	})
 	if err == nil {
-		t.Fatalf("expected export fallback to remain non-authoritative, got %#v", res)
+		t.Fatalf("export must not authorize an ambiguous stream, got %#v", res)
 	}
-	if len(lifecycle) != 2 {
-		t.Fatalf("expected two lifecycle observations, got %#v", lifecycle)
+	var incompleteErr *IncompleteTerminalStateError
+	if !errors.As(err, &incompleteErr) {
+		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
 	}
-	if lifecycle[1].EvidenceSource != string(completionEvidenceSourceExportSanitized) {
-		t.Fatalf("expected sanitized export evidence source in lifecycle, got %#v", lifecycle[1].EvidenceSource)
+	if res.ProviderSessionID != "ses_fake_created" {
+		t.Fatalf("expected observed provider session id, got %q", res.ProviderSessionID)
 	}
-	if len(exporter.exportModes) != 2 || exporter.exportModes[0] != sessionExportModeRaw || exporter.exportModes[1] != sessionExportModeSanitized {
-		t.Fatalf("expected raw then sanitized export modes, got %#v", exporter.exportModes)
+	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
+		t.Fatalf("expected provider_incomplete_turn outcome, got %#v", res.Outcome)
 	}
-}
-
-func TestSessionAdapterAmbiguousMalformedExportCannotRecoverWithinReconcileBudget(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{
-		results: []sessionExportResult{
-			exportResultFixture(`{"messages":[`),
-			exportResultFixture(`{"messages":[`),
-			exportResultFixture(invocationSuccessExportFixtureWithAttempt("attempt_reconcile_budget_recovery", "invocation_reconcile_budget_recovery", "recovered after export persistence catch-up")),
-		},
-		sanitizedResults: []sessionExportResult{
-			exportResultFixture(`{"messages":[`),
-			exportResultFixture(`{"messages":[`),
-		},
+	argsLogRaw, readErr := os.ReadFile(argsLogPath)
+	if readErr != nil {
+		t.Fatalf("read args log: %v", readErr)
 	}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
-		MaxContinuationTurns:    1,
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
-	t.Setenv("FAKE_OPENCODE_STEP_FINISH_TOKENS", `{"input":11,"output":7,"total":18}`)
-
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_reconcile_budget_recovery",
-		AttemptID:      "attempt_reconcile_budget_recovery",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "tool calls then recover after transient malformed export",
-		OccurredAt:     "2026-03-02T10:22:00Z",
-		InvocationID:   "invocation_reconcile_budget_recovery",
-	})
-	if err == nil {
-		t.Fatalf("expected export recovery to remain non-authoritative, got %#v", res)
-	}
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_reconcile_budget_recovery"), AttemptEventTypeFailed)
-	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
-	}
-	if execPath["export_check_status"] != string(sessionCompletionReconcileStatusResolved) {
-		t.Fatalf("expected resolved export check status, got %#v", execPath["export_check_status"])
-	}
-	if execPath["export_check_evidence_source"] != string(completionEvidenceSourceExport) {
-		t.Fatalf("expected export evidence source in diagnostics, got %#v", execPath["export_check_evidence_source"])
-	}
-	if execPath["export_check_attempts"] != float64(1) {
-		t.Fatalf("expected one diagnostic export attempt, got %#v", execPath["export_check_attempts"])
-	}
-	if len(exporter.exportModes) == 0 || exporter.exportModes[0] != sessionExportModeRaw {
-		t.Fatalf("expected diagnostic export evidence, got %#v", exporter.exportModes)
+	if strings.Contains(string(argsLogRaw), "export ") {
+		t.Fatalf("expected no export command, args log=%q", string(argsLogRaw))
 	}
 }
 
 func TestSessionAdapterAmbiguousEOFWithoutProviderSessionFailsWithoutExport(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(successExportFixture("unexpected export"))}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3435,9 +2880,6 @@ func TestSessionAdapterAmbiguousEOFWithoutProviderSessionFailsWithoutExport(t *t
 	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
 		t.Fatalf("expected provider_incomplete_turn outcome, got %#v", res.Outcome)
 	}
-	if len(exporter.providerSessionIDs) != 0 {
-		t.Fatalf("expected exporter not to be called, got %#v", exporter.providerSessionIDs)
-	}
 	if actual := adapter.actualSessionID("session_logical_only"); actual != "" {
 		t.Fatalf("expected logical session not to bind provider session, got %q", actual)
 	}
@@ -3454,13 +2896,10 @@ func TestSessionAdapterAmbiguousEOFWithoutProviderSessionFailsWithoutExport(t *t
 
 func TestSessionAdapterOnlyStopIsTerminalSuccessWithoutProviderSession(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(successExportFixture("unexpected export"))}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3509,10 +2948,6 @@ func TestSessionAdapterOnlyStopIsTerminalSuccessWithoutProviderSession(t *testin
 			}
 		})
 	}
-	if len(exporter.providerSessionIDs) != 0 {
-		t.Fatalf("expected exporter not to be called, got %#v", exporter.providerSessionIDs)
-	}
-
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
 	if readErr != nil {
 		t.Fatalf("read args log: %v", readErr)
@@ -3522,68 +2957,13 @@ func TestSessionAdapterOnlyStopIsTerminalSuccessWithoutProviderSession(t *testin
 	}
 }
 
-func TestSessionAdapterExporterErrorsExhaustToIncompleteTurn(t *testing.T) {
+func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         &fakeSessionExporter{errs: []error{fmt.Errorf("session not found yet"), fmt.Errorf("session not found yet")}},
-	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
-	t.Setenv("FAKE_OPENCODE_EXIT_BEFORE_STEP_FINISH", "1")
-	lifecycle := make([]ExecuteLifecycleObservation, 0, 2)
-
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_logical_only",
-		AttemptID:      "attempt_export_reconcile_exhausted",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "clean eof then exporter miss",
-		OccurredAt:     "2026-03-02T10:22:00Z",
-		OnLifecycle: func(observation ExecuteLifecycleObservation) {
-			lifecycle = append(lifecycle, observation)
-		},
-	})
-	if err == nil {
-		t.Fatal("expected incomplete terminal state error")
-	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if len(lifecycle) != 2 {
-		t.Fatalf("expected two lifecycle observations, got %#v", lifecycle)
-	}
-	if lifecycle[0].Phase != ExecuteLifecyclePhaseProviderExportReconciliationStarted {
-		t.Fatalf("expected first lifecycle phase %q, got %#v", ExecuteLifecyclePhaseProviderExportReconciliationStarted, lifecycle[0].Phase)
-	}
-	if lifecycle[1].Phase != ExecuteLifecyclePhaseProviderExportReconciliationFailed {
-		t.Fatalf("expected second lifecycle phase %q, got %#v", ExecuteLifecyclePhaseProviderExportReconciliationFailed, lifecycle[1].Phase)
-	}
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_export_reconcile_exhausted"), AttemptEventTypeFailed)
-	if !strings.Contains(fmt.Sprint(payload["error"]), "session not found yet") {
-		t.Fatalf("expected failed payload to preserve last export error, got %#v", payload["error"])
-	}
-}
-
-func TestSessionAdapterAmbiguousMalformedExportPreservesObservedMetadata(t *testing.T) {
-	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{results: []sessionExportResult{exportResultFixture(`{"messages":[`)}}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
 		MaxContinuationTurns:    1,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3596,11 +2976,11 @@ func TestSessionAdapterAmbiguousMalformedExportPreservesObservedMetadata(t *test
 	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_logical_only",
-		AttemptID:      "attempt_reconcile_error_metadata",
+		AttemptID:      "attempt_incomplete_tool_metadata",
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		WorkspacePath:  t.TempDir(),
-		Prompt:         "tool calls then reconciliation error",
+		Prompt:         "tool calls must remain incomplete without terminal stream evidence",
 		OccurredAt:     "2026-03-02T10:22:00Z",
 	})
 	if err == nil {
@@ -3622,46 +3002,25 @@ func TestSessionAdapterAmbiguousMalformedExportPreservesObservedMetadata(t *test
 	if res.Tokens.InputTokens != 11 || res.Tokens.OutputTokens != 7 || res.Tokens.TotalTokens != 18 {
 		t.Fatalf("expected observed tokens to be preserved, got %#v", res.Tokens)
 	}
-	if len(exporter.providerSessionIDs) != 4 || exporter.providerSessionIDs[0] != "ses_fake_created" || exporter.providerSessionIDs[1] != "ses_fake_created" || exporter.providerSessionIDs[2] != "ses_fake_created" || exporter.providerSessionIDs[3] != "ses_fake_created" {
-		t.Fatalf("expected exporter to use observed provider session id, got %#v", exporter.providerSessionIDs)
-	}
-	if len(exporter.exportModes) != 4 || exporter.exportModes[0] != sessionExportModeRaw || exporter.exportModes[1] != sessionExportModeSanitized || exporter.exportModes[2] != sessionExportModeRaw || exporter.exportModes[3] != sessionExportModeSanitized {
-		t.Fatalf("expected raw then sanitized export modes, got %#v", exporter.exportModes)
-	}
 	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
 		t.Fatalf("expected provider_incomplete_turn outcome, got %#v", res.Outcome)
 	}
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_reconcile_error_metadata"), AttemptEventTypeFailed)
-	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
+	argsLogRaw, readErr := os.ReadFile(argsLogPath)
+	if readErr != nil {
+		t.Fatalf("read args log: %v", readErr)
 	}
-	if execPath["export_check_status"] != string(sessionCompletionReconcileStatusMalformedExport) {
-		t.Fatalf("expected malformed export status, got %#v", execPath["export_check_status"])
-	}
-	if !strings.Contains(fmt.Sprint(execPath["export_check_last_error"]), "decode opencode export") {
-		t.Fatalf("expected malformed export diagnostic, got %#v", execPath["export_check_last_error"])
+	if strings.Contains(string(argsLogRaw), "export ") {
+		t.Fatalf("expected no export command, args log=%q", string(argsLogRaw))
 	}
 }
 
-func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutReceipt(t *testing.T) {
+func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutTerminalStreamEvidence(t *testing.T) {
 	const reviewVerdict = "VERDICT: PASS\n\nCaptured reviewer response."
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-	exporter := &fakeSessionExporter{
-		results: []sessionExportResult{
-			exportResultFixture(`{"messages":[`),
-			exportResultFixture(test2MalformedReviewExportFixtureWithAttempts("attempt_review_current", "invocation_test2_review", "attempt_review_later", "invocation_test2_review_later", reviewVerdict)),
-		},
-		sanitizedResults: []sessionExportResult{
-			exportResultFixture(`{"messages":[`),
-		},
-	}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		ReconcileTotalTimeout:   time.Nanosecond,
-		SessionExporter:         exporter,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -3704,13 +3063,6 @@ func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutR
 	if res.ProviderInvocationID != "invocation_test2_review" {
 		t.Fatalf("expected provider invocation id to persist, got %q", res.ProviderInvocationID)
 	}
-	if len(exporter.providerSessionIDs) != 2 || exporter.providerSessionIDs[0] != "ses_fake_created" || exporter.providerSessionIDs[1] != "ses_fake_created" {
-		t.Fatalf("expected raw and sanitized foreground reconcile attempts to use provider session id, got %#v", exporter.providerSessionIDs)
-	}
-	if len(exporter.exportModes) != 2 || exporter.exportModes[0] != sessionExportModeRaw || exporter.exportModes[1] != sessionExportModeSanitized {
-		t.Fatalf("expected raw then sanitized foreground reconcile attempts, got %#v", exporter.exportModes)
-	}
-
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
 	if readErr != nil {
 		t.Fatalf("read args log: %v", readErr)
@@ -3718,6 +3070,9 @@ func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutR
 	argsLog := string(argsLogRaw)
 	if strings.Count(argsLog, "KingdomProviderInvocationID: invocation_test2_review") != 1 {
 		t.Fatalf("expected a single foreground provider invocation, args log=%q", argsLog)
+	}
+	if strings.Contains(argsLog, "export ") {
+		t.Fatalf("expected no export command, args log=%q", argsLog)
 	}
 }
 
@@ -3959,6 +3314,45 @@ func enableFakeOpenCodeCompletionReceipt(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_EMIT_COMPLETION_RECEIPT", "1")
 }
 
+func acceptedReceiptExecuteRequest(t *testing.T, attemptID, receiptDir string) ExecuteRequest {
+	t.Helper()
+	return ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
+		SessionID:                 "session_" + attemptID,
+		AttemptID:                 attemptID,
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "accepted receipt must remain candidate evidence",
+		OccurredAt:                "2026-03-02T10:00:00Z",
+		InvocationID:              "invocation_" + attemptID,
+		InvocationIssuedAt:        "2026-03-02T10:00:00Z",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_" + attemptID,
+		CompletionReceiptDir:      receiptDir,
+		OnCompletionReceipt: func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) {
+			return CompletionReceiptAcceptance{
+				EvidenceID:            "evidence_" + attemptID,
+				FinalText:             receipt.FinalText,
+				StructuredPayloadJSON: receipt.StructuredPayloadJSON,
+			}, nil
+		},
+	}
+}
+
+func assertAcceptedReceiptFailure(t *testing.T, res ExecuteResponse, wantReason string) {
+	t.Helper()
+	if !res.CompletionReceiptAccepted || strings.TrimSpace(res.CompletionReceiptEvidenceID) == "" {
+		t.Fatalf("expected accepted receipt to remain candidate metadata, got %#v", res)
+	}
+	if res.Accepted || res.Outcome.State == string(attemptCompletionStateSuccess) {
+		t.Fatalf("expected fatal stream evidence to reject success, got %#v", res)
+	}
+	if res.Outcome.ReasonCode != wantReason || res.Outcome.EvidenceSource != string(completionEvidenceSourceStream) {
+		t.Fatalf("expected stream-backed %s outcome, got %#v", wantReason, res.Outcome)
+	}
+}
+
 func writeFakeOpenCodeBinary(t *testing.T) (string, string) {
 	t.Helper()
 
@@ -4197,6 +3591,16 @@ fi
 
 echo "{\"type\":\"step_start\"$SESSION_FIELD}"
 
+if [ "$FAKE_OPENCODE_EMIT_EARLY_COMPLETION_RECEIPT" = "1" ]; then
+  RECEIPT_FINAL_TEXT="accepted before provider termination"
+  export RECEIPT_FINAL_TEXT
+  write_completion_receipt
+fi
+
+if [ -n "$FAKE_OPENCODE_EXIT_CODE_AFTER_EARLY_RECEIPT" ]; then
+  exit "$FAKE_OPENCODE_EXIT_CODE_AFTER_EARLY_RECEIPT"
+fi
+
 write_large_stderr "$FAKE_OPENCODE_LARGE_STDERR_BYTES"
 
 if [ "$FAKE_OPENCODE_STALL_AFTER_FIRST" = "1" ]; then
@@ -4344,6 +3748,11 @@ if [ "$FAKE_OPENCODE_TOOL_CALLS_THEN_STOP" = "1" ]; then
   if [ "$FAKE_OPENCODE_CONTINUATION_ERROR_AFTER_TEXT" = "1" ]; then
     echo "{\"type\":\"text\"$SESSION_FIELD,\"part\":{\"text\":\"continued before upstream error\"}}"
     echo "{\"type\":\"step_finish\"$SESSION_FIELD,\"part\":{\"reason\":\"stop\"$TOKENS_SUFFIX}}"
+    if [ "$FAKE_OPENCODE_CONTINUATION_EMIT_COMPLETION_RECEIPT" = "1" ]; then
+      RECEIPT_FINAL_TEXT="continued before upstream error"
+      export RECEIPT_FINAL_TEXT
+      write_completion_receipt
+    fi
     echo "{\"type\":\"error\"$SESSION_FIELD,\"message\":\"continuation upstream exploded\"}"
     exit 0
   fi
@@ -4413,6 +3822,10 @@ if [ "$FINISH_REASON" != "error" ] && [ "$FINISH_REASON" != "tool-calls" ] && [ 
   RECEIPT_FINAL_TEXT="${FAKE_OPENCODE_TEXT:-hello from fake}"
   export RECEIPT_FINAL_TEXT
   write_completion_receipt
+fi
+
+if [ "$FAKE_OPENCODE_CONFLICTING_TERMINAL_AFTER_RECEIPT" = "1" ]; then
+  echo "{\"type\":\"step_finish\"$SESSION_FIELD,\"part\":{\"reason\":\"error\"}}"
 fi
 
 if [ "$FAKE_OPENCODE_STALL_AFTER_STEP_FINISH" = "1" ]; then

@@ -42,10 +42,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
@@ -91,10 +87,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
@@ -141,10 +133,6 @@ agent_policy:
 timeouts:
   session_start_timeout: 30s
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
@@ -190,10 +178,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
@@ -236,10 +220,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
@@ -284,7 +264,6 @@ func TestLoadPolicyFromFileCoversTimeoutAndFallbackContract(t *testing.T) {
 
 	timeoutValues := []string{
 		policy.Timeouts.StrictStartupTotalTimeout,
-		policy.Timeouts.CompletionReconcileTotalTimeout,
 		policy.Timeouts.DispatchAckTimeout,
 		policy.Timeouts.FirstEventTimeout,
 		policy.Timeouts.StreamInactivityTimeout,
@@ -300,24 +279,6 @@ func TestLoadPolicyFromFileCoversTimeoutAndFallbackContract(t *testing.T) {
 		if d <= 0 {
 			t.Fatalf("expected positive timeout, got %s", d)
 		}
-	}
-}
-func TestLoadPolicyFromFileAcceptsCompletionReconcileBackoffSchedule(t *testing.T) {
-	t.Parallel()
-
-	policy, err := LoadPolicyFromFile(
-		repoRootPath(t, "policies", "opencode_provider_policy.yaml"),
-		repoRootPath(t, "contracts", "schemas", "opencode_provider_policy.schema.json"),
-	)
-	if err != nil {
-		t.Fatalf("load provider policy: %v", err)
-	}
-	durations, err := policy.CompletionReconcileBackoffDurations()
-	if err != nil {
-		t.Fatalf("parse completion reconcile backoff schedule: %v", err)
-	}
-	if len(durations) != 6 {
-		t.Fatalf("expected completion reconcile backoff schedule to contain 6 entries, got %d", len(durations))
 	}
 }
 
@@ -377,54 +338,6 @@ func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
 	}
 }
 
-func TestLoadPolicyFromFileRejectsInvalidCompletionReconcileBackoffSchedule(t *testing.T) {
-	t.Parallel()
-
-	policyPath := writeTempProviderPolicy(t, `
-version: v2
-policy_id: provider-policy-test
-model_policy:
-  fallback_enabled: false
-  fallback_strategy: disabled_for_mvp
-agent_policy:
-  default_agent: advisor
-  role_agents:
-    king: king
-timeouts:
-  strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - nope
-  dispatch_ack_timeout: 5s
-  first_event_timeout: 20s
-  stream_inactivity_timeout: 45s
-  cancel_grace_timeout: 5s
-  cancel_force_timeout: 10s
-  node_wall_clock:
-    decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
-escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
-  dead_letter_required: true
-`)
-
-	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "opencode_provider_policy.schema.json"))
-	if err == nil {
-		t.Fatal("expected completion reconcile backoff schedule duration parse failure")
-	}
-	if !strings.Contains(err.Error(), "completion_reconcile_backoff_schedule") {
-		t.Fatalf("expected completion reconcile backoff schedule validation error, got %v", err)
-	}
-}
-
 func TestPolicyAgentForRoleUsesRoleOverrideThenDefault(t *testing.T) {
 	t.Parallel()
 
@@ -476,10 +389,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
   dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s

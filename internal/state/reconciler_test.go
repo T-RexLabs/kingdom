@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/retryengine"
 	executionstore "kingdom/internal/execution/store"
 )
@@ -361,7 +360,7 @@ func TestReconcilerFailsAndEscalatesWhenRetryBudgetExhausted(t *testing.T) {
 	}
 }
 
-func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *testing.T) {
+func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -417,11 +416,14 @@ func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *tes
 	if err != nil {
 		t.Fatalf("reconcile stale provider-backed attempt: %v", err)
 	}
-	if result.AttemptsFailed != 1 {
-		t.Fatalf("expected one failed attempt recovery, got %d", result.AttemptsFailed)
+	if result.StaleAttemptsFound != 1 {
+		t.Fatalf("expected one stale provider-backed attempt, got %d", result.StaleAttemptsFound)
 	}
-	if got := queryNodeStatus(t, db, "nr_2"); got != "failed" {
-		t.Fatalf("expected stale attempt node to fail, got %q", got)
+	if result.AttemptsFailed != 0 || result.AttemptsReassigned != 0 {
+		t.Fatalf("expected provider-backed attempt to bypass generic recovery, got %#v", result)
+	}
+	if got := queryNodeStatus(t, db, "nr_2"); got != "running" {
+		t.Fatalf("expected stale provider-backed node to remain running for fencing, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -431,14 +433,11 @@ func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *tes
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_failure" {
-		t.Fatalf("expected committed_failure durable state, got %#v", attempt)
+	if attempt.State != "running" || attempt.FailureCode != "" {
+		t.Fatalf("expected provider-backed attempt to remain nonterminal, got %#v", attempt)
 	}
-	if attempt.FailureCode != string(errorcatalog.CodeAgentUnresponsive) {
-		t.Fatalf("expected durable failure code %q, got %#v", errorcatalog.CodeAgentUnresponsive, attempt)
-	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected stale failure to remain without a canonical settlement, got %#v", attempt)
 	}
 
 	invocation, found, err := store.GetProviderInvocation(context.Background(), "invocation_stale_failure")
@@ -448,26 +447,80 @@ func TestReconcilerStaleFailureCommitsDurableFailureAndProviderSettlement(t *tes
 	if !found {
 		t.Fatal("expected provider invocation to exist")
 	}
-	if invocation.InvocationState != executionstore.ProviderInvocationStateSettledFailed {
-		t.Fatalf("expected settled_failed invocation state, got %#v", invocation)
+	if invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
+		t.Fatalf("expected stale attempt recovery not to settle the provider invocation, got %#v", invocation)
 	}
 
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_stale_failure")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed {
-		t.Fatalf("expected failed provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.FailureReasonCode != string(errorcatalog.CodeAgentUnresponsive) {
-		t.Fatalf("expected provider settlement reason code %q, got %#v", errorcatalog.CodeAgentUnresponsive, settlement)
+	if found {
+		t.Fatalf("expected stale attempt failure not to create a provider settlement, got %#v", settlement)
 	}
 }
 
-func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T) {
+func TestReconcilerDoesNotReassignStaleProviderInvocationWithoutSettlement(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	store := executionstore.New(db)
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
+		AttemptID:      "att_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		CreatedAt:      "2026-03-01T11:58:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue stale provider attempt: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T11:58:00Z' WHERE attempt_id = 'att_1'`)
+	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_stale_reassign_guard",
+		AttemptID:            "att_1",
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
+		CreatedAt:            "2026-03-01T11:58:01Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_stale_reassign_guard",
+		AttemptID:            "att_1",
+		ProviderSessionID:    "ses_stale_reassign_guard",
+		OpenedAt:             "2026-03-01T11:58:02Z",
+	}); err != nil {
+		t.Fatalf("open provider invocation: %v", err)
+	}
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:05:30Z"})
+	if err != nil {
+		t.Fatalf("reconcile stale provider attempt with replacement: %v", err)
+	}
+	if result.StaleAttemptsFound != 1 || result.AttemptsReassigned != 0 || result.AttemptsFailed != 0 {
+		t.Fatalf("expected stale provider attempt to remain fenced from generic recovery, got %#v", result)
+	}
+	if got := queryNodeStatus(t, db, "nr_1"); got != "running" {
+		t.Fatalf("stale provider attempt changed node state to %q", got)
+	}
+	var retries int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 1`).Scan(&retries); err != nil {
+		t.Fatalf("count provider retry attempts: %v", err)
+	}
+	if retries != 0 {
+		t.Fatalf("stale provider attempt created %d retries", retries)
+	}
+}
+
+func TestReconcilerDoesNotRecoverStaleReceiptPersistedProviderAttemptAsSuccess(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -516,7 +569,7 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
+	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
 		EvidenceID:            "receipt_stale_receipt_success",
 		ProviderInvocationID:  "invocation_stale_receipt_success",
 		AttemptID:             attemptID,
@@ -538,11 +591,11 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 	if err != nil {
 		t.Fatalf("reconcile receipt-persisted provider-backed attempt: %v", err)
 	}
-	if result.AttemptsFailed != 0 {
-		t.Fatalf("expected no failed attempt recovery once receipt is persisted, got %d", result.AttemptsFailed)
+	if result.AttemptsFailed != 0 || result.AttemptsReassigned != 0 {
+		t.Fatalf("expected receipt-only attempt to bypass generic recovery, got %#v", result)
 	}
-	if got := queryNodeStatus(t, db, "nr_2"); got != "succeeded" {
-		t.Fatalf("expected receipt-backed stale attempt node to succeed, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_2"); got != "running" {
+		t.Fatalf("expected receipt-only stale attempt node to remain running for fencing, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -552,11 +605,11 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_success" {
-		t.Fatalf("expected committed_success durable state, got %#v", attempt)
+	if attempt.State != "running" {
+		t.Fatalf("expected receipt-only attempt to remain nonterminal, got %#v", attempt)
 	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected receipt-only stale attempt to remain unsettled, got %#v", attempt)
 	}
 
 	invocation, found, err := store.GetProviderInvocation(context.Background(), "invocation_stale_receipt_success")
@@ -566,26 +619,20 @@ func TestReconcilerRecoversReceiptPersistedProviderAttemptAsSuccess(t *testing.T
 	if !found {
 		t.Fatal("expected provider invocation to exist")
 	}
-	if invocation.InvocationState != executionstore.ProviderInvocationStateSettledSuccess {
-		t.Fatalf("expected settled_success invocation state, got %#v", invocation)
+	if invocation.InvocationState != executionstore.ProviderInvocationStateReceiptPersisted {
+		t.Fatalf("expected receipt_persisted invocation state to remain unchanged, got %#v", invocation)
 	}
 
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_stale_receipt_success")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
-		t.Fatalf("expected success provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected success provider settlement to reuse persisted receipt evidence %q, got %#v", accepted.Evidence.EvidenceID, settlement)
+	if found {
+		t.Fatalf("expected receipt-only state not to create a provider settlement, got %#v", settlement)
 	}
 }
 
-func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *testing.T) {
+func TestReconcilerDoesNotSettleRecentReceiptPersistedProviderAttempt(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -634,7 +681,7 @@ func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
+	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
 		EvidenceID:            "receipt_recent_receipt_success",
 		ProviderInvocationID:  "invocation_recent_receipt_success",
 		AttemptID:             attemptID,
@@ -662,8 +709,8 @@ func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *
 	if result.AttemptsFailed != 0 {
 		t.Fatalf("expected no stale failure recovery for recent receipt-backed recovery, got %d", result.AttemptsFailed)
 	}
-	if got := queryNodeStatus(t, db, "nr_2_recent_receipt"); got != "succeeded" {
-		t.Fatalf("expected recent receipt-backed attempt node to succeed, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_2_recent_receipt"); got != "running" {
+		t.Fatalf("expected recent receipt-only attempt node to remain running, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -673,28 +720,29 @@ func TestReconcilerImmediatelyConvergesRecentReceiptPersistedProviderAttempt(t *
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_success" {
-		t.Fatalf("expected committed_success durable state, got %#v", attempt)
+	if attempt.State != "running" {
+		t.Fatalf("expected receipt-only attempt to remain running, got %#v", attempt)
 	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected receipt-only attempt to remain unsettled, got %#v", attempt)
+	}
+	invocation, found, err := store.GetProviderInvocation(context.Background(), "invocation_recent_receipt_success")
+	if err != nil {
+		t.Fatalf("get provider invocation: %v", err)
+	}
+	if !found || invocation.InvocationState != executionstore.ProviderInvocationStateReceiptPersisted {
+		t.Fatalf("expected receipt_persisted invocation to remain unchanged, got found=%t invocation=%#v", found, invocation)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_recent_receipt_success")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
-		t.Fatalf("expected success provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected success provider settlement to reuse persisted receipt evidence %q, got %#v", accepted.Evidence.EvidenceID, settlement)
+	if found {
+		t.Fatalf("expected no provider settlement without process/stream authority, got %#v", settlement)
 	}
 }
 
-func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettlement(t *testing.T) {
+func TestReconcilerDoesNotSettleReceiptPersistedExecutionReview(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -745,7 +793,7 @@ func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettleme
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
+	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
 		EvidenceID:            "receipt_review_receipt_rework",
 		ProviderInvocationID:  "invocation_review_receipt_rework",
 		AttemptID:             attemptID,
@@ -767,11 +815,11 @@ func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettleme
 	if err != nil {
 		t.Fatalf("reconcile review receipt-persisted rework attempt: %v", err)
 	}
-	if result.AttemptsFailed != 0 {
-		t.Fatalf("expected no stale failure recovery for review receipt rework convergence, got %d", result.AttemptsFailed)
+	if result.AttemptsFailed != 0 || result.AttemptsReassigned != 0 {
+		t.Fatalf("expected stale review attempt to bypass generic recovery, got %#v", result)
 	}
-	if got := queryNodeStatus(t, db, "nr_review_receipt_rework"); got != "failed" {
-		t.Fatalf("expected review receipt rework node to fail, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_review_receipt_rework"); got != "running" {
+		t.Fatalf("expected review receipt-only node to remain running for fencing, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -781,28 +829,19 @@ func TestReconcilerRecoversReceiptPersistedExecutionReviewReworkAsFailedSettleme
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_failure" || attempt.FailureCode != "execution_review_rework" {
-		t.Fatalf("expected committed_failure with execution_review_rework, got %#v", attempt)
+	if attempt.State != "running" || attempt.FailureCode != "" {
+		t.Fatalf("expected stale review attempt to remain nonterminal, got %#v", attempt)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_review_receipt_rework")
 	if err != nil {
 		t.Fatalf("get provider completion settlement: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed {
-		t.Fatalf("expected failed provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected review rework to retain receipt evidence %q, got %#v", accepted.Evidence.EvidenceID, settlement)
-	}
-	if settlement.FailureReasonCode != "execution_review_rework" {
-		t.Fatalf("expected execution_review_rework settlement reason, got %#v", settlement)
+	if found {
+		t.Fatalf("expected receipt-only review not to create a provider settlement, got %#v", settlement)
 	}
 }
 
-func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkReceipt(t *testing.T) {
+func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -868,7 +907,7 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 	if err != nil {
 		t.Fatalf("accept provider completion receipt: %v", err)
 	}
-	if _, err := store.FinalizeProviderCompletionSettlement(context.Background(), executionstore.FinalizeProviderCompletionSettlementRequest{
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          executionstore.ProviderCompletionSettlementID("invocation_review_existing_settlement"),
 		ProviderInvocationID:  "invocation_review_existing_settlement",
 		AttemptID:             attemptID,
@@ -879,9 +918,7 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 		FinalText:             "VERDICT: REWORK\n\nReviewer requested changes.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
-	}); err != nil {
-		t.Fatalf("finalize incorrect success settlement: %v", err)
-	}
+	})
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -890,10 +927,10 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 		t.Fatalf("reconcile stored review success settlement: %v", err)
 	}
 	if result.AttemptsFailed != 0 {
-		t.Fatalf("expected no stale failure recovery while correcting stored settlement, got %d", result.AttemptsFailed)
+		t.Fatalf("expected no stale failure recovery while converging stored settlement, got %d", result.AttemptsFailed)
 	}
-	if got := queryNodeStatus(t, db, "nr_review_existing_settlement"); got != "failed" {
-		t.Fatalf("expected corrected review settlement node to fail, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_review_existing_settlement"); got != "succeeded" {
+		t.Fatalf("expected immutable success settlement to drive node success, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -903,8 +940,8 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_failure" || attempt.FailureCode != "execution_review_rework" {
-		t.Fatalf("expected committed_failure with execution_review_rework, got %#v", attempt)
+	if attempt.State != "committed_success" || attempt.FailureCode != "" {
+		t.Fatalf("expected existing settlement to drive committed_success, got %#v", attempt)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_review_existing_settlement")
 	if err != nil {
@@ -913,8 +950,11 @@ func TestReconcilerCorrectsStoredExecutionReviewSuccessSettlementWithReworkRecei
 	if !found {
 		t.Fatal("expected provider completion settlement to exist")
 	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "execution_review_rework" {
-		t.Fatalf("expected corrected failed review settlement, got %#v", settlement)
+	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess || settlement.FailureReasonCode != "" {
+		t.Fatalf("expected existing success settlement to remain unchanged, got %#v", settlement)
+	}
+	if settlement.FinalText != "VERDICT: REWORK\n\nReviewer requested changes." || settlement.SettledAt != "2026-03-01T12:08:04Z" {
+		t.Fatalf("expected canonical settlement payload and timestamp to remain immutable, got %#v", settlement)
 	}
 }
 
@@ -982,7 +1022,7 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 	if err != nil {
 		t.Fatalf("ensure terminal provider evidence: %v", err)
 	}
-	if _, err := store.FinalizeProviderCompletionSettlement(context.Background(), executionstore.FinalizeProviderCompletionSettlementRequest{
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          executionstore.ProviderCompletionSettlementID("invocation_recent_settled_failure"),
 		ProviderInvocationID:  "invocation_recent_settled_failure",
 		AttemptID:             attemptID,
@@ -994,9 +1034,7 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 		FailureReasonText:     "provider exited before completion could be settled",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:12:24Z",
-	}); err != nil {
-		t.Fatalf("finalize provider completion settlement: %v", err)
-	}
+	})
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -1045,7 +1083,7 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 	}
 }
 
-func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLink(t *testing.T) {
+func TestReconcilerDoesNotCreateSettlementFromCommittedSuccess(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1093,7 +1131,7 @@ func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLi
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
+	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
 		EvidenceID:            "receipt_committed_success_backfill",
 		ProviderInvocationID:  "invocation_committed_success_backfill",
 		AttemptID:             attemptID,
@@ -1134,8 +1172,8 @@ func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLi
 	if attempt.State != "committed_success" {
 		t.Fatalf("expected committed_success durable state, got %#v", attempt)
 	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected committed attempt not to authorize a canonical settlement, got %#v", attempt)
 	}
 	if got := queryNodeStatus(t, db, "nr_2"); got != "succeeded" {
 		t.Fatalf("expected committed success node to project as succeeded, got %q", got)
@@ -1145,18 +1183,12 @@ func TestReconcilerFinalizesCommittedSuccessProviderSettlementWithoutCanonicalLi
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
-		t.Fatalf("expected success provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != accepted.Evidence.EvidenceID {
-		t.Fatalf("expected success provider settlement to reuse persisted receipt evidence %q, got %#v", accepted.Evidence.EvidenceID, settlement)
+	if found {
+		t.Fatalf("expected committed attempt not to create a provider settlement, got %#v", settlement)
 	}
 }
 
-func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing.T) {
+func TestReconcilerDoesNotSettleInvalidHandshakeReceiptConflict(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1205,7 +1237,7 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
+	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
 		EvidenceID:            "receipt_invalid_handshake_conflict_1",
 		ProviderInvocationID:  "invocation_invalid_handshake_conflict",
 		AttemptID:             attemptID,
@@ -1244,8 +1276,11 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	if result.AttemptsFailed != 0 {
 		t.Fatalf("expected no stale failure recovery for invalid-handshake conflict convergence, got %d", result.AttemptsFailed)
 	}
-	if got := queryNodeStatus(t, db, "nr_2_invalid_handshake_conflict"); got != "failed" {
-		t.Fatalf("expected invalid-handshake conflict node to fail, got %q", got)
+	if result.AttemptsReassigned != 0 {
+		t.Fatalf("expected no stale reassignment for invalid-handshake conflict, got %d", result.AttemptsReassigned)
+	}
+	if got := queryNodeStatus(t, db, "nr_2_invalid_handshake_conflict"); got != "running" {
+		t.Fatalf("expected invalid-handshake conflict node to remain running for fencing, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -1255,31 +1290,26 @@ func TestReconcilerRecoversInvalidHandshakeConflictAsFailedSettlement(t *testing
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_failure" || attempt.FailureCode != "provider_incomplete_turn" {
-		t.Fatalf("expected committed_failure with provider_incomplete_turn, got %#v", attempt)
+	if attempt.State != "running" || attempt.FailureCode != "" || attempt.CanonicalSettlementID != "" {
+		t.Fatalf("expected invalid-handshake conflict attempt to remain nonterminal and unsettled, got %#v", attempt)
 	}
-	if attempt.FailureText != "conflicting provider completion receipts invalidated the invocation" {
-		t.Fatalf("expected durable attempt failure text to describe receipt conflict, got %q", attempt.FailureText)
+	invocation, found, err := store.GetProviderInvocation(context.Background(), "invocation_invalid_handshake_conflict")
+	if err != nil || !found {
+		t.Fatalf("get invalid provider invocation: found=%t err=%v", found, err)
+	}
+	if invocation.InvocationState != executionstore.ProviderInvocationStateInvalidHandshake {
+		t.Fatalf("expected invalid handshake to remain for stale fencing, got %#v", invocation)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_invalid_handshake_conflict")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected failed provider settlement with provider_incomplete_turn, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID == accepted.Evidence.EvidenceID {
-		t.Fatalf("expected invalid-handshake settlement to use runtime terminal evidence instead of accepted receipt evidence, got %#v", settlement)
-	}
-	if settlement.FailureReasonText != "conflicting provider completion receipts invalidated the invocation" {
-		t.Fatalf("expected invalid-handshake conflict failure text, got %#v", settlement)
+	if found {
+		t.Fatalf("expected invalid handshake not to synthesize a settlement, got %#v", settlement)
 	}
 }
 
-func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(t *testing.T) {
+func TestReconcilerDoesNotSettleInvalidHandshakeCapabilityMismatch(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1352,8 +1382,11 @@ func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(
 	if result.AttemptsFailed != 0 {
 		t.Fatalf("expected no stale failure recovery for invalid-handshake capability convergence, got %d", result.AttemptsFailed)
 	}
-	if got := queryNodeStatus(t, db, "nr_2_invalid_handshake_capability"); got != "failed" {
-		t.Fatalf("expected invalid-handshake capability node to fail, got %q", got)
+	if result.AttemptsReassigned != 0 {
+		t.Fatalf("expected no stale reassignment for invalid-handshake capability mismatch, got %d", result.AttemptsReassigned)
+	}
+	if got := queryNodeStatus(t, db, "nr_2_invalid_handshake_capability"); got != "running" {
+		t.Fatalf("expected invalid-handshake capability node to remain running for fencing, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -1363,21 +1396,15 @@ func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "committed_failure" || attempt.FailureCode != "provider_incomplete_turn" {
-		t.Fatalf("expected committed_failure with provider_incomplete_turn, got %#v", attempt)
+	if attempt.State != "running" || attempt.FailureCode != "" || attempt.CanonicalSettlementID != "" {
+		t.Fatalf("expected invalid-handshake capability attempt to remain nonterminal and unsettled, got %#v", attempt)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_invalid_handshake_capability")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected failed provider settlement with provider_incomplete_turn, got %#v", settlement)
-	}
-	if !strings.Contains(settlement.FailureReasonText, "completion capability mismatch") {
-		t.Fatalf("expected capability mismatch failure text, got %#v", settlement)
+	if found {
+		t.Fatalf("expected invalid handshake not to synthesize a settlement, got %#v", settlement)
 	}
 	if _, foundReceipt, err := store.GetProviderCompletionReceiptEvidence(context.Background(), "invocation_invalid_handshake_capability"); err != nil {
 		t.Fatalf("get provider completion receipt evidence: %v", err)
@@ -1386,7 +1413,7 @@ func TestReconcilerRecoversInvalidHandshakeCapabilityMismatchAsFailedSettlement(
 	}
 }
 
-func TestReconcilerReusesExistingTerminalEvidenceWhenSettlementMissing(t *testing.T) {
+func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptEvidence(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1472,7 +1499,7 @@ func TestReconcilerReusesExistingTerminalEvidenceWhenSettlementMissing(t *testin
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
 	if _, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now}); err != nil {
-		t.Fatalf("reconcile existing evidence backfill: %v", err)
+		t.Fatalf("reconcile terminal attempt evidence: %v", err)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -1482,25 +1509,19 @@ func TestReconcilerReusesExistingTerminalEvidenceWhenSettlementMissing(t *testin
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected contradictory evidence to remain unsettled, got %#v", attempt)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_existing_evidence_backfill")
 	if err != nil {
 		t.Fatalf("get provider completion settlement by invocation: %v", err)
 	}
-	if !found {
-		t.Fatal("expected provider completion settlement to exist")
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed {
-		t.Fatalf("expected failed provider settlement outcome, got %#v", settlement)
-	}
-	if settlement.PrimaryEvidenceID != "evidence_terminal_invocation_existing_evidence_backfill" {
-		t.Fatalf("expected reconcile to reuse the existing terminal evidence, got %#v", settlement)
+	if found {
+		t.Fatalf("expected no provider settlement repair, got %#v", settlement)
 	}
 }
 
-func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *testing.T) {
+func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1563,7 +1584,7 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 	if err != nil {
 		t.Fatalf("accept provider completion receipt: %v", err)
 	}
-	if _, err := store.FinalizeProviderCompletionSettlement(context.Background(), executionstore.FinalizeProviderCompletionSettlementRequest{
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          "settlement_invocation_settlement_mismatch",
 		ProviderInvocationID:  "invocation_settlement_mismatch",
 		AttemptID:             attemptID,
@@ -1571,11 +1592,10 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 		NodeRunID:             "nr_2",
 		Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
 		PrimaryEvidenceID:     accepted.Evidence.EvidenceID,
+		FinalText:             "Receipt-backed success that should be cleared.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
-	}); err != nil {
-		t.Fatalf("finalize initial provider settlement: %v", err)
-	}
+	})
 
 	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions
 		SET state = 'committed_cancelled',
@@ -1600,8 +1620,11 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if strings.TrimSpace(attempt.CanonicalSettlementID) == "" {
-		t.Fatalf("expected canonical settlement id to be linked, got %#v", attempt)
+	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
+		t.Fatalf("expected terminal attempt not to rewrite its canonical settlement link, got %#v", attempt)
+	}
+	if got := queryNodeStatus(t, db, "nr_2"); got != "cancelled" {
+		t.Fatalf("expected unrelated terminal node projection to remain intact, got %q", got)
 	}
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_settlement_mismatch")
 	if err != nil {
@@ -1610,18 +1633,18 @@ func TestReconcilerReconcilesExistingProviderSettlementToDurableAttemptTruth(t *
 	if !found {
 		t.Fatal("expected provider completion settlement to exist")
 	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
-		t.Fatalf("expected cancelled provider settlement outcome, got %#v", settlement)
+	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
+		t.Fatalf("expected existing provider settlement outcome to remain immutable, got %#v", settlement)
 	}
-	if settlement.FailureReasonCode != "run_terminalized" {
-		t.Fatalf("expected cancelled provider settlement reason code to reconcile, got %#v", settlement)
+	if settlement.FailureReasonCode != "" {
+		t.Fatalf("expected existing provider settlement failure reason to remain unchanged, got %#v", settlement)
 	}
-	if settlement.FinalText != "" {
-		t.Fatalf("expected cancelled provider settlement to clear stale success text, got %#v", settlement)
+	if settlement.FinalText != "Receipt-backed success that should be cleared." || settlement.SettledAt != "2026-03-01T12:08:04Z" {
+		t.Fatalf("expected existing provider settlement payload and timestamp to remain immutable, got %#v", settlement)
 	}
 }
 
-func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTruth(t *testing.T) {
+func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1684,7 +1707,7 @@ func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTr
 	if err != nil {
 		t.Fatalf("accept provider completion receipt: %v", err)
 	}
-	if _, err := store.FinalizeProviderCompletionSettlement(context.Background(), executionstore.FinalizeProviderCompletionSettlementRequest{
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          "settlement_invocation_settlement_pinned",
 		ProviderInvocationID:  "invocation_settlement_pinned",
 		AttemptID:             attemptID,
@@ -1692,11 +1715,10 @@ func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTr
 		NodeRunID:             "nr_2_pinned",
 		Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
 		PrimaryEvidenceID:     accepted.Evidence.EvidenceID,
+		FinalText:             "Receipt-backed success that should be replaced.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
-	}); err != nil {
-		t.Fatalf("finalize initial provider settlement: %v", err)
-	}
+	})
 
 	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions
 		SET state = 'committed_cancelled',
@@ -1721,14 +1743,14 @@ func TestReconcilerReconcilesPinnedCanonicalSettlementMismatchToDurableAttemptTr
 	if !found {
 		t.Fatal("expected provider completion settlement to exist")
 	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
-		t.Fatalf("expected cancelled provider settlement outcome, got %#v", settlement)
+	if settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
+		t.Fatalf("expected pinned provider settlement outcome to remain immutable, got %#v", settlement)
 	}
-	if settlement.FailureReasonCode != "run_terminalized" {
-		t.Fatalf("expected cancelled provider settlement reason code to reconcile, got %#v", settlement)
+	if settlement.FailureReasonCode != "" {
+		t.Fatalf("expected pinned provider settlement failure reason to remain unchanged, got %#v", settlement)
 	}
-	if settlement.FinalText != "" {
-		t.Fatalf("expected cancelled provider settlement to clear stale success text, got %#v", settlement)
+	if settlement.FinalText != "Receipt-backed success that should be replaced." || settlement.SettledAt != "2026-03-01T12:08:04Z" {
+		t.Fatalf("expected pinned provider settlement payload and timestamp to remain immutable, got %#v", settlement)
 	}
 }
 
@@ -1840,6 +1862,49 @@ func queryProgressEventCountForAttemptOrNode(t *testing.T, db *sql.DB, attemptID
 		t.Fatalf("query progress event count: %v", err)
 	}
 	return count
+}
+
+func seedHistoricalProviderSettlementWithoutTerminal(t *testing.T, db *sql.DB, req executionstore.FinalizeProviderCompletionSettlementRequest) {
+	t.Helper()
+	structuredPayloadJSON := strings.TrimSpace(req.StructuredPayloadJSON)
+	if structuredPayloadJSON == "" {
+		structuredPayloadJSON = `{}`
+	}
+	providerDiagnosticsJSON := strings.TrimSpace(req.ProviderDiagnosticsJSON)
+	if providerDiagnosticsJSON == "" {
+		providerDiagnosticsJSON = `{}`
+	}
+	failureCode, failureText := strings.TrimSpace(req.FailureReasonCode), strings.TrimSpace(req.FailureReasonText)
+	invocationState := executionstore.ProviderInvocationStateSettledFailed
+	if req.Outcome == executionstore.ProviderCompletionOutcomeSuccess {
+		invocationState = executionstore.ProviderInvocationStateSettledSuccess
+		failureCode, failureText = "", ""
+	} else if req.Outcome == executionstore.ProviderCompletionOutcomeCancelled {
+		invocationState = executionstore.ProviderInvocationStateSettledCancelled
+	}
+	if _, err := db.Exec(`INSERT INTO provider_completion_settlements (
+		settlement_id, provider_invocation_id, attempt_id, run_id, node_run_id, outcome,
+		primary_evidence_id, final_text, structured_payload_json, provider_diagnostics_json,
+		failure_reason_code, failure_reason_text, settled_at, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.SettlementID, req.ProviderInvocationID, req.AttemptID, req.RunID, req.NodeRunID, string(req.Outcome),
+		req.PrimaryEvidenceID, req.FinalText, structuredPayloadJSON, providerDiagnosticsJSON,
+		failureCode, failureText, req.SettledAt, req.SettledAt,
+	); err != nil {
+		t.Fatalf("seed historical provider settlement %q: %v", req.SettlementID, err)
+	}
+	if _, err := db.Exec(`UPDATE provider_invocations
+		SET invocation_state = ?, settled_at = ?,
+		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN ? ELSE '' END,
+		    failure_reason_code = ?, failure_reason_text = ?, updated_at = ?
+		WHERE provider_invocation_id = ?`,
+		string(invocationState), req.SettledAt, req.SettledAt, failureCode, failureText, req.SettledAt, req.ProviderInvocationID,
+	); err != nil {
+		t.Fatalf("seed historical provider invocation settlement %q: %v", req.ProviderInvocationID, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET canonical_settlement_id = ? WHERE attempt_id = ?`, req.SettlementID, req.AttemptID); err != nil {
+		t.Fatalf("link historical provider settlement %q: %v", req.SettlementID, err)
+	}
 }
 
 func mustParseRFC3339(t *testing.T, raw string) time.Time {

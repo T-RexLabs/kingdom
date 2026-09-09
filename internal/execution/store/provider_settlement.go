@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kingdom/internal/core/executionoutput"
+	"kingdom/internal/core/providerexecution"
 )
 
 type ProviderInvocationState string
@@ -32,7 +35,6 @@ const (
 	ProviderCompletionEvidenceKindCompletionReceiptAttempt ProviderCompletionEvidenceKind = "completion_receipt_attempt"
 	ProviderCompletionEvidenceKindStreamObservation        ProviderCompletionEvidenceKind = "stream_observation"
 	ProviderCompletionEvidenceKindExportDiagnostic         ProviderCompletionEvidenceKind = "export_diagnostic"
-	ProviderCompletionEvidenceKindRepairDiagnostic         ProviderCompletionEvidenceKind = "repair_diagnostic"
 )
 
 type ProviderCompletionReceiptDisposition string
@@ -234,20 +236,25 @@ type FinalizeProviderCompletionSettlementRequest struct {
 // durable terminal attempt record. Its outbox is deliberately only a handoff
 // for projections after the canonical result has committed.
 type SettleProviderCompletionAndTerminalRequest struct {
-	Settlement       FinalizeProviderCompletionSettlementRequest
-	TerminalEvidence *EnsureTerminalProviderCompletionEvidenceRequest
-	Terminal         CommitTerminalRequest
+	Settlement           FinalizeProviderCompletionSettlementRequest
+	StreamObservation    *providerexecution.InvocationStreamObservation
+	ExpectedLeaseOwner   string
+	ExpectedLeaseVersion int64
+	TokenUsage           *ProviderInvocationTokenUsage
+	Terminal             CommitTerminalRequest
 }
 
-type ReconcileProviderCompletionSettlementRequest struct {
-	ProviderInvocationID string
-	AttemptID            string
-	RunID                string
-	NodeRunID            string
-	Outcome              ProviderCompletionOutcome
-	FailureReasonCode    string
-	FailureReasonText    string
-	SettledAt            string
+type ProviderInvocationTokenUsage struct {
+	RequiredRole     string
+	Model            string
+	Variant          string
+	InputTokens      int64
+	OutputTokens     int64
+	TotalTokens      int64
+	ReasoningTokens  int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	CreatedAt        string
 }
 
 type SupersedeProviderInvocationRequest struct {
@@ -352,7 +359,7 @@ func (s *Store) EnsureTerminalProviderCompletionEvidence(ctx context.Context, re
 		return ProviderCompletionEvidence{}, err
 	}
 	if found {
-		if !sameProviderCompletionEvidenceIdentity(evidence, appendReq) {
+		if !sameProviderCompletionEvidence(evidence, appendReq) {
 			return ProviderCompletionEvidence{}, providerSettlementError("ensure_terminal_provider_completion_evidence", "evidence_conflict", appendReq.ProviderInvocationID, appendReq.AttemptID, "")
 		}
 		return evidence, nil
@@ -506,7 +513,7 @@ func (s *Store) MarkProviderInvocationOpen(ctx context.Context, req MarkProvider
 	if err := ensureProviderSessionLineage(invocation.ProviderInvocationID, invocation.AttemptID, invocation.ProviderSessionID, normalized.ProviderSessionID, string(invocation.InvocationState), "mark_provider_invocation_open"); err != nil {
 		return ProviderInvocation{}, err
 	}
-	if invocation.InvocationState != ProviderInvocationStateOpen || invocation.OpenedAt == "" || activeInvocationID == "" {
+	if invocation.InvocationState != ProviderInvocationStateOpen || invocation.OpenedAt == "" || activeInvocationID == "" || (invocation.ProviderSessionID == "" && normalized.ProviderSessionID != "") {
 		if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
@@ -838,35 +845,6 @@ func (s *Store) AcceptProviderCompletionReceipt(ctx context.Context, req AcceptP
 	return result, nil
 }
 
-func (s *Store) FinalizeProviderCompletionSettlement(ctx context.Context, req FinalizeProviderCompletionSettlementRequest) (ProviderCompletionSettlement, error) {
-	if s == nil || s.db == nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("store database is required")
-	}
-	normalized, err := normalizeFinalizeProviderCompletionSettlementRequest(req)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("begin provider completion settlement transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	settlement, err := finalizeProviderCompletionSettlementTx(ctx, tx, normalized)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("commit provider completion settlement transaction: %w", err)
-	}
-	committed = true
-	return settlement, nil
-}
-
 // SettleProviderCompletionAndTerminal commits settlement and terminal attempt
 // state in one SQLite transaction. A projection can therefore never observe a
 // terminal attempt without its canonical provider settlement.
@@ -875,6 +853,9 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 		return ProviderCompletionSettlement{}, fmt.Errorf("store database is required")
 	}
 	settlementReq := req.Settlement
+	if strings.TrimSpace(settlementReq.SettledAt) == "" {
+		settlementReq.SettledAt = s.currentTime().UTC().Format(time.RFC3339Nano)
+	}
 	terminal := req.Terminal
 	if strings.TrimSpace(terminal.AttemptID) == "" {
 		terminal.AttemptID = settlementReq.AttemptID
@@ -887,6 +868,12 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 	}
 	if strings.TrimSpace(terminal.OutboxID) == "" || strings.TrimSpace(terminal.TerminalState) == "" {
 		return ProviderCompletionSettlement{}, fmt.Errorf("outbox_id and terminal_state are required")
+	}
+	if req.StreamObservation == nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("stream_observation is required")
+	}
+	if req.TokenUsage == nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("token_usage is required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -908,29 +895,157 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 	if err := ensureInvocationLineage(invocation, settlementReq.AttemptID, settlementReq.RunID, settlementReq.NodeRunID, "settle_provider_completion_and_terminal"); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
-	activeInvocationID, _, attemptFound, err := loadAttemptInvocationRefsTx(ctx, tx, invocation.AttemptID)
+	authority, attemptFound, err := loadProviderSettlementAttemptAuthorityTx(ctx, tx, invocation.AttemptID)
 	if err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
 	if !attemptFound {
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
-	if activeInvocationID != invocation.ProviderInvocationID {
+	if authority.ExecutionMode != ExecutionModeProviderBacked {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "attempt_not_provider_backed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	if authority.CompletionMode != invocation.CompletionMode {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "completion_mode_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	if authority.ActiveProviderInvocationID != invocation.ProviderInvocationID {
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_not_active", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
-	if req.TerminalEvidence != nil {
-		evidenceReq, err := normalizeEnsureTerminalProviderCompletionEvidenceRequest(*req.TerminalEvidence)
-		if err != nil {
+	if invocation.SupersededByInvocationID != "" || invocation.InvocationState == ProviderInvocationStateSuperseded {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_superseded", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	// Every row in this atomic boundary uses the canonical settlement time.
+	// Replay wall-clock values are metadata, not a new settlement claim.
+	existingCanonical := authority.CanonicalSettlementID != ""
+	if existingCanonical {
+		existingSettlement, found, loadErr := loadProviderCompletionSettlementByInvocationTx(ctx, tx, invocation.ProviderInvocationID)
+		if loadErr != nil {
+			return ProviderCompletionSettlement{}, loadErr
+		}
+		if !found || existingSettlement.SettlementID != authority.CanonicalSettlementID {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "canonical_settlement_missing", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		settlementReq.SettledAt = existingSettlement.SettledAt
+	}
+	terminal.CommittedAt = settlementReq.SettledAt
+	if !existingCanonical {
+		if authority.State != "starting" && authority.State != "running" {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "attempt_not_active", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		expectedOwner := strings.TrimSpace(req.ExpectedLeaseOwner)
+		if expectedOwner == "" {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_owner_required", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		if req.ExpectedLeaseVersion <= 0 {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_version_invalid", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		if authority.LeaseOwner != expectedOwner || authority.LeaseVersion != req.ExpectedLeaseVersion {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_lineage_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		leaseExpiresAt, parseErr := time.Parse(time.RFC3339Nano, authority.LeaseExpiresAt)
+		if parseErr != nil {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_expired", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		if !leaseExpiresAt.After(s.currentTime()) {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_expired", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+	}
+
+	observation := *req.StreamObservation
+	observation.ProviderSessionID = strings.TrimSpace(observation.ProviderSessionID)
+	if observation.ProviderSessionID != "" {
+		if err := ensureProviderSessionLineage(invocation.ProviderInvocationID, invocation.AttemptID, invocation.ProviderSessionID, observation.ProviderSessionID, string(invocation.InvocationState), "settle_provider_completion_and_terminal"); err != nil {
 			return ProviderCompletionSettlement{}, err
 		}
-		evidence, err := insertProviderCompletionEvidenceTx(ctx, tx, evidenceReq)
+		if authority.ProviderSessionID != "" && authority.ProviderSessionID != observation.ProviderSessionID {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_session_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		if invocation.ProviderSessionID == "" || authority.ProviderSessionID == "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations SET provider_session_id = CASE WHEN provider_session_id = '' THEN ? ELSE provider_session_id END, updated_at = ? WHERE provider_invocation_id = ?`, observation.ProviderSessionID, settlementReq.SettledAt, invocation.ProviderInvocationID); err != nil {
+				return ProviderCompletionSettlement{}, fmt.Errorf("bind provider invocation session: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE attempt_executions SET provider_session_id = CASE WHEN provider_session_id = '' THEN ? ELSE provider_session_id END WHERE attempt_id = ?`, observation.ProviderSessionID, invocation.AttemptID); err != nil {
+				return ProviderCompletionSettlement{}, fmt.Errorf("bind attempt provider session: %w", err)
+			}
+			invocation.ProviderSessionID = observation.ProviderSessionID
+			authority.ProviderSessionID = observation.ProviderSessionID
+		}
+	}
+
+	streamPayload, err := marshalProviderStreamObservationEvidence(invocation, req, observation)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	streamEvidence, err := insertProviderCompletionEvidenceTx(ctx, tx, AppendProviderCompletionEvidenceRequest{
+		EvidenceID:           TerminalProviderCompletionEvidenceID(invocation.ProviderInvocationID),
+		ProviderInvocationID: invocation.ProviderInvocationID,
+		AttemptID:            invocation.AttemptID,
+		RunID:                invocation.RunID,
+		NodeRunID:            invocation.NodeRunID,
+		EvidenceKind:         ProviderCompletionEvidenceKindStreamObservation,
+		PayloadJSON:          streamPayload,
+		CreatedAt:            settlementReq.SettledAt,
+	})
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+
+	var validated executionoutput.Result
+	if settlementReq.Outcome == ProviderCompletionOutcomeSuccess {
+		switch invocation.CompletionMode {
+		case ProviderCompletionModeServerResponse:
+			if observation.ProviderSessionID == "" {
+				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_session_missing", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+			}
+			if err := providerexecution.ValidateServerResponseSuccess(observation); err != nil {
+				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invalid_stream_success", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+			}
+			validated, err = executionoutput.Validate(authority.NodeID, authority.NodeClass, observation.CanonicalTerminalText, settlementReq.StructuredPayloadJSON)
+			settlementReq.PrimaryEvidenceID = streamEvidence.EvidenceID
+		case ProviderCompletionModeReceiptRequired:
+			if err := validateSuccessfulProviderProcessObservation(observation); err != nil {
+				return ProviderCompletionSettlement{}, err
+			}
+			primaryEvidence, found, loadErr := loadProviderCompletionEvidenceByIDTx(ctx, tx, settlementReq.PrimaryEvidenceID)
+			if loadErr != nil {
+				return ProviderCompletionSettlement{}, loadErr
+			}
+			if !found || primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
+				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "completion_receipt_required", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+			}
+			receiptPayload, parseErr := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
+			if parseErr != nil {
+				return ProviderCompletionSettlement{}, parseErr
+			}
+			validated, err = executionoutput.Validate(authority.NodeID, authority.NodeClass, receiptPayload.FinalText, receiptPayload.StructuredPayloadJSON)
+		default:
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invalid_completion_mode", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
 		if err != nil {
-			return ProviderCompletionSettlement{}, err
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "output_validation_failed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
-		if settlementReq.PrimaryEvidenceID != "" && settlementReq.PrimaryEvidenceID != evidence.EvidenceID {
-			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "primary_evidence_conflict", settlementReq.ProviderInvocationID, settlementReq.AttemptID, "")
+		settlementReq.FinalText = validated.CanonicalText
+		settlementReq.StructuredPayloadJSON = validated.StructuredPayloadJSON
+	} else {
+		settlementReq.PrimaryEvidenceID = streamEvidence.EvidenceID
+	}
+
+	expectedTerminalState := "committed_failure"
+	if settlementReq.Outcome == ProviderCompletionOutcomeCancelled {
+		expectedTerminalState = "committed_cancelled"
+	} else if settlementReq.Outcome == ProviderCompletionOutcomeSuccess && validated.WorkflowFailureCode == "" {
+		expectedTerminalState = "committed_success"
+	}
+	if strings.TrimSpace(terminal.TerminalState) != expectedTerminalState {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "terminal_outcome_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	if validated.WorkflowFailureCode != "" {
+		if strings.TrimSpace(terminal.FailureCode) != validated.WorkflowFailureCode || strings.TrimSpace(terminal.FailureText) != validated.WorkflowFailureText {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "workflow_outcome_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
-		settlementReq.PrimaryEvidenceID = evidence.EvidenceID
+	}
+	if terminal.ProviderSessionID != "" && terminal.ProviderSessionID != observation.ProviderSessionID {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_session_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 	}
 	settlementReq, err = normalizeFinalizeProviderCompletionSettlementRequest(settlementReq)
 	if err != nil {
@@ -943,11 +1058,150 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 	if err := commitTerminalTx(ctx, tx, terminal); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
+	usage := *req.TokenUsage
+	if usage.RequiredRole != "" && strings.TrimSpace(usage.RequiredRole) != authority.RequiredRole {
+		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "token_usage_role_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	usage.RequiredRole = authority.RequiredRole
+	usage.InputTokens = observation.Tokens.InputTokens
+	usage.OutputTokens = observation.Tokens.OutputTokens
+	usage.TotalTokens = observation.Tokens.TotalTokens
+	usage.ReasoningTokens = observation.Tokens.ReasoningTokens
+	usage.CacheReadTokens = observation.Tokens.CacheReadTokens
+	usage.CacheWriteTokens = observation.Tokens.CacheWriteTokens
+	if err := insertProviderInvocationTokenUsageTx(ctx, tx, invocation, usage, settlement.SettledAt); err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ProviderCompletionSettlement{}, fmt.Errorf("commit composite provider settlement transaction: %w", err)
 	}
 	committed = true
 	return settlement, nil
+}
+
+type providerSettlementAttemptAuthority struct {
+	State                      string
+	ExecutionMode              ExecutionMode
+	CompletionMode             ProviderCompletionMode
+	LeaseOwner                 string
+	LeaseExpiresAt             string
+	LeaseVersion               int64
+	ProviderSessionID          string
+	ActiveProviderInvocationID string
+	CanonicalSettlementID      string
+	NodeID                     string
+	NodeClass                  string
+	RequiredRole               string
+}
+
+func loadProviderSettlementAttemptAuthorityTx(ctx context.Context, tx *sql.Tx, attemptID string) (providerSettlementAttemptAuthority, bool, error) {
+	var authority providerSettlementAttemptAuthority
+	var executionMode, completionMode string
+	err := tx.QueryRowContext(ctx, `SELECT ae.state, ae.execution_mode, ae.completion_mode, ae.lease_owner, COALESCE(ae.lease_expires_at, ''), ae.lease_version,
+		COALESCE(ae.provider_session_id, ''), COALESCE(ae.active_provider_invocation_id, ''), COALESCE(ae.canonical_settlement_id, ''),
+		nr.node_id, wn.node_class, nr.required_role
+		FROM attempt_executions ae
+		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		JOIN workflow_runs wr ON wr.run_id = ae.run_id
+		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
+		WHERE ae.attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(
+		&authority.State, &executionMode, &completionMode, &authority.LeaseOwner, &authority.LeaseExpiresAt, &authority.LeaseVersion,
+		&authority.ProviderSessionID, &authority.ActiveProviderInvocationID, &authority.CanonicalSettlementID,
+		&authority.NodeID, &authority.NodeClass, &authority.RequiredRole,
+	)
+	if err == sql.ErrNoRows {
+		return providerSettlementAttemptAuthority{}, false, nil
+	}
+	if err != nil {
+		return providerSettlementAttemptAuthority{}, false, fmt.Errorf("load provider settlement attempt authority for %q: %w", attemptID, err)
+	}
+	authority.ExecutionMode = NormalizeExecutionMode(executionMode)
+	authority.CompletionMode = ProviderCompletionMode(completionMode)
+	return authority, true, nil
+}
+
+func marshalProviderStreamObservationEvidence(invocation ProviderInvocation, req SettleProviderCompletionAndTerminalRequest, observation providerexecution.InvocationStreamObservation) (string, error) {
+	raw, err := json.Marshal(struct {
+		AttemptID            string                                        `json:"attempt_id"`
+		ProviderInvocationID string                                        `json:"provider_invocation_id"`
+		CompletionMode       ProviderCompletionMode                        `json:"completion_mode"`
+		LeaseOwner           string                                        `json:"lease_owner"`
+		LeaseVersion         int64                                         `json:"lease_version"`
+		Observation          providerexecution.InvocationStreamObservation `json:"observation"`
+	}{
+		AttemptID:            invocation.AttemptID,
+		ProviderInvocationID: invocation.ProviderInvocationID,
+		CompletionMode:       invocation.CompletionMode,
+		LeaseOwner:           strings.TrimSpace(req.ExpectedLeaseOwner),
+		LeaseVersion:         req.ExpectedLeaseVersion,
+		Observation:          observation,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal provider stream observation evidence: %w", err)
+	}
+	return canonicalizeJSONDocument(string(raw), "")
+}
+
+func validateSuccessfulProviderProcessObservation(observation providerexecution.InvocationStreamObservation) error {
+	if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
+		return fmt.Errorf("provider process did not exit successfully")
+	}
+	if !observation.StdoutDrained || !observation.StderrDrained {
+		return fmt.Errorf("provider output streams were not fully drained")
+	}
+	if observation.TimedOut || observation.Cancelled || strings.TrimSpace(observation.ProviderError) != "" || observation.MalformedProtocolCount != 0 || observation.ConflictingTerminalEvidence {
+		return fmt.Errorf("provider process observation does not authorize receipt-backed success")
+	}
+	return nil
+}
+
+func insertProviderInvocationTokenUsageTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, usage ProviderInvocationTokenUsage, settledAt string) error {
+	usage.RequiredRole = strings.TrimSpace(usage.RequiredRole)
+	usage.Model = strings.TrimSpace(usage.Model)
+	usage.Variant = strings.TrimSpace(usage.Variant)
+	usage.CreatedAt = strings.TrimSpace(settledAt)
+	if usage.RequiredRole == "" {
+		return fmt.Errorf("required_role is required for provider invocation token usage")
+	}
+	if usage.CreatedAt == "" {
+		return fmt.Errorf("canonical settlement timestamp is required for provider invocation token usage")
+	}
+	usageID := "usage_provider_" + sanitizeProviderSettlementToken(invocation.ProviderInvocationID)
+	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO token_usage (
+		usage_id, run_id, node_run_id, attempt_id, provider_invocation_id,
+		required_role, model, variant, input_tokens, output_tokens, total_tokens,
+		reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		usageID, invocation.RunID, invocation.NodeRunID, invocation.AttemptID, invocation.ProviderInvocationID,
+		usage.RequiredRole, usage.Model, usage.Variant, usage.InputTokens, usage.OutputTokens, usage.TotalTokens,
+		usage.ReasoningTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert provider invocation token usage for %q: %w", invocation.ProviderInvocationID, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read provider invocation token usage rows affected for %q: %w", invocation.ProviderInvocationID, err)
+	}
+	if rows > 0 {
+		return nil
+	}
+	var existing ProviderInvocationTokenUsage
+	var existingUsageID, attemptID, runID, nodeRunID, invocationID string
+	if err := tx.QueryRowContext(ctx, `SELECT usage_id, attempt_id, run_id, node_run_id, provider_invocation_id,
+		required_role, model, variant, input_tokens, output_tokens, total_tokens,
+		reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at
+		FROM token_usage WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID).Scan(
+		&existingUsageID, &attemptID, &runID, &nodeRunID, &invocationID,
+		&existing.RequiredRole, &existing.Model, &existing.Variant, &existing.InputTokens, &existing.OutputTokens, &existing.TotalTokens,
+		&existing.ReasoningTokens, &existing.CacheReadTokens, &existing.CacheWriteTokens, &existing.CreatedAt,
+	); err != nil {
+		return fmt.Errorf("load provider invocation token usage for %q: %w", invocation.ProviderInvocationID, err)
+	}
+	if existingUsageID != usageID || attemptID != invocation.AttemptID || runID != invocation.RunID || nodeRunID != invocation.NodeRunID || invocationID != invocation.ProviderInvocationID || existing != usage {
+		return providerSettlementError("settle_provider_completion_and_terminal", "token_usage_conflict", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	return nil
 }
 
 // finalizeProviderCompletionSettlementTx owns only settlement rows. Callers that
@@ -973,6 +1227,9 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 	}
 	if primaryEvidence.ProviderInvocationID != invocation.ProviderInvocationID || primaryEvidence.AttemptID != invocation.AttemptID || primaryEvidence.RunID != invocation.RunID || primaryEvidence.NodeRunID != invocation.NodeRunID {
 		return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if primaryEvidence.EvidenceKind == ProviderCompletionEvidenceKindExportDiagnostic {
+		return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "export_evidence_not_authoritative", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
 	settlement := ProviderCompletionSettlement{
 		SettlementID:            normalized.SettlementID,
@@ -1002,23 +1259,15 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 			}
 			settlement.FinalText = receiptPayload.FinalText
 			settlement.StructuredPayloadJSON = receiptPayload.StructuredPayloadJSON
-			if invocation.InvocationState != ProviderInvocationStateReceiptPersisted && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
-				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_receipt_persisted", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-			}
 		case ProviderCompletionModeServerResponse:
 			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindStreamObservation {
 				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "primary_evidence_kind_invalid", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-			}
-			if invocation.InvocationState != ProviderInvocationStateOpen && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
-				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 			}
 		default:
 			return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invalid_completion_mode", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 		}
 		settlement.FailureReasonCode = ""
 		settlement.FailureReasonText = ""
-	} else if err := ensureInvocationStateForNonSuccessSettlement(invocation, normalized.Outcome); err != nil {
-		return ProviderCompletionSettlement{}, err
 	}
 	existingSettlement, settlementFound, err := loadProviderCompletionSettlementByInvocationTx(ctx, tx, invocation.ProviderInvocationID)
 	if err != nil {
@@ -1032,6 +1281,20 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 			return ProviderCompletionSettlement{}, err
 		}
 		return existingSettlement, nil
+	}
+	if normalized.Outcome == ProviderCompletionOutcomeSuccess {
+		switch invocation.CompletionMode {
+		case ProviderCompletionModeReceiptRequired:
+			if invocation.InvocationState != ProviderInvocationStateReceiptPersisted && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_receipt_persisted", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+		case ProviderCompletionModeServerResponse:
+			if invocation.InvocationState != ProviderInvocationStateOpen && invocation.InvocationState != ProviderInvocationStateSettledSuccess {
+				return ProviderCompletionSettlement{}, providerSettlementError("finalize_provider_completion_settlement", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+			}
+		}
+	} else if err := ensureInvocationStateForNonSuccessSettlement(invocation, normalized.Outcome); err != nil {
+		return ProviderCompletionSettlement{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_completion_settlements (
 		settlement_id,
@@ -1091,161 +1354,19 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 	return settlement, nil
 }
 
-func (s *Store) ReconcileProviderCompletionSettlement(ctx context.Context, req ReconcileProviderCompletionSettlementRequest) (ProviderCompletionSettlement, error) {
-	if s == nil || s.db == nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("store database is required")
-	}
-	normalized, err := normalizeReconcileProviderCompletionSettlementRequest(req)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("begin provider completion settlement reconcile transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	invocation, found, err := loadProviderInvocationTx(ctx, tx, normalized.ProviderInvocationID)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	if !found {
-		return ProviderCompletionSettlement{}, providerSettlementError("reconcile_provider_completion_settlement", "invocation_not_found", normalized.ProviderInvocationID, normalized.AttemptID, "")
-	}
-	if err := ensureInvocationLineage(invocation, normalized.AttemptID, normalized.RunID, normalized.NodeRunID, "reconcile_provider_completion_settlement"); err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	settlement, found, err := loadProviderCompletionSettlementByInvocationTx(ctx, tx, invocation.ProviderInvocationID)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	if !found {
-		return ProviderCompletionSettlement{}, providerSettlementError("reconcile_provider_completion_settlement", "settlement_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-	}
-	primaryEvidence, found, err := loadProviderCompletionEvidenceByIDTx(ctx, tx, settlement.PrimaryEvidenceID)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	if !found {
-		return ProviderCompletionSettlement{}, providerSettlementError("reconcile_provider_completion_settlement", "primary_evidence_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
-	}
-	payload, err := reconciledProviderCompletionSettlementPayload(settlement, primaryEvidence, normalized.Outcome, invocation.CompletionMode)
-	if err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-
-	reconciled := settlement
-	reconciled.Outcome = normalized.Outcome
-	reconciled.FinalText = payload.FinalText
-	reconciled.StructuredPayloadJSON = payload.StructuredPayloadJSON
-	reconciled.FailureReasonCode = normalized.FailureReasonCode
-	reconciled.FailureReasonText = normalized.FailureReasonText
-	reconciled.SettledAt = normalized.SettledAt
-	if reconciled.Outcome == ProviderCompletionOutcomeSuccess {
-		reconciled.FailureReasonCode = ""
-		reconciled.FailureReasonText = ""
-	}
-	if !sameProviderCompletionSettlement(settlement, reconciled) {
-		if _, err := tx.ExecContext(ctx, `UPDATE provider_completion_settlements
-			SET outcome = ?,
-			    final_text = ?,
-			    structured_payload_json = ?,
-			    failure_reason_code = ?,
-			    failure_reason_text = ?,
-			    settled_at = ?
-			WHERE settlement_id = ?`,
-			string(reconciled.Outcome),
-			reconciled.FinalText,
-			reconciled.StructuredPayloadJSON,
-			reconciled.FailureReasonCode,
-			reconciled.FailureReasonText,
-			reconciled.SettledAt,
-			reconciled.SettlementID,
-		); err != nil {
-			return ProviderCompletionSettlement{}, fmt.Errorf("update provider completion settlement %q: %w", reconciled.SettlementID, err)
-		}
-	}
-	providerState := providerInvocationStateForOutcome(reconciled.Outcome)
-	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
-		SET invocation_state = ?,
-		    settled_at = ?,
-		    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN COALESCE(completion_capability_revoked_at, ?) ELSE '' END,
-		    failure_reason_code = ?,
-		    failure_reason_text = ?,
-		    updated_at = ?
-		WHERE provider_invocation_id = ?`,
-		string(providerState),
-		reconciled.SettledAt,
-		reconciled.SettledAt,
-		reconciled.FailureReasonCode,
-		reconciled.FailureReasonText,
-		reconciled.SettledAt,
-		invocation.ProviderInvocationID,
-	); err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("update provider invocation settlement state for %q: %w", invocation.ProviderInvocationID, err)
-	}
-	if err := linkAttemptCanonicalSettlementTx(ctx, tx, invocation.AttemptID, invocation.ProviderInvocationID, reconciled.SettlementID); err != nil {
-		return ProviderCompletionSettlement{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ProviderCompletionSettlement{}, fmt.Errorf("commit provider completion settlement reconcile transaction: %w", err)
-	}
-	committed = true
-	return reconciled, nil
-}
-
-type reconciledProviderSettlementPayload struct {
-	FinalText             string
-	StructuredPayloadJSON string
-}
-
-func reconciledProviderCompletionSettlementPayload(existing ProviderCompletionSettlement, primaryEvidence ProviderCompletionEvidence, outcome ProviderCompletionOutcome, completionMode ProviderCompletionMode) (reconciledProviderSettlementPayload, error) {
-	if outcome == ProviderCompletionOutcomeSuccess {
-		switch completionMode {
-		case ProviderCompletionModeReceiptRequired:
-			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
-				return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "success_requires_receipt_evidence", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
-			}
-			receiptPayload, err := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
-			if err != nil {
-				return reconciledProviderSettlementPayload{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, err)
-			}
-			return reconciledProviderSettlementPayload{FinalText: receiptPayload.FinalText, StructuredPayloadJSON: receiptPayload.StructuredPayloadJSON}, nil
-		case ProviderCompletionModeServerResponse:
-			if primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindStreamObservation {
-				return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "success_requires_stream_evidence", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
-			}
-			return reconciledProviderSettlementPayload{FinalText: existing.FinalText, StructuredPayloadJSON: existing.StructuredPayloadJSON}, nil
-		default:
-			return reconciledProviderSettlementPayload{}, providerSettlementError("reconcile_provider_completion_settlement", "invalid_completion_mode", existing.ProviderInvocationID, existing.AttemptID, string(existing.Outcome))
-		}
-	}
-	if existing.Outcome != outcome || primaryEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
-		return reconciledProviderSettlementPayload{StructuredPayloadJSON: "{}"}, nil
-	}
-	receiptPayload, err := ParseProviderCompletionReceiptEvidencePayload(primaryEvidence.PayloadJSON)
-	if err != nil {
-		return reconciledProviderSettlementPayload{}, fmt.Errorf("parse completion receipt evidence %q: %w", primaryEvidence.EvidenceID, err)
-	}
-	return reconciledProviderSettlementPayload{
-		FinalText:             receiptPayload.FinalText,
-		StructuredPayloadJSON: receiptPayload.StructuredPayloadJSON,
-	}, nil
-}
-
 func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProviderInvocationRequest, capabilityHash string) (ProviderInvocation, error) {
-	attemptCompletionMode, foundAttempt, err := loadAttemptCompletionModeTx(ctx, tx, req.AttemptID)
-	if err != nil {
-		return ProviderInvocation{}, err
-	}
-	if !foundAttempt {
+	var attemptRunID, attemptNodeRunID, rawAttemptCompletionMode string
+	err := tx.QueryRowContext(ctx, `SELECT run_id, node_run_id, completion_mode FROM attempt_executions WHERE attempt_id = ?`, req.AttemptID).Scan(&attemptRunID, &attemptNodeRunID, &rawAttemptCompletionMode)
+	if err == sql.ErrNoRows {
 		return ProviderInvocation{}, providerSettlementError("create_provider_invocation", "attempt_not_found", req.ProviderInvocationID, req.AttemptID, "")
 	}
+	if err != nil {
+		return ProviderInvocation{}, fmt.Errorf("load attempt lineage for provider invocation %q: %w", req.ProviderInvocationID, err)
+	}
+	if attemptRunID != req.RunID || attemptNodeRunID != req.NodeRunID {
+		return ProviderInvocation{}, providerSettlementError("create_provider_invocation", "attempt_lineage_mismatch", req.ProviderInvocationID, req.AttemptID, "")
+	}
+	attemptCompletionMode := ProviderCompletionMode(rawAttemptCompletionMode)
 	if attemptCompletionMode != req.CompletionMode {
 		return ProviderInvocation{}, providerSettlementError("create_provider_invocation", "completion_mode_mismatch", req.ProviderInvocationID, req.AttemptID, "")
 	}
@@ -1817,10 +1938,6 @@ func terminalProviderEvidenceKindForSource(source string) (ProviderCompletionEvi
 	switch strings.TrimSpace(source) {
 	case "", "stream":
 		return ProviderCompletionEvidenceKindStreamObservation, nil
-	case "export":
-		return ProviderCompletionEvidenceKindExportDiagnostic, nil
-	case "repair":
-		return ProviderCompletionEvidenceKindRepairDiagnostic, nil
 	default:
 		return "", fmt.Errorf("invalid terminal provider evidence source: %q", strings.TrimSpace(source))
 	}
@@ -1837,22 +1954,6 @@ func loadAttemptInvocationRefsTx(ctx context.Context, tx *sql.Tx, attemptID stri
 		return "", "", false, fmt.Errorf("load attempt invocation refs for %q: %w", attemptID, err)
 	}
 	return active.String, canonical.String, true, nil
-}
-
-func loadAttemptCompletionModeTx(ctx context.Context, tx *sql.Tx, attemptID string) (ProviderCompletionMode, bool, error) {
-	var rawCompletionMode string
-	err := tx.QueryRowContext(ctx, `SELECT completion_mode FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&rawCompletionMode)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("load attempt completion mode for %q: %w", attemptID, err)
-	}
-	completionMode, err := ParseProviderCompletionMode(rawCompletionMode)
-	if err != nil {
-		return "", false, fmt.Errorf("invalid stored completion mode for attempt %q: %w", attemptID, err)
-	}
-	return completionMode, true, nil
 }
 
 func loadAttemptExecutionStateTx(ctx context.Context, tx *sql.Tx, attemptID string) (string, bool, error) {
@@ -2176,7 +2277,11 @@ func normalizeFinalizeProviderCompletionSettlementRequest(req FinalizeProviderCo
 	switch req.Outcome {
 	case ProviderCompletionOutcomeSuccess:
 		req.FinalText = strings.TrimSpace(req.FinalText)
-		req.StructuredPayloadJSON = `{}`
+		structuredPayloadJSON, err := canonicalizeJSONDocument(req.StructuredPayloadJSON, `{}`)
+		if err != nil {
+			return FinalizeProviderCompletionSettlementRequest{}, fmt.Errorf("canonicalize provider completion settlement structured payload: %w", err)
+		}
+		req.StructuredPayloadJSON = structuredPayloadJSON
 		req.FailureReasonCode = ""
 		req.FailureReasonText = ""
 	case ProviderCompletionOutcomeFailed, ProviderCompletionOutcomeCancelled:
@@ -2509,33 +2614,6 @@ func sanitizeProviderSettlementToken(raw string) string {
 		return "attempt"
 	}
 	return value
-}
-
-func normalizeReconcileProviderCompletionSettlementRequest(req ReconcileProviderCompletionSettlementRequest) (ReconcileProviderCompletionSettlementRequest, error) {
-	normalized := ReconcileProviderCompletionSettlementRequest{
-		ProviderInvocationID: strings.TrimSpace(req.ProviderInvocationID),
-		AttemptID:            strings.TrimSpace(req.AttemptID),
-		RunID:                strings.TrimSpace(req.RunID),
-		NodeRunID:            strings.TrimSpace(req.NodeRunID),
-		Outcome:              req.Outcome,
-		FailureReasonCode:    strings.TrimSpace(req.FailureReasonCode),
-		FailureReasonText:    strings.TrimSpace(req.FailureReasonText),
-		SettledAt:            strings.TrimSpace(req.SettledAt),
-	}
-	if normalized.ProviderInvocationID == "" || normalized.AttemptID == "" || normalized.RunID == "" || normalized.NodeRunID == "" {
-		return ReconcileProviderCompletionSettlementRequest{}, fmt.Errorf("provider_invocation_id, attempt_id, run_id, and node_run_id are required")
-	}
-	if normalized.SettledAt == "" {
-		normalized.SettledAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if !isValidProviderCompletionOutcome(normalized.Outcome) {
-		return ReconcileProviderCompletionSettlementRequest{}, fmt.Errorf("invalid provider completion outcome: %q", normalized.Outcome)
-	}
-	if normalized.Outcome == ProviderCompletionOutcomeSuccess {
-		normalized.FailureReasonCode = ""
-		normalized.FailureReasonText = ""
-	}
-	return normalized, nil
 }
 
 func providerSettlementError(operation, reason, providerInvocationID, attemptID, state string) error {

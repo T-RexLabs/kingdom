@@ -167,6 +167,7 @@ CREATE TABLE node_runs (
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (required_role) REFERENCES roles(role_id),
   FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+	UNIQUE (node_run_id, run_id),
   UNIQUE (run_id, node_id, attempt)
 );
 
@@ -466,9 +467,11 @@ CREATE TABLE attempt_executions (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
+	FOREIGN KEY (node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
   FOREIGN KEY (active_provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
   FOREIGN KEY (canonical_settlement_id) REFERENCES provider_completion_settlements(settlement_id),
-  UNIQUE (attempt_id, node_run_id)
+	UNIQUE (attempt_id, node_run_id),
+	UNIQUE (attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_attempt_executions_state_lease
@@ -521,7 +524,9 @@ CREATE TABLE provider_invocations (
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
-  FOREIGN KEY (superseded_by_invocation_id) REFERENCES provider_invocations(provider_invocation_id)
+	FOREIGN KEY (attempt_id, run_id, node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id),
+	FOREIGN KEY (superseded_by_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
+	UNIQUE (provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_provider_invocations_attempt_created
@@ -540,13 +545,14 @@ CREATE TABLE provider_completion_evidence (
   attempt_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   node_run_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'completion_receipt_attempt', 'stream_observation', 'export_diagnostic', 'repair_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'completion_receipt_attempt', 'stream_observation', 'export_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
-  FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id)
+	FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_provider_completion_evidence_invocation_seq
@@ -574,7 +580,8 @@ CREATE TABLE provider_completion_settlements (
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
-  FOREIGN KEY (primary_evidence_id) REFERENCES provider_completion_evidence(evidence_id)
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id),
+	FOREIGN KEY (primary_evidence_id) REFERENCES provider_completion_evidence(evidence_id)
 );
 
 CREATE INDEX idx_provider_completion_settlements_attempt_settled
@@ -1001,6 +1008,7 @@ CREATE TABLE token_usage (
   run_id             TEXT NOT NULL REFERENCES workflow_runs(run_id),
   node_run_id        TEXT NOT NULL REFERENCES node_runs(node_run_id),
   attempt_id         TEXT NOT NULL,
+  provider_invocation_id TEXT REFERENCES provider_invocations(provider_invocation_id),
   required_role      TEXT NOT NULL,
   model              TEXT NOT NULL DEFAULT '',
   variant            TEXT NOT NULL DEFAULT '',
@@ -1009,13 +1017,19 @@ CREATE TABLE token_usage (
   total_tokens       INTEGER NOT NULL DEFAULT 0,
   reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  created_at         TEXT NOT NULL
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+	created_at         TEXT NOT NULL,
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_token_usage_run ON token_usage(run_id);
 CREATE INDEX idx_token_usage_created ON token_usage(created_at);
-CREATE UNIQUE INDEX idx_token_usage_attempt_unique ON token_usage(run_id, node_run_id, attempt_id);
+CREATE UNIQUE INDEX idx_token_usage_attempt_without_invocation_unique
+ON token_usage(run_id, node_run_id, attempt_id)
+WHERE provider_invocation_id IS NULL;
+CREATE UNIQUE INDEX idx_token_usage_provider_invocation_unique
+ON token_usage(provider_invocation_id)
+WHERE provider_invocation_id IS NOT NULL;
 
 CREATE TABLE planning_sessions (
   planning_session_id TEXT PRIMARY KEY,
@@ -1178,7 +1192,7 @@ CREATE TABLE planning_provider_completion_evidence (
   planning_provider_invocation_id TEXT NOT NULL,
   planning_operation_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic', 'repair_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),

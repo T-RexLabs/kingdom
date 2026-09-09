@@ -3,7 +3,7 @@ package opencode
 import "testing"
 
 func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
-	event, err := parseOpencodeRunEvent(`{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"read","id":"prt_1","state":{"status":"error","title":"package.json"}}}`)
+	event, err := parseOpencodeRunEvent(`{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"read","id":"prt_1","callID":"call_1","messageID":"msg_1","state":{"status":"error","title":"package.json"}}}`)
 	if err != nil {
 		t.Fatalf("parse opencode run event: %v", err)
 	}
@@ -19,11 +19,25 @@ func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
 	if event.Part.ID != "prt_1" {
 		t.Fatalf("expected nested part id, got %q", event.Part.ID)
 	}
+	if event.Part.CallID != "call_1" || event.Part.MessageID != "msg_1" {
+		t.Fatalf("expected nested tool lineage, got call=%q message=%q", event.Part.CallID, event.Part.MessageID)
+	}
 	if event.Part.State.Status != "error" {
 		t.Fatalf("expected nested part state status, got %q", event.Part.State.Status)
 	}
 	if event.Part.State.Title != "package.json" {
 		t.Fatalf("expected nested part state title, got %q", event.Part.State.Title)
+	}
+}
+
+func TestParseOpencodeRunEventRejectsTrailingData(t *testing.T) {
+	for _, line := range []string{
+		`{"type":"text"} trailing`,
+		`{"type":"text"} {"type":"text"}`,
+	} {
+		if _, err := parseOpencodeRunEvent(line); err == nil {
+			t.Fatalf("expected malformed event line to be rejected: %q", line)
+		}
 	}
 }
 

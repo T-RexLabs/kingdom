@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
-	coreverdict "kingdom/internal/core/verdict"
+	"kingdom/internal/core/executionoutput"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
@@ -28,6 +28,8 @@ type executionOutboxPayload struct {
 	ProviderSessionID               string                                `json:"provider_session_id,omitempty"`
 	ProviderInvocationID            string                                `json:"provider_invocation_id,omitempty"`
 	ProviderInvocationAt            string                                `json:"provider_invocation_at,omitempty"`
+	ExpectedLeaseOwner              string                                `json:"expected_lease_owner,omitempty"`
+	ExpectedLeaseVersion            int64                                 `json:"expected_lease_version,omitempty"`
 	CompletionReceiptEvidenceID     string                                `json:"completion_receipt_evidence_id,omitempty"`
 	CompletionStructuredPayloadJSON string                                `json:"completion_structured_payload_json,omitempty"`
 	ProviderDiagnosticsJSON         string                                `json:"provider_diagnostics_json,omitempty"`
@@ -124,6 +126,8 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ProviderSessionID:               strings.TrimSpace(result.providerSessionID),
 		ProviderInvocationID:            strings.TrimSpace(result.providerInvocationID),
 		ProviderInvocationAt:            strings.TrimSpace(result.providerInvocationAt),
+		ExpectedLeaseOwner:              strings.TrimSpace(result.expectedLeaseOwner),
+		ExpectedLeaseVersion:            result.expectedLeaseVersion,
 		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
 		ProviderDiagnosticsJSON:         strings.TrimSpace(result.providerDiagnosticsJSON),
@@ -162,6 +166,9 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 		}
 	}
 	job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
+	if job.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked {
+		return o.commitProviderExecutionCompletion(ctx, job)
+	}
 	raw, err := marshalExecutionOutboxPayload(job)
 	if err != nil {
 		return fmt.Errorf("marshal execution outbox payload for attempt %q: %w", job.attemptID, err)
@@ -260,7 +267,7 @@ func (o *orchestrationLoop) retryDetachedCompletionHandoff(job asyncExecutionRes
 		if err := commit(); err != nil {
 			lastErr = err
 			if !state.IsSQLiteBusy(err) {
-				return err
+				break
 			}
 			continue
 		}
@@ -302,6 +309,8 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		providerSessionID:               payload.ProviderSessionID,
 		providerInvocationID:            payload.ProviderInvocationID,
 		providerInvocationAt:            payload.ProviderInvocationAt,
+		expectedLeaseOwner:              payload.ExpectedLeaseOwner,
+		expectedLeaseVersion:            payload.ExpectedLeaseVersion,
 		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
 		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
 		providerDiagnosticsJSON:         payload.ProviderDiagnosticsJSON,
@@ -481,25 +490,29 @@ func hydrateExecutionOutcomeFromDurableState(outcome opencode.ExecutionOutcome, 
 }
 
 func receiptDecisionFailureOutcome(nodeID, nodeClass, finalText, structuredPayloadJSON string) (opencode.ExecutionOutcome, bool, error) {
-	decision, handled, err := coreverdict.ReceiptDecisionForNode(nodeID, nodeClass, structuredPayloadJSON, finalText)
+	resolvedClass := resolvedNodeClass(nodeID, nodeClass)
+	if resolvedClass != workflow.NodeClassExecutionReview && resolvedClass != workflow.NodeClassValidationGates {
+		return opencode.ExecutionOutcome{}, false, nil
+	}
+	validated, err := executionoutput.Validate(nodeID, nodeClass, finalText, structuredPayloadJSON)
 	if err != nil {
-		var contractErr *coreverdict.ReceiptContractError
-		if errors.As(err, &contractErr) {
+		var validationErr *executionoutput.ValidationError
+		if errors.As(err, &validationErr) {
 			return opencode.ExecutionOutcome{
 				State:       "failed",
-				ReasonCode:  strings.TrimSpace(contractErr.ReasonCode),
-				FailureText: strings.TrimSpace(contractErr.Error()),
+				ReasonCode:  strings.TrimSpace(validationErr.ReasonCode),
+				FailureText: strings.TrimSpace(validationErr.Error()),
 			}, true, nil
 		}
-		return opencode.ExecutionOutcome{}, handled, err
+		return opencode.ExecutionOutcome{}, true, err
 	}
-	if !handled || strings.TrimSpace(decision.FailureReasonCode) == "" {
-		return opencode.ExecutionOutcome{}, handled, nil
+	if strings.TrimSpace(validated.WorkflowFailureCode) == "" {
+		return opencode.ExecutionOutcome{}, true, nil
 	}
 	return opencode.ExecutionOutcome{
 		State:       "failed",
-		ReasonCode:  strings.TrimSpace(decision.FailureReasonCode),
-		FailureText: strings.TrimSpace(decision.FailureReasonText),
+		ReasonCode:  strings.TrimSpace(validated.WorkflowFailureCode),
+		FailureText: strings.TrimSpace(validated.WorkflowFailureText),
 	}, true, nil
 }
 
@@ -539,33 +552,8 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	hasCanonicalSettlement := hasPersistedAttemptExecution && strings.TrimSpace(persistedAttemptExecution.CanonicalSettlementID) != ""
 	alreadyAutoSucceededAtLoopCap := execErr == nil && workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), currentExecutionReasonCode(currentOutcome, nil))
 	currentNodeClass := resolvedNodeClass(result.node.NodeID, result.node.NodeClass)
-	usesCompletionEvidence := result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && strings.TrimSpace(result.completionReceiptEvidenceID) != ""
-	usesServerResponse := result.completionMode == executionstore.ProviderCompletionModeServerResponse
-	if execErr == nil && usesServerResponse && strings.TrimSpace(result.outputText) == "" {
-		execErr = &providerEmptyOutputError{NodeID: result.node.NodeID, AttemptID: result.attemptID}
-		currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{
-			State:       "failed",
-			ReasonCode:  "provider_empty_output",
-			FailureText: "provider returned an empty terminal response",
-		}, execErr)
-	}
-	if execErr == nil && !alreadyAutoSucceededAtLoopCap && (usesCompletionEvidence || usesServerResponse) {
-		failureOutcome, handled, verdictErr := receiptDecisionFailureOutcome(result.node.NodeID, result.node.NodeClass, result.outputText, result.completionStructuredPayloadJSON)
-		if verdictErr != nil {
-			execErr = verdictErr
-			currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{}, execErr)
-		} else if handled && strings.TrimSpace(failureOutcome.State) != "" {
-			currentOutcome = failureOutcome
-			execErr = errorFromExecutionOutcome(currentOutcome)
-		}
-	}
-	if execErr == nil && result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && strings.TrimSpace(result.providerInvocationID) != "" && strings.TrimSpace(result.completionReceiptEvidenceID) == "" && !hasCanonicalSettlement {
-		execErr = &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"}
-		currentOutcome = normalizeExecutionOutcome(opencode.ExecutionOutcome{
-			State:       "incomplete_turn",
-			ReasonCode:  "provider_incomplete_turn",
-			FailureText: "provider exited without an accepted kingdom_complete_attempt receipt",
-		}, execErr)
+	if result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && !hasCanonicalSettlement && !alreadyAutoSucceededAtLoopCap {
+		return fmt.Errorf("provider-backed attempt %q reached projection without a canonical settlement", result.attemptID)
 	}
 	terminalState := projectedNodeTerminalState(currentOutcome)
 	terminalType := projectedAttemptEventType(currentOutcome)
@@ -580,20 +568,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		result.outcome.ReasonCode = terminalReasonCode
 	}
 	actualAttemptState := durableExecutionTerminalState(currentOutcome)
-	if !hasCanonicalSettlement && result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(result.providerInvocationID) != "" && (strings.TrimSpace(result.outboxID) != "" || isDurableExecutionTerminalState(actualAttemptState)) {
-		if err := o.finalizeProviderSettlement(ctx, result, currentOutcome); err != nil {
-			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_provider_settlement_error", now, map[string]any{"error": err.Error()})
-			return err
-		}
-		if persisted, found, err := o.loadAttemptExecutionMetadata(ctx, result.attemptID); err != nil {
-			return err
-		} else if found {
-			persistedAttemptExecution = persisted
-			hasPersistedAttemptExecution = true
-			hasCanonicalSettlement = strings.TrimSpace(persisted.CanonicalSettlementID) != ""
-		}
-	}
-	if strings.TrimSpace(result.outboxID) != "" {
+	if strings.TrimSpace(result.outboxID) != "" && result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		durableFailureCode := ""
 		if actualAttemptState != "committed_success" {
 			durableFailureCode = terminalReasonCode
@@ -636,12 +611,6 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		result.outcome = currentOutcome
 		result.err = execErr
 		hasCanonicalSettlement = strings.TrimSpace(persisted.CanonicalSettlementID) != ""
-	}
-	if hasPersistedAttemptExecution && hasCanonicalSettlement && result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked {
-		if err := o.reconcileProviderSettlementToDurableAttempt(ctx, persistedAttemptExecution, result, now); err != nil {
-			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_provider_settlement_reconcile_error", now, map[string]any{"error": err.Error()})
-			return err
-		}
 	}
 	terminalState = projectedNodeTerminalState(currentOutcome)
 	terminalType = projectedAttemptEventType(currentOutcome)
@@ -688,7 +657,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	if !isDurableExecutionTerminalState(durableTerminalState) {
 		durableTerminalState = durableExecutionTerminalState(currentOutcome)
 	}
-	if strings.TrimSpace(result.outboxID) != "" {
+	if strings.TrimSpace(result.outboxID) != "" && result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		if err := o.executionStore.UpdateOutbox(ctx, executionstore.UpdateOutboxRequest{
 			OutboxID:      result.outboxID,
 			TerminalState: durableTerminalState,
@@ -887,7 +856,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		}
 	}
 
-	if o.tokenUsage != nil && result.tokens.TotalTokens > 0 {
+	if o.tokenUsage != nil && result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked && result.tokens.TotalTokens > 0 {
 		if _, insertErr := o.tokenUsage.Insert(ctx, state.InsertTokenUsageRequest{
 			RunID:            result.run.RunID,
 			NodeRunID:        result.attempt.NodeRunID,
@@ -1091,47 +1060,6 @@ func (o *orchestrationLoop) emitCompletionLifecycleObservation(ctx context.Conte
 	})
 }
 
-func (o *orchestrationLoop) providerExecutionLifecycleObserver(ctx context.Context, result asyncExecutionResult) func(opencode.ExecuteLifecycleObservation) {
-	if o == nil {
-		return nil
-	}
-	baseCtx := ctx
-	if baseCtx == nil {
-		baseCtx = context.Background()
-	}
-	baseCtx = context.WithoutCancel(baseCtx)
-	return func(observation opencode.ExecuteLifecycleObservation) {
-		phase := strings.TrimSpace(string(observation.Phase))
-		if phase == "" {
-			return
-		}
-		occurredAt := strings.TrimSpace(observation.OccurredAt)
-		if occurredAt == "" {
-			occurredAt = o.now().UTC().Format(time.RFC3339)
-		}
-		extra := map[string]any{}
-		if providerSessionID := strings.TrimSpace(observation.ProviderSessionID); providerSessionID != "" {
-			extra["provider_session_id"] = providerSessionID
-		}
-		if ambiguityReason := strings.TrimSpace(observation.AmbiguityReason); ambiguityReason != "" {
-			extra["ambiguity_reason"] = ambiguityReason
-		}
-		if resolvedState := strings.TrimSpace(observation.ResolvedState); resolvedState != "" {
-			extra["resolved_state"] = resolvedState
-		}
-		if resolvedReasonCode := strings.TrimSpace(observation.ResolvedReasonCode); resolvedReasonCode != "" {
-			extra["resolved_reason_code"] = resolvedReasonCode
-		}
-		if evidenceSource := strings.TrimSpace(observation.EvidenceSource); evidenceSource != "" {
-			extra["evidence_source"] = evidenceSource
-		}
-		if errText := strings.TrimSpace(observation.Error); errText != "" {
-			extra["error"] = errText
-		}
-		o.emitCompletionLifecycleObservation(baseCtx, result, phase, occurredAt, extra)
-	}
-}
-
 // providerExecutionActivityObserver returns the OnActivity sink wired into the
 // provider execution. Each observation is persisted as an attempt.activity event
 // so the run Activity tab can render the agent's reasoning and tool calls live and
@@ -1163,8 +1091,8 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	o.eventSeqMu.Lock()
 	defer o.eventSeqMu.Unlock()
 	seq := o.nextEventSeq(ctx, result.attemptID)
-	// Prefer the provider part id so a live activity and the same part recovered
-	// later by reconciliation share one stable id the reader de-dupes on; fall
+	// Prefer the provider part id so live and diagnostic activity observations
+	// share one stable id the reader de-dupes on; fall
 	// back to a seq-derived id only when the provider omits a part id.
 	activityID := strings.TrimSpace(observation.ProviderPartID)
 	if activityID == "" {

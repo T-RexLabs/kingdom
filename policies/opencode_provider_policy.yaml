@@ -24,14 +24,6 @@ agent_policy:
 
 timeouts:
   strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-    - 1s
-    - 2s
-    - 3s
-    - 5s
   dispatch_ack_timeout: 5s
   first_event_timeout: 60s
   stream_inactivity_timeout: 10m

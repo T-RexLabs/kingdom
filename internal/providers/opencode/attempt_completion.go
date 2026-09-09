@@ -14,10 +14,8 @@ const (
 type completionEvidenceSource string
 
 const (
-	completionEvidenceSourceStream          completionEvidenceSource = "stream"
-	completionEvidenceSourceExport          completionEvidenceSource = "export"
-	completionEvidenceSourceExportSanitized completionEvidenceSource = "export_sanitized"
-	completionEvidenceSourceReceipt         completionEvidenceSource = "completion_receipt"
+	completionEvidenceSourceStream  completionEvidenceSource = "stream"
+	completionEvidenceSourceReceipt completionEvidenceSource = "completion_receipt"
 )
 
 type stepFinishReasonKind string
@@ -121,10 +119,16 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 		result.FailureText = "opencode emitted conflicting terminal evidence"
 		return attemptCompletionDecision{Result: result}
 	}
+	if e.LaterEventAfterTerminal {
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode stream remained active after terminal response"
+		return attemptCompletionDecision{Result: result}
+	}
 	if e.StepFinishSeen {
 		switch e.LastStepFinish.Class {
 		case stepFinishTerminalSuccessCandidate:
-			if e.PendingToolCount > 0 || e.LaterEventAfterTerminal {
+			if e.PendingToolCount > 0 {
 				result.State = attemptCompletionStateIncompleteTurn
 				result.ReasonCode = "provider_incomplete_turn"
 				result.FailureText = "opencode stream remained active after terminal response"

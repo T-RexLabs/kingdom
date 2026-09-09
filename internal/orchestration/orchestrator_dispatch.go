@@ -67,8 +67,65 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		return nil
 	}
 
-	delegateID := deterministicAgentIDForRole(node.RequiredRole)
 	executionSpec := executionSpecForNode(node.NodeID, node.NodeClass)
+	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
+	sessionID := ""
+	providerTimeout := int64(0)
+	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
+		sessionID = sessionIDForAttempt(attemptID)
+		providerTimeout = o.providerTimeoutMillisForNode(node.NodeID, node.NodeClass)
+	}
+	if o.executionStore == nil {
+		return fmt.Errorf("execution store is required for dispatch")
+	}
+	if err := o.executionStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
+		AttemptID:             attemptID,
+		RunID:                 run.RunID,
+		NodeRunID:             attempt.NodeRunID,
+		ExecutionMode:         executionSpec.Mode,
+		CompletionMode:        executionSpec.CompletionMode,
+		ProviderTimeoutMillis: providerTimeout,
+		SessionRef:            sessionID,
+		CreatedAt:             now,
+	}); err != nil {
+		return fmt.Errorf("enqueue durable attempt execution %q: %w", attemptID, err)
+	}
+	attempt.ExecutionMode = executionSpec.Mode
+	attempt.CompletionMode = executionSpec.CompletionMode
+	attempt.ProviderTimeoutMillis = providerTimeout
+	attempt.SessionRef = sessionID
+	providerLeaseDuration := time.Duration(0)
+	expectedLeaseExpiresAt := ""
+
+	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
+		leaseOwner, err := generateExecutionLeaseOwner()
+		if err != nil {
+			return err
+		}
+		providerLeaseDuration = o.providerExecutionLeaseDuration(node.NodeID, node.NodeClass)
+		if providerLeaseDuration <= 0 {
+			return fmt.Errorf("provider execution lease duration is required for node %q", node.NodeID)
+		}
+		claimedAt := o.now().UTC()
+		claim, acquired, err := o.executionStore.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{
+			AttemptID:  attemptID,
+			LeaseOwner: leaseOwner,
+			LeaseUntil: claimedAt.Add(providerLeaseDuration).Format(time.RFC3339Nano),
+			ClaimedAt:  claimedAt.Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return fmt.Errorf("claim provider-backed attempt %q: %w", attemptID, err)
+		}
+		if !acquired {
+			return nil
+		}
+		attempt.DurableState = claim.State
+		attempt.LeaseOwner = claim.LeaseOwner
+		attempt.LeaseVersion = claim.LeaseVersion
+		expectedLeaseExpiresAt = claim.LeaseExpiresAt
+	}
+
+	delegateID := deterministicAgentIDForRole(node.RequiredRole)
 	delegatorID, delegateRole := delegationPathForNode(node.NodeID, node.RequiredRole)
 
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked && delegatorID != "" {
@@ -76,7 +133,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		if delegatorRole != "" {
 			ensuredDelegatorID, err := o.ensureAgentForRole(ctx, delegatorRole, now)
 			if err != nil {
-				return err
+				return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "ensure delegator agent", err, now)
 			}
 			delegatorID = ensuredDelegatorID
 		}
@@ -106,7 +163,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			OccurredAt:       now,
 		})
 		if err != nil {
-			return err
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record delegation", err, now)
 		}
 		_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 			MessageID:         fmt.Sprintf("msg_comm_%s_%s_%d_delegation_result", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
@@ -124,37 +181,9 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			OccurredAt:        now,
 		})
 		if decision.Outcome != state.DelegationOutcomeSuccess {
-			return nil
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record delegation", fmt.Errorf("delegation outcome %s: %s", decision.Outcome, decision.ReasonCode), now)
 		}
 	}
-
-	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
-	sessionID := ""
-	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
-		sessionID = sessionIDForAttempt(attemptID)
-	}
-	providerTimeout := int64(0)
-	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
-		providerTimeout = o.providerTimeoutMillisForNode(node.NodeID, node.NodeClass)
-	}
-	if o.executionStore != nil {
-		if err := o.executionStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
-			AttemptID:             attemptID,
-			RunID:                 run.RunID,
-			NodeRunID:             attempt.NodeRunID,
-			ExecutionMode:         executionSpec.Mode,
-			CompletionMode:        executionSpec.CompletionMode,
-			ProviderTimeoutMillis: providerTimeout,
-			SessionRef:            sessionID,
-			CreatedAt:             now,
-		}); err != nil {
-			return fmt.Errorf("enqueue durable attempt execution %q: %w", attemptID, err)
-		}
-	}
-	attempt.ExecutionMode = executionSpec.Mode
-	attempt.CompletionMode = executionSpec.CompletionMode
-	attempt.ProviderTimeoutMillis = providerTimeout
-	attempt.SessionRef = sessionID
 
 	resolvedModel := ""
 	resolvedVariant := ""
@@ -168,7 +197,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve decree text", decreeErr, now)
 		}
 		if err := o.ensureSessionLease(ctx, sessionID, attempt.AgentID, now); err != nil {
-			return err
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "ensure provider session lease", err, now)
 		}
 		resolvedModel, resolvedVariant, modelSource = o.resolveModelForRole(run, node.RequiredRole)
 		delegatorRoleID := o.roleIDForAgent(ctx, delegatorID)
@@ -191,7 +220,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		"resolution_source":        modelSource,
 	})
 	if payloadErr != nil {
-		return fmt.Errorf("marshal execution start payload: %w", payloadErr)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "marshal execution start payload", payloadErr, now)
 	}
 	startingPayloadRaw, payloadErr := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "orchestration_progress", map[string]any{
 		"state":                    "starting",
@@ -201,7 +230,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		"resolution_source":        modelSource,
 	})
 	if payloadErr != nil {
-		return fmt.Errorf("marshal execution starting payload: %w", payloadErr)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "marshal execution starting payload", payloadErr, now)
 	}
 	if executionSpec.Mode == executionstore.ExecutionModeRuntimeOwned && o.executionStore == nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "queue runtime-owned execution", fmt.Errorf("execution store is required for runtime-owned execution"), now)
@@ -301,25 +330,29 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	attempt.NodeStatus = "starting"
 
 	o.startAsyncExecution(ctx, asyncExecutionResult{
-		run:                  run,
-		node:                 node,
-		attempt:              attempt,
-		attemptID:            attemptID,
-		sessionID:            sessionID,
-		providerInvocationID: providerInvocationID,
-		providerInvocationAt: providerInvocationAt,
-		completionCapability: completionCapability,
-		completionMode:       executionSpec.CompletionMode,
-		completionReceiptDir: completionReceiptDir,
-		baseSnapshotID:       baseSnapshotID,
-		workspaceID:          run.RunID,
-		workspacePath:        workspacePath,
-		delegator:            delegatorID,
-		prompt:               providerOutputPrompt,
-		model:                resolvedModel,
-		variant:              resolvedVariant,
-		agent:                agentForRole,
-		occurredAt:           now,
+		run:                    run,
+		node:                   node,
+		attempt:                attempt,
+		attemptID:              attemptID,
+		sessionID:              sessionID,
+		providerInvocationID:   providerInvocationID,
+		providerInvocationAt:   providerInvocationAt,
+		completionCapability:   completionCapability,
+		completionMode:         executionSpec.CompletionMode,
+		expectedLeaseOwner:     attempt.LeaseOwner,
+		expectedLeaseVersion:   attempt.LeaseVersion,
+		expectedLeaseExpiresAt: expectedLeaseExpiresAt,
+		providerLeaseDuration:  providerLeaseDuration,
+		completionReceiptDir:   completionReceiptDir,
+		baseSnapshotID:         baseSnapshotID,
+		workspaceID:            run.RunID,
+		workspacePath:          workspacePath,
+		delegator:              delegatorID,
+		prompt:                 providerOutputPrompt,
+		model:                  resolvedModel,
+		variant:                resolvedVariant,
+		agent:                  agentForRole,
+		occurredAt:             now,
 	})
 
 	return nil
@@ -658,6 +691,9 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 
 	go func() {
 		defer o.clearExecutionInflight(job.attemptID)
+		executionCtx, cancelExecution := context.WithCancel(firstNonNilContext(ctx))
+		defer cancelExecution()
+		heartbeat := o.startProviderLeaseHeartbeat(executionCtx, cancelExecution, job)
 
 		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(job.workspacePath)
 		launchObserved := false
@@ -671,7 +707,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			slog.Warn("failed to marshal provider execution start payload", "attempt_id", job.attemptID, "error", startPayloadErr)
 			startPayloadRaw = "{}"
 		}
-		response, execErr := o.executeWithDurableProgress(ctx, job, opencode.ExecuteRequest{
+		response, execErr := o.executeWithDurableProgress(executionCtx, job, opencode.ExecuteRequest{
 			SessionID:                 job.sessionID,
 			AttemptID:                 job.attemptID,
 			RunID:                     job.run.RunID,
@@ -699,12 +735,32 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 				o.observeProviderSessionForInvocation(ctx, job.attemptID, job.providerInvocationID, providerSessionID)
 			},
 			OnActivity:          o.providerExecutionActivityObserver(ctx, job),
-			OnLifecycle:         o.providerExecutionLifecycleObserver(ctx, job),
 			OnCompletionReceipt: completionReceiptAcceptorForMode(job, o.providerCompletionReceiptAcceptor(ctx, job)),
 		})
+		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.launchObserved = launchObserved
 		job.launchObservedAt = strings.TrimSpace(launchObservedAt)
+		hasSettlementAuthority := heartbeatResult.err == nil && !heartbeatResult.authorityLost
+		if heartbeat != nil && hasSettlementAuthority {
+			renewed, _, err := o.renewProviderExecutionLease(executionCtx, job, heartbeatResult.leaseExpiresAt)
+			if err != nil {
+				o.recordProviderLeaseRenewalError(job, err)
+				hasSettlementAuthority = false
+				cancelExecution()
+			} else if !renewed {
+				hasSettlementAuthority = false
+				cancelExecution()
+			}
+		}
+		o.publishExecutionResult(job.attemptID, job)
+		if !hasSettlementAuthority {
+			return
+		}
+		if !o.claimExecutionSettlement(job.attemptID, "provider_completion") {
+			return
+		}
+		defer o.releaseExecutionSettlement(job.attemptID, "provider_completion")
 
 		if o.executionStore != nil {
 			// Async completions must outlive the dispatch tick context because the
@@ -1031,6 +1087,10 @@ func (o *orchestrationLoop) markExecutionInflight(attemptID string) bool {
 		return false
 	}
 	o.inflightExec[attemptID] = struct{}{}
+	if o.executionResults == nil {
+		o.executionResults = make(map[string]chan asyncExecutionResult)
+	}
+	o.executionResults[attemptID] = make(chan asyncExecutionResult, 1)
 	if o.asyncDrain != nil {
 		o.asyncDrain.Start()
 	}
@@ -1041,7 +1101,65 @@ func (o *orchestrationLoop) clearExecutionInflight(attemptID string) {
 	o.execMu.Lock()
 	defer o.execMu.Unlock()
 	delete(o.inflightExec, attemptID)
+	if _, claimed := o.inflightSettlements[attemptID]; !claimed {
+		delete(o.executionResults, attemptID)
+	}
 	if o.asyncDrain != nil {
 		o.asyncDrain.Done()
+	}
+}
+
+func (o *orchestrationLoop) claimExecutionSettlement(attemptID, claimant string) bool {
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	if o.inflightSettlements == nil {
+		o.inflightSettlements = make(map[string]string)
+	}
+	if _, claimed := o.inflightSettlements[attemptID]; claimed {
+		return false
+	}
+	o.inflightSettlements[attemptID] = claimant
+	return true
+}
+
+func (o *orchestrationLoop) releaseExecutionSettlement(attemptID, claimant string) {
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	if o.inflightSettlements[attemptID] == claimant {
+		delete(o.inflightSettlements, attemptID)
+		delete(o.executionResults, attemptID)
+	}
+}
+
+func (o *orchestrationLoop) publishExecutionResult(attemptID string, result asyncExecutionResult) {
+	o.execMu.Lock()
+	resultCh := o.executionResults[attemptID]
+	o.execMu.Unlock()
+	if resultCh == nil {
+		return
+	}
+	select {
+	case resultCh <- result:
+	default:
+	}
+}
+
+func (o *orchestrationLoop) awaitExecutionResult(ctx context.Context, attemptID string) (asyncExecutionResult, bool) {
+	o.execMu.Lock()
+	resultCh := o.executionResults[attemptID]
+	o.execMu.Unlock()
+	if resultCh == nil {
+		return asyncExecutionResult{}, false
+	}
+	select {
+	case result := <-resultCh:
+		o.execMu.Lock()
+		if o.executionResults[attemptID] == resultCh {
+			delete(o.executionResults, attemptID)
+		}
+		o.execMu.Unlock()
+		return result, true
+	case <-ctx.Done():
+		return asyncExecutionResult{}, false
 	}
 }

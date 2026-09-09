@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/dbmigrations"
 )
 
@@ -429,6 +431,7 @@ func TestStoreGetRunExecutionDetailIncludesCanonicalSettlementProjection(t *test
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 0, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer', 'reviewer-shieldmaiden', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review', 'wfdef_1', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review', 'run_1', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`)
 
 	s := New(db)
@@ -443,18 +446,7 @@ func TestStoreGetRunExecutionDetailIncludesCanonicalSettlementProjection(t *test
 		    failure_text = 'review requested rework',
 		    updated_at = '2026-03-01T12:05:00Z'
 		WHERE attempt_id = 'run_1:execution_review_shieldmaiden:1'`)
-	if err := s.QueueOutbox(ctx, QueueOutboxRequest{
-		OutboxID:      "outbox_review_detail",
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_review",
-		TerminalSeq:   1,
-		TerminalState: "committed_failure",
-		PayloadJSON:   `{"provider_invocation_id":"inv_review_stale","provider_invocation_at":"2026-03-01T12:00:01Z","output_text":"VERDICT: PASS\n\nStale reviewer response."}`,
-		CreatedAt:     "2026-03-01T12:05:00Z",
-	}); err != nil {
-		t.Fatalf("queue outbox: %v", err)
-	}
+	mustExec(t, db, `UPDATE attempt_outbox SET payload_json = '{"provider_invocation_id":"inv_review_stale","provider_invocation_at":"2026-03-01T12:00:01Z","output_text":"VERDICT: PASS\n\nStale reviewer response."}' WHERE attempt_id = 'run_1:execution_review_shieldmaiden:1'`)
 
 	record, found, err := s.GetRunExecutionDetail(ctx, "run_1", attemptID)
 	if err != nil {
@@ -545,8 +537,8 @@ func TestStoreListLatestRunExecutionOutputsUsesLatestCommittedAttemptPerNode(t *
 			t.Fatalf("update attempt %s: %v", attemptID, err)
 		}
 		payloadJSON := fmt.Sprintf(`{"attempt_id":%q,"output_text":%q,"outcome":{"reason_code":%q}}`, attemptID, "VERDICT: PASS\n\nStale outbox payload.", reasonCode)
-		if err := s.QueueOutbox(ctx, QueueOutboxRequest{OutboxID: "outbox_" + strings.ReplaceAll(nodeRunID, ":", "_"), AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, TerminalSeq: 1, TerminalState: state, PayloadJSON: payloadJSON, CreatedAt: createdAt}); err != nil {
-			t.Fatalf("queue outbox %s: %v", attemptID, err)
+		if _, err := db.Exec(`UPDATE attempt_outbox SET payload_json = ? WHERE attempt_id = ?`, payloadJSON, attemptID); err != nil {
+			t.Fatalf("update outbox %s: %v", attemptID, err)
 		}
 	}
 	seedOutput("run_1:execution_review_shieldmaiden:1", "nr_review_1", "committed_failure", "execution_review_rework", "review requested rework", "execution_review_rework", "VERDICT: REWORK\n\nOld review failure.", "2026-03-01T12:01:00Z")
@@ -650,92 +642,263 @@ func TestStoreAcquireLeaseHonorsExpiry(t *testing.T) {
 	}
 }
 
-func TestStoreCommitTerminalWritesOutboxAndRejectsSecondTerminal(t *testing.T) {
+func TestStoreClaimQueuedProviderAttemptFencesCompetingClaimantsWithoutStarting(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-
 	s := New(db)
 	ctx := context.Background()
-	attemptID := "run_1:decree_intake:1"
+	const attemptID = "run_1:decree_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
-		CreatedAt:      "2026-03-01T12:00:01Z",
+		CompletionMode: ProviderCompletionModeServerResponse,
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+
+	first, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-a",
+		LeaseUntil: "2026-03-01T12:10:00Z",
+		ClaimedAt:  "2026-03-01T12:00:01Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim queued attempt: acquired=%t err=%v", acquired, err)
+	}
+	if first.State != "queued" || first.LeaseOwner != "worker-a" || first.LeaseVersion != 1 || first.LeaseExpiresAt != "2026-03-01T12:10:00Z" {
+		t.Fatalf("unexpected first claim: %#v", first)
+	}
+	if first.StartedAt != "" || first.LaunchStartedAt != "" {
+		t.Fatalf("queued claim fabricated provider start timestamps: %#v", first)
+	}
+
+	if second, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-b",
+		LeaseUntil: "2026-03-01T12:20:00Z",
+		ClaimedAt:  "2026-03-01T12:00:02Z",
+	}); err != nil || acquired || second.AttemptID != "" {
+		t.Fatalf("competing claim should lose without a record: claim=%#v acquired=%t err=%v", second, acquired, err)
+	}
+
+	second, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-b",
+		LeaseUntil: "2026-03-01T12:30:00Z",
+		ClaimedAt:  "2026-03-01T12:10:01Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim expired queued attempt: acquired=%t err=%v", acquired, err)
+	}
+	if second.LeaseOwner != "worker-b" || second.LeaseVersion != 2 || second.StartedAt != "" {
+		t.Fatalf("expected monotonically fenced second generation without provider start, got %#v", second)
+	}
+}
+
+func TestStoreClaimQueuedProviderAttemptLeavesRuntimeOwnedLeaseEmpty(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeRuntimeOwned,
+		CompletionMode: ProviderCompletionModeNotApplicable,
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue runtime-owned attempt: %v", err)
+	}
+	if claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-a",
+		LeaseUntil: "2026-03-01T12:10:00Z",
+		ClaimedAt:  "2026-03-01T12:00:01Z",
+	}); err != nil || acquired || claim.AttemptID != "" {
+		t.Fatalf("runtime-owned attempt must not be provider-claimed: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load runtime-owned attempt: found=%t err=%v", found, err)
+	}
+	if attempt.LeaseOwner != "" || attempt.LeaseExpiresAt != "" || attempt.LeaseVersion != 0 {
+		t.Fatalf("runtime-owned attempt gained lease lineage: %#v", attempt)
+	}
+}
+
+func TestStoreRenewProviderAttemptLeasePreservesGeneration(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CompletionMode: ProviderCompletionModeServerResponse,
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+	claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker-a",
+		LeaseUntil: "2026-03-01T12:01:00Z",
+		ClaimedAt:  "2026-03-01T12:00:00Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: acquired=%t err=%v", acquired, err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting' WHERE attempt_id = 'run_1:decree_intake:1'`)
+
+	renewed, err := s.RenewProviderAttemptLease(ctx, RenewProviderAttemptLeaseRequest{
+		AttemptID:    attemptID,
+		LeaseOwner:   claim.LeaseOwner,
+		LeaseVersion: claim.LeaseVersion,
+		LeaseUntil:   "2026-03-01T12:02:00Z",
+		RenewedAt:    "2026-03-01T12:00:30Z",
+	})
+	if err != nil || !renewed {
+		t.Fatalf("renew provider attempt lease: renewed=%t err=%v", renewed, err)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load renewed attempt: found=%t err=%v", found, err)
+	}
+	if attempt.LeaseExpiresAt != "2026-03-01T12:02:00Z" || attempt.LeaseOwner != claim.LeaseOwner || attempt.LeaseVersion != claim.LeaseVersion {
+		t.Fatalf("renewal changed lease lineage: %#v", attempt)
+	}
+}
+
+func TestStoreRenewProviderAttemptLeaseRejectsWrongOrExpiredOwner(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		owner      string
+		version    int64
+		renewedAt  string
+		clearLease bool
+	}{
+		{name: "wrong owner", owner: "worker-b", version: 1, renewedAt: "2026-03-01T12:00:30Z"},
+		{name: "wrong version", owner: "worker-a", version: 2, renewedAt: "2026-03-01T12:00:30Z"},
+		{name: "expired lease", owner: "worker-a", version: 1, renewedAt: "2026-03-01T12:01:00Z"},
+		{name: "cleared lease", owner: "worker-a", version: 1, renewedAt: "2026-03-01T12:00:30Z", clearLease: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			s := New(db)
+			ctx := context.Background()
+			const attemptID = "run_1:decree_intake:1"
+			if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+				t.Fatalf("enqueue provider attempt: %v", err)
+			}
+			if _, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-a", LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || !acquired {
+				t.Fatalf("claim provider attempt: acquired=%t err=%v", acquired, err)
+			}
+			mustExec(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = 'run_1:decree_intake:1'`)
+			if tt.clearLease {
+				mustExec(t, db, `UPDATE attempt_executions SET lease_owner = '', lease_expires_at = NULL WHERE attempt_id = 'run_1:decree_intake:1'`)
+			}
+			renewed, err := s.RenewProviderAttemptLease(ctx, RenewProviderAttemptLeaseRequest{
+				AttemptID:    attemptID,
+				LeaseOwner:   tt.owner,
+				LeaseVersion: tt.version,
+				LeaseUntil:   "2026-03-01T12:02:00Z",
+				RenewedAt:    tt.renewedAt,
+			})
+			if err != nil {
+				t.Fatalf("renew rejected lease: %v", err)
+			}
+			if renewed {
+				t.Fatal("expected renewal to lose its fence")
+			}
+		})
+	}
+}
+
+func TestStoreCommitRecoveredTerminalRejectsActiveUnsettledProviderInvocation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:recovered_terminal_guard:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeReceiptRequired,
+		CreatedAt:      "2026-03-01T12:00:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-
-	if err := s.CommitTerminal(ctx, CommitTerminalRequest{
-		OutboxID:          "outbox_terminal_1",
-		AttemptID:         attemptID,
-		RunID:             "run_1",
-		NodeRunID:         "nr_1",
-		TerminalSeq:       2,
-		TerminalState:     "committed_success",
-		PayloadJSON:       `{"status":"ok"}`,
-		CommittedAt:       "2026-03-01T12:00:30Z",
-		ProviderSessionID: "ses_terminal_1",
+	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_recovered_terminal_guard",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
+		CompletionCapability: "capability-recovered-terminal-guard",
+		CreatedAt:            "2026-03-01T12:00:01Z",
 	}); err != nil {
-		t.Fatalf("commit terminal first call: %v", err)
+		t.Fatalf("create invocation: %v", err)
+	}
+	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_recovered_terminal_guard",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_recovered_terminal_guard",
+		OpenedAt:             "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("open invocation: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:02Z' WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatalf("mark attempt running: %v", err)
 	}
 
-	var state string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state); err != nil {
-		t.Fatalf("query terminal state: %v", err)
-	}
-	if state != "committed_success" {
-		t.Fatalf("expected committed_success terminal state, got %q", state)
-	}
-
-	var outboxCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxCount); err != nil {
-		t.Fatalf("query outbox count: %v", err)
-	}
-	if outboxCount != 1 {
-		t.Fatalf("expected one outbox record, got %d", outboxCount)
-	}
-
-	var terminalEventType string
-	var terminalReasonCode string
-	var terminalPayload string
-	if err := db.QueryRow(`SELECT event_type, reason_code, payload_json FROM attempt_event_log WHERE attempt_id = ? AND seq = 2`, attemptID).Scan(&terminalEventType, &terminalReasonCode, &terminalPayload); err != nil {
-		t.Fatalf("query terminal attempt event: %v", err)
-	}
-	if terminalEventType != "attempt.succeeded" {
-		t.Fatalf("expected terminal attempt event_type attempt.succeeded, got %q", terminalEventType)
-	}
-	if terminalReasonCode != "execution_completed" {
-		t.Fatalf("expected terminal attempt reason_code execution_completed, got %q", terminalReasonCode)
-	}
-	if terminalPayload != `{"status":"ok"}` {
-		t.Fatalf("expected terminal attempt payload to match commit payload, got %q", terminalPayload)
-	}
-
-	var providerSessionID string
-	if err := db.QueryRow(`SELECT provider_session_id FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&providerSessionID); err != nil {
-		t.Fatalf("query persisted provider_session_id: %v", err)
-	}
-	if providerSessionID != "ses_terminal_1" {
-		t.Fatalf("expected persisted provider_session_id ses_terminal_1, got %q", providerSessionID)
-	}
-
-	err := s.CommitTerminal(ctx, CommitTerminalRequest{
-		OutboxID:      "outbox_terminal_2",
-		AttemptID:     attemptID,
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		TerminalSeq:   3,
-		TerminalState: "committed_failure",
-		PayloadJSON:   `{"status":"error"}`,
-		CommittedAt:   "2026-03-01T12:00:31Z",
+	_, err := s.CommitRecoveredTerminal(ctx, CommitRecoveredTerminalRequest{
+		AttemptID:          attemptID,
+		RunID:              "run_1",
+		NodeRunID:          "nr_1",
+		TerminalState:      "committed_failure",
+		CommittedAt:        "2026-03-01T12:10:00Z",
+		TerminalReasonCode: "agent_unresponsive",
+		FailureCode:        "agent_unresponsive",
+		FailureText:        "generic recovery must not win provider terminal authority",
 	})
-	if err == nil {
-		t.Fatal("expected second terminal commit attempt to fail")
+	var settlementErr *ProviderSettlementError
+	if !errors.As(err, &settlementErr) || settlementErr.Reason != "canonical_settlement_required" {
+		t.Fatalf("expected canonical settlement guard, got %v", err)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load guarded attempt: found=%t err=%v", found, err)
+	}
+	if attempt.State != "running" || attempt.CanonicalSettlementID != "" {
+		t.Fatalf("recovered terminal rejection changed provider attempt truth: %#v", attempt)
+	}
+	if count := countPhase2Table(t, db, "attempt_event_log"); count != 0 {
+		t.Fatalf("recovered terminal rejection persisted %d attempt events", count)
 	}
 }
 
@@ -817,7 +980,7 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	if err := s.CommitTerminal(ctx, CommitTerminalRequest{
+	if err := s.QueueOutbox(ctx, QueueOutboxRequest{
 		OutboxID:      "outbox_terminal_1",
 		AttemptID:     attemptID,
 		RunID:         "run_1",
@@ -825,9 +988,9 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 		TerminalSeq:   2,
 		TerminalState: "committed_success",
 		PayloadJSON:   `{"status":"ok"}`,
-		CommittedAt:   "2026-03-01T12:00:30Z",
+		CreatedAt:     "2026-03-01T12:00:30Z",
 	}); err != nil {
-		t.Fatalf("commit terminal: %v", err)
+		t.Fatalf("queue outbox: %v", err)
 	}
 
 	pending, err := s.ListPendingOutbox(ctx, 10)
@@ -870,7 +1033,7 @@ func TestStoreRecordOutboxFailureAndMarkFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	if err := s.CommitTerminal(ctx, CommitTerminalRequest{
+	if err := s.QueueOutbox(ctx, QueueOutboxRequest{
 		OutboxID:      "outbox_terminal_1",
 		AttemptID:     attemptID,
 		RunID:         "run_1",
@@ -878,9 +1041,9 @@ func TestStoreRecordOutboxFailureAndMarkFailed(t *testing.T) {
 		TerminalSeq:   2,
 		TerminalState: "committed_success",
 		PayloadJSON:   `{"status":"ok"}`,
-		CommittedAt:   "2026-03-01T12:00:30Z",
+		CreatedAt:     "2026-03-01T12:00:30Z",
 	}); err != nil {
-		t.Fatalf("commit terminal: %v", err)
+		t.Fatalf("queue outbox: %v", err)
 	}
 
 	if err := s.RecordOutboxFailure(ctx, "outbox_terminal_1", "projection failed", "2026-03-01T12:00:35Z"); err != nil {
@@ -1407,72 +1570,48 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 	s := New(db)
 	providerInvocationID := fmt.Sprintf("pinv_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID))
 	providerSessionID := fmt.Sprintf("ses_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID))
-	completionCapability := fmt.Sprintf("cap_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID))
 	if err := s.EnqueueAttempt(context.Background(), EnqueueAttemptRequest{
 		AttemptID:         attemptID,
 		RunID:             runID,
 		NodeRunID:         nodeRunID,
 		ExecutionMode:     ExecutionModeProviderBacked,
-		CompletionMode:    ProviderCompletionModeReceiptRequired,
+		CompletionMode:    ProviderCompletionModeServerResponse,
 		SessionRef:        "session_" + strings.NewReplacer(":", "_", "-", "_").Replace(attemptID),
 		ProviderSessionID: providerSessionID,
 		CreatedAt:         createdAt,
 	}); err != nil {
 		t.Fatalf("enqueue canonical provider attempt %q: %v", attemptID, err)
 	}
-	if _, err := s.CreateProviderInvocation(context.Background(), CreateProviderInvocationRequest{
+	claim, acquired, err := s.ClaimQueuedProviderAttempt(context.Background(), ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "fixture_worker_" + strings.NewReplacer(":", "_", "-", "_").Replace(attemptID),
+		LeaseUntil: "2099-12-31T23:59:59Z",
+		ClaimedAt:  createdAt,
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim canonical provider attempt %q: claim=%#v acquired=%t err=%v", attemptID, claim, acquired, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, createdAt, attemptID); err != nil {
+		t.Fatalf("mark canonical provider attempt %q running: %v", attemptID, err)
+	}
+	if _, err := s.ActivateProviderInvocation(context.Background(), ActivateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     "session_" + strings.NewReplacer(":", "_", "-", "_").Replace(attemptID),
 		ProviderSessionID:    providerSessionID,
-		CompletionMode:       ProviderCompletionModeReceiptRequired,
-		CompletionCapability: completionCapability,
+		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             createdAt,
 		CreatedAt:            createdAt,
-	}); err != nil {
-		t.Fatalf("create canonical provider invocation %q: %v", attemptID, err)
-	}
-	if _, err := s.MarkProviderInvocationOpen(context.Background(), MarkProviderInvocationOpenRequest{
-		ProviderInvocationID: providerInvocationID,
-		AttemptID:            attemptID,
-		ProviderSessionID:    providerSessionID,
 		OpenedAt:             createdAt,
 	}); err != nil {
-		t.Fatalf("mark canonical provider invocation open %q: %v", attemptID, err)
+		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
 	}
 	structuredPayloadJSON := canonicalStructuredPayloadForStoreTest(outputText)
-	primaryEvidenceID := fmt.Sprintf("evidence_terminal_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID))
-	if strings.TrimSpace(outputText) != "" {
-		primaryEvidenceID = fmt.Sprintf("receipt_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID))
-		if _, err := s.AcceptProviderCompletionReceipt(context.Background(), AcceptProviderCompletionReceiptRequest{
-			EvidenceID:            primaryEvidenceID,
-			ProviderInvocationID:  providerInvocationID,
-			AttemptID:             attemptID,
-			RunID:                 runID,
-			NodeRunID:             nodeRunID,
-			ProtocolVersion:       "2026-05-01",
-			CompletionCapability:  completionCapability,
-			FinalText:             outputText,
-			StructuredPayloadJSON: structuredPayloadJSON,
-			ReceivedAt:            createdAt,
-		}); err != nil {
-			t.Fatalf("accept canonical provider receipt %q: %v", attemptID, err)
-		}
-	} else {
-		if _, err := s.AppendProviderCompletionEvidence(context.Background(), AppendProviderCompletionEvidenceRequest{
-			EvidenceID:           primaryEvidenceID,
-			ProviderInvocationID: providerInvocationID,
-			AttemptID:            attemptID,
-			RunID:                runID,
-			NodeRunID:            nodeRunID,
-			EvidenceKind:         ProviderCompletionEvidenceKindStreamObservation,
-			PayloadJSON:          `{"diagnostic":"missing canonical response"}`,
-			CreatedAt:            createdAt,
-		}); err != nil {
-			t.Fatalf("append canonical provider evidence %q: %v", attemptID, err)
-		}
+	var requiredRole string
+	if err := db.QueryRow(`SELECT required_role FROM node_runs WHERE node_run_id = ?`, nodeRunID).Scan(&requiredRole); err != nil {
+		t.Fatalf("load canonical provider role %q: %v", attemptID, err)
 	}
 	settlementOutcome := ProviderCompletionOutcomeSuccess
 	switch strings.TrimSpace(stateValue) {
@@ -1481,21 +1620,52 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 	case "committed_cancelled":
 		settlementOutcome = ProviderCompletionOutcomeCancelled
 	}
-	if _, err := s.FinalizeProviderCompletionSettlement(context.Background(), FinalizeProviderCompletionSettlementRequest{
-		SettlementID:          fmt.Sprintf("settlement_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID)),
-		ProviderInvocationID:  providerInvocationID,
-		AttemptID:             attemptID,
-		RunID:                 runID,
-		NodeRunID:             nodeRunID,
-		Outcome:               settlementOutcome,
-		PrimaryEvidenceID:     primaryEvidenceID,
-		FinalText:             outputText,
-		StructuredPayloadJSON: structuredPayloadJSON,
-		FailureReasonCode:     failureCode,
-		FailureReasonText:     failureText,
-		SettledAt:             createdAt,
+	zero := 0
+	observation := providerexecution.InvocationStreamObservation{
+		ProviderSessionID:      providerSessionID,
+		FinalTurnID:            "turn_" + providerInvocationID,
+		FinalStepID:            "step_" + providerInvocationID,
+		FinalSequence:          1,
+		RawFinishReason:        "stop",
+		NormalizedFinishReason: "stop",
+		CanonicalTerminalText:  outputText,
+		ProcessExited:          true,
+		ProcessExitCode:        &zero,
+		StdoutDrained:          true,
+		StderrDrained:          true,
+	}
+	if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), SettleProviderCompletionAndTerminalRequest{
+		Settlement: FinalizeProviderCompletionSettlementRequest{
+			SettlementID:          fmt.Sprintf("settlement_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID)),
+			ProviderInvocationID:  providerInvocationID,
+			AttemptID:             attemptID,
+			RunID:                 runID,
+			NodeRunID:             nodeRunID,
+			Outcome:               settlementOutcome,
+			FinalText:             outputText,
+			StructuredPayloadJSON: structuredPayloadJSON,
+			FailureReasonCode:     failureCode,
+			FailureReasonText:     failureText,
+			SettledAt:             createdAt,
+		},
+		StreamObservation:    &observation,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: requiredRole},
+		Terminal: CommitTerminalRequest{
+			OutboxID:           fmt.Sprintf("outbox_fixture_%s", strings.NewReplacer(":", "_", "-", "_").Replace(attemptID)),
+			AttemptID:          attemptID,
+			RunID:              runID,
+			NodeRunID:          nodeRunID,
+			TerminalState:      stateValue,
+			PayloadJSON:        `{}`,
+			TerminalReasonCode: failureCode,
+			FailureCode:        failureCode,
+			FailureText:        failureText,
+			ProviderSessionID:  providerSessionID,
+		},
 	}); err != nil {
-		t.Fatalf("finalize canonical provider settlement %q: %v", attemptID, err)
+		t.Fatalf("settle canonical provider execution %q: %v", attemptID, err)
 	}
 }
 

@@ -1030,6 +1030,9 @@ func (s *TransitionService) RecordDirectExecutionTerminal(ctx context.Context, r
 		if err := ensureAttemptExecutionRowForDirectTerminalTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.FromState, transition.OccurredAt); err != nil {
 			return err
 		}
+		if err := ensureGenericRecoveryMayMutateAttemptTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String); err != nil {
+			return err
+		}
 		if err := insertAttemptExecutionEventTx(ctx, tx, transition); err != nil {
 			return err
 		}
@@ -1914,6 +1917,9 @@ func cancelAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeA
 	if trimmedState == "terminal_observed" || isDurablyTerminalAttemptExecutionState(trimmedState) {
 		return nil
 	}
+	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
+		return nil
+	}
 
 	seq, err := nextAttemptExecutionSeqTx(ctx, tx, attempt.AttemptID)
 	if err != nil {
@@ -2527,6 +2533,33 @@ func ensureAttemptExecutionRowForDirectTerminalTx(ctx context.Context, tx *sql.T
 	return nil
 }
 
+func ensureGenericRecoveryMayMutateAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, runID, nodeRunID string) error {
+	var executionMode string
+	var activeProviderInvocationID string
+	var canonicalSettlementID string
+	err := tx.QueryRowContext(ctx, `SELECT execution_mode,
+		COALESCE(active_provider_invocation_id, ''),
+		COALESCE(canonical_settlement_id, '')
+		FROM attempt_executions
+		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?`,
+		strings.TrimSpace(attemptID),
+		strings.TrimSpace(runID),
+		strings.TrimSpace(nodeRunID),
+	).Scan(&executionMode, &activeProviderInvocationID, &canonicalSettlementID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load attempt execution provider authority: %w", err)
+	}
+	if executionstore.NormalizeExecutionMode(executionMode) == executionstore.ExecutionModeProviderBacked &&
+		strings.TrimSpace(activeProviderInvocationID) != "" &&
+		strings.TrimSpace(canonicalSettlementID) == "" {
+		return fmt.Errorf("provider-backed attempt %q with an active invocation requires a canonical provider settlement", strings.TrimSpace(attemptID))
+	}
+	return nil
+}
+
 func loadExecutionModesForNodeRunTx(ctx context.Context, tx *sql.Tx, runID, nodeRunID string) (executionstore.ExecutionMode, executionstore.ProviderCompletionMode, error) {
 	var nodeID string
 	var nodeClass string
@@ -2663,6 +2696,9 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 			_ = tx.Rollback()
 		}
 	}()
+	if err := ensureGenericRecoveryMayMutateAttemptTx(ctx, tx, req.CurrentAttemptID, attempt.RunID, attempt.NodeRunID); err != nil {
+		return QueuedNodeAttempt{}, err
+	}
 
 	if req.HasReplacement {
 		if err := updateAgentStatusTx(ctx, tx, attempt.AgentID, AgentStatusBusy, AgentStatusBlocked, occurredAt); err != nil {

@@ -3,6 +3,7 @@ package opencode
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 )
@@ -18,12 +19,14 @@ type opencodeRunEventWire struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	Part      struct {
-		Type   string  `json:"type"`
-		ID     string  `json:"id"`
-		Text   string  `json:"text"`
-		Tool   string  `json:"tool"`
-		Reason *string `json:"reason"`
-		State  struct {
+		Type      string  `json:"type"`
+		ID        string  `json:"id"`
+		CallID    string  `json:"callID"`
+		MessageID string  `json:"messageID"`
+		Text      string  `json:"text"`
+		Tool      string  `json:"tool"`
+		Reason    *string `json:"reason"`
+		State     struct {
 			Status string          `json:"status"`
 			Title  string          `json:"title"`
 			Input  json.RawMessage `json:"input"`
@@ -55,7 +58,18 @@ type opencodeRunEventWire struct {
 
 func parseOpencodeRunEvent(line string) (opencodeRunEvent, error) {
 	decoder := json.NewDecoder(strings.NewReader(line))
-	return decodeNextOpencodeRunEvent(decoder)
+	event, err := decodeNextOpencodeRunEvent(decoder)
+	if err != nil {
+		return opencodeRunEvent{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return opencodeRunEvent{}, fmt.Errorf("multiple JSON values in provider event line")
+		}
+		return opencodeRunEvent{}, fmt.Errorf("trailing provider event data: %w", err)
+	}
+	return event, nil
 }
 
 func decodeOpencodeRunEventStream(stream io.Reader, onEvent func(opencodeRunEvent) error, onMalformed func(string, error)) error {
@@ -94,6 +108,8 @@ func decodeNextOpencodeRunEvent(decoder *json.Decoder) (opencodeRunEvent, error)
 	}
 	event.Part.Type = strings.TrimSpace(envelope.Part.Type)
 	event.Part.ID = strings.TrimSpace(envelope.Part.ID)
+	event.Part.CallID = strings.TrimSpace(envelope.Part.CallID)
+	event.Part.MessageID = strings.TrimSpace(envelope.Part.MessageID)
 	event.Part.Text = envelope.Part.Text
 	event.Part.Tool = strings.TrimSpace(envelope.Part.Tool)
 	if envelope.Part.Reason != nil {

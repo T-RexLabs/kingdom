@@ -61,22 +61,23 @@ func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
 }
 
 type Config struct {
-	DB                  *sql.DB
-	StartupContext      context.Context
-	StartupReporter     StartupReporter
-	Paths               BootstrapPaths
-	Adapter             opencode.Adapter
-	ProviderEngine      string
-	ProviderStrict      bool
-	GovernanceMode      string
-	AutonomousApprovals *bool
-	PublishMode         string
-	ProviderSession     opencode.SessionAdapterConfig
-	ReconcileInterval   time.Duration
-	DispatchInterval    time.Duration
-	WorkspaceRoot       string
-	YoloOutputRoot      string
-	WorktreeRetention   time.Duration
+	DB                                      *sql.DB
+	StartupContext                          context.Context
+	StartupReporter                         StartupReporter
+	Paths                                   BootstrapPaths
+	Adapter                                 opencode.Adapter
+	ProviderEngine                          string
+	ProviderStrict                          bool
+	GovernanceMode                          string
+	AutonomousApprovals                     *bool
+	PublishMode                             string
+	ProviderSession                         opencode.SessionAdapterConfig
+	ReconcileInterval                       time.Duration
+	DispatchInterval                        time.Duration
+	ProviderExecutionLeaseHeartbeatInterval time.Duration
+	WorkspaceRoot                           string
+	YoloOutputRoot                          string
+	WorktreeRetention                       time.Duration
 }
 
 type StartupPhase string
@@ -253,14 +254,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider strict_startup_total_timeout: %w", err)
 	}
-	completionReconcileTotalTimeout, err := parseCompletionReconcileTotalTimeout(providerCfg.Timeouts.CompletionReconcileTotalTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider completion_reconcile_total_timeout: %w", err)
-	}
-	completionReconcileBackoffSchedule, err := providerCfg.CompletionReconcileBackoffDurations()
-	if err != nil {
-		return nil, fmt.Errorf("parse provider completion_reconcile_backoff_schedule: %w", err)
-	}
 	cancelGraceTimeout, cancelForceTimeout, err := parseProviderCancelTimeouts(providerCfg.Timeouts.CancelGraceTimeout, providerCfg.Timeouts.CancelForceTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("parse provider cancellation timeouts: %w", err)
@@ -268,8 +261,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 
 	cfg.ProviderSession.FirstEventTimeout = firstEventTimeout
 	cfg.ProviderSession.StreamInactivityTimeout = streamInactivityTimeout
-	cfg.ProviderSession.ReconcileTotalTimeout = completionReconcileTotalTimeout
-	cfg.ProviderSession.ReconcileBackoffSchedule = completionReconcileBackoffSchedule
 	providerWorkDir := strings.TrimSpace(cfg.ProviderSession.WorkDir)
 	providerConfigDir := bootstrapassets.ManagedOpenCodeRoot(providerWorkDir)
 	providerEngineName := strings.ToLower(strings.TrimSpace(cfg.ProviderEngine))
@@ -323,6 +314,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		completionWake:  make(chan struct{}, 1),
 	}
 	runtimeInstance.orchestrator.notifyCompletionReady = runtimeInstance.signalCompletionReady
+	runtimeInstance.orchestrator.providerLeaseHeartbeatInterval = cfg.ProviderExecutionLeaseHeartbeatInterval
 	return runtimeInstance, nil
 }
 
@@ -1268,21 +1260,6 @@ func parseStrictStartupTotalTimeout(raw string) (time.Duration, error) {
 	}
 	if timeout <= 0 {
 		return 0, fmt.Errorf("strict_startup_total_timeout must be > 0")
-	}
-	return timeout, nil
-}
-
-func parseCompletionReconcileTotalTimeout(raw string) (time.Duration, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout is required")
-	}
-	timeout, err := time.ParseDuration(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout parse failed: %w", err)
-	}
-	if timeout <= 0 {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout must be > 0")
 	}
 	return timeout, nil
 }

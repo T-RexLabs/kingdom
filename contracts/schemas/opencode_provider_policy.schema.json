@@ -61,8 +61,6 @@
       "additionalProperties": false,
       "required": [
         "strict_startup_total_timeout",
-        "completion_reconcile_total_timeout",
-        "completion_reconcile_backoff_schedule",
         "dispatch_ack_timeout",
         "first_event_timeout",
         "stream_inactivity_timeout",
@@ -72,12 +70,6 @@
       ],
       "properties": {
         "strict_startup_total_timeout": {"type": "string", "minLength": 2},
-        "completion_reconcile_total_timeout": {"type": "string", "minLength": 2},
-        "completion_reconcile_backoff_schedule": {
-          "type": "array",
-          "minItems": 1,
-          "items": {"type": "string", "minLength": 2}
-        },
         "dispatch_ack_timeout": {"type": "string", "minLength": 2},
         "first_event_timeout": {"type": "string", "minLength": 2},
         "stream_inactivity_timeout": {"type": "string", "minLength": 2},

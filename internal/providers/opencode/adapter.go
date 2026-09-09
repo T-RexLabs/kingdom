@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/verdict"
 )
 
@@ -33,48 +34,6 @@ type Adapter interface {
 }
 
 const CompletionProtocolVersion = "v1"
-
-type ExportCheckPhase string
-
-const (
-	ExportCheckPhaseForegroundReconcile ExportCheckPhase = "foreground_reconcile"
-	ExportCheckPhaseDeferredVerify      ExportCheckPhase = "deferred_verify"
-	ExportCheckPhaseLateRepair          ExportCheckPhase = "late_repair"
-)
-
-type ExportCheckStatus string
-
-const (
-	ExportCheckStatusResolvedSuccess  ExportCheckStatus = "resolved_success"
-	ExportCheckStatusResolvedFailure  ExportCheckStatus = "resolved_failure"
-	ExportCheckStatusUnresolved       ExportCheckStatus = "unresolved"
-	ExportCheckStatusMalformedExport  ExportCheckStatus = "malformed_export"
-	ExportCheckStatusExporterError    ExportCheckStatus = "exporter_error"
-	ExportCheckStatusDeadlineExceeded ExportCheckStatus = "deadline_exceeded"
-	ExportCheckStatusCancelled        ExportCheckStatus = "cancelled"
-)
-
-type ExportCheck struct {
-	ProviderSessionID          string            `json:"-"`
-	ProviderInvocationID       string            `json:"-"`
-	Phase                      ExportCheckPhase  `json:"-"`
-	ExportMode                 string            `json:"-"`
-	Status                     ExportCheckStatus `json:"-"`
-	SalvageUsed                bool              `json:"-"`
-	AssistantFound             bool              `json:"-"`
-	AssistantOwnedByInvocation bool              `json:"-"`
-	AssistantCompletedAt       string            `json:"-"`
-	AssistantFinishReason      string            `json:"-"`
-	AssistantHasError          bool              `json:"-"`
-	StdoutBytes                int               `json:"-"`
-	StderrBytes                int               `json:"-"`
-	DiagnosticText             string            `json:"-"`
-	StdoutCapture              string            `json:"-"`
-	StderrCapture              string            `json:"-"`
-	StartedAt                  string            `json:"-"`
-	FinishedAt                 string            `json:"-"`
-	DurationMillis             int64             `json:"-"`
-}
 
 type ExecuteRequest struct {
 	CompletionMode            CompletionMode `json:"completion_mode"`
@@ -111,10 +70,6 @@ type ExecuteRequest struct {
 	// but before stream decoding begins.
 	OnProcessStarted func() `json:"-"`
 
-	// OnLifecycle is called for structured provider execution lifecycle observations
-	// that are not plain text progress, such as export-based reconciliation phases.
-	OnLifecycle func(observation ExecuteLifecycleObservation) `json:"-"`
-
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
 	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
@@ -132,26 +87,6 @@ const (
 	CompletionModeServerResponse  CompletionMode = "server_response"
 	CompletionModeReceiptRequired CompletionMode = "receipt_required"
 )
-
-type ExecuteLifecyclePhase string
-
-const (
-	ExecuteLifecyclePhaseProviderExportReconciliationStarted    ExecuteLifecyclePhase = "provider_export_reconciliation_started"
-	ExecuteLifecyclePhaseProviderExportReconciliationSucceeded  ExecuteLifecyclePhase = "provider_export_reconciliation_succeeded"
-	ExecuteLifecyclePhaseProviderExportReconciliationFailed     ExecuteLifecyclePhase = "provider_export_reconciliation_failed"
-	ExecuteLifecyclePhaseProviderExportReconciliationUnresolved ExecuteLifecyclePhase = "provider_export_reconciliation_unresolved"
-)
-
-type ExecuteLifecycleObservation struct {
-	Phase              ExecuteLifecyclePhase `json:"phase"`
-	OccurredAt         string                `json:"occurred_at,omitempty"`
-	ProviderSessionID  string                `json:"provider_session_id,omitempty"`
-	AmbiguityReason    string                `json:"ambiguity_reason,omitempty"`
-	ResolvedState      string                `json:"resolved_state,omitempty"`
-	ResolvedReasonCode string                `json:"resolved_reason_code,omitempty"`
-	EvidenceSource     string                `json:"evidence_source,omitempty"`
-	Error              string                `json:"error,omitempty"`
-}
 
 type ExecuteActivityKind string
 
@@ -200,48 +135,14 @@ type mockExecutionArtifact struct {
 	Body string `json:"-"`
 }
 
-type TokenUsage struct {
-	InputTokens      int64 `json:"input_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
-	ReasoningTokens  int64 `json:"reasoning_tokens"`
-	CacheReadTokens  int64 `json:"cache_read_tokens"`
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-}
+type TokenUsage = providerexecution.TokenUsage
 
 // InvocationStreamObservation is the complete live-stream evidence for one
 // provider invocation. It is diagnostic evidence only until the execution
 // store validates its lineage and settles it transactionally.
-type InvocationStreamObservation struct {
-	ProviderSessionID           string                      `json:"provider_session_id,omitempty"`
-	FinalTurnID                 string                      `json:"final_turn_id,omitempty"`
-	FinalStepID                 string                      `json:"final_step_id,omitempty"`
-	FinalSequence               int                         `json:"final_sequence"`
-	RawFinishReason             string                      `json:"raw_finish_reason,omitempty"`
-	NormalizedFinishReason      string                      `json:"normalized_finish_reason,omitempty"`
-	CanonicalTerminalText       string                      `json:"canonical_terminal_text,omitempty"`
-	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
-	PendingToolCount            int                         `json:"pending_tool_count"`
-	Tokens                      TokenUsage                  `json:"tokens"`
-	ProcessExited               bool                        `json:"process_exited"`
-	ProcessExitCode             *int                        `json:"process_exit_code,omitempty"`
-	ProcessExitSignal           *int                        `json:"process_exit_signal,omitempty"`
-	StdoutDrained               bool                        `json:"stdout_drained"`
-	StderrDrained               bool                        `json:"stderr_drained"`
-	TimedOut                    bool                        `json:"timed_out"`
-	Cancelled                   bool                        `json:"cancelled"`
-	ProviderError               string                      `json:"provider_error,omitempty"`
-	MalformedProtocolCount      int                         `json:"malformed_protocol_count"`
-	ConflictingTerminalEvidence bool                        `json:"conflicting_terminal_evidence"`
-	LaterEventAfterTerminal     bool                        `json:"later_event_after_terminal"`
-	MeaningfulProgress          bool                        `json:"meaningful_progress"`
-}
+type InvocationStreamObservation = providerexecution.InvocationStreamObservation
 
-type InvocationToolObservation struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Status string `json:"status,omitempty"`
-}
+type InvocationToolObservation = providerexecution.InvocationToolObservation
 
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
@@ -265,7 +166,6 @@ type ExecuteResponse struct {
 	CompletionStructuredPayloadJSON string                      `json:"completion_structured_payload_json,omitempty"`
 	ProviderDiagnosticsJSON         string                      `json:"provider_diagnostics_json,omitempty"`
 	StreamObservation               InvocationStreamObservation `json:"stream_observation"`
-	ExportChecks                    []ExportCheck               `json:"-"`
 }
 
 type CancelRequest struct {
@@ -315,6 +215,10 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	if req.OnProcessStarted != nil {
 		req.OnProcessStarted()
 	}
+	providerSessionID := "memory_" + strings.TrimSpace(req.InvocationID)
+	if req.OnProviderSession != nil {
+		req.OnProviderSession(providerSessionID)
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -350,14 +254,29 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 		}
 	}
 
+	zero := 0
 	return ExecuteResponse{
 		Accepted:                        true,
 		OutputText:                      summary,
+		ProviderSessionID:               providerSessionID,
 		ProviderInvocationID:            strings.TrimSpace(req.InvocationID),
 		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
 		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
 		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
 		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
+		StreamObservation: InvocationStreamObservation{
+			ProviderSessionID:      providerSessionID,
+			FinalTurnID:            "turn_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
+			FinalStepID:            "step_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
+			FinalSequence:          2,
+			RawFinishReason:        "stop",
+			NormalizedFinishReason: "stop",
+			CanonicalTerminalText:  summary,
+			ProcessExited:          true,
+			ProcessExitCode:        &zero,
+			StdoutDrained:          true,
+			StderrDrained:          true,
+		},
 	}, nil
 }
 

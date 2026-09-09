@@ -41,41 +41,45 @@ func isImplementationRole(roleID string) bool {
 }
 
 type orchestrationLoop struct {
-	db                    *sql.DB
-	transition            *state.TransitionService
-	registry              *state.AgentRegistry
-	mailbox               *state.MailboxStore
-	delegation            *state.DelegationPolicyEngine
-	scheduler             *workflow.Scheduler
-	sessions              *state.SessionManager
-	events                *state.AttemptEventIngestor
-	adapter               opencode.Adapter
-	fsStore               *runtimefs.Store
-	validator             *state.WorkerOutputValidator
-	tokenUsage            *state.TokenUsageStore
-	planningOutputs       *state.RunPlanningOutputStore
-	executionStore        *executionstore.Store
-	nodeTimeouts          map[string]time.Duration
-	streamInactivity      time.Duration
-	cancelGrace           time.Duration
-	cancelForce           time.Duration
-	yoloRoot              string
-	publishMode           string
-	roleComm              rolecomm.Policy
-	providerPolicy        providerpolicy.Policy
-	governanceMode        string
-	autonomousApprovals   bool
-	runWorktrees          *workspace.RunWorktreeStore
-	worktreeRetention     time.Duration
-	gitRunner             gitCommandRunner
-	now                   func() time.Time
-	sleep                 func(time.Duration)
-	execMu                sync.Mutex
-	eventSeqMu            sync.Mutex
-	inflightExec          map[string]struct{}
-	asyncDrain            *executionDrainTracker
-	notifyCompletionReady func()
-	closeMode             *runtimeCloseMode
+	db                             *sql.DB
+	transition                     *state.TransitionService
+	registry                       *state.AgentRegistry
+	mailbox                        *state.MailboxStore
+	delegation                     *state.DelegationPolicyEngine
+	scheduler                      *workflow.Scheduler
+	sessions                       *state.SessionManager
+	events                         *state.AttemptEventIngestor
+	adapter                        opencode.Adapter
+	fsStore                        *runtimefs.Store
+	validator                      *state.WorkerOutputValidator
+	tokenUsage                     *state.TokenUsageStore
+	planningOutputs                *state.RunPlanningOutputStore
+	executionStore                 *executionstore.Store
+	nodeTimeouts                   map[string]time.Duration
+	streamInactivity               time.Duration
+	cancelGrace                    time.Duration
+	cancelForce                    time.Duration
+	yoloRoot                       string
+	publishMode                    string
+	roleComm                       rolecomm.Policy
+	providerPolicy                 providerpolicy.Policy
+	governanceMode                 string
+	autonomousApprovals            bool
+	runWorktrees                   *workspace.RunWorktreeStore
+	worktreeRetention              time.Duration
+	gitRunner                      gitCommandRunner
+	now                            func() time.Time
+	sleep                          func(time.Duration)
+	providerLeaseHeartbeatInterval time.Duration
+	newProviderLeaseTicker         func(time.Duration) providerLeaseTicker
+	execMu                         sync.Mutex
+	eventSeqMu                     sync.Mutex
+	inflightExec                   map[string]struct{}
+	inflightSettlements            map[string]string
+	executionResults               map[string]chan asyncExecutionResult
+	asyncDrain                     *executionDrainTracker
+	notifyCompletionReady          func()
+	closeMode                      *runtimeCloseMode
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {
@@ -144,6 +148,10 @@ type nodeAttempt struct {
 	CompletionMode        executionstore.ProviderCompletionMode
 	ProviderTimeoutMillis int64
 	SessionRef            string
+	ProviderSessionID     string
+	ProviderInvocationID  string
+	LeaseOwner            string
+	LeaseVersion          int64
 }
 
 type asyncExecutionResult struct {
@@ -159,6 +167,10 @@ type asyncExecutionResult struct {
 	launchObservedAt                string
 	completionCapability            string
 	completionMode                  executionstore.ProviderCompletionMode
+	expectedLeaseOwner              string
+	expectedLeaseVersion            int64
+	expectedLeaseExpiresAt          string
+	providerLeaseDuration           time.Duration
 	completionReceiptDir            string
 	completionReceiptEvidenceID     string
 	completionStructuredPayloadJSON string
@@ -229,37 +241,40 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
-		db:                  db,
-		transition:          state.NewTransitionService(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		registry:            registry,
-		mailbox:             mailbox,
-		delegation:          state.NewDelegationPolicyEngineWithMailbox(db, registry, mailbox),
-		scheduler:           workflow.NewScheduler(workflow.SchedulerConfig{}),
-		sessions:            sessionManager,
-		events:              state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		adapter:             adapter,
-		fsStore:             fsStore,
-		validator:           outputValidator,
-		tokenUsage:          state.NewTokenUsageStore(db),
-		planningOutputs:     state.NewRunPlanningOutputStore(db),
-		executionStore:      executionstore.New(db),
-		nodeTimeouts:        cloneDurationMap(nodeTimeouts),
-		streamInactivity:    streamInactivity,
-		cancelGrace:         defaultDuration(cancelGrace, 5*time.Second),
-		cancelForce:         defaultDuration(cancelForce, 10*time.Second),
-		yoloRoot:            strings.TrimSpace(yoloOutputRoot),
-		publishMode:         normalizePublishMode(publishMode),
-		roleComm:            policy,
-		providerPolicy:      providerPolicy,
-		governanceMode:      normalizeGovernanceMode(governanceMode),
-		autonomousApprovals: autonomousApprovals,
-		runWorktrees:        workspace.NewRunWorktreeStore(db),
-		worktreeRetention:   workspace.NormalizeRunWorktreeRetention(worktreeRetention),
-		now:                 time.Now,
-		sleep:               time.Sleep,
-		inflightExec:        make(map[string]struct{}),
-		asyncDrain:          newExecutionDrainTracker(),
-		closeMode:           closeMode,
+		db:                     db,
+		transition:             state.NewTransitionService(db, eventSchemas).WithRoleCommunicationPolicy(policy),
+		registry:               registry,
+		mailbox:                mailbox,
+		delegation:             state.NewDelegationPolicyEngineWithMailbox(db, registry, mailbox),
+		scheduler:              workflow.NewScheduler(workflow.SchedulerConfig{}),
+		sessions:               sessionManager,
+		events:                 state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
+		adapter:                adapter,
+		fsStore:                fsStore,
+		validator:              outputValidator,
+		tokenUsage:             state.NewTokenUsageStore(db),
+		planningOutputs:        state.NewRunPlanningOutputStore(db),
+		executionStore:         executionstore.New(db),
+		nodeTimeouts:           cloneDurationMap(nodeTimeouts),
+		streamInactivity:       streamInactivity,
+		cancelGrace:            defaultDuration(cancelGrace, 5*time.Second),
+		cancelForce:            defaultDuration(cancelForce, 10*time.Second),
+		yoloRoot:               strings.TrimSpace(yoloOutputRoot),
+		publishMode:            normalizePublishMode(publishMode),
+		roleComm:               policy,
+		providerPolicy:         providerPolicy,
+		governanceMode:         normalizeGovernanceMode(governanceMode),
+		autonomousApprovals:    autonomousApprovals,
+		runWorktrees:           workspace.NewRunWorktreeStore(db),
+		worktreeRetention:      workspace.NormalizeRunWorktreeRetention(worktreeRetention),
+		now:                    time.Now,
+		sleep:                  time.Sleep,
+		newProviderLeaseTicker: newTimeProviderLeaseTicker,
+		inflightExec:           make(map[string]struct{}),
+		inflightSettlements:    make(map[string]string),
+		executionResults:       make(map[string]chan asyncExecutionResult),
+		asyncDrain:             newExecutionDrainTracker(),
+		closeMode:              closeMode,
 	}
 }
 
@@ -774,8 +789,13 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 		        CASE WHEN ae.attempt_id IS NULL THEN 0 ELSE 1 END AS has_execution_record,
 		        COALESCE(ae.state, '') AS durable_state,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
+		        COALESCE(ae.completion_mode, '') AS completion_mode,
 		        COALESCE(ae.provider_timeout_ms, 0) AS provider_timeout_ms,
-		        COALESCE(ae.session_ref, '') AS session_ref
+		        COALESCE(ae.session_ref, '') AS session_ref,
+		        COALESCE(ae.provider_session_id, '') AS provider_session_id,
+		        COALESCE(ae.active_provider_invocation_id, '') AS active_provider_invocation_id,
+		        COALESCE(ae.lease_owner, '') AS lease_owner,
+		        COALESCE(ae.lease_version, 0) AS lease_version
 		 FROM node_runs nr
 		 JOIN canonical_attempts latest ON latest.node_run_id = nr.node_run_id AND latest.canonical_rank = 1
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = nr.run_id || ':' || nr.node_id || ':' || nr.attempt
@@ -793,13 +813,14 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 	attempts := make(map[string]nodeAttempt)
 	for rows.Next() {
 		var attempt nodeAttempt
-		var executionMode string
+		var executionMode, completionMode string
 		var hasExecutionRecord int
-		if err := rows.Scan(&attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.Wave, &attempt.NodeStatus, &attempt.TransitionReasonCode, &attempt.TransitionAuthority, &attempt.RequiredRole, &attempt.AgentID, &attempt.StartedAt, &hasExecutionRecord, &attempt.DurableState, &executionMode, &attempt.ProviderTimeoutMillis, &attempt.SessionRef); err != nil {
+		if err := rows.Scan(&attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.Wave, &attempt.NodeStatus, &attempt.TransitionReasonCode, &attempt.TransitionAuthority, &attempt.RequiredRole, &attempt.AgentID, &attempt.StartedAt, &hasExecutionRecord, &attempt.DurableState, &executionMode, &completionMode, &attempt.ProviderTimeoutMillis, &attempt.SessionRef, &attempt.ProviderSessionID, &attempt.ProviderInvocationID, &attempt.LeaseOwner, &attempt.LeaseVersion); err != nil {
 			return nil, err
 		}
 		attempt.HasExecutionRecord = hasExecutionRecord != 0
 		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
+		attempt.CompletionMode = executionstore.ProviderCompletionMode(completionMode)
 		attempts[attempt.NodeID] = attempt
 	}
 	if err := rows.Err(); err != nil {
