@@ -2286,7 +2286,6 @@ func TestDrainExecutionOutboxPrefersDurableFailureOverStaleSuccessPayload(t *tes
 		WorkspaceID:      "",
 		Workspace:        t.TempDir(),
 		Delegator:        "agent_king",
-		Prompt:           "stale success replay",
 		Model:            "github-copilot/gpt-5.4-mini",
 		Variant:          "low",
 		Agent:            "king",
@@ -2456,7 +2455,6 @@ func TestDrainExecutionOutboxReplaysProviderIncompleteTurnForOwnerNode(t *testin
 		LogicalSessionID: sessionIDForAttempt(attemptID),
 		Workspace:        t.TempDir(),
 		Delegator:        "agent_council_replay",
-		Prompt:           "review execution",
 		Model:            "github-copilot/gpt-5.4-mini",
 		Variant:          "low",
 		Agent:            "reviewer",
@@ -10713,26 +10711,6 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 	}); err != nil {
 		t.Fatalf("mark provider invocation open for %q: %v", attemptID, err)
 	}
-}
-
-func acceptProviderCompletionReceiptForAttempt(t *testing.T, store *executionstore.Store, attemptID, runID, nodeRunID, providerInvocationID, outputText, receivedAt string) executionstore.AcceptProviderCompletionReceiptResult {
-	t.Helper()
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            fmt.Sprintf("receipt_%s", sanitizeFileToken(attemptID)),
-		ProviderInvocationID:  providerInvocationID,
-		AttemptID:             attemptID,
-		RunID:                 runID,
-		NodeRunID:             nodeRunID,
-		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		CompletionCapability:  fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID)),
-		FinalText:             outputText,
-		StructuredPayloadJSON: structuredPayloadJSONForTestOutput(outputText),
-		ReceivedAt:            receivedAt,
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt for %q: %v", attemptID, err)
-	}
-	return accepted
 }
 
 func canonicalStructuredPayloadForExecutionOutput(outputText string) string {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 )
@@ -29,27 +30,36 @@ type providerCompletionReceiptWire struct {
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceipts(ctx context.Context) error {
+	_, err := o.ingestProviderCompletionReceiptPass(ctx)
+	return err
+}
+
+func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Context) (int, error) {
 	if o == nil || o.executionStore == nil || o.fsStore == nil || o.schemas == nil {
-		return fmt.Errorf("provider completion receipt ingestion is not configured")
+		return 0, fmt.Errorf("provider completion receipt ingestion is not configured")
 	}
 	o.receiptIngestionMu.Lock()
 	defer o.receiptIngestionMu.Unlock()
 
 	candidates, err := o.executionStore.ListProviderReceiptIngestionCandidates(ctx, o.receiptIngestionCursor, providerReceiptInvocationPassLimit)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(candidates) == 0 {
 		o.receiptIngestionCursor = ""
-		return nil
+		return 0, nil
 	}
+	var ingestionErr error
 	for _, candidate := range candidates {
 		if err := o.ingestProviderCompletionReceiptCandidate(ctx, candidate); err != nil {
-			return err
+			var infrastructureErr *providerReceiptInfrastructureError
+			if !errors.As(err, &infrastructureErr) {
+				ingestionErr = errors.Join(ingestionErr, fmt.Errorf("ingest provider completion receipt invocation %q: %w", candidate.ProviderInvocationID, err))
+			}
 		}
 		o.receiptIngestionCursor = candidate.ProviderInvocationID
 	}
-	return nil
+	return len(candidates), ingestionErr
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceiptInvocation(ctx context.Context, providerInvocationID string) error {
@@ -76,12 +86,24 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptInvocation(ctx contex
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceiptCandidate(ctx context.Context, candidate executionstore.ProviderInvocation) error {
+	if err := o.recoverProviderTerminalHandoffFile(ctx, candidate); err != nil {
+		return err
+	}
 	entries, listErr := o.fsStore.ListProviderCompletionEntries(candidate.ProviderInvocationID)
 	if listErr != nil && errors.Is(listErr, fs.ErrNotExist) {
-		return o.markMissingTerminalProviderReceiptInboxCleaned(ctx, candidate)
+		if providerReceiptInvocationTerminal(candidate.InvocationState) {
+			return o.markMissingTerminalProviderReceiptInboxCleaned(ctx, candidate)
+		}
+		if err := o.persistProviderReceiptInfrastructureDisposition(ctx, candidate.ProviderInvocationID, "receipt_inbox_unavailable", "completion receipt inbox is unavailable"); err != nil {
+			return err
+		}
+		return &providerReceiptInfrastructureError{cause: listErr}
 	}
 	if listErr != nil && !errors.Is(listErr, securefs.ErrLimitExceeded) {
-		return listErr
+		if err := o.persistProviderReceiptInfrastructureDisposition(ctx, candidate.ProviderInvocationID, "receipt_inbox_traversal_failed", "completion receipt inbox could not be traversed safely"); err != nil {
+			return err
+		}
+		return &providerReceiptInfrastructureError{cause: listErr}
 	}
 	if errors.Is(listErr, securefs.ErrLimitExceeded) {
 		if _, err := o.ingestProviderCompletionReceiptRequest(ctx, executionstore.IngestProviderCompletionReceiptRequest{
@@ -90,7 +112,7 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptCandidate(ctx context
 			EntryType:            "entry_count_overflow",
 			Disposition:          executionstore.ProviderCompletionReceiptDispositionInvalidated,
 			ReasonCode:           "receipt_entry_count_overflow",
-			ReasonText:           fmt.Sprintf("completion receipt inbox contains more than %d entries", runtimefs.CompletionReceiptEntryLimit),
+			ReasonText:           "completion receipt inbox contains too many entries",
 			ObservedAt:           o.providerReceiptObservedAt(),
 		}); err != nil {
 			return err
@@ -148,7 +170,7 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 		req.ReasonText = "completion receipt could not be read safely"
 		if errors.Is(readErr, securefs.ErrLimitExceeded) {
 			req.ReasonCode = "receipt_wire_too_large"
-			req.ReasonText = fmt.Sprintf("completion receipt exceeds %d bytes", runtimefs.CompletionReceiptWireLimit)
+			req.ReasonText = "completion receipt exceeds the wire size limit"
 			if _, err := o.ingestProviderCompletionReceiptRequest(ctx, req); err != nil {
 				return err
 			}
@@ -159,14 +181,14 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 		if _, err := o.ingestProviderCompletionReceiptRequest(ctx, req); err != nil {
 			return err
 		}
-		return readErr
+		return &providerReceiptInfrastructureError{cause: readErr}
 	}
 	req.WireByteCount = int64(len(receipt.Wire))
 	wireHash := sha256.Sum256(receipt.Wire)
 	req.WireSHA256 = hex.EncodeToString(wireHash[:])
 	if err := o.schemas.ValidateJSONBytes("completion_receipt", receipt.Wire); err != nil {
 		req.ReasonCode = "receipt_schema_validation_failed"
-		req.ReasonText = err.Error()
+		req.ReasonText = "completion receipt does not match the required schema"
 		if _, ingestErr := o.ingestProviderCompletionReceiptRequest(ctx, req); ingestErr != nil {
 			return ingestErr
 		}
@@ -185,7 +207,7 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 	structuredPayloadJSON, validationErr := validateProviderCompletionReceiptForNode(node, wire.FinalText, string(wire.StructuredPayload))
 	if validationErr != nil {
 		req.ReasonCode = "receipt_node_contract_validation_failed"
-		req.ReasonText = validationErr.Error()
+		req.ReasonText = "completion receipt does not satisfy the node output contract"
 	} else {
 		req.ValidationSucceeded = true
 		req.FinalText = strings.TrimSpace(wire.FinalText)
@@ -197,6 +219,37 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 	}
 	o.removeDispositionedProviderCompletionReceipt(candidate.ProviderInvocationID, entry.Name, receipt.Identity)
 	return nil
+}
+
+type providerReceiptInfrastructureError struct {
+	cause error
+}
+
+func (e *providerReceiptInfrastructureError) Error() string {
+	if e == nil || e.cause == nil {
+		return "provider completion receipt infrastructure error"
+	}
+	return e.cause.Error()
+}
+
+func (e *providerReceiptInfrastructureError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (o *orchestrationLoop) persistProviderReceiptInfrastructureDisposition(ctx context.Context, providerInvocationID, reasonCode, reasonText string) error {
+	_, err := o.ingestProviderCompletionReceiptRequest(ctx, executionstore.IngestProviderCompletionReceiptRequest{
+		ProviderInvocationID: providerInvocationID,
+		EntryName:            ".inbox-error",
+		EntryType:            "inbox_error",
+		Disposition:          executionstore.ProviderCompletionReceiptDispositionError,
+		ReasonCode:           reasonCode,
+		ReasonText:           reasonText,
+		ObservedAt:           o.providerReceiptObservedAt(),
+	})
+	return err
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceiptRequest(ctx context.Context, req executionstore.IngestProviderCompletionReceiptRequest) (executionstore.IngestProviderCompletionReceiptResult, error) {
@@ -211,6 +264,27 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptRequest(ctx context.C
 
 func (o *orchestrationLoop) hydrateAcceptedProviderCompletionReceipt(ctx context.Context, result *asyncExecutionResult) error {
 	if result == nil || result.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
+		return nil
+	}
+	invocation, found, err := o.executionStore.GetProviderInvocation(ctx, result.providerInvocationID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("provider invocation %q not found", result.providerInvocationID)
+	}
+	if invocation.InvocationState == executionstore.ProviderInvocationStateInvalidHandshake {
+		result.completionReceiptEvidenceID = ""
+		result.completionStructuredPayloadJSON = ""
+		if normalizeExecutionOutcome(result.outcome, result.err).State == "success" {
+			result.outcome = opencode.ExecutionOutcome{
+				State:          "failed",
+				ReasonCode:     "provider_incomplete_turn",
+				FailureText:    "provider completion receipt handshake is invalid",
+				EvidenceSource: "stream",
+			}
+			result.err = errorFromExecutionOutcome(result.outcome)
+		}
 		return nil
 	}
 	evidence, found, err := o.executionStore.GetProviderCompletionReceiptEvidence(ctx, result.providerInvocationID)
@@ -254,6 +328,10 @@ func (o *orchestrationLoop) removeDispositionedProviderCompletionReceipt(provide
 }
 
 func (o *orchestrationLoop) cleanupTerminalProviderReceiptInbox(ctx context.Context, providerInvocationID string) {
+	if _, err := o.fsStore.RemoveProviderCompletionStagingEntries(providerInvocationID); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("provider completion staging cleanup deferred", "provider_invocation_id", providerInvocationID, "error", err)
+		return
+	}
 	if err := o.fsStore.RemoveProviderCompletionInbox(providerInvocationID); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			slog.Warn("provider completion inbox cleanup deferred", "provider_invocation_id", providerInvocationID, "error", err)

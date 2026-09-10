@@ -543,6 +543,23 @@ CREATE INDEX idx_provider_invocations_receipt_ingestion
 ON provider_invocations (provider_invocation_id)
 WHERE completion_mode = 'receipt_required' AND receipt_inbox_cleaned_at IS NULL;
 
+CREATE TABLE provider_terminal_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  provider_invocation_id TEXT NOT NULL UNIQUE,
+  attempt_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  node_run_id TEXT NOT NULL,
+  expected_lease_owner TEXT NOT NULL CHECK (TRIM(expected_lease_owner) <> ''),
+  expected_lease_version INTEGER NOT NULL CHECK (expected_lease_version >= 1),
+  stream_observation_json TEXT NOT NULL CHECK (TRIM(stream_observation_json) <> ''),
+  payload_json TEXT NOT NULL CHECK (TRIM(payload_json) <> '' AND LENGTH(CAST(payload_json AS BLOB)) <= 33554432),
+  created_at TEXT NOT NULL,
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
+);
+
+CREATE INDEX idx_provider_terminal_handoffs_pending
+ON provider_terminal_handoffs (provider_invocation_id ASC);
+
 CREATE TABLE provider_completion_evidence (
   provider_evidence_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   evidence_id TEXT NOT NULL UNIQUE,

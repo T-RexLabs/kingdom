@@ -3,7 +3,9 @@
 package securefs
 
 import (
+	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -88,18 +90,37 @@ func readRootRegular(root *Root, path string, maxBytes int64) ([]byte, FileIdent
 	if err := unix.Fstat(int(file.Fd()), &opened); err != nil {
 		return nil, FileIdentity{}, fmt.Errorf("stat secure regular file %q: %w", path, err)
 	}
-	identity := fileIdentity(opened)
-	if opened.Size > maxBytes {
-		return nil, identity, fmt.Errorf("%w: secure regular file %q exceeds %d bytes", ErrLimitExceeded, path, maxBytes)
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	raw, identity, err := readBoundedRegular(file, maxBytes, fileIdentity(opened), func() (FileIdentity, error) {
+		var postRead unix.Stat_t
+		if err := unix.Fstat(int(file.Fd()), &postRead); err != nil {
+			return FileIdentity{}, fmt.Errorf("stat secure regular file %q after read: %w", path, err)
+		}
+		return fileIdentity(postRead), nil
+	})
 	if err != nil {
-		return nil, identity, fmt.Errorf("read secure regular file %q: %w", path, err)
+		return nil, identity, err
+	}
+	digest := sha256.Sum256(raw)
+	identity.ContentSHA256 = hex.EncodeToString(digest[:])
+	return raw, identity, nil
+}
+
+func readBoundedRegular(reader io.Reader, maxBytes int64, before FileIdentity, postReadIdentity func() (FileIdentity, error)) ([]byte, FileIdentity, error) {
+	raw, readErr := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	after, statErr := postReadIdentity()
+	if statErr != nil {
+		return nil, FileIdentity{}, statErr
+	}
+	if after != before {
+		return nil, after, fmt.Errorf("%w: secure regular file changed while reading", ErrIdentityMismatch)
+	}
+	if readErr != nil {
+		return nil, after, fmt.Errorf("read secure regular file: %w", readErr)
 	}
 	if int64(len(raw)) > maxBytes {
-		return nil, identity, fmt.Errorf("%w: secure regular file %q exceeds %d bytes", ErrLimitExceeded, path, maxBytes)
+		return nil, after, fmt.Errorf("%w: secure regular file exceeds %d bytes", ErrLimitExceeded, maxBytes)
 	}
-	return raw, identity, nil
+	return raw, after, nil
 }
 
 func readRootDir(root *Root, path string) ([]os.DirEntry, error) {
@@ -194,6 +215,90 @@ func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.F
 	return replaceRegularAt(parentFD, leaf, path, data, mode, modifiedAt)
 }
 
+func createRootRegularExact(root *Root, path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
+	parentFD, leaf, err := openParent(root, path, true, dirMode)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	defer unix.Close(parentFD)
+
+	tempName, tempFile, err := createTempAt(parentFD)
+	if err != nil {
+		return FileIdentity{}, fmt.Errorf("create secure temporary file for %q: %w", path, err)
+	}
+	published := false
+	defer func() {
+		_ = tempFile.Close()
+		if !published {
+			_ = unix.Unlinkat(parentFD, tempName, 0)
+		}
+	}()
+	if _, err := tempFile.Write(data); err != nil {
+		return FileIdentity{}, fmt.Errorf("write secure temporary file for %q: %w", path, err)
+	}
+	if err := tempFile.Chmod(mode.Perm()); err != nil {
+		return FileIdentity{}, fmt.Errorf("set secure file mode for %q: %w", path, err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		return FileIdentity{}, fmt.Errorf("sync secure file %q: %w", path, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return FileIdentity{}, fmt.Errorf("close secure file %q: %w", path, err)
+	}
+
+	if err := renameAtNoReplace(parentFD, tempName, parentFD, leaf); err != nil {
+		if !errors.Is(err, unix.EEXIST) {
+			return FileIdentity{}, fmt.Errorf("publish secure file %q: %w", path, err)
+		}
+		identity, replayErr := readExactRegularAt(parentFD, leaf, path, data, mode)
+		if replayErr != nil {
+			return FileIdentity{}, replayErr
+		}
+		return identity, nil
+	}
+	published = true
+	if err := unix.Fsync(parentFD); err != nil {
+		return FileIdentity{}, fmt.Errorf("sync secure parent after publishing %q: %w", path, err)
+	}
+	return readExactRegularAt(parentFD, leaf, path, data, mode)
+}
+
+func readExactRegularAt(parentFD int, leaf, path string, expected []byte, mode fs.FileMode) (FileIdentity, error) {
+	fd, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return FileIdentity{}, fmt.Errorf("%w: open existing secure file %q: %v", ErrContentConflict, path, err)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return FileIdentity{}, fmt.Errorf("open existing secure file %q: invalid descriptor", path)
+	}
+	defer file.Close()
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return FileIdentity{}, fmt.Errorf("inspect existing secure file %q: %w", path, err)
+	}
+	if before.Mode&unix.S_IFMT != unix.S_IFREG || fs.FileMode(before.Mode).Perm() != mode.Perm() {
+		return FileIdentity{}, fmt.Errorf("%w: existing secure file %q has different type or mode", ErrContentConflict, path)
+	}
+	raw, identity, err := readBoundedRegular(file, int64(len(expected)), fileIdentity(before), func() (FileIdentity, error) {
+		var after unix.Stat_t
+		if err := unix.Fstat(fd, &after); err != nil {
+			return FileIdentity{}, err
+		}
+		return fileIdentity(after), nil
+	})
+	if err != nil {
+		return FileIdentity{}, fmt.Errorf("%w: existing secure file %q cannot be replayed: %v", ErrContentConflict, path, err)
+	}
+	if !bytes.Equal(raw, expected) {
+		return FileIdentity{}, fmt.Errorf("%w: existing secure file %q has different content", ErrContentConflict, path)
+	}
+	digest := sha256.Sum256(raw)
+	identity.ContentSHA256 = hex.EncodeToString(digest[:])
+	return identity, nil
+}
+
 func replaceRegularAt(parentFD int, leaf, path string, data []byte, mode fs.FileMode, modifiedAt time.Time) error {
 	tempName, tempFile, err := createTempAt(parentFD)
 	if err != nil {
@@ -277,13 +382,100 @@ func removeRootEntryIfIdentity(root *Root, path string, expectedType EntryType, 
 	if err := unix.Fstatat(parentFD, leaf, &info, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return fmt.Errorf("inspect secure conditional removal %q: %w", path, err)
 	}
-	if entryType(uint32(info.Mode)) != expectedType || fileIdentity(info) != identity {
+	if entryType(uint32(info.Mode)) != expectedType || !sameFileIdentityMetadata(fileIdentity(info), identity) {
 		return fmt.Errorf("%w: secure entry %q", ErrIdentityMismatch, path)
 	}
 	if expectedType == EntryTypeDirectory {
 		return fmt.Errorf("secure conditional removal %q is a directory; refusing recursive removal", path)
 	}
-	return removeEntryAt(parentFD, leaf, path)
+	claimName, err := claimEntryAt(parentFD, leaf)
+	if err != nil {
+		return fmt.Errorf("claim secure entry %q for removal: %w", path, err)
+	}
+	var claimed unix.Stat_t
+	if err := unix.Fstatat(parentFD, claimName, &claimed, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("inspect claimed secure entry %q: %w", path, err)
+	}
+	if entryType(uint32(claimed.Mode)) != expectedType || !sameClaimedFileIdentity(fileIdentity(claimed), identity) {
+		if restoreErr := renameAtNoReplace(parentFD, claimName, parentFD, leaf); restoreErr != nil {
+			return fmt.Errorf("%w: secure entry %q changed while claiming; restore failed: %v", ErrIdentityMismatch, path, restoreErr)
+		}
+		return fmt.Errorf("%w: secure entry %q changed while claiming", ErrIdentityMismatch, path)
+	}
+	if identity.ContentSHA256 != "" {
+		if err := verifyClaimedRegularContent(parentFD, claimName, identity); err != nil {
+			if restoreErr := renameAtNoReplace(parentFD, claimName, parentFD, leaf); restoreErr != nil {
+				return fmt.Errorf("%w: secure entry %q content changed while claiming; restore failed: %v", ErrIdentityMismatch, path, restoreErr)
+			}
+			return fmt.Errorf("%w: secure entry %q content changed while claiming: %v", ErrIdentityMismatch, path, err)
+		}
+	}
+	return removeEntryAt(parentFD, claimName, path)
+}
+
+func sameFileIdentityMetadata(actual, expected FileIdentity) bool {
+	actual.ContentSHA256 = ""
+	expected.ContentSHA256 = ""
+	return actual == expected
+}
+
+func sameClaimedFileIdentity(actual, expected FileIdentity) bool {
+	return actual.Device == expected.Device &&
+		actual.Inode == expected.Inode &&
+		actual.SizeBytes == expected.SizeBytes &&
+		actual.ModTimeSeconds == expected.ModTimeSeconds &&
+		actual.ModTimeNanoseconds == expected.ModTimeNanoseconds
+}
+
+func verifyClaimedRegularContent(parentFD int, claimName string, expected FileIdentity) error {
+	fd, err := unix.Openat(parentFD, claimName, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), claimName)
+	if file == nil {
+		_ = unix.Close(fd)
+		return fmt.Errorf("invalid claimed file descriptor")
+	}
+	defer file.Close()
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return err
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, expected.SizeBytes+1))
+	if err != nil {
+		return err
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return err
+	}
+	if fileIdentity(before) != fileIdentity(after) || int64(len(raw)) != expected.SizeBytes {
+		return ErrIdentityMismatch
+	}
+	digest := sha256.Sum256(raw)
+	if hex.EncodeToString(digest[:]) != expected.ContentSHA256 {
+		return ErrIdentityMismatch
+	}
+	return nil
+}
+
+func claimEntryAt(parentFD int, leaf string) (string, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return "", err
+		}
+		claimName := ".receipt-cleanup-" + hex.EncodeToString(raw) + ".json"
+		if err := renameAtNoReplace(parentFD, leaf, parentFD, claimName); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			return "", err
+		}
+		return claimName, nil
+	}
+	return "", fmt.Errorf("could not allocate unique cleanup claim")
 }
 
 func removeEntryAt(parentFD int, leaf, path string) error {
@@ -373,10 +565,6 @@ func entryType(mode uint32) EntryType {
 	default:
 		return EntryTypeOther
 	}
-}
-
-func fileIdentity(stat unix.Stat_t) FileIdentity {
-	return FileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino)}
 }
 
 func openParent(root *Root, path string, create bool, mode fs.FileMode) (int, string, error) {

@@ -38,6 +38,9 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !tableExists(t, db, "provider_invocations") {
 		t.Fatal("expected provider_invocations table to exist after up migration")
 	}
+	if !tableExists(t, db, "provider_terminal_handoffs") {
+		t.Fatal("expected provider_terminal_handoffs table to exist after up migration")
+	}
 	if !tableExists(t, db, "provider_completion_evidence") {
 		t.Fatal("expected provider_completion_evidence table to exist after up migration")
 	}
@@ -139,6 +142,14 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	}
 	if !indexExists(t, db, "idx_provider_invocations_receipt_ingestion") {
 		t.Fatal("expected receipt ingestion candidate index after up migration")
+	}
+	for _, column := range []string{"handoff_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "expected_lease_owner", "expected_lease_version", "stream_observation_json", "payload_json", "created_at"} {
+		if !columnExists(t, db, "provider_terminal_handoffs", column) {
+			t.Fatalf("expected provider_terminal_handoffs.%s column to exist after up migration", column)
+		}
+	}
+	if !indexExists(t, db, "idx_provider_terminal_handoffs_pending") {
+		t.Fatal("expected pending provider terminal handoff index after up migration")
 	}
 	if !columnExists(t, db, "provider_completion_evidence", "evidence_kind") {
 		t.Fatal("expected provider_completion_evidence.evidence_kind column to exist after up migration")

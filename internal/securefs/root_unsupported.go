@@ -29,6 +29,9 @@ func ensureRootDir(*Root, string, fs.FileMode) error { return unsupportedRoot() 
 func replaceRootRegular(*Root, string, []byte, fs.FileMode, fs.FileMode, time.Time) error {
 	return unsupportedRoot()
 }
+func createRootRegularExact(*Root, string, []byte, fs.FileMode, fs.FileMode) (FileIdentity, error) {
+	return FileIdentity{}, unsupportedRoot()
+}
 func removeRootEntry(*Root, string) error { return unsupportedRoot() }
 func removeRootEntryIfIdentity(*Root, string, EntryType, FileIdentity) error {
 	return unsupportedRoot()

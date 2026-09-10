@@ -23,10 +23,21 @@ var ErrLimitExceeded = errors.New("secure filesystem limit exceeded")
 // ErrIdentityMismatch reports that an entry changed after it was read.
 var ErrIdentityMismatch = errors.New("secure filesystem entry identity changed")
 
-// FileIdentity identifies one opened filesystem object without exposing paths.
+// ErrContentConflict reports that a create-or-replay destination already
+// contains different bytes or metadata.
+var ErrContentConflict = errors.New("secure filesystem content conflict")
+
+// FileIdentity identifies one stable version of an opened filesystem object
+// without exposing paths.
 type FileIdentity struct {
-	Device uint64
-	Inode  uint64
+	Device                uint64
+	Inode                 uint64
+	SizeBytes             int64
+	ModTimeSeconds        int64
+	ModTimeNanoseconds    int64
+	ChangeTimeSeconds     int64
+	ChangeTimeNanoseconds int64
+	ContentSHA256         string
 }
 
 // EntryType describes an entry without following it.
@@ -120,6 +131,12 @@ func (r *Root) EnsureDir(path string, mode fs.FileMode) error {
 // removed without following them, and missing parents are created with dirMode.
 func (r *Root) ReplaceRegular(path string, data []byte, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
 	return replaceRootRegular(r, path, data, mode, dirMode, modifiedAt)
+}
+
+// CreateRegularExact atomically creates a regular descendant or returns the
+// identity of an exact existing replay. It never replaces an existing entry.
+func (r *Root) CreateRegularExact(path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
+	return createRootRegularExact(r, path, data, mode, dirMode)
 }
 
 // RemoveEntry removes a non-directory descendant without following it.

@@ -77,6 +77,8 @@ type orchestrationLoop struct {
 	eventSeqMu                     sync.Mutex
 	receiptIngestionMu             sync.Mutex
 	receiptIngestionCursor         string
+	terminalHandoffMu              sync.Mutex
+	terminalHandoffCursor          string
 	inflightExec                   map[string]struct{}
 	inflightSettlements            map[string]string
 	executionResults               map[string]chan asyncExecutionResult
@@ -167,6 +169,7 @@ type asyncExecutionResult struct {
 	providerSessionID               string
 	providerInvocationID            string
 	providerInvocationAt            string
+	terminalHandoffID               string
 	launchObservedAt                string
 	completionCapability            string
 	completionMode                  executionstore.ProviderCompletionMode

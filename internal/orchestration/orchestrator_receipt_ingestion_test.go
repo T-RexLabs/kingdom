@@ -2,8 +2,11 @@ package orchestration
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -59,10 +62,10 @@ func writeTestCompletionReceipt(req opencode.ExecuteRequest, outputText, structu
 }
 
 type receiptIngestionHarness struct {
-	db        *sql.DB
-	store     *executionstore.Store
-	fsStore   *runtimefs.Store
-	loop      *orchestrationLoop
+	db         *sql.DB
+	store      *executionstore.Store
+	fsStore    *runtimefs.Store
+	loop       *orchestrationLoop
 	runtimeDir string
 }
 
@@ -215,6 +218,9 @@ func TestProviderReceiptIngestionMalformedEvidenceIsSafe(t *testing.T) {
 	if !strings.Contains(evidence[0].PayloadJSON, `"receipt_schema_validation_failed"`) {
 		t.Fatalf("malformed evidence lacks safe disposition: %s", evidence[0].PayloadJSON)
 	}
+	if !strings.Contains(evidence[0].PayloadJSON, `"reason_text":"completion receipt does not match the required schema"`) {
+		t.Fatalf("malformed evidence did not use the fixed safe reason text: %s", evidence[0].PayloadJSON)
+	}
 }
 
 func TestProviderReceiptIngestionRetainsFileWhenSQLiteWriteFails(t *testing.T) {
@@ -231,6 +237,48 @@ func TestProviderReceiptIngestionRetainsFileWhenSQLiteWriteFails(t *testing.T) {
 	}
 	if _, err := os.Stat(receiptPath); err != nil {
 		t.Fatalf("receipt must remain after SQL failure: %v", err)
+	}
+}
+
+func TestProviderReceiptIngestionReplaysAcceptanceBeforeDeletion(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	wire := receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`)
+	receiptPath := filepath.Join(inbox, "completion.json")
+	if err := os.WriteFile(receiptPath, wire, 0o600); err != nil {
+		t.Fatalf("write completion receipt: %v", err)
+	}
+	digest := sha256.Sum256(wire)
+	if _, err := h.store.IngestProviderCompletionReceipt(context.Background(), executionstore.IngestProviderCompletionReceiptRequest{
+		ProviderInvocationID:  invocation.ProviderInvocationID,
+		EntryName:             "completion.json",
+		WireByteCount:         int64(len(wire)),
+		WireSHA256:            hex.EncodeToString(digest[:]),
+		EntryType:             "regular",
+		ProtocolVersion:       "v1",
+		ObservedAttemptID:     invocation.AttemptID,
+		ObservedInvocationID:  invocation.ProviderInvocationID,
+		CompletionCapability:  capability,
+		ValidationSucceeded:   true,
+		FinalText:             "Builder complete.",
+		StructuredPayloadJSON: `{}`,
+		Disposition:           executionstore.ProviderCompletionReceiptDispositionAccepted,
+		ObservedAt:            "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("persist receipt acceptance before simulated crash: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); err != nil {
+		t.Fatalf("simulated crash window lost receipt before cleanup replay: %v", err)
+	}
+	if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+		t.Fatalf("replay accepted receipt cleanup: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("accepted receipt was not deleted after idempotent replay: %v", err)
+	}
+	after, found, err := h.store.GetProviderInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || after.ReceiptSeenCount != 1 {
+		t.Fatalf("idempotent cleanup replay changed receipt counters: found=%t invocation=%#v err=%v", found, after, err)
 	}
 }
 
@@ -326,4 +374,531 @@ func TestStartupReceiptReplayPersistsEvidenceWithoutSettling(t *testing.T) {
 	if attempt.State != "queued" {
 		t.Fatalf("receipt replay inferred process success, attempt state=%q", attempt.State)
 	}
+}
+
+func TestProviderTerminalHandoffIsPersistedBeforeReceiptIngestion(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, capability, inbox, 1)
+	h.loop.adapter = &sequenceExecutionAdapter{outputs: []string{"Builder complete."}}
+	mustExec(t, h.db, `CREATE TRIGGER require_terminal_handoff_before_receipt
+		BEFORE INSERT ON provider_completion_evidence
+		WHEN NEW.evidence_kind = 'completion_receipt_attempt'
+		 AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs WHERE provider_invocation_id = NEW.provider_invocation_id)
+		BEGIN SELECT RAISE(FAIL, 'terminal handoff must precede receipt ingestion'); END`)
+
+	h.loop.startAsyncExecution(context.Background(), job)
+	if !waitForProviderSettlement(h.store, invocation.ProviderInvocationID) {
+		var handoffCount int
+		_ = h.db.QueryRow(`SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID).Scan(&handoffCount)
+		t.Fatalf("timed out waiting for provider settlement %q; handoffs=%d", invocation.ProviderInvocationID, handoffCount)
+	}
+	attempt, found, err := h.store.GetAttempt(context.Background(), invocation.AttemptID)
+	if err != nil || !found || attempt.State != "committed_success" {
+		t.Fatalf("receipt-backed execution did not settle successfully: found=%t attempt=%#v err=%v", found, attempt, err)
+	}
+}
+
+func TestProviderTerminalHandoffFileRecoversAfterInsertFailureAndLeaseExpiry(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, capability, inbox, 1)
+	zero := 0
+	job.providerStreamObservation = opencode.InvocationStreamObservation{ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true}
+	job.outputText = "provider process output"
+	job.outcome = opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed"}
+	receiptPath := filepath.Join(inbox, "completion.json")
+	if err := os.WriteFile(receiptPath, receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write completion receipt: %v", err)
+	}
+	mustExec(t, h.db, `CREATE TRIGGER fail_terminal_handoff_insert BEFORE INSERT ON provider_terminal_handoffs BEGIN SELECT RAISE(FAIL, 'forced handoff insert failure'); END`)
+
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil || !strings.Contains(err.Error(), "forced handoff insert failure") {
+		t.Fatalf("expected forced handoff insert failure, got %v", err)
+	}
+	handoffPath := providerTerminalHandoffTestPath(h.runtimeDir, invocation.ProviderInvocationID)
+	if _, err := os.Stat(handoffPath); err != nil {
+		t.Fatalf("trusted handoff file did not survive SQLite failure: %v", err)
+	}
+	if count := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("failed handoff insert left %d rows", count)
+	}
+	mustExec(t, h.db, `DROP TRIGGER fail_terminal_handoff_insert`)
+	mustExec(t, h.db, `UPDATE attempt_executions SET lease_expires_at = '2026-03-01T12:00:03Z' WHERE attempt_id = 'run_receipt_ingestion:delegated_execution_berserker:1'`)
+
+	restarted := &orchestrationLoop{db: h.db, executionStore: h.store, fsStore: h.fsStore, schemas: h.loop.schemas, now: func() time.Time { return time.Date(2026, 3, 1, 12, 10, 0, 0, time.UTC) }, sleep: func(time.Duration) {}}
+	if err := (&Runtime{orchestrator: restarted}).recoverDurableExecutionState(context.Background()); err != nil {
+		t.Fatalf("recover durable execution state after expired lease: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
+		t.Fatalf("recovered settlement found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	attempt, found, err := h.store.GetAttempt(context.Background(), invocation.AttemptID)
+	if err != nil || !found || attempt.State != "committed_success" {
+		t.Fatalf("recovered attempt found=%t attempt=%#v err=%v", found, attempt, err)
+	}
+	if _, err := os.Stat(handoffPath); !os.IsNotExist(err) {
+		t.Fatalf("recovered handoff file remains: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("accepted receipt file remains: %v", err)
+	}
+	if count := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("settlement left %d SQLite handoff rows", count)
+	}
+}
+
+func TestProviderTerminalHandoffFileChangedReplayConflictsAndRetainsOriginal(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, capability, inbox, 1)
+	zero := 0
+	job.providerStreamObservation = opencode.InvocationStreamObservation{ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true}
+	job.outputText = "original process output"
+	job.outcome = opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed"}
+	mustExec(t, h.db, `CREATE TRIGGER fail_changed_replay_insert BEFORE INSERT ON provider_terminal_handoffs BEGIN SELECT RAISE(FAIL, 'forced handoff insert failure'); END`)
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil {
+		t.Fatal("expected initial SQLite handoff failure")
+	}
+	handoffPath := providerTerminalHandoffTestPath(h.runtimeDir, invocation.ProviderInvocationID)
+	original, err := os.ReadFile(handoffPath)
+	if err != nil {
+		t.Fatalf("read original trusted handoff: %v", err)
+	}
+	job.outputText = "changed process output"
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil || !strings.Contains(err.Error(), "replay conflicts") {
+		t.Fatalf("expected changed trusted handoff replay conflict, got %v", err)
+	}
+	after, err := os.ReadFile(handoffPath)
+	if err != nil || string(after) != string(original) {
+		t.Fatalf("changed replay replaced original handoff: err=%v", err)
+	}
+}
+
+func TestProviderTerminalHandoffFileMalformedWireIsRetainedAndBlocksReceipt(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, []byte(`{"version":"v1","unknown":true}`)); err != nil {
+		t.Fatalf("persist malformed trusted handoff fixture: %v", err)
+	}
+	receiptPath := filepath.Join(inbox, "completion.json")
+	if err := os.WriteFile(receiptPath, receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write completion receipt: %v", err)
+	}
+
+	err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID)
+	var infrastructureErr *providerReceiptInfrastructureError
+	if !errors.As(err, &infrastructureErr) {
+		t.Fatalf("malformed trusted handoff error = %v, want infrastructure error", err)
+	}
+	if _, err := os.Stat(providerTerminalHandoffTestPath(h.runtimeDir, invocation.ProviderInvocationID)); err != nil {
+		t.Fatalf("malformed trusted handoff was not retained: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); err != nil {
+		t.Fatalf("receipt was consumed despite malformed trusted handoff: %v", err)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("malformed trusted handoff allowed receipt evidence: found=%t err=%v", found, err)
+	}
+	if count := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("malformed trusted handoff entered SQLite: rows=%d", count)
+	}
+}
+
+func TestProviderTerminalHandoffFileIsCleanupOnlyForTerminalInvocation(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, _, _ := h.addInvocation(t, 1)
+	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, []byte(`not-json`)); err != nil {
+		t.Fatalf("persist terminal cleanup fixture: %v", err)
+	}
+	mustExec(t, h.db, `UPDATE provider_invocations SET invocation_state = 'settled_failed', settled_at = '2026-03-01T12:00:03Z' WHERE provider_invocation_id = 'pinv_receipt_ingestion_001'`)
+	candidate, found, err := h.store.GetProviderInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("load terminal invocation: found=%t err=%v", found, err)
+	}
+
+	if err := h.loop.ingestProviderCompletionReceiptCandidate(context.Background(), candidate); err != nil {
+		t.Fatalf("clean terminal handoff file: %v", err)
+	}
+	if _, err := os.Stat(providerTerminalHandoffTestPath(h.runtimeDir, invocation.ProviderInvocationID)); !os.IsNotExist(err) {
+		t.Fatalf("terminal handoff file remains: %v", err)
+	}
+	if count := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("terminal cleanup reopened handoff authority: rows=%d", count)
+	}
+}
+
+func TestProviderTerminalHandoffWireDecoderRejectsUnknownAndTrailingFields(t *testing.T) {
+	t.Parallel()
+	valid, err := json.Marshal(providerTerminalHandoffWire{
+		Version:              providerTerminalHandoffWireVersion,
+		ProviderInvocationID: "invocation",
+		AttemptID:            "attempt",
+		RunID:                "run",
+		NodeRunID:            "node-run",
+		ExpectedLeaseOwner:   "worker",
+		ExpectedLeaseVersion: 1,
+		ExecutionPayloadJSON: `{}`,
+		CreatedAt:            "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("marshal valid handoff wire: %v", err)
+	}
+	for _, raw := range [][]byte{
+		[]byte(`{"version":"v1","unknown":true}`),
+		append(append([]byte(nil), valid...), []byte(` {}`)...),
+	} {
+		if _, err := decodeProviderTerminalHandoffWire(raw); err == nil {
+			t.Fatalf("expected strict handoff decode rejection for %s", raw)
+		}
+	}
+}
+
+func TestProviderTerminalHandoffPreservesReceiptWhenIngestionSQLFails(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.persistHandoffJob(t, invocation, 1)
+	receiptPath := filepath.Join(inbox, "completion.json")
+	if err := os.WriteFile(receiptPath, receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write completion receipt: %v", err)
+	}
+	mustExec(t, h.db, `CREATE TRIGGER fail_handoff_receipt_ingestion BEFORE INSERT ON provider_completion_evidence BEGIN SELECT RAISE(FAIL, 'forced ingestion failure'); END`)
+
+	if err := h.loop.convergeProviderTerminalHandoff(context.Background(), mustProviderTerminalHandoff(t, h.store, job.terminalHandoffID)); err == nil {
+		t.Fatal("expected terminal handoff convergence ingestion failure")
+	}
+	if _, found, err := h.store.GetProviderTerminalHandoff(context.Background(), job.terminalHandoffID); err != nil || !found {
+		t.Fatalf("terminal handoff was not preserved after ingestion failure: found=%t err=%v", found, err)
+	}
+	if _, err := os.Stat(receiptPath); err != nil {
+		t.Fatalf("receipt file was not preserved after ingestion failure: %v", err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("ingestion failure must not settle provider execution: found=%t err=%v", found, err)
+	}
+}
+
+func TestProviderTerminalHandoffRestartConvergesAcceptedReceiptAfterLeaseExpiry(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.persistHandoffJob(t, invocation, 1)
+	if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write completion receipt: %v", err)
+	}
+	if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+		t.Fatalf("persist completion receipt before restart: %v", err)
+	}
+	if _, err := h.db.Exec(`UPDATE attempt_executions SET lease_expires_at = '2000-01-01T00:00:00Z' WHERE attempt_id = ?`, invocation.AttemptID); err != nil {
+		t.Fatalf("expire provider lease: %v", err)
+	}
+
+	restarted := &orchestrationLoop{db: h.db, executionStore: h.store, fsStore: h.fsStore, schemas: h.loop.schemas, now: h.loop.now, sleep: func(time.Duration) {}}
+	if _, err := restarted.convergeProviderTerminalHandoffs(context.Background()); err != nil {
+		t.Fatalf("converge terminal handoff after restart: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
+		t.Fatalf("expired-lease handoff did not settle from accepted receipt: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	if _, found, err := h.store.GetProviderTerminalHandoff(context.Background(), job.terminalHandoffID); err != nil || found {
+		t.Fatalf("settled terminal handoff was not consumed atomically: found=%t err=%v", found, err)
+	}
+}
+
+func TestProviderTerminalHandoffProcessExitWithoutReceiptSettlesFailure(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, _, _ := h.addInvocation(t, 1)
+	h.persistHandoffJob(t, invocation, 1)
+	if _, err := h.loop.convergeProviderTerminalHandoffs(context.Background()); err != nil {
+		t.Fatalf("converge receipt-less terminal handoff: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("load receipt-less settlement: found=%t err=%v", found, err)
+	}
+	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_incomplete_turn" {
+		t.Fatalf("process exit alone authorized success: %#v", settlement)
+	}
+}
+
+func TestProviderTerminalHandoffConflictingReceiptSettlesFailure(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	h.persistHandoffJob(t, invocation, 1)
+	for index, finalText := range []string{"Builder complete.", "Conflicting builder result."} {
+		path := filepath.Join(inbox, fmt.Sprintf("completion-%d.json", index))
+		if err := os.WriteFile(path, receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, finalText, `{}`), 0o600); err != nil {
+			t.Fatalf("write completion receipt %d: %v", index, err)
+		}
+		if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+			t.Fatalf("ingest completion receipt %d: %v", index, err)
+		}
+	}
+	if _, err := h.loop.convergeProviderTerminalHandoffs(context.Background()); err != nil {
+		t.Fatalf("converge invalidated terminal handoff: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("load invalidated settlement: found=%t err=%v", found, err)
+	}
+	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_incomplete_turn" {
+		t.Fatalf("conflicting receipt did not settle fail-closed: %#v", settlement)
+	}
+}
+
+func TestProviderReceiptIngestionPoisonedFirstInboxDoesNotStarveLaterCandidate(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	first, _, firstInbox := h.addInvocation(t, 1)
+	second, secondCapability, secondInbox := h.addInvocation(t, 2)
+	if err := os.Remove(firstInbox); err != nil {
+		t.Fatalf("remove empty first inbox: %v", err)
+	}
+	if err := os.Symlink(h.runtimeDir, firstInbox); err != nil {
+		t.Fatalf("poison first inbox: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secondInbox, "completion.json"), receiptWire(t, second.AttemptID, second.ProviderInvocationID, secondCapability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write second completion receipt: %v", err)
+	}
+
+	if err := h.loop.ingestProviderCompletionReceipts(context.Background()); err != nil {
+		t.Fatalf("bulk ingestion should safely disposition traversal failures: %v", err)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), second.ProviderInvocationID); err != nil || !found {
+		t.Fatalf("poisoned first inbox starved later receipt: found=%t err=%v", found, err)
+	}
+	evidence, err := h.store.ListProviderCompletionEvidence(context.Background(), first.ProviderInvocationID)
+	if err != nil || len(evidence) != 1 || !strings.Contains(evidence[0].PayloadJSON, `"reason_text":"completion receipt inbox could not be traversed safely"`) {
+		t.Fatalf("first inbox did not receive fixed safe traversal disposition: evidence=%#v err=%v", evidence, err)
+	}
+}
+
+func TestProviderReceiptIngestionIgnoresExactLiveStagingEntry(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, _, inbox := h.addInvocation(t, 1)
+	stagingName := ".receipt-123e4567-e89b-42d3-a456-426614174000.tmp"
+	if err := os.WriteFile(filepath.Join(inbox, stagingName), []byte(`{"incomplete":true}`), 0o600); err != nil {
+		t.Fatalf("write live staging entry: %v", err)
+	}
+	if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+		t.Fatalf("ingest inbox with live staging entry: %v", err)
+	}
+	evidence, err := h.store.ListProviderCompletionEvidence(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || len(evidence) != 0 {
+		t.Fatalf("live staging entry was treated as receipt evidence: evidence=%#v err=%v", evidence, err)
+	}
+	if _, err := os.Stat(filepath.Join(inbox, stagingName)); err != nil {
+		t.Fatalf("live staging entry was removed: %v", err)
+	}
+}
+
+func TestProviderReceiptIngestionRemovesAbandonedStagingOnlyAfterTerminalSettlement(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, _, inbox := h.addInvocation(t, 1)
+	h.persistHandoffJob(t, invocation, 1)
+	stagingPath := filepath.Join(inbox, ".receipt-123e4567-e89b-42d3-a456-426614174000.tmp")
+	if err := os.WriteFile(stagingPath, []byte(`{"incomplete":true}`), 0o600); err != nil {
+		t.Fatalf("write abandoned staging entry: %v", err)
+	}
+	if _, err := h.loop.convergeProviderTerminalHandoffs(context.Background()); err != nil {
+		t.Fatalf("settle receipt-less terminal handoff: %v", err)
+	}
+	if _, err := os.Stat(stagingPath); err != nil {
+		t.Fatalf("staging entry was removed before terminal cleanup: %v", err)
+	}
+	if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+		t.Fatalf("clean terminal receipt inbox: %v", err)
+	}
+	if _, err := os.Stat(inbox); !os.IsNotExist(err) {
+		t.Fatalf("terminal inbox with abandoned staging entry was not removed: %v", err)
+	}
+	cleaned, found, err := h.store.GetProviderInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || cleaned.ReceiptInboxCleanedAt == "" {
+		t.Fatalf("terminal staging cleanup was not recorded: found=%t invocation=%#v err=%v", found, cleaned, err)
+	}
+}
+
+func TestProviderReceiptSpoolSurvivesDeletedDirectAndWorktreeExecutionRoots(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index, publishMode := range []string{"direct", "git_worktree"} {
+		invocation, capability, inbox := h.addInvocation(t, index+1)
+		executionRoot := t.TempDir()
+		if strings.HasPrefix(inbox, executionRoot+string(os.PathSeparator)) {
+			t.Fatalf("%s receipt inbox resolved inside execution root: %q", publishMode, inbox)
+		}
+		if !strings.HasPrefix(inbox, filepath.Join(h.runtimeDir, "provider-completion", "receipts")+string(os.PathSeparator)) {
+			t.Fatalf("%s receipt inbox did not resolve in central runtime spool: %q", publishMode, inbox)
+		}
+		if err := os.Remove(executionRoot); err != nil {
+			t.Fatalf("delete %s execution root: %v", publishMode, err)
+		}
+		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+			t.Fatalf("write %s central-spool receipt: %v", publishMode, err)
+		}
+		if err := h.loop.ingestProviderCompletionReceiptInvocation(context.Background(), invocation.ProviderInvocationID); err != nil {
+			t.Fatalf("ingest %s receipt after execution-root deletion: %v", publishMode, err)
+		}
+		if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocation.ProviderInvocationID); err != nil || !found {
+			t.Fatalf("%s receipt spool depended on deleted execution root: found=%t err=%v", publishMode, found, err)
+		}
+	}
+}
+
+func TestStartupDrainsMoreThanOneReceiptAndHandoffPage(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerTerminalHandoffPassLimit+1; index++ {
+		invocation, capability, inbox := h.addInvocation(t, index)
+		h.persistHandoffJob(t, invocation, index)
+		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+			t.Fatalf("write startup receipt %d: %v", index, err)
+		}
+	}
+	runtime := &Runtime{orchestrator: h.loop}
+	if err := runtime.recoverDurableExecutionState(context.Background()); err != nil {
+		t.Fatalf("recover all startup receipt and handoff pages: %v", err)
+	}
+	var settlementCount, handoffCount int
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_completion_settlements`).Scan(&settlementCount); err != nil {
+		t.Fatalf("count startup settlements: %v", err)
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_terminal_handoffs`).Scan(&handoffCount); err != nil {
+		t.Fatalf("count pending startup handoffs: %v", err)
+	}
+	if settlementCount != providerTerminalHandoffPassLimit+1 || handoffCount != 0 {
+		t.Fatalf("startup paging did not converge all durable handoffs: settlements=%d handoffs=%d", settlementCount, handoffCount)
+	}
+}
+
+func TestProviderTerminalHandoffPassVisitsAtMostOneHundredTwentyEight(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerTerminalHandoffPassLimit+1; index++ {
+		invocation, _, _ := h.addInvocation(t, index)
+		h.persistHandoffJob(t, invocation, index)
+	}
+	visited, err := h.loop.convergeProviderTerminalHandoffs(context.Background())
+	if err != nil {
+		t.Fatalf("converge bounded terminal handoff pass: %v", err)
+	}
+	var settlementCount, handoffCount int
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_completion_settlements`).Scan(&settlementCount); err != nil {
+		t.Fatalf("count bounded settlements: %v", err)
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_terminal_handoffs`).Scan(&handoffCount); err != nil {
+		t.Fatalf("count remaining bounded handoffs: %v", err)
+	}
+	if visited != providerTerminalHandoffPassLimit || settlementCount != providerTerminalHandoffPassLimit || handoffCount != 1 {
+		t.Fatalf("terminal handoff pass exceeded bound: visited=%d settlements=%d handoffs=%d", visited, settlementCount, handoffCount)
+	}
+}
+
+func TestProviderInvocationActivationFailureRemovesOnlyEmptyInbox(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	mustExec(t, h.db, `CREATE TRIGGER fail_provider_invocation_activation BEFORE INSERT ON provider_invocations BEGIN SELECT RAISE(FAIL, 'forced activation failure'); END`)
+	_, _, _, _, err := h.loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_ingestion"}, nodeAttempt{NodeRunID: "nr_missing"}, "attempt_activation_failure", "session_activation_failure", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
+	if err == nil {
+		t.Fatal("expected provider invocation activation failure")
+	}
+	receiptRoot := filepath.Join(h.runtimeDir, "provider-completion", "receipts")
+	entries, readErr := os.ReadDir(receiptRoot)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read receipt root after activation failure: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("activation failure left empty inbox debt: entries=%d", len(entries))
+	}
+}
+
+func (h receiptIngestionHarness) runningHandoffJob(t *testing.T, invocation executionstore.ProviderInvocation, capability, inbox string, index int) asyncExecutionResult {
+	t.Helper()
+	job := h.baseHandoffJob(invocation, index)
+	claim, acquired, err := h.store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID:  invocation.AttemptID,
+		LeaseOwner: job.expectedLeaseOwner,
+		LeaseUntil: "2099-03-01T12:10:00Z",
+		ClaimedAt:  "2026-03-01T12:00:01Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim handoff attempt: acquired=%t err=%v", acquired, err)
+	}
+	job.expectedLeaseVersion = claim.LeaseVersion
+	job.expectedLeaseExpiresAt = claim.LeaseExpiresAt
+	job.completionCapability = capability
+	job.completionReceiptDir = inbox
+	job.providerLeaseDuration = 10 * time.Minute
+	if _, err := h.db.Exec(`UPDATE attempt_executions SET state = 'running' WHERE attempt_id = ?`, invocation.AttemptID); err != nil {
+		t.Fatalf("mark handoff attempt running: %v", err)
+	}
+	return job
+}
+
+func (h receiptIngestionHarness) persistHandoffJob(t *testing.T, invocation executionstore.ProviderInvocation, index int) asyncExecutionResult {
+	t.Helper()
+	job := h.runningHandoffJob(t, invocation, "", "", index)
+	zero := 0
+	job.providerStreamObservation = opencode.InvocationStreamObservation{
+		ProviderSessionID: "",
+		ProcessExited:     true,
+		ProcessExitCode:   &zero,
+		StdoutDrained:     true,
+		StderrDrained:     true,
+	}
+	job.outputText = "provider process output"
+	job.outcome = opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed"}
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
+		t.Fatalf("persist terminal handoff: %v", err)
+	}
+	return job
+}
+
+func (h receiptIngestionHarness) baseHandoffJob(invocation executionstore.ProviderInvocation, index int) asyncExecutionResult {
+	return asyncExecutionResult{
+		run:                     runSnapshot{RunID: invocation.RunID},
+		node:                    nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
+		attempt:                 nodeAttempt{NodeRunID: invocation.NodeRunID, NodeID: "delegated_execution_berserker", Attempt: index, RequiredRole: "builder-berserker", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeReceiptRequired},
+		attemptID:               invocation.AttemptID,
+		providerInvocationID:    invocation.ProviderInvocationID,
+		providerInvocationAt:    invocation.CompletionCapabilityIssuedAt,
+		completionMode:          executionstore.ProviderCompletionModeReceiptRequired,
+		expectedLeaseOwner:      fmt.Sprintf("handoff-worker-%03d", index),
+		workspaceID:             invocation.RunID,
+		model:                   "test-model",
+		occurredAt:              "2026-03-01T12:00:00Z",
+		providerDiagnosticsJSON: `{}`,
+	}
+}
+
+func mustProviderTerminalHandoff(t *testing.T, store *executionstore.Store, handoffID string) executionstore.ProviderTerminalHandoff {
+	t.Helper()
+	handoff, found, err := store.GetProviderTerminalHandoff(context.Background(), handoffID)
+	if err != nil || !found {
+		t.Fatalf("load provider terminal handoff: found=%t err=%v", found, err)
+	}
+	return handoff
+}
+
+func waitForProviderSettlement(store *executionstore.Store, invocationID string) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), invocationID); err == nil && found {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func providerTerminalHandoffTestPath(runtimeDir, invocationID string) string {
+	sum := sha256.Sum256([]byte(invocationID))
+	return filepath.Join(runtimeDir, "provider-completion", "handoffs", hex.EncodeToString(sum[:])+".json")
+}
+
+func countReceiptRows(t *testing.T, db *sql.DB, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(query, args...).Scan(&count); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return count
 }

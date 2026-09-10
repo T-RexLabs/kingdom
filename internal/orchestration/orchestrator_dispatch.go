@@ -362,7 +362,15 @@ func (o *orchestrationLoop) runHasPendingTerminalHandoff(ctx context.Context, ru
 	var pending int
 	err := o.db.QueryRowContext(ctx, `
 SELECT EXISTS(SELECT 1 FROM attempt_cancel_outbox WHERE run_id = ? AND status = 'pending')
-    OR EXISTS(SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending')`, runID, runID).Scan(&pending)
+    OR EXISTS(SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending')
+    OR EXISTS(
+        SELECT 1
+        FROM provider_terminal_handoffs pth
+        JOIN attempt_executions ae ON ae.attempt_id = pth.attempt_id
+        WHERE pth.run_id = ?
+          AND ae.active_provider_invocation_id = pth.provider_invocation_id
+          AND ae.state IN ('queued', 'starting', 'running', 'terminal_observed')
+    )`, runID, runID, runID).Scan(&pending)
 	if err != nil {
 		return false, fmt.Errorf("inspect pending run terminal handoff: %w", err)
 	}
@@ -738,6 +746,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		})
 		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
+		job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
 		job.launchObserved = launchObserved
 		job.launchObservedAt = strings.TrimSpace(launchObservedAt)
 		hasSettlementAuthority := heartbeatResult.err == nil && !heartbeatResult.authorityLost
@@ -752,9 +761,28 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 				cancelExecution()
 			}
 		}
+		if hasSettlementAuthority && !o.claimExecutionSettlement(job.attemptID, "provider_completion") {
+			o.publishExecutionResult(job.attemptID, job)
+			return
+		}
+		if hasSettlementAuthority {
+			defer o.releaseExecutionSettlement(job.attemptID, "provider_completion")
+		}
+		if hasSettlementAuthority && job.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
+			handoffCtx, cancelHandoff := detachedTimeoutContext(ctx, 5*time.Second)
+			err := o.persistProviderTerminalHandoff(handoffCtx, &job)
+			cancelHandoff()
+			if err != nil {
+				o.recordProviderTerminalHandoffError(job, err)
+				return
+			}
+		}
 		if hasSettlementAuthority && job.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
 			ingestCtx, cancelIngest := detachedTimeoutContext(ctx, 5*time.Second)
-			err := o.ingestProviderCompletionReceiptInvocation(ingestCtx, job.providerInvocationID)
+			err := o.fsStore.SyncProviderCompletionInbox(job.providerInvocationID)
+			if err == nil {
+				err = o.ingestProviderCompletionReceiptInvocation(ingestCtx, job.providerInvocationID)
+			}
 			if err == nil {
 				err = o.hydrateAcceptedProviderCompletionReceipt(ingestCtx, &job)
 			}
@@ -768,10 +796,6 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		if !hasSettlementAuthority {
 			return
 		}
-		if !o.claimExecutionSettlement(job.attemptID, "provider_completion") {
-			return
-		}
-		defer o.releaseExecutionSettlement(job.attemptID, "provider_completion")
 
 		if o.executionStore != nil {
 			// Async completions must outlive the dispatch tick context because the
@@ -786,6 +810,16 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			}
 		}
 	}()
+}
+
+func (o *orchestrationLoop) recordProviderTerminalHandoffError(job asyncExecutionResult, err error) {
+	if err == nil {
+		return
+	}
+	slog.Warn("provider terminal handoff persistence failed", "attempt_id", job.attemptID, "provider_invocation_id", job.providerInvocationID, "error", err)
+	if o != nil && o.asyncDrain != nil {
+		o.asyncDrain.RecordError(fmt.Errorf("durable provider terminal handoff failed for attempt %q: %w", strings.TrimSpace(job.attemptID), err))
+	}
 }
 
 func (o *orchestrationLoop) observeExecutionLaunchAsync(ctx context.Context, job asyncExecutionResult, payloadRaw, occurredAt string) {

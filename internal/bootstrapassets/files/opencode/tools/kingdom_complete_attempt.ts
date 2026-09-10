@@ -77,7 +77,6 @@ export default tool({
       }
 
       await link(temporaryPath, receiptPath)
-      await syncDirectory(receiptDir)
       await unlink(temporaryPath)
       temporaryExists = false
       await syncDirectory(receiptDir)

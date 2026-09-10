@@ -3,6 +3,7 @@
 package securefs
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -38,15 +39,22 @@ func TestReadRegularEnforcesExactByteLimitAndRejectsSpecialFiles(t *testing.T) {
 	}
 	defer root.Close()
 
-	raw, err := root.ReadRegular("exact.json", 4)
+	raw, exactIdentity, err := root.ReadRegularIdentified("exact.json", 4)
 	if err != nil {
 		t.Fatalf("read exact limit: %v", err)
 	}
 	if string(raw) != "1234" {
 		t.Fatalf("exact bytes = %q", raw)
 	}
-	if _, err := root.ReadRegular("overflow.json", 4); !errors.Is(err, ErrLimitExceeded) {
+	_, overflowIdentity, err := root.ReadRegularIdentified("overflow.json", 4)
+	if !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("overflow error = %v, want ErrLimitExceeded", err)
+	}
+	if exactIdentity == (FileIdentity{}) || overflowIdentity == (FileIdentity{}) {
+		t.Fatal("exact and overflow reads must return stable identities")
+	}
+	if exactIdentity.SizeBytes != 4 || overflowIdentity.SizeBytes != 5 {
+		t.Fatalf("identity sizes = (%d, %d), want (4, 5)", exactIdentity.SizeBytes, overflowIdentity.SizeBytes)
 	}
 	if _, err := root.ReadRegular("symlink.json", 64); err == nil {
 		t.Fatal("expected symlink read rejection")
@@ -59,6 +67,49 @@ func TestReadRegularEnforcesExactByteLimitAndRejectsSpecialFiles(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("fifo rejection blocked for %s", elapsed)
 	}
+}
+
+func TestReadBoundedRegularRejectsMutationDuringRead(t *testing.T) {
+	t.Parallel()
+
+	before := FileIdentity{Device: 1, Inode: 2, SizeBytes: 4, ModTimeSeconds: 3, ChangeTimeSeconds: 4}
+	after := before
+	after.ChangeTimeNanoseconds = 1
+	mutated := false
+	reader := &mutationReader{
+		reader: bytes.NewBufferString("1234"),
+		mutate: func() { mutated = true },
+	}
+
+	raw, identity, err := readBoundedRegular(reader, 4, before, func() (FileIdentity, error) {
+		if mutated {
+			return after, nil
+		}
+		return before, nil
+	})
+	if !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("mutation error = %v, want ErrIdentityMismatch", err)
+	}
+	if raw != nil {
+		t.Fatalf("mutated read returned bytes %q", raw)
+	}
+	if identity != after {
+		t.Fatalf("mutation identity = %#v, want stable post-read identity %#v", identity, after)
+	}
+}
+
+type mutationReader struct {
+	reader *bytes.Buffer
+	mutate func()
+	done   bool
+}
+
+func (r *mutationReader) Read(p []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		r.mutate()
+	}
+	return r.reader.Read(p)
 }
 
 func TestReadDirBoundedDetectsEntryOverflow(t *testing.T) {
@@ -219,4 +270,80 @@ func TestRemoveRegularIfIdentityRefusesReplacement(t *testing.T) {
 		t.Fatalf("conditional removal error = %v, want ErrIdentityMismatch", err)
 	}
 	assertFileContents(t, path, "replacement")
+}
+
+func TestRemoveRegularIfIdentityRefusesInPlaceMutation(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	path := filepath.Join(rootPath, "receipt.json")
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+	root, err := OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+	_, identity, err := root.ReadRegularIdentified("receipt.json", 64)
+	if err != nil {
+		t.Fatalf("read identified receipt: %v", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open receipt for mutation: %v", err)
+	}
+	if _, err := file.WriteAt([]byte("other"), 0); err != nil {
+		file.Close()
+		t.Fatalf("mutate receipt in place: %v", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		t.Fatalf("sync mutated receipt: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close mutated receipt: %v", err)
+	}
+	future := time.Now().Add(24 * time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("set deterministic mutation timestamp: %v", err)
+	}
+
+	if err := root.RemoveRegularIfIdentity("receipt.json", identity); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("conditional removal error = %v, want ErrIdentityMismatch", err)
+	}
+	assertFileContents(t, path, "other")
+}
+
+func TestCreateRegularExactCreatesAndReplaysWithoutReplacement(t *testing.T) {
+	t.Parallel()
+	rootPath := t.TempDir()
+	root, err := OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	first, err := root.CreateRegularExact("trusted/handoff.json", []byte(`{"value":1}`), 0o600, 0o700)
+	if err != nil {
+		t.Fatalf("create exact regular file: %v", err)
+	}
+	replay, err := root.CreateRegularExact("trusted/handoff.json", []byte(`{"value":1}`), 0o600, 0o700)
+	if err != nil {
+		t.Fatalf("replay exact regular file: %v", err)
+	}
+	if replay != first || first.ContentSHA256 == "" {
+		t.Fatalf("replay identity = %#v, want %#v", replay, first)
+	}
+	info, err := os.Stat(filepath.Join(rootPath, "trusted", "handoff.json"))
+	if err != nil {
+		t.Fatalf("stat exact regular file: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("exact regular mode = %o, want 600", info.Mode().Perm())
+	}
+	if _, err := root.CreateRegularExact("trusted/handoff.json", []byte(`{"value":2}`), 0o600, 0o700); !errors.Is(err, ErrContentConflict) {
+		t.Fatalf("changed replay error = %v, want ErrContentConflict", err)
+	}
+	assertFileContents(t, filepath.Join(rootPath, "trusted", "handoff.json"), `{"value":1}`)
 }

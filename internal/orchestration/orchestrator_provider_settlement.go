@@ -79,6 +79,9 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		OpenedAt:                     issuedAt,
 		ReplacesProviderInvocationID: strings.TrimSpace(replacesInvocationID),
 	}); err != nil {
+		if receiptDir != "" {
+			_ = o.fsStore.RemoveProviderCompletionInbox(providerInvocationID)
+		}
 		return "", "", "", "", err
 	}
 	return providerInvocationID, issuedAt, completionCapability, receiptDir, nil
@@ -253,6 +256,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletion(ctx context.Contex
 			StreamObservation:    &result.providerStreamObservation,
 			ExpectedLeaseOwner:   result.expectedLeaseOwner,
 			ExpectedLeaseVersion: result.expectedLeaseVersion,
+			TerminalHandoffID:    strings.TrimSpace(result.terminalHandoffID),
 			TokenUsage: &executionstore.ProviderInvocationTokenUsage{
 				RequiredRole: result.node.RequiredRole,
 				Model:        result.model,
@@ -275,6 +279,25 @@ func (o *orchestrationLoop) commitProviderExecutionCompletion(ctx context.Contex
 	if o.notifyCompletionReady != nil {
 		o.notifyCompletionReady()
 	}
+	return nil
+}
+
+func (o *orchestrationLoop) persistProviderTerminalHandoff(ctx context.Context, result *asyncExecutionResult) error {
+	if o == nil || o.executionStore == nil || o.fsStore == nil || result == nil {
+		return fmt.Errorf("execution and runtime filesystem stores are required for provider terminal handoff")
+	}
+	if result.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
+		return nil
+	}
+	payloadJSON, err := marshalExecutionOutboxPayload(*result)
+	if err != nil {
+		return fmt.Errorf("marshal provider terminal handoff payload for attempt %q: %w", result.attemptID, err)
+	}
+	persisted, err := o.persistProviderTerminalHandoffFile(ctx, result, payloadJSON)
+	if err != nil {
+		return err
+	}
+	result.terminalHandoffID = strings.TrimSpace(persisted.Handoff.HandoffID)
 	return nil
 }
 

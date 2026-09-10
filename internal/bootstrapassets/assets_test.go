@@ -199,13 +199,36 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		"Buffer.byteLength(serialized, \"utf8\")",
 		"await open(temporaryPath, \"wx\", 0o600)",
 		"await temporaryFile.sync()",
+		"await temporaryFile.close()",
 		"await link(temporaryPath, receiptPath)",
-		"await syncDirectory(receiptDir)",
 		"await unlink(temporaryPath)",
+		"await syncDirectory(receiptDir)",
 	} {
 		if !strings.Contains(content, token) {
 			t.Fatalf("expected managed completion tool to include %q", token)
 		}
+	}
+	publicationSteps := []string{
+		"await temporaryFile.writeFile(serialized, \"utf8\")",
+		"await temporaryFile.sync()",
+		"await temporaryFile.close()",
+		"await link(temporaryPath, receiptPath)",
+		"await unlink(temporaryPath)",
+		"temporaryExists = false",
+		"await syncDirectory(receiptDir)",
+	}
+	position := -1
+	for _, step := range publicationSteps {
+		next := strings.Index(content[position+1:], step)
+		if next < 0 {
+			t.Fatalf("expected managed completion publication source to include %q after byte %d", step, position)
+		}
+		position += next + 1
+	}
+	linkPosition := strings.Index(content, "await link(temporaryPath, receiptPath)")
+	unlinkPosition := strings.Index(content, "await unlink(temporaryPath)")
+	if strings.Contains(content[linkPosition:unlinkPosition], "syncDirectory(receiptDir)") {
+		t.Fatal("completion publication must unlink staging before its final directory sync")
 	}
 	for _, token := range []string{
 		"attempt_id`, `invocation_id`, and `completion_capability` exactly as provided",

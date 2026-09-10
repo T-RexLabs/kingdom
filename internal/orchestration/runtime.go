@@ -648,7 +648,14 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				return nil
 			}
 			slog.Warn("completion receipt ingestion loop failed", "error", err)
-		} else if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		}
+		if _, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			slog.Warn("provider terminal handoff convergence loop failed", "error", err)
+		}
+		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -674,6 +681,36 @@ func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
 			return err
 		}
 		if processed == 0 {
+			return nil
+		}
+	}
+}
+
+func (r *Runtime) drainProviderCompletionReceipts(ctx context.Context) error {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || r.orchestrator.fsStore == nil || r.orchestrator.schemas == nil {
+		return nil
+	}
+	for {
+		visited, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx)
+		if err != nil {
+			return err
+		}
+		if visited == 0 {
+			return nil
+		}
+	}
+}
+
+func (r *Runtime) drainProviderTerminalHandoffs(ctx context.Context) error {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
+		return nil
+	}
+	for {
+		visited, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx)
+		if err != nil {
+			return err
+		}
+		if visited == 0 {
 			return nil
 		}
 	}
@@ -761,6 +798,12 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 	if err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}
+	if err := r.drainProviderCompletionReceipts(ctx); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
+	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
+		closeErr = errors.Join(closeErr, err)
+	}
 	if err := r.drainExecutionOutboxUntilDrained(ctx); err != nil {
 		closeErr = errors.Join(closeErr, err)
 	}
@@ -794,8 +837,11 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	if err := r.orchestrator.ingestProviderCompletionReceipts(ctx); err != nil {
+	if err := r.drainProviderCompletionReceipts(ctx); err != nil {
 		return fmt.Errorf("replay provider completion receipts: %w", err)
+	}
+	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
+		return fmt.Errorf("converge provider terminal handoffs: %w", err)
 	}
 	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
 		return err
@@ -1149,6 +1195,7 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"last_receipt_seen_at",
 			"last_receipt_disposition",
 		},
+		"provider_terminal_handoffs": nil,
 	}
 	tableNames := []string{
 		"workflow_runs",
@@ -1158,6 +1205,7 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"attempt_outbox",
 		"attempt_cancel_outbox",
 		"provider_invocations",
+		"provider_terminal_handoffs",
 		"run_worktrees",
 		"run_execution_targets",
 		"filesystem_snapshots",

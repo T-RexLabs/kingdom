@@ -569,21 +569,14 @@ func TestReconcilerDoesNotRecoverStaleReceiptPersistedProviderAttemptAsSuccess(t
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_stale_receipt_success",
-		ProviderInvocationID:  "invocation_stale_receipt_success",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_stale_receipt_success",
-		FinalText:             "Recovered provider-backed response.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_stale_receipt_success",
+		"invocation_stale_receipt_success",
+		attemptID,
+		"capability_stale_receipt_success",
+		"Recovered provider-backed response.",
+		"2026-03-01T12:08:03Z",
+	)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -681,21 +674,14 @@ func TestReconcilerDoesNotSettleRecentReceiptPersistedProviderAttempt(t *testing
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_recent_receipt_success",
-		ProviderInvocationID:  "invocation_recent_receipt_success",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2_recent_receipt",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_recent_receipt_success",
-		FinalText:             "Recovered recent provider-backed response.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:12:23Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_recent_receipt_success",
+		"invocation_recent_receipt_success",
+		attemptID,
+		"capability_recent_receipt_success",
+		"Recovered recent provider-backed response.",
+		"2026-03-01T12:12:23Z",
+	)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -793,21 +779,14 @@ func TestReconcilerDoesNotSettleReceiptPersistedExecutionReview(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_review_receipt_rework",
-		ProviderInvocationID:  "invocation_review_receipt_rework",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_review_receipt_rework",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_review_receipt_rework",
-		FinalText:             "VERDICT: REWORK\n\nReviewer requested changes.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_review_receipt_rework",
+		"invocation_review_receipt_rework",
+		attemptID,
+		"capability_review_receipt_rework",
+		"VERDICT: REWORK\n\nReviewer requested changes.",
+		"2026-03-01T12:08:03Z",
+	)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -892,21 +871,14 @@ func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_review_existing_settlement",
-		ProviderInvocationID:  "invocation_review_existing_settlement",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_review_existing_settlement",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_review_existing_settlement",
-		FinalText:             "VERDICT: REWORK\n\nReviewer requested changes.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	accepted := ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_review_existing_settlement",
+		"invocation_review_existing_settlement",
+		attemptID,
+		"capability_review_existing_settlement",
+		"VERDICT: REWORK\n\nReviewer requested changes.",
+		"2026-03-01T12:08:03Z",
+	)
 	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          executionstore.ProviderCompletionSettlementID("invocation_review_existing_settlement"),
 		ProviderInvocationID:  "invocation_review_existing_settlement",
@@ -914,7 +886,7 @@ func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 		RunID:                 "run_1",
 		NodeRunID:             "nr_review_existing_settlement",
 		Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
-		PrimaryEvidenceID:     accepted.Evidence.EvidenceID,
+		PrimaryEvidenceID:     accepted.AcceptedEvidence.EvidenceID,
 		FinalText:             "VERDICT: REWORK\n\nReviewer requested changes.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
@@ -1131,21 +1103,14 @@ func TestReconcilerDoesNotCreateSettlementFromCommittedSuccess(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_committed_success_backfill",
-		ProviderInvocationID:  "invocation_committed_success_backfill",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_committed_success_backfill",
-		FinalText:             "Recovered committed success response.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_committed_success_backfill",
+		"invocation_committed_success_backfill",
+		attemptID,
+		"capability_committed_success_backfill",
+		"Recovered committed success response.",
+		"2026-03-01T12:08:03Z",
+	)
 
 	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions
 		SET state = 'committed_success',
@@ -1237,34 +1202,24 @@ func TestReconcilerDoesNotSettleInvalidHandshakeReceiptConflict(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	_, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_invalid_handshake_conflict_1",
-		ProviderInvocationID:  "invocation_invalid_handshake_conflict",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2_invalid_handshake_conflict",
-		ProtocolVersion:       "v1",
-		CompletionCapability:  "capability_invalid_handshake_conflict",
-		FinalText:             "Recovered provider-backed response.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
-	if _, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_invalid_handshake_conflict_2",
-		ProviderInvocationID:  "invocation_invalid_handshake_conflict",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2_invalid_handshake_conflict",
-		ProtocolVersion:       "v1",
-		CompletionCapability:  "capability_invalid_handshake_conflict",
-		FinalText:             "A conflicting settled answer.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:04Z",
-	}); err == nil {
-		t.Fatal("expected conflicting receipt to invalidate the invocation")
+	ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_invalid_handshake_conflict_1",
+		"invocation_invalid_handshake_conflict",
+		attemptID,
+		"capability_invalid_handshake_conflict",
+		"Recovered provider-backed response.",
+		"2026-03-01T12:08:03Z",
+	)
+	conflict := ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_invalid_handshake_conflict_2",
+		"invocation_invalid_handshake_conflict",
+		attemptID,
+		"capability_invalid_handshake_conflict",
+		"A conflicting settled answer.",
+		"2026-03-01T12:08:04Z",
+	)
+	if conflict.Disposition != executionstore.ProviderCompletionReceiptDispositionInvalidated {
+		t.Fatalf("expected conflicting receipt to invalidate the invocation, got %#v", conflict)
 	}
 
 	engine := loadRetryEngine(t)
@@ -1358,19 +1313,16 @@ func TestReconcilerDoesNotSettleInvalidHandshakeCapabilityMismatch(t *testing.T)
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	if _, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_invalid_handshake_capability",
-		ProviderInvocationID:  "invocation_invalid_handshake_capability",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2_invalid_handshake_capability",
-		ProtocolVersion:       "v1",
-		CompletionCapability:  "wrong-capability",
-		FinalText:             "Recovered provider-backed response.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	}); err == nil {
-		t.Fatal("expected capability mismatch to invalidate the invocation")
+	mismatch := ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_invalid_handshake_capability",
+		"invocation_invalid_handshake_capability",
+		attemptID,
+		"wrong-capability",
+		"Recovered provider-backed response.",
+		"2026-03-01T12:08:03Z",
+	)
+	if mismatch.Disposition != executionstore.ProviderCompletionReceiptDispositionInvalidated {
+		t.Fatalf("expected capability mismatch to invalidate the invocation, got %#v", mismatch)
 	}
 
 	engine := loadRetryEngine(t)
@@ -1569,21 +1521,14 @@ func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_settlement_mismatch",
-		ProviderInvocationID:  "invocation_settlement_mismatch",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_settlement_mismatch",
-		FinalText:             "Receipt-backed success that should be cleared.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	accepted := ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_settlement_mismatch",
+		"invocation_settlement_mismatch",
+		attemptID,
+		"capability_settlement_mismatch",
+		"Receipt-backed success that should be cleared.",
+		"2026-03-01T12:08:03Z",
+	)
 	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          "settlement_invocation_settlement_mismatch",
 		ProviderInvocationID:  "invocation_settlement_mismatch",
@@ -1591,7 +1536,7 @@ func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T
 		RunID:                 "run_1",
 		NodeRunID:             "nr_2",
 		Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
-		PrimaryEvidenceID:     accepted.Evidence.EvidenceID,
+		PrimaryEvidenceID:     accepted.AcceptedEvidence.EvidenceID,
 		FinalText:             "Receipt-backed success that should be cleared.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
@@ -1692,21 +1637,14 @@ func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t 
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
-	accepted, err := store.AcceptProviderCompletionReceipt(context.Background(), executionstore.AcceptProviderCompletionReceiptRequest{
-		EvidenceID:            "receipt_settlement_pinned",
-		ProviderInvocationID:  "invocation_settlement_pinned",
-		AttemptID:             attemptID,
-		RunID:                 "run_1",
-		NodeRunID:             "nr_2_pinned",
-		ProtocolVersion:       "2026-05-01",
-		CompletionCapability:  "capability_settlement_pinned",
-		FinalText:             "Receipt-backed success that should be replaced.",
-		StructuredPayloadJSON: `{}`,
-		ReceivedAt:            "2026-03-01T12:08:03Z",
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
+	accepted := ingestProviderCompletionReceiptFixture(t, store,
+		"receipt_settlement_pinned",
+		"invocation_settlement_pinned",
+		attemptID,
+		"capability_settlement_pinned",
+		"Receipt-backed success that should be replaced.",
+		"2026-03-01T12:08:03Z",
+	)
 	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
 		SettlementID:          "settlement_invocation_settlement_pinned",
 		ProviderInvocationID:  "invocation_settlement_pinned",
@@ -1714,7 +1652,7 @@ func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t 
 		RunID:                 "run_1",
 		NodeRunID:             "nr_2_pinned",
 		Outcome:               executionstore.ProviderCompletionOutcomeSuccess,
-		PrimaryEvidenceID:     accepted.Evidence.EvidenceID,
+		PrimaryEvidenceID:     accepted.AcceptedEvidence.EvidenceID,
 		FinalText:             "Receipt-backed success that should be replaced.",
 		StructuredPayloadJSON: `{}`,
 		SettledAt:             "2026-03-01T12:08:04Z",
@@ -2292,6 +2230,38 @@ func TestNormalizeReconcileInputsAppliesDefaultThresholds(t *testing.T) {
 	if staleThreshold != DefaultStaleHeartbeatThreshold {
 		t.Fatalf("expected default stale threshold %s, got %s", DefaultStaleHeartbeatThreshold, staleThreshold)
 	}
+}
+
+func ingestProviderCompletionReceiptFixture(
+	t *testing.T,
+	store *executionstore.Store,
+	entryName,
+	providerInvocationID,
+	attemptID,
+	completionCapability,
+	finalText,
+	observedAt string,
+) executionstore.IngestProviderCompletionReceiptResult {
+	t.Helper()
+
+	result, err := store.IngestProviderCompletionReceipt(context.Background(), executionstore.IngestProviderCompletionReceiptRequest{
+		ProviderInvocationID:  providerInvocationID,
+		EntryName:             entryName + ".json",
+		EntryType:             "regular",
+		ProtocolVersion:       "v1",
+		ObservedAttemptID:     attemptID,
+		ObservedInvocationID:  providerInvocationID,
+		CompletionCapability:  completionCapability,
+		ValidationSucceeded:   true,
+		FinalText:             finalText,
+		StructuredPayloadJSON: `{}`,
+		Disposition:           executionstore.ProviderCompletionReceiptDispositionAccepted,
+		ObservedAt:            observedAt,
+	})
+	if err != nil {
+		t.Fatalf("ingest provider completion receipt: %v", err)
+	}
+	return result
 }
 
 func loadRetryEngine(t *testing.T) *retryengine.Engine {

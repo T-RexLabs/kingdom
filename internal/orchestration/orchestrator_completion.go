@@ -39,7 +39,6 @@ type executionOutboxPayload struct {
 	WorkspaceID                     string                                `json:"workspace_id"`
 	Workspace                       string                                `json:"workspace_path"`
 	Delegator                       string                                `json:"delegator"`
-	Prompt                          string                                `json:"prompt"`
 	Model                           string                                `json:"model"`
 	Variant                         string                                `json:"variant"`
 	Agent                           string                                `json:"agent"`
@@ -137,7 +136,6 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		WorkspaceID:                     result.workspaceID,
 		Workspace:                       result.workspacePath,
 		Delegator:                       result.delegator,
-		Prompt:                          result.prompt,
 		Model:                           result.model,
 		Variant:                         result.variant,
 		Agent:                           result.agent,
@@ -288,16 +286,27 @@ func detachedTimeoutContext(ctx context.Context, timeout time.Duration) (context
 }
 
 func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecutionResult, bool, error) {
-	trimmed := strings.TrimSpace(rec.PayloadJSON)
+	result, err := decodeExecutionPayloadJSON(rec.PayloadJSON, fmt.Sprintf("outbox payload %q", rec.OutboxID))
+	if err != nil {
+		return asyncExecutionResult{}, false, err
+	}
+	result.outcome = hydrateExecutionOutcomeFromDurableState(result.outcome, rec.AttemptState, rec.FailureCode, rec.FailureText)
+	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
+	result.err = errorFromExecutionOutcome(result.outcome)
+	return result, true, nil
+}
+
+func decodeExecutionPayloadJSON(raw, source string) (asyncExecutionResult, error) {
+	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || trimmed == "{}" {
-		return asyncExecutionResult{}, false, fmt.Errorf("decode outbox payload %q: missing replay payload", rec.OutboxID)
+		return asyncExecutionResult{}, fmt.Errorf("decode %s: missing replay payload", source)
 	}
 	var payload executionOutboxPayload
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return asyncExecutionResult{}, false, fmt.Errorf("decode outbox payload %q: %w", rec.OutboxID, err)
+		return asyncExecutionResult{}, fmt.Errorf("decode %s: %w", source, err)
 	}
 	if strings.TrimSpace(payload.AttemptID) == "" {
-		return asyncExecutionResult{}, false, fmt.Errorf("decode outbox payload %q: missing attempt_id", rec.OutboxID)
+		return asyncExecutionResult{}, fmt.Errorf("decode %s: missing attempt_id", source)
 	}
 	result := asyncExecutionResult{
 		run:                             payload.Run,
@@ -320,7 +329,6 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		workspaceID:                     payload.WorkspaceID,
 		workspacePath:                   payload.Workspace,
 		delegator:                       payload.Delegator,
-		prompt:                          payload.Prompt,
 		model:                           payload.Model,
 		variant:                         payload.Variant,
 		agent:                           payload.Agent,
@@ -329,10 +337,9 @@ func decodeExecutionOutboxPayload(rec executionstore.OutboxRecord) (asyncExecuti
 		tokens:                          payload.Tokens,
 		outcome:                         payload.Outcome,
 	}
-	result.outcome = hydrateExecutionOutcomeFromDurableState(result.outcome, rec.AttemptState, rec.FailureCode, rec.FailureText)
 	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
 	result.err = errorFromExecutionOutcome(result.outcome)
-	return result, true, nil
+	return result, nil
 }
 
 func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response opencode.ExecuteResponse, execErr error) {
