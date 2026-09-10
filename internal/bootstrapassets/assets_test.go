@@ -192,7 +192,16 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		"attempt_id: attemptID",
 		"invocation_id: invocationID",
 		"completion_capability: completionCapability",
-		"final_text: args.final_text",
+		"final_text: finalText",
+		"const finalText = args.final_text.trim()",
+		"const RECEIPT_WIRE_LIMIT_BYTES = 1024 * 1024",
+		"const serialized = JSON.stringify(payload)",
+		"Buffer.byteLength(serialized, \"utf8\")",
+		"await open(temporaryPath, \"wx\", 0o600)",
+		"await temporaryFile.sync()",
+		"await link(temporaryPath, receiptPath)",
+		"await syncDirectory(receiptDir)",
+		"await unlink(temporaryPath)",
 	} {
 		if !strings.Contains(content, token) {
 			t.Fatalf("expected managed completion tool to include %q", token)
@@ -208,9 +217,11 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		"attempt_id: args.attempt_id",
 		"invocation_id: args.invocation_id",
 		"completion_capability: args.completion_capability",
+		"mkdir(",
+		"JSON.stringify(payload, null",
 	} {
 		if strings.Contains(content, token) {
-			t.Fatalf("expected managed completion tool to ignore caller-supplied handshake field %q", token)
+			t.Fatalf("expected managed completion tool not to include %q", token)
 		}
 	}
 }

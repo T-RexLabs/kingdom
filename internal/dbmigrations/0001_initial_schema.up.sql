@@ -509,6 +509,7 @@ CREATE TABLE provider_invocations (
   last_receipt_seen_at TEXT,
   last_receipt_disposition TEXT NOT NULL DEFAULT '' CHECK (last_receipt_disposition IN ('', 'accepted', 'rejected', 'invalidated', 'idempotent_duplicate', 'error')),
   receipt_persisted_at TEXT,
+  receipt_inbox_cleaned_at TEXT,
   settled_at TEXT,
   superseded_by_invocation_id TEXT,
   invalid_reason TEXT NOT NULL DEFAULT '',
@@ -537,6 +538,10 @@ ON provider_invocations (invocation_state, updated_at DESC, provider_invocation_
 
 CREATE INDEX idx_provider_invocations_run_node_created
 ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocation_id);
+
+CREATE INDEX idx_provider_invocations_receipt_ingestion
+ON provider_invocations (provider_invocation_id)
+WHERE completion_mode = 'receipt_required' AND receipt_inbox_cleaned_at IS NULL;
 
 CREATE TABLE provider_completion_evidence (
   provider_evidence_seq INTEGER PRIMARY KEY AUTOINCREMENT,

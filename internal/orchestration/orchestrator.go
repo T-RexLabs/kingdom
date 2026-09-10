@@ -51,6 +51,7 @@ type orchestrationLoop struct {
 	events                         *state.AttemptEventIngestor
 	adapter                        opencode.Adapter
 	fsStore                        *runtimefs.Store
+	schemas                        *schemas.Set
 	validator                      *state.WorkerOutputValidator
 	tokenUsage                     *state.TokenUsageStore
 	planningOutputs                *state.RunPlanningOutputStore
@@ -74,6 +75,8 @@ type orchestrationLoop struct {
 	newProviderLeaseTicker         func(time.Duration) providerLeaseTicker
 	execMu                         sync.Mutex
 	eventSeqMu                     sync.Mutex
+	receiptIngestionMu             sync.Mutex
+	receiptIngestionCursor         string
 	inflightExec                   map[string]struct{}
 	inflightSettlements            map[string]string
 	executionResults               map[string]chan asyncExecutionResult
@@ -251,6 +254,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		events:                 state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
 		adapter:                adapter,
 		fsStore:                fsStore,
+		schemas:                eventSchemas,
 		validator:              outputValidator,
 		tokenUsage:             state.NewTokenUsageStore(db),
 		planningOutputs:        state.NewRunPlanningOutputStore(db),

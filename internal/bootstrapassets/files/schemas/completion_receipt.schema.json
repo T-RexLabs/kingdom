@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kingdom.local/contracts/schemas/completion_receipt.schema.json",
+  "title": "CompletionReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "attempt_id",
+    "invocation_id",
+    "completion_capability",
+    "final_text",
+    "structured_payload"
+  ],
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "invocation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "completion_capability": {
+      "type": "string",
+      "minLength": 1
+    },
+    "final_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "structured_payload": {
+      "type": "object"
+    }
+  }
+}

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,8 +16,6 @@ import (
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
-
-const completionReceiptInboxPath = ".kingdom/provider-completion/receipts"
 
 var sqliteBusyWriteRetrySchedule = []time.Duration{0, 50 * time.Millisecond, 150 * time.Millisecond, 400 * time.Millisecond}
 
@@ -44,11 +41,7 @@ func generateExecutionLeaseOwner() (string, error) {
 	return "dispatch_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func completionReceiptDirForInvocation(workspacePath, providerInvocationID string) (string, error) {
-	return resolvePathWithinRoot(strings.TrimSpace(workspacePath), completionReceiptInboxPath+"/"+sanitizeFileToken(providerInvocationID))
-}
-
-func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, workspacePath string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
+func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
 	if o == nil || o.executionStore == nil {
 		return "", "", "", "", fmt.Errorf("execution store is required for provider invocation activation")
 	}
@@ -65,12 +58,12 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		if err != nil {
 			return "", "", "", "", err
 		}
-		receiptDir, err = completionReceiptDirForInvocation(workspacePath, providerInvocationID)
-		if err != nil {
-			return "", "", "", "", fmt.Errorf("resolve completion receipt dir: %w", err)
+		if o.fsStore == nil {
+			return "", "", "", "", fmt.Errorf("runtime filesystem store is required for completion receipt inbox")
 		}
-		if err := os.MkdirAll(receiptDir, 0o755); err != nil {
-			return "", "", "", "", fmt.Errorf("create completion receipt dir: %w", err)
+		receiptDir, err = o.fsStore.EnsureProviderCompletionInbox(providerInvocationID)
+		if err != nil {
+			return "", "", "", "", err
 		}
 	}
 	if _, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
@@ -89,13 +82,6 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		return "", "", "", "", err
 	}
 	return providerInvocationID, issuedAt, completionCapability, receiptDir, nil
-}
-
-func completionReceiptAcceptorForMode(job asyncExecutionResult, accept func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error)) func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
-	if job.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
-		return nil
-	}
-	return accept
 }
 
 func completionProtocolVersionForMode(mode executionstore.ProviderCompletionMode) string {
@@ -119,57 +105,6 @@ func completionReceiptDirForMode(mode executionstore.ProviderCompletionMode, rec
 	return ""
 }
 
-func (o *orchestrationLoop) providerCompletionReceiptAcceptor(ctx context.Context, job asyncExecutionResult) func(opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
-	return func(receipt opencode.CompletionReceipt) (opencode.CompletionReceiptAcceptance, error) {
-		if o == nil || o.executionStore == nil {
-			return opencode.CompletionReceiptAcceptance{}, fmt.Errorf("execution store is required for completion receipt acceptance")
-		}
-		structuredPayloadJSON, err := validateProviderCompletionReceiptForNode(job.node, receipt.FinalText, receipt.StructuredPayloadJSON)
-		if err != nil {
-			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionRejected, "validation_failed", err.Error(), "")
-			return opencode.CompletionReceiptAcceptance{Rejected: true, RejectedReason: err.Error()}, nil
-		}
-		acceptCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-		defer cancel()
-		accepted, err := o.acceptProviderCompletionReceiptWithRetry(acceptCtx, executionstore.AcceptProviderCompletionReceiptRequest{
-			EvidenceID:            fmt.Sprintf("receipt_%s_%d", sanitizeFileToken(job.attemptID), time.Now().UTC().UnixNano()),
-			ProviderInvocationID:  strings.TrimSpace(receipt.InvocationID),
-			AttemptID:             strings.TrimSpace(receipt.AttemptID),
-			RunID:                 strings.TrimSpace(job.run.RunID),
-			NodeRunID:             strings.TrimSpace(job.attempt.NodeRunID),
-			ProtocolVersion:       firstNonEmptyString(strings.TrimSpace(receipt.ProtocolVersion), opencode.CompletionProtocolVersion),
-			CompletionCapability:  strings.TrimSpace(receipt.CompletionCapability),
-			FinalText:             strings.TrimSpace(receipt.FinalText),
-			StructuredPayloadJSON: structuredPayloadJSON,
-			ReceivedAt:            o.now().UTC().Format(time.RFC3339),
-		})
-		if err != nil {
-			if executionstore.IsTerminalProviderReceiptError(err) {
-				reasonCode := "accept_provider_completion_receipt_failed"
-				var settlementErr *executionstore.ProviderSettlementError
-				if errors.As(err, &settlementErr) && settlementErr != nil && strings.TrimSpace(settlementErr.Reason) != "" {
-					reasonCode = strings.TrimSpace(settlementErr.Reason)
-				}
-				o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionInvalidated, reasonCode, err.Error(), "")
-				return opencode.CompletionReceiptAcceptance{Rejected: true, InvalidatesInvocation: true, RejectedReason: err.Error()}, nil
-			}
-			o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, executionstore.ProviderCompletionReceiptDispositionError, "accept_error", err.Error(), "")
-			return opencode.CompletionReceiptAcceptance{}, err
-		}
-		disposition := executionstore.ProviderCompletionReceiptDispositionAccepted
-		if accepted.Idempotent {
-			disposition = executionstore.ProviderCompletionReceiptDispositionIdempotentDuplicate
-		}
-		o.observeProviderCompletionReceiptAttempt(ctx, job, receipt, structuredPayloadJSON, disposition, string(disposition), "", accepted.Evidence.EvidenceID)
-		return opencode.CompletionReceiptAcceptance{
-			EvidenceID:            accepted.Evidence.EvidenceID,
-			FinalText:             strings.TrimSpace(receipt.FinalText),
-			StructuredPayloadJSON: structuredPayloadJSON,
-			Idempotent:            accepted.Idempotent,
-		}, nil
-	}
-}
-
 func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func(context.Context) error) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -191,48 +126,6 @@ func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func
 		return nil
 	}
 	return lastErr
-}
-
-func (o *orchestrationLoop) acceptProviderCompletionReceiptWithRetry(ctx context.Context, req executionstore.AcceptProviderCompletionReceiptRequest) (executionstore.AcceptProviderCompletionReceiptResult, error) {
-	var accepted executionstore.AcceptProviderCompletionReceiptResult
-	err := o.retrySQLiteBusyWrite(ctx, func(ctx context.Context) error {
-		result, err := o.executionStore.AcceptProviderCompletionReceipt(ctx, req)
-		if err != nil {
-			return err
-		}
-		accepted = result
-		return nil
-	})
-	return accepted, err
-}
-
-func (o *orchestrationLoop) observeProviderCompletionReceiptAttempt(ctx context.Context, job asyncExecutionResult, receipt opencode.CompletionReceipt, structuredPayloadJSON string, disposition executionstore.ProviderCompletionReceiptDisposition, reasonCode, reasonText, acceptedEvidenceID string) {
-	if o == nil || o.executionStore == nil || strings.TrimSpace(job.providerInvocationID) == "" {
-		return
-	}
-	observeCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-	defer cancel()
-	_, err := o.executionStore.ObserveProviderCompletionReceiptAttempt(observeCtx, executionstore.ObserveProviderCompletionReceiptAttemptRequest{
-		EvidenceID:            fmt.Sprintf("receipt_attempt_%s_%d", sanitizeFileToken(job.attemptID), time.Now().UTC().UnixNano()),
-		ProviderInvocationID:  strings.TrimSpace(job.providerInvocationID),
-		AttemptID:             strings.TrimSpace(job.attemptID),
-		RunID:                 strings.TrimSpace(job.run.RunID),
-		NodeRunID:             strings.TrimSpace(job.attempt.NodeRunID),
-		ProtocolVersion:       firstNonEmptyString(strings.TrimSpace(receipt.ProtocolVersion), opencode.CompletionProtocolVersion),
-		ObservedAttemptID:     strings.TrimSpace(receipt.AttemptID),
-		ObservedInvocationID:  strings.TrimSpace(receipt.InvocationID),
-		CompletionCapability:  strings.TrimSpace(receipt.CompletionCapability),
-		FinalText:             strings.TrimSpace(receipt.FinalText),
-		StructuredPayloadJSON: firstNonEmptyString(strings.TrimSpace(structuredPayloadJSON), strings.TrimSpace(receipt.StructuredPayloadJSON), "{}"),
-		Disposition:           disposition,
-		ReasonCode:            strings.TrimSpace(reasonCode),
-		ReasonText:            strings.TrimSpace(reasonText),
-		AcceptedEvidenceID:    strings.TrimSpace(acceptedEvidenceID),
-		ObservedAt:            o.now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		o.emitCompletionLifecycleObservation(ctx, job, "completion_receipt_observation_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error(), "disposition": string(disposition)})
-	}
 }
 
 func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, structuredPayloadJSON string) (string, error) {

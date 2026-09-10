@@ -90,6 +90,44 @@ func TestVersionFieldsAreRequiredAndValidated(t *testing.T) {
 	}
 }
 
+func TestCompletionReceiptContractRejectsInvalidPayloads(t *testing.T) {
+	t.Parallel()
+
+	set := loadDefaultSchemaSet(t)
+	testCases := []struct {
+		name string
+		json string
+	}{
+		{
+			name: "missing_version",
+			json: `{"attempt_id":"attempt-1","invocation_id":"invocation-1","completion_capability":"capability-1","final_text":"done","structured_payload":{}}`,
+		},
+		{
+			name: "wrong_version",
+			json: `{"protocol_version":"v2","attempt_id":"attempt-1","invocation_id":"invocation-1","completion_capability":"capability-1","final_text":"done","structured_payload":{}}`,
+		},
+		{
+			name: "additional_property",
+			json: `{"protocol_version":"v1","attempt_id":"attempt-1","invocation_id":"invocation-1","completion_capability":"capability-1","final_text":"done","structured_payload":{},"extra":true}`,
+		},
+		{
+			name: "non_object_structured_payload",
+			json: `{"protocol_version":"v1","attempt_id":"attempt-1","invocation_id":"invocation-1","completion_capability":"capability-1","final_text":"done","structured_payload":[]}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := set.ValidateJSONBytes("completion_receipt", []byte(tc.json)); err == nil {
+				t.Fatal("expected completion receipt validation to fail")
+			}
+		})
+	}
+}
+
 func TestLoadFailsDeterministicallyOnInvalidSchemaSet(t *testing.T) {
 	t.Parallel()
 

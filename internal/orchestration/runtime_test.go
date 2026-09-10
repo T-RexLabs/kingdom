@@ -693,7 +693,9 @@ func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 	t.Helper()
 
 	if cfg.Adapter == nil {
-		cfg.Adapter = opencode.NewMemoryAdapter()
+		cfg.Adapter = &receiptPublishingTestAdapter{Adapter: opencode.NewMemoryAdapter()}
+	} else if _, ok := cfg.Adapter.(*opencode.MemoryAdapter); ok {
+		cfg.Adapter = &receiptPublishingTestAdapter{Adapter: cfg.Adapter}
 	}
 	if strings.TrimSpace(cfg.ProviderEngine) == "" {
 		cfg.ProviderEngine = "opencode"
@@ -2835,7 +2837,7 @@ func TestPrepareExecutionWorkspaceInstallsManagedOpenCodeOverlay(t *testing.T) {
 		"attempt_id: attemptID",
 		"invocation_id: invocationID",
 		"completion_capability: completionCapability",
-		"final_text: args.final_text",
+		"const finalText = args.final_text.trim()",
 	} {
 		if !strings.Contains(content, token) {
 			t.Fatalf("expected installed managed completion tool to include %q, got %q", token, content)
@@ -2890,10 +2892,15 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
+	runtimeRoot := t.TempDir()
+	fsStore, err := runtimefs.NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	loop := orchestrationLoop{executionStore: store, fsStore: fsStore, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	workspaceRoot := t.TempDir()
 
-	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1"}, attemptID, "session_receipt_setup", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
+	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1"}, attemptID, "session_receipt_setup", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
@@ -2906,6 +2913,9 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	if _, err := os.Stat(receiptDir); err != nil {
 		t.Fatalf("expected receipt dir to exist: %v", err)
 	}
+	if strings.HasPrefix(receiptDir, workspaceRoot+string(filepath.Separator)) {
+		t.Fatalf("receipt inbox %q must be independent of execution workspace %q", receiptDir, workspaceRoot)
+	}
 	invocation, found, err := store.GetProviderInvocation(context.Background(), providerInvocationID)
 	if err != nil {
 		t.Fatalf("get provider invocation: %v", err)
@@ -2915,176 +2925,6 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	}
 	if invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
 		t.Fatalf("expected open provider invocation, got %q", invocation.InvocationState)
-	}
-}
-
-func TestProviderCompletionReceiptAcceptorPersistsValidatedReceipt(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_accept', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_accept', 'Receipt accept', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_accept', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_accept', NULL, 'decree_receipt_accept', 'wfdef_receipt_accept', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_accept_1', 'run_receipt_accept', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_accept', 1, '%s', NULL)`, now))
-	store := executionstore.New(db)
-	attemptID := "run_receipt_accept:delegated_execution_berserker:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:             attemptID,
-		RunID:                 "run_receipt_accept",
-		NodeRunID:             "nr_receipt_accept_1",
-		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
-		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
-		ProviderTimeoutMillis: 60000,
-		SessionRef:            "session_receipt_accept",
-		CreatedAt:             now,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }}
-	workspaceRoot := t.TempDir()
-	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_accept"}, nodeAttempt{NodeRunID: "nr_receipt_accept_1"}, attemptID, "session_receipt_accept", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
-	if err != nil {
-		t.Fatalf("activate provider invocation: %v", err)
-	}
-	acceptor := loop.providerCompletionReceiptAcceptor(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_receipt_accept"},
-		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
-		attempt:              nodeAttempt{NodeRunID: "nr_receipt_accept_1", NodeID: "delegated_execution_berserker", Attempt: 1, RequiredRole: "builder-berserker"},
-		attemptID:            attemptID,
-		providerInvocationID: providerInvocationID,
-	})
-	accepted, err := acceptor(opencode.CompletionReceipt{
-		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		AttemptID:             attemptID,
-		InvocationID:          providerInvocationID,
-		CompletionCapability:  completionCapability,
-		FinalText:             "Builder deliverable complete.",
-		StructuredPayloadJSON: `{}`,
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
-	if strings.TrimSpace(accepted.EvidenceID) == "" {
-		t.Fatal("expected completion receipt evidence id")
-	}
-	evidence, err := store.ListProviderCompletionEvidence(context.Background(), providerInvocationID)
-	if err != nil {
-		t.Fatalf("list provider completion evidence: %v", err)
-	}
-	if len(evidence) != 2 {
-		t.Fatalf("expected two provider completion evidence rows, got %d", len(evidence))
-	}
-	if evidence[0].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceipt {
-		t.Fatalf("expected first evidence row to be completion receipt, got %q", evidence[0].EvidenceKind)
-	}
-	if evidence[1].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceiptAttempt {
-		t.Fatalf("expected second evidence row to be completion receipt attempt telemetry, got %q", evidence[1].EvidenceKind)
-	}
-	var payload struct {
-		AttemptID string `json:"attempt_id"`
-	}
-	if err := json.Unmarshal([]byte(evidence[0].PayloadJSON), &payload); err != nil {
-		t.Fatalf("decode completion receipt payload: %v", err)
-	}
-	if payload.AttemptID != attemptID {
-		t.Fatalf("expected persisted receipt payload attempt_id %q, got %q", attemptID, payload.AttemptID)
-	}
-}
-
-func TestProviderCompletionReceiptAcceptorRejectsAttemptMismatch(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_attempt_mismatch', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_attempt_mismatch', 'Receipt attempt mismatch', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_attempt_mismatch', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_attempt_mismatch', NULL, 'decree_receipt_attempt_mismatch', 'wfdef_receipt_attempt_mismatch', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_attempt_mismatch_1', 'run_receipt_attempt_mismatch', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_attempt_mismatch', 1, '%s', NULL)`, now))
-	store := executionstore.New(db)
-	attemptID := "run_receipt_attempt_mismatch:delegated_execution_berserker:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:             attemptID,
-		RunID:                 "run_receipt_attempt_mismatch",
-		NodeRunID:             "nr_receipt_attempt_mismatch_1",
-		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
-		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
-		ProviderTimeoutMillis: 60000,
-		SessionRef:            "session_receipt_attempt_mismatch",
-		CreatedAt:             now,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }}
-	workspaceRoot := t.TempDir()
-	providerInvocationID, _, completionCapability, _, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_attempt_mismatch"}, nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1"}, attemptID, "session_receipt_attempt_mismatch", workspaceRoot, executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
-	if err != nil {
-		t.Fatalf("activate provider invocation: %v", err)
-	}
-	acceptor := loop.providerCompletionReceiptAcceptor(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_receipt_attempt_mismatch"},
-		node:                 nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", RequiredRole: "builder-berserker"},
-		attempt:              nodeAttempt{NodeRunID: "nr_receipt_attempt_mismatch_1", NodeID: "delegated_execution_berserker", Attempt: 1, RequiredRole: "builder-berserker"},
-		attemptID:            attemptID,
-		providerInvocationID: providerInvocationID,
-	})
-	acceptance, err := acceptor(opencode.CompletionReceipt{
-		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		AttemptID:             "run_receipt_attempt_mismatch:delegated_execution_berserker:99",
-		InvocationID:          providerInvocationID,
-		CompletionCapability:  completionCapability,
-		FinalText:             "Builder deliverable complete.",
-		StructuredPayloadJSON: `{}`,
-	})
-	if err != nil {
-		t.Fatalf("accept provider completion receipt: %v", err)
-	}
-	if !acceptance.Rejected || !acceptance.InvalidatesInvocation {
-		t.Fatalf("expected attempt mismatch receipt to be rejected and invalidate the invocation, got %#v", acceptance)
-	}
-	if !strings.Contains(acceptance.RejectedReason, "attempt_lineage_mismatch") {
-		t.Fatalf("expected attempt_lineage_mismatch rejection, got %q", acceptance.RejectedReason)
-	}
-
-	invocation, found, err := store.GetProviderInvocation(context.Background(), providerInvocationID)
-	if err != nil {
-		t.Fatalf("get provider invocation: %v", err)
-	}
-	if !found {
-		t.Fatal("expected provider invocation row to exist")
-	}
-	if invocation.InvocationState != executionstore.ProviderInvocationStateInvalidHandshake {
-		t.Fatalf("expected invalid_handshake provider invocation, got %#v", invocation)
-	}
-
-	evidence, err := store.ListProviderCompletionEvidence(context.Background(), providerInvocationID)
-	if err != nil {
-		t.Fatalf("list provider completion evidence: %v", err)
-	}
-	if len(evidence) != 1 {
-		t.Fatalf("expected one provider completion evidence row, got %d", len(evidence))
-	}
-	if evidence[0].EvidenceKind != executionstore.ProviderCompletionEvidenceKindCompletionReceiptAttempt {
-		t.Fatalf("expected receipt attempt telemetry row, got %q", evidence[0].EvidenceKind)
-	}
-	var payload struct {
-		Disposition string `json:"disposition"`
-		ReasonCode  string `json:"reason_code"`
-	}
-	if err := json.Unmarshal([]byte(evidence[0].PayloadJSON), &payload); err != nil {
-		t.Fatalf("decode completion receipt attempt payload: %v", err)
-	}
-	if payload.Disposition != string(executionstore.ProviderCompletionReceiptDispositionInvalidated) {
-		t.Fatalf("expected invalidated disposition, got %q", payload.Disposition)
-	}
-	if payload.ReasonCode != "attempt_lineage_mismatch" {
-		t.Fatalf("expected attempt_lineage_mismatch reason code, got %q", payload.ReasonCode)
 	}
 }
 
@@ -12998,19 +12838,15 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	accepted, err := maybeAcceptTestCompletionReceipt(req, outputText)
-	if err != nil {
+	if err := writeTestCompletionReceipt(req, outputText, structuredPayloadJSONForTestOutput(outputText)); err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
 	return opencode.ExecuteResponse{
-		Accepted:                        true,
-		OutputText:                      outputText,
-		ProviderInvocationID:            firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
-		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
-		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
-		StreamObservation:               testSuccessfulExecuteObservation(req, outputText),
+		Accepted:             true,
+		OutputText:           outputText,
+		ProviderInvocationID: firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
 	}, nil
 }
 
@@ -13113,19 +12949,15 @@ func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req openco
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	accepted, err := maybeAcceptTestCompletionReceipt(req, outputText)
-	if err != nil {
+	if err := writeTestCompletionReceipt(req, outputText, structuredPayloadJSONForTestOutput(outputText)); err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
 	return opencode.ExecuteResponse{
-		Accepted:                        true,
-		OutputText:                      outputText,
-		ProviderInvocationID:            firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
-		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
-		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
-		StreamObservation:               testSuccessfulExecuteObservation(req, outputText),
+		Accepted:             true,
+		OutputText:           outputText,
+		ProviderInvocationID: firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
 	}, nil
 }
 
@@ -13170,13 +13002,9 @@ func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencod
 		resp.StreamObservation = testSuccessfulExecuteObservation(req, resp.OutputText)
 	}
 	if shouldAcceptTestReceipt(resp) {
-		accepted, err := maybeAcceptTestCompletionReceipt(req, resp.OutputText)
-		if err != nil {
+		if err := writeTestCompletionReceipt(req, resp.OutputText, structuredPayloadJSONForTestOutput(resp.OutputText)); err != nil {
 			return opencode.ExecuteResponse{}, err
 		}
-		resp.CompletionReceiptAccepted = accepted.EvidenceID != "" || accepted.Idempotent
-		resp.CompletionReceiptEvidenceID = strings.TrimSpace(accepted.EvidenceID)
-		resp.CompletionStructuredPayloadJSON = strings.TrimSpace(accepted.StructuredPayloadJSON)
 	}
 	return resp, nil
 }
@@ -13196,24 +13024,6 @@ func (a *outcomeSequenceExecutionAdapter) Stream(context.Context, opencode.Strea
 func shouldAcceptTestReceipt(resp opencode.ExecuteResponse) bool {
 	state := strings.TrimSpace(resp.Outcome.State)
 	return state == "" || state == "success"
-}
-
-func maybeAcceptTestCompletionReceipt(req opencode.ExecuteRequest, outputText string) (opencode.CompletionReceiptAcceptance, error) {
-	if req.OnCompletionReceipt == nil || strings.TrimSpace(req.InvocationID) == "" || strings.TrimSpace(req.CompletionCapability) == "" || strings.TrimSpace(outputText) == "" {
-		return opencode.CompletionReceiptAcceptance{}, nil
-	}
-	accepted, err := req.OnCompletionReceipt(opencode.CompletionReceipt{
-		ProtocolVersion:       opencode.CompletionProtocolVersion,
-		AttemptID:             strings.TrimSpace(req.AttemptID),
-		InvocationID:          strings.TrimSpace(req.InvocationID),
-		CompletionCapability:  strings.TrimSpace(req.CompletionCapability),
-		FinalText:             strings.TrimSpace(outputText),
-		StructuredPayloadJSON: structuredPayloadJSONForTestOutput(outputText),
-	})
-	if err != nil {
-		return opencode.CompletionReceiptAcceptance{}, err
-	}
-	return accepted, nil
 }
 
 func structuredPayloadJSONForTestOutput(outputText string) string {
@@ -13300,18 +13110,14 @@ func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req o
 		return opencode.ExecuteResponse{}, ctx.Err()
 	}
 	callOnProcessStarted(req)
-	accepted, err := maybeAcceptTestCompletionReceipt(req, `{"summary":"ok"}`)
-	if err != nil {
+	if err := writeTestCompletionReceipt(req, `{"summary":"ok"}`, `{}`); err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
 	return opencode.ExecuteResponse{
-		Accepted:                        true,
-		OutputText:                      `{"summary":"ok"}`,
-		CompletionReceiptAccepted:       true,
-		CompletionReceiptEvidenceID:     accepted.EvidenceID,
-		CompletionStructuredPayloadJSON: accepted.StructuredPayloadJSON,
-		ProviderInvocationID:            strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
+		Accepted:             true,
+		OutputText:           `{"summary":"ok"}`,
+		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
 	}, nil
 }
 

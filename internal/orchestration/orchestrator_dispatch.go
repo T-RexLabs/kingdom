@@ -299,7 +299,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		}
 		workspacePath = strings.TrimSpace(responseWorkspacePath)
 	}
-	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, workspacePath, executionSpec.CompletionMode, now, "")
+	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
 	if invocationErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
 	}
@@ -734,8 +734,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			OnProviderSession: func(providerSessionID string) {
 				o.observeProviderSessionForInvocation(ctx, job.attemptID, job.providerInvocationID, providerSessionID)
 			},
-			OnActivity:          o.providerExecutionActivityObserver(ctx, job),
-			OnCompletionReceipt: completionReceiptAcceptorForMode(job, o.providerCompletionReceiptAcceptor(ctx, job)),
+			OnActivity: o.providerExecutionActivityObserver(ctx, job),
 		})
 		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
@@ -751,6 +750,18 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			} else if !renewed {
 				hasSettlementAuthority = false
 				cancelExecution()
+			}
+		}
+		if hasSettlementAuthority && job.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
+			ingestCtx, cancelIngest := detachedTimeoutContext(ctx, 5*time.Second)
+			err := o.ingestProviderCompletionReceiptInvocation(ingestCtx, job.providerInvocationID)
+			if err == nil {
+				err = o.hydrateAcceptedProviderCompletionReceipt(ingestCtx, &job)
+			}
+			cancelIngest()
+			if err != nil {
+				slog.Warn("provider completion receipt ingestion will retry", "attempt_id", job.attemptID, "provider_invocation_id", job.providerInvocationID, "error", err)
+				return
 			}
 		}
 		o.publishExecutionResult(job.attemptID, job)

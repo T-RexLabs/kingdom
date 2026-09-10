@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -195,7 +196,11 @@ func TestCLISessionDiagnosticExporterSetsManagedOpenCodeEnvironment(t *testing.T
 	if envLog["OPENCODE_DB"] != databasePath {
 		t.Fatalf("expected OPENCODE_DB %q, got %q", databasePath, envLog["OPENCODE_DB"])
 	}
-	assertNoCompletionAttemptEnv(t, envLog)
+	for key, value := range envLog {
+		if strings.HasPrefix(key, "KINGDOM_COMPLETE_ATTEMPT_") {
+			t.Fatalf("expected no inherited completion attempt env, got %s=%q in env log %#v", key, value, envLog)
+		}
+	}
 }
 
 func TestInspectSessionActivityFallbackStillHonorsInvocationStartedAt(t *testing.T) {

@@ -74,6 +74,7 @@ type ProviderInvocation struct {
 	LastReceiptSeenAt             string
 	LastReceiptDisposition        ProviderCompletionReceiptDisposition
 	ReceiptPersistedAt            string
+	ReceiptInboxCleanedAt         string
 	SettledAt                     string
 	SupersededByInvocationID      string
 	InvalidReason                 string
@@ -158,6 +159,8 @@ type AppendProviderCompletionEvidenceRequest struct {
 	CreatedAt            string
 }
 
+// Deprecated: use IngestProviderCompletionReceiptRequest. This remains only
+// until orchestration callers migrate to the atomic ingestion boundary.
 type ObserveProviderCompletionReceiptAttemptRequest struct {
 	EvidenceID            string
 	ProviderInvocationID  string
@@ -177,6 +180,46 @@ type ObserveProviderCompletionReceiptAttemptRequest struct {
 	ObservedAt            string
 }
 
+// IngestProviderCompletionReceiptRequest contains only bounded receipt
+// transport metadata and parsed claims. ProviderInvocationID is selected by
+// the runtime from the inbox being read; payload identifiers are observations,
+// never routing authority. FinalText and StructuredPayloadJSON are retained
+// only when ValidationSucceeded is true.
+type IngestProviderCompletionReceiptRequest struct {
+	ProviderInvocationID  string
+	EntryName             string
+	WireByteCount         int64
+	WireSHA256            string
+	EntryType             string
+	ProtocolVersion       string
+	ObservedAttemptID     string
+	ObservedInvocationID  string
+	CompletionCapability  string
+	ValidationSucceeded   bool
+	FinalText             string
+	StructuredPayloadJSON string
+	Disposition           ProviderCompletionReceiptDisposition
+	ReasonCode            string
+	ReasonText            string
+	ObservedAt            string
+}
+
+type IngestProviderCompletionReceiptResult struct {
+	Invocation       ProviderInvocation
+	AttemptEvidence  ProviderCompletionEvidence
+	AcceptedEvidence ProviderCompletionEvidence
+	Disposition      ProviderCompletionReceiptDisposition
+	ReasonCode       string
+	ReasonText       string
+	Idempotent       bool
+	ExactReplay      bool
+}
+
+type MarkProviderReceiptInboxCleanedRequest struct {
+	ProviderInvocationID string
+	CleanedAt            string
+}
+
 type EnsureTerminalProviderCompletionEvidenceRequest struct {
 	ProviderInvocationID    string
 	AttemptID               string
@@ -191,6 +234,8 @@ type EnsureTerminalProviderCompletionEvidenceRequest struct {
 	CreatedAt               string
 }
 
+// Deprecated: use IngestProviderCompletionReceiptRequest. This remains only
+// until orchestration callers migrate to the atomic ingestion boundary.
 type AcceptProviderCompletionReceiptRequest struct {
 	EvidenceID            string
 	ProviderInvocationID  string
@@ -428,6 +473,112 @@ func (s *Store) GetProviderInvocation(ctx context.Context, providerInvocationID 
 	return invocation, found, nil
 }
 
+// ListProviderReceiptIngestionCandidates returns receipt-required invocations
+// that may still receive evidence or whose terminal inbox cleanup is pending.
+// The caller owns the batch size and advances with the last returned ID.
+func (s *Store) ListProviderReceiptIngestionCandidates(ctx context.Context, afterProviderInvocationID string, max int) ([]ProviderInvocation, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store database is required")
+	}
+	if max <= 0 {
+		return nil, fmt.Errorf("max must be positive")
+	}
+	afterProviderInvocationID = strings.TrimSpace(afterProviderInvocationID)
+	rows, err := s.db.QueryContext(ctx, providerInvocationSelect+`
+		WHERE provider_invocation_id > ?
+		  AND completion_mode = 'receipt_required'
+		  AND receipt_inbox_cleaned_at IS NULL
+		  AND EXISTS (
+		    SELECT 1 FROM attempt_executions ae
+		    WHERE ae.attempt_id = provider_invocations.attempt_id
+		      AND (
+		        (ae.state IN ('queued', 'starting', 'running', 'terminal_observed')
+		          AND ae.active_provider_invocation_id = provider_invocations.provider_invocation_id
+		          AND provider_invocations.invocation_state IN ('issued', 'open', 'receipt_persisted'))
+		        OR (ae.state IN ('queued', 'starting', 'running', 'terminal_observed')
+		          AND provider_invocations.invocation_state = 'invalid_handshake')
+		        OR provider_invocations.invocation_state IN ('settled_success', 'settled_failed', 'settled_cancelled', 'superseded')
+		      )
+		  )
+		ORDER BY provider_invocation_id ASC
+		LIMIT ?`, afterProviderInvocationID, max)
+	if err != nil {
+		return nil, fmt.Errorf("list provider receipt ingestion candidates: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]ProviderInvocation, 0, max)
+	for rows.Next() {
+		candidate, found, scanErr := scanProviderInvocation(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan provider receipt ingestion candidate: %w", scanErr)
+		}
+		if !found {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate provider receipt ingestion candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func (s *Store) MarkProviderReceiptInboxCleaned(ctx context.Context, req MarkProviderReceiptInboxCleanedRequest) (ProviderInvocation, error) {
+	if s == nil || s.db == nil {
+		return ProviderInvocation{}, fmt.Errorf("store database is required")
+	}
+	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
+	req.CleanedAt = strings.TrimSpace(req.CleanedAt)
+	if req.ProviderInvocationID == "" {
+		return ProviderInvocation{}, fmt.Errorf("provider_invocation_id is required")
+	}
+	if req.CleanedAt == "" {
+		req.CleanedAt = s.currentTime().UTC().Format(time.RFC3339Nano)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ProviderInvocation{}, fmt.Errorf("begin provider receipt inbox cleanup transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	invocation, found, err := loadProviderInvocationTx(ctx, tx, req.ProviderInvocationID)
+	if err != nil {
+		return ProviderInvocation{}, err
+	}
+	if !found {
+		return ProviderInvocation{}, providerSettlementError("mark_provider_receipt_inbox_cleaned", "invocation_not_found", req.ProviderInvocationID, "", "")
+	}
+	if invocation.CompletionMode != ProviderCompletionModeReceiptRequired {
+		return ProviderInvocation{}, providerSettlementError("mark_provider_receipt_inbox_cleaned", "completion_receipt_not_supported", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if !providerInvocationIsTerminal(invocation.InvocationState) {
+		return ProviderInvocation{}, providerSettlementError("mark_provider_receipt_inbox_cleaned", "invocation_not_terminal", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if invocation.ReceiptInboxCleanedAt == "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
+			SET receipt_inbox_cleaned_at = ?, updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+			WHERE provider_invocation_id = ? AND receipt_inbox_cleaned_at IS NULL`, req.CleanedAt, req.CleanedAt, req.CleanedAt, invocation.ProviderInvocationID); err != nil {
+			return ProviderInvocation{}, fmt.Errorf("mark provider receipt inbox cleaned for %q: %w", invocation.ProviderInvocationID, err)
+		}
+		invocation, found, err = loadProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID)
+		if err != nil {
+			return ProviderInvocation{}, err
+		}
+		if !found {
+			return ProviderInvocation{}, providerSettlementError("mark_provider_receipt_inbox_cleaned", "invocation_not_found", req.ProviderInvocationID, "", "")
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return ProviderInvocation{}, fmt.Errorf("commit provider receipt inbox cleanup transaction: %w", err)
+	}
+	committed = true
+	return invocation, nil
+}
+
 func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProviderInvocationRequest) (ProviderInvocation, error) {
 	if s == nil || s.db == nil {
 		return ProviderInvocation{}, fmt.Errorf("store database is required")
@@ -638,6 +789,264 @@ func (s *Store) ListProviderCompletionEvidence(ctx context.Context, providerInvo
 	return evidence, nil
 }
 
+// IngestProviderCompletionReceipt atomically records one transport attempt,
+// updates receipt telemetry, applies handshake invalidation, and publishes
+// accepted receipt evidence. Domain rejection is returned as a disposition;
+// an error means the transaction did not commit.
+func (s *Store) IngestProviderCompletionReceipt(ctx context.Context, req IngestProviderCompletionReceiptRequest) (IngestProviderCompletionReceiptResult, error) {
+	result := IngestProviderCompletionReceiptResult{}
+	if s == nil || s.db == nil {
+		return result, fmt.Errorf("store database is required")
+	}
+	normalized, err := normalizeIngestProviderCompletionReceiptRequest(req, s.currentTime())
+	if err != nil {
+		return result, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("begin provider completion receipt ingestion transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	invocation, found, err := loadProviderInvocationTx(ctx, tx, normalized.ProviderInvocationID)
+	if err != nil {
+		return result, err
+	}
+	if !found {
+		return result, providerSettlementError("ingest_provider_completion_receipt", "invocation_not_found", normalized.ProviderInvocationID, "", "")
+	}
+
+	existingAttempt, found, err := loadProviderCompletionEvidenceByIDTx(ctx, tx, normalized.AttemptEvidenceID)
+	if err != nil {
+		return result, err
+	}
+	if found {
+		if existingAttempt.ProviderInvocationID != invocation.ProviderInvocationID || existingAttempt.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceiptAttempt {
+			return result, providerSettlementError("ingest_provider_completion_receipt", "evidence_conflict", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+		}
+		result, err = replayProviderReceiptIngestionTx(ctx, tx, invocation, existingAttempt)
+		if err != nil {
+			return IngestProviderCompletionReceiptResult{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return IngestProviderCompletionReceiptResult{}, fmt.Errorf("commit provider completion receipt ingestion replay transaction: %w", err)
+		}
+		committed = true
+		return result, nil
+	}
+
+	activeInvocationID, _, attemptFound, err := loadAttemptInvocationRefsTx(ctx, tx, invocation.AttemptID)
+	if err != nil {
+		return result, err
+	}
+	if !attemptFound {
+		return result, providerSettlementError("ingest_provider_completion_receipt", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	attemptState, attemptFound, err := loadAttemptExecutionStateTx(ctx, tx, invocation.AttemptID)
+	if err != nil {
+		return result, err
+	}
+	if !attemptFound {
+		return result, providerSettlementError("ingest_provider_completion_receipt", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+
+	disposition := normalized.Disposition
+	reasonCode := normalized.ReasonCode
+	reasonText := normalized.ReasonText
+	acceptedEvidenceID := ""
+	acceptedEvidence := ProviderCompletionEvidence{}
+	candidateReceiptPayload := ""
+	if normalized.ValidationSucceeded {
+		candidateReceiptPayload, err = buildCompletionReceiptEvidencePayload(
+			normalized.ProtocolVersion,
+			invocation.AttemptID,
+			invocation.ProviderInvocationID,
+			normalized.CompletionCapability,
+			normalized.FinalText,
+			normalized.StructuredPayloadJSON,
+		)
+		if err != nil {
+			return result, err
+		}
+		candidateReceiptPayload, err = canonicalizeJSONDocument(candidateReceiptPayload, "")
+		if err != nil {
+			return result, fmt.Errorf("canonicalize completion receipt evidence: %w", err)
+		}
+	}
+
+	invalidationReason := ""
+	switch {
+	case normalized.ObservedAttemptID != "" && normalized.ObservedAttemptID != invocation.AttemptID:
+		invalidationReason = "attempt_lineage_mismatch"
+	case normalized.ObservedInvocationID != "" && normalized.ObservedInvocationID != invocation.ProviderInvocationID:
+		invalidationReason = "provider_invocation_claim_mismatch"
+	case normalized.CompletionCapabilityHash != "" && normalized.CompletionCapabilityHash != invocation.CompletionCapabilityHash:
+		invalidationReason = "completion_capability_mismatch"
+	}
+	if invalidationReason != "" {
+		disposition = ProviderCompletionReceiptDispositionInvalidated
+		reasonCode = invalidationReason
+		reasonText = "completion receipt claims conflict with the runtime-selected invocation"
+	}
+
+	if disposition == ProviderCompletionReceiptDispositionAccepted {
+		switch {
+		case !normalized.ValidationSucceeded:
+			disposition = ProviderCompletionReceiptDispositionRejected
+			reasonCode = "receipt_validation_required"
+			reasonText = "completion receipt schema and node validation must succeed before acceptance"
+		case normalized.ProtocolVersion != "v1":
+			disposition = ProviderCompletionReceiptDispositionRejected
+			reasonCode = "protocol_version_unsupported"
+			reasonText = "completion receipt protocol version is not supported"
+		case normalized.ObservedAttemptID == "" || normalized.ObservedInvocationID == "" || normalized.CompletionCapabilityHash == "":
+			disposition = ProviderCompletionReceiptDispositionRejected
+			reasonCode = "receipt_claims_missing"
+			reasonText = "validated completion receipt claims are incomplete"
+		}
+	}
+
+	if disposition == ProviderCompletionReceiptDispositionAccepted {
+		existingReceipt, receiptFound, loadErr := loadProviderCompletionReceiptTx(ctx, tx, invocation.ProviderInvocationID)
+		if loadErr != nil {
+			return result, loadErr
+		}
+		if receiptFound {
+			if existingReceipt.PayloadJSON == candidateReceiptPayload {
+				disposition = ProviderCompletionReceiptDispositionIdempotentDuplicate
+				reasonCode = string(disposition)
+				reasonText = ""
+				acceptedEvidenceID = existingReceipt.EvidenceID
+				acceptedEvidence = existingReceipt
+				result.Idempotent = true
+			} else {
+				disposition = ProviderCompletionReceiptDispositionInvalidated
+				reasonCode = "completion_receipt_conflict"
+				reasonText = "completion receipt conflicts with accepted evidence"
+			}
+		}
+	}
+
+	if disposition == ProviderCompletionReceiptDispositionAccepted {
+		if eligibilityErr := validateProviderInvocationReceiptEligibilityTx(ctx, tx, invocation); eligibilityErr != nil {
+			var settlementErr *ProviderSettlementError
+			if !errors.As(eligibilityErr, &settlementErr) {
+				return result, eligibilityErr
+			}
+			disposition = ProviderCompletionReceiptDispositionRejected
+			reasonCode = settlementErr.Reason
+			reasonText = settlementErr.Error()
+		}
+	}
+
+	if disposition == ProviderCompletionReceiptDispositionInvalidated &&
+		activeInvocationID == invocation.ProviderInvocationID &&
+		attemptExecutionCanAcceptReceipt(attemptState) &&
+		(invocation.InvocationState == ProviderInvocationStateIssued || invocation.InvocationState == ProviderInvocationStateOpen || invocation.InvocationState == ProviderInvocationStateReceiptPersisted) {
+		if err := invalidateProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID, normalized.ObservedAt, reasonCode); err != nil {
+			return result, err
+		}
+	}
+
+	if disposition == ProviderCompletionReceiptDispositionAccepted {
+		acceptedEvidenceID = deterministicAcceptedProviderReceiptEvidenceID(invocation.ProviderInvocationID, candidateReceiptPayload)
+		acceptedEvidence, err = insertProviderCompletionEvidenceTx(ctx, tx, AppendProviderCompletionEvidenceRequest{
+			EvidenceID:           acceptedEvidenceID,
+			ProviderInvocationID: invocation.ProviderInvocationID,
+			AttemptID:            invocation.AttemptID,
+			RunID:                invocation.RunID,
+			NodeRunID:            invocation.NodeRunID,
+			EvidenceKind:         ProviderCompletionEvidenceKindCompletionReceipt,
+			PayloadJSON:          candidateReceiptPayload,
+			CreatedAt:            normalized.ObservedAt,
+		})
+		if err != nil {
+			return result, err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE provider_invocations
+			SET invocation_state = 'receipt_persisted',
+			    completion_capability_used_at = COALESCE(completion_capability_used_at, ?),
+			    receipt_persisted_at = COALESCE(receipt_persisted_at, ?),
+			    updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+			WHERE provider_invocation_id = ? AND invocation_state = 'open'`,
+			normalized.ObservedAt, normalized.ObservedAt, normalized.ObservedAt, normalized.ObservedAt, invocation.ProviderInvocationID)
+		if err != nil {
+			return result, fmt.Errorf("persist ingested provider completion receipt for %q: %w", invocation.ProviderInvocationID, err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return result, fmt.Errorf("read ingested provider completion receipt rows affected for %q: %w", invocation.ProviderInvocationID, err)
+		}
+		if rows == 0 {
+			return result, providerSettlementError("ingest_provider_completion_receipt", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+		}
+		reasonCode = string(ProviderCompletionReceiptDispositionAccepted)
+		reasonText = ""
+	}
+	if reasonCode == "" {
+		reasonCode = string(disposition)
+	}
+
+	attemptPayload, err := buildIngestedCompletionReceiptAttemptEvidencePayload(normalized, disposition, reasonCode, reasonText, acceptedEvidenceID)
+	if err != nil {
+		return result, err
+	}
+	attemptEvidence, err := insertProviderCompletionEvidenceTx(ctx, tx, AppendProviderCompletionEvidenceRequest{
+		EvidenceID:           normalized.AttemptEvidenceID,
+		ProviderInvocationID: invocation.ProviderInvocationID,
+		AttemptID:            invocation.AttemptID,
+		RunID:                invocation.RunID,
+		NodeRunID:            invocation.NodeRunID,
+		EvidenceKind:         ProviderCompletionEvidenceKindCompletionReceiptAttempt,
+		PayloadJSON:          attemptPayload,
+		CreatedAt:            normalized.ObservedAt,
+	})
+	if err != nil {
+		return result, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
+		SET receipt_seen_count = receipt_seen_count + 1,
+		    first_receipt_seen_at = COALESCE(first_receipt_seen_at, ?),
+		    last_receipt_seen_at = ?,
+		    last_receipt_disposition = ?,
+		    updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+		WHERE provider_invocation_id = ?`,
+		normalized.ObservedAt,
+		normalized.ObservedAt,
+		string(disposition),
+		normalized.ObservedAt,
+		normalized.ObservedAt,
+		invocation.ProviderInvocationID,
+	); err != nil {
+		return result, fmt.Errorf("update provider completion receipt ingestion counters for %q: %w", invocation.ProviderInvocationID, err)
+	}
+	invocation, found, err = loadProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID)
+	if err != nil {
+		return result, err
+	}
+	if !found {
+		return result, providerSettlementError("ingest_provider_completion_receipt", "invocation_not_found", normalized.ProviderInvocationID, "", "")
+	}
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("commit provider completion receipt ingestion transaction: %w", err)
+	}
+	committed = true
+	result.Invocation = invocation
+	result.AttemptEvidence = attemptEvidence
+	result.AcceptedEvidence = acceptedEvidence
+	result.Disposition = disposition
+	result.ReasonCode = reasonCode
+	result.ReasonText = reasonText
+	result.Idempotent = result.Idempotent || disposition == ProviderCompletionReceiptDispositionIdempotentDuplicate
+	return result, nil
+}
+
+// Deprecated: use IngestProviderCompletionReceipt.
 func (s *Store) ObserveProviderCompletionReceiptAttempt(ctx context.Context, req ObserveProviderCompletionReceiptAttemptRequest) (ObserveProviderCompletionReceiptAttemptResult, error) {
 	result := ObserveProviderCompletionReceiptAttemptResult{}
 	if s == nil || s.db == nil {
@@ -709,6 +1118,7 @@ func (s *Store) ObserveProviderCompletionReceiptAttempt(ctx context.Context, req
 	return result, nil
 }
 
+// Deprecated: use IngestProviderCompletionReceipt.
 func (s *Store) AcceptProviderCompletionReceipt(ctx context.Context, req AcceptProviderCompletionReceiptRequest) (AcceptProviderCompletionReceiptResult, error) {
 	result := AcceptProviderCompletionReceiptResult{}
 	if s == nil || s.db == nil {
@@ -1706,6 +2116,7 @@ const providerInvocationSelect = `SELECT provider_invocation_id,
 	COALESCE(last_receipt_seen_at, ''),
 	COALESCE(last_receipt_disposition, ''),
 	COALESCE(receipt_persisted_at, ''),
+	COALESCE(receipt_inbox_cleaned_at, ''),
 	COALESCE(settled_at, ''),
 	COALESCE(superseded_by_invocation_id, ''),
 	COALESCE(invalid_reason, ''),
@@ -1769,6 +2180,7 @@ func scanProviderInvocation(scanner providerInvocationScanner) (ProviderInvocati
 		&invocation.LastReceiptSeenAt,
 		&rawLastReceiptDisposition,
 		&invocation.ReceiptPersistedAt,
+		&invocation.ReceiptInboxCleanedAt,
 		&invocation.SettledAt,
 		&invocation.SupersededByInvocationID,
 		&invocation.InvalidReason,
@@ -1970,7 +2382,19 @@ func loadAttemptExecutionStateTx(ctx context.Context, tx *sql.Tx, attemptID stri
 
 func attemptExecutionCanAcceptReceipt(state string) bool {
 	switch strings.TrimSpace(state) {
-	case "queued", "starting", "running":
+	case "queued", "starting", "running", "terminal_observed":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerInvocationIsTerminal(state ProviderInvocationState) bool {
+	switch state {
+	case ProviderInvocationStateSettledSuccess,
+		ProviderInvocationStateSettledFailed,
+		ProviderInvocationStateSettledCancelled,
+		ProviderInvocationStateSuperseded:
 		return true
 	default:
 		return false
@@ -2152,7 +2576,7 @@ func normalizeProviderCompletionEvidenceRequest(req AppendProviderCompletionEvid
 		return AppendProviderCompletionEvidenceRequest{}, fmt.Errorf("evidence_id, provider_invocation_id, attempt_id, run_id, node_run_id, and evidence_kind are required")
 	}
 	if !allowCompletionReceipt && req.EvidenceKind == ProviderCompletionEvidenceKindCompletionReceipt {
-		return AppendProviderCompletionEvidenceRequest{}, fmt.Errorf("completion_receipt evidence must be persisted via AcceptProviderCompletionReceipt")
+		return AppendProviderCompletionEvidenceRequest{}, fmt.Errorf("completion_receipt evidence must be persisted via IngestProviderCompletionReceipt")
 	}
 	payloadJSON, err := canonicalizeJSONDocument(req.PayloadJSON, "")
 	if err != nil {
@@ -2174,6 +2598,77 @@ type normalizedAcceptProviderCompletionReceiptRequest struct {
 type normalizedObserveProviderCompletionReceiptAttemptRequest struct {
 	ObserveProviderCompletionReceiptAttemptRequest
 	PayloadJSON string
+}
+
+type normalizedIngestProviderCompletionReceiptRequest struct {
+	IngestProviderCompletionReceiptRequest
+	CompletionCapabilityHash string
+	AttemptEvidenceID        string
+}
+
+func normalizeIngestProviderCompletionReceiptRequest(req IngestProviderCompletionReceiptRequest, now time.Time) (normalizedIngestProviderCompletionReceiptRequest, error) {
+	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
+	req.EntryType = strings.TrimSpace(req.EntryType)
+	req.WireSHA256 = strings.ToLower(strings.TrimSpace(req.WireSHA256))
+	req.ProtocolVersion = strings.TrimSpace(req.ProtocolVersion)
+	req.ObservedAttemptID = strings.TrimSpace(req.ObservedAttemptID)
+	req.ObservedInvocationID = strings.TrimSpace(req.ObservedInvocationID)
+	req.CompletionCapability = strings.TrimSpace(req.CompletionCapability)
+	req.Disposition = ProviderCompletionReceiptDisposition(strings.TrimSpace(string(req.Disposition)))
+	req.ReasonCode = strings.TrimSpace(req.ReasonCode)
+	req.ReasonText = strings.TrimSpace(req.ReasonText)
+	req.ObservedAt = strings.TrimSpace(req.ObservedAt)
+	if req.ProviderInvocationID == "" || req.EntryName == "" || req.EntryType == "" || req.Disposition == "" {
+		return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("provider_invocation_id, entry_name, entry_type, and disposition are required")
+	}
+	if req.WireByteCount < 0 {
+		return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("wire_byte_count must be non-negative")
+	}
+	if req.WireSHA256 != "" {
+		digest, err := hex.DecodeString(req.WireSHA256)
+		if err != nil || len(digest) != sha256.Size {
+			return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("wire_sha256 must be a lowercase SHA-256 digest")
+		}
+	}
+	switch req.Disposition {
+	case ProviderCompletionReceiptDispositionAccepted,
+		ProviderCompletionReceiptDispositionRejected,
+		ProviderCompletionReceiptDispositionInvalidated,
+		ProviderCompletionReceiptDispositionError:
+	default:
+		return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("invalid initial completion receipt disposition %q", req.Disposition)
+	}
+	if req.ObservedAt == "" {
+		req.ObservedAt = now.UTC().Format(time.RFC3339Nano)
+	}
+	if req.ReasonCode == "" && req.Disposition != ProviderCompletionReceiptDispositionAccepted {
+		req.ReasonCode = string(req.Disposition)
+	}
+	if req.ValidationSucceeded {
+		req.FinalText = strings.TrimSpace(req.FinalText)
+		if req.FinalText == "" {
+			return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("validated completion receipt final_text is required")
+		}
+		structuredPayloadJSON, err := canonicalizeJSONObject(req.StructuredPayloadJSON, `{}`)
+		if err != nil {
+			return normalizedIngestProviderCompletionReceiptRequest{}, fmt.Errorf("canonicalize validated completion receipt structured payload: %w", err)
+		}
+		req.StructuredPayloadJSON = structuredPayloadJSON
+	} else {
+		// Unvalidated output may contain malformed wire data. Never retain it.
+		req.FinalText = ""
+		req.StructuredPayloadJSON = ""
+	}
+	capabilityHash := ""
+	if req.CompletionCapability != "" {
+		capabilityHash = sha256Hex(req.CompletionCapability)
+	}
+	normalized := normalizedIngestProviderCompletionReceiptRequest{
+		IngestProviderCompletionReceiptRequest: req,
+		CompletionCapabilityHash:               capabilityHash,
+	}
+	normalized.AttemptEvidenceID = deterministicProviderReceiptAttemptEvidenceID(normalized)
+	return normalized, nil
 }
 
 func normalizeAcceptProviderCompletionReceiptRequest(req AcceptProviderCompletionReceiptRequest) (normalizedAcceptProviderCompletionReceiptRequest, error) {
@@ -2352,16 +2847,49 @@ func buildCompletionReceiptEvidencePayload(protocolVersion, attemptID, providerI
 }
 
 type completionReceiptAttemptEvidencePayload struct {
+	EntryName               string          `json:"entry_name,omitempty"`
+	WireByteCount           *int64          `json:"wire_byte_count,omitempty"`
+	WireSHA256              string          `json:"wire_sha256,omitempty"`
+	EntryType               string          `json:"entry_type,omitempty"`
 	ProtocolVersion         string          `json:"protocol_version"`
 	ObservedAttemptID       string          `json:"observed_attempt_id"`
 	ObservedInvocationID    string          `json:"observed_invocation_id"`
 	CompletionCapabilitySHA string          `json:"completion_capability_sha256"`
+	ValidationSucceeded     bool            `json:"validation_succeeded,omitempty"`
 	FinalText               string          `json:"final_text"`
 	StructuredPayload       json.RawMessage `json:"structured_payload"`
 	Disposition             string          `json:"disposition"`
 	ReasonCode              string          `json:"reason_code,omitempty"`
 	ReasonText              string          `json:"reason_text,omitempty"`
 	AcceptedEvidenceID      string          `json:"accepted_evidence_id,omitempty"`
+}
+
+func buildIngestedCompletionReceiptAttemptEvidencePayload(req normalizedIngestProviderCompletionReceiptRequest, disposition ProviderCompletionReceiptDisposition, reasonCode, reasonText, acceptedEvidenceID string) (string, error) {
+	wireByteCount := req.WireByteCount
+	payload := completionReceiptAttemptEvidencePayload{
+		EntryName:               req.EntryName,
+		WireByteCount:           &wireByteCount,
+		WireSHA256:              req.WireSHA256,
+		EntryType:               req.EntryType,
+		ProtocolVersion:         req.ProtocolVersion,
+		ObservedAttemptID:       req.ObservedAttemptID,
+		ObservedInvocationID:    req.ObservedInvocationID,
+		CompletionCapabilitySHA: req.CompletionCapabilityHash,
+		ValidationSucceeded:     req.ValidationSucceeded,
+		FinalText:               req.FinalText,
+		Disposition:             string(disposition),
+		ReasonCode:              strings.TrimSpace(reasonCode),
+		ReasonText:              strings.TrimSpace(reasonText),
+		AcceptedEvidenceID:      strings.TrimSpace(acceptedEvidenceID),
+	}
+	if req.ValidationSucceeded {
+		payload.StructuredPayload = json.RawMessage(req.StructuredPayloadJSON)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal ingested completion receipt attempt payload: %w", err)
+	}
+	return canonicalizeJSONDocument(string(raw), "")
 }
 
 func buildCompletionReceiptAttemptEvidencePayload(protocolVersion, observedAttemptID, observedInvocationID, completionCapability, finalText, structuredPayloadJSON string, disposition ProviderCompletionReceiptDisposition, reasonCode, reasonText, acceptedEvidenceID string) (string, error) {
@@ -2385,6 +2913,56 @@ func buildCompletionReceiptAttemptEvidencePayload(protocolVersion, observedAttem
 		return "", fmt.Errorf("marshal completion receipt attempt payload: %w", err)
 	}
 	return string(payload), nil
+}
+
+func deterministicProviderReceiptAttemptEvidenceID(req normalizedIngestProviderCompletionReceiptRequest) string {
+	raw, _ := json.Marshal(struct {
+		ProviderInvocationID string `json:"provider_invocation_id"`
+		EntryName            string `json:"entry_name"`
+		WireByteCount        int64  `json:"wire_byte_count"`
+		WireSHA256           string `json:"wire_sha256"`
+		EntryType            string `json:"entry_type"`
+	}{
+		ProviderInvocationID: req.ProviderInvocationID,
+		EntryName:            req.EntryName,
+		WireByteCount:        req.WireByteCount,
+		WireSHA256:           req.WireSHA256,
+		EntryType:            req.EntryType,
+	})
+	sum := sha256.Sum256(raw)
+	return "receipt_attempt_" + hex.EncodeToString(sum[:])
+}
+
+func deterministicAcceptedProviderReceiptEvidenceID(providerInvocationID, payloadJSON string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(providerInvocationID) + "\x00" + payloadJSON))
+	return "receipt_" + hex.EncodeToString(sum[:])
+}
+
+func replayProviderReceiptIngestionTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, attemptEvidence ProviderCompletionEvidence) (IngestProviderCompletionReceiptResult, error) {
+	var payload completionReceiptAttemptEvidencePayload
+	if err := json.Unmarshal([]byte(attemptEvidence.PayloadJSON), &payload); err != nil {
+		return IngestProviderCompletionReceiptResult{}, fmt.Errorf("decode provider receipt ingestion replay evidence %q: %w", attemptEvidence.EvidenceID, err)
+	}
+	result := IngestProviderCompletionReceiptResult{
+		Invocation:      invocation,
+		AttemptEvidence: attemptEvidence,
+		Disposition:     ProviderCompletionReceiptDisposition(strings.TrimSpace(payload.Disposition)),
+		ReasonCode:      strings.TrimSpace(payload.ReasonCode),
+		ReasonText:      strings.TrimSpace(payload.ReasonText),
+		ExactReplay:     true,
+	}
+	if payload.AcceptedEvidenceID != "" {
+		accepted, found, err := loadProviderCompletionEvidenceByIDTx(ctx, tx, payload.AcceptedEvidenceID)
+		if err != nil {
+			return IngestProviderCompletionReceiptResult{}, err
+		}
+		if !found || accepted.ProviderInvocationID != invocation.ProviderInvocationID || accepted.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
+			return IngestProviderCompletionReceiptResult{}, providerSettlementError("ingest_provider_completion_receipt", "accepted_evidence_missing", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+		}
+		result.AcceptedEvidence = accepted
+		result.Idempotent = true
+	}
+	return result, nil
 }
 
 func ParseProviderCompletionReceiptEvidencePayload(payloadJSON string) (struct {
@@ -2431,6 +3009,21 @@ func canonicalizeJSONDocument(raw string, defaultJSON string) (string, error) {
 		return "", err
 	}
 	return string(normalized), nil
+}
+
+func canonicalizeJSONObject(raw string, defaultJSON string) (string, error) {
+	canonical, err := canonicalizeJSONDocument(raw, defaultJSON)
+	if err != nil {
+		return "", err
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(canonical), &object); err != nil {
+		return "", err
+	}
+	if object == nil {
+		return "", fmt.Errorf("json document must be an object")
+	}
+	return canonical, nil
 }
 
 func ensureInvocationLineage(invocation ProviderInvocation, attemptID, runID, nodeRunID, operation string) error {

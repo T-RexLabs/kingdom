@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"os"
+	"sort"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -18,7 +21,7 @@ func openRoot(path string) (*Root, error) {
 	if path == "" {
 		return nil, fmt.Errorf("secure root path is required")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open secure root %q: %w", path, err)
 	}
@@ -40,46 +43,69 @@ func openRootRegular(root *Root, path string) (*os.File, error) {
 		return nil, err
 	}
 	defer unix.Close(parentFD)
+	var entry unix.Stat_t
+	if err := unix.Fstatat(parentFD, leaf, &entry, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return nil, fmt.Errorf("inspect secure regular file %q: %w", path, err)
+	}
+	if uint32(entry.Mode)&unix.S_IFMT != unix.S_IFREG {
+		return nil, fmt.Errorf("secure path %q must be a regular non-symlink file", path)
+	}
 	fd, err := unix.Openat(parentFD, leaf, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open secure regular file %q: %w", path, err)
 	}
-	file := os.NewFile(uintptr(fd), path)
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
+	var opened unix.Stat_t
+	if err := unix.Fstat(fd, &opened); err != nil {
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("stat secure regular file %q: %w", path, err)
 	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
+	if uint32(opened.Mode)&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
 		return nil, fmt.Errorf("secure path %q must be a regular non-symlink file", path)
+	}
+	if fileIdentity(entry) != fileIdentity(opened) {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("%w: secure regular file %q changed while opening", ErrIdentityMismatch, path)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open secure regular file %q: invalid descriptor", path)
 	}
 	return file, nil
 }
 
-func readRootDir(root *Root, path string) ([]os.DirEntry, error) {
-	if root == nil || root.fd < 0 {
-		return nil, fmt.Errorf("secure root is closed")
+func readRootRegular(root *Root, path string, maxBytes int64) ([]byte, FileIdentity, error) {
+	if maxBytes < 0 || maxBytes == math.MaxInt64 {
+		return nil, FileIdentity{}, fmt.Errorf("maximum read size must be between 0 and %d", int64(math.MaxInt64-1))
 	}
-	fd, err := unix.Dup(root.fd)
+	file, err := openRootRegular(root, path)
 	if err != nil {
-		return nil, fmt.Errorf("duplicate secure root %q: %w", root.name, err)
+		return nil, FileIdentity{}, err
 	}
-	trimmed := path
-	if trimmed != "" && trimmed != "." {
-		components, splitErr := splitRelativePath(trimmed)
-		if splitErr != nil {
-			unix.Close(fd)
-			return nil, splitErr
-		}
-		for _, component := range components {
-			childFD, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			unix.Close(fd)
-			if openErr != nil {
-				return nil, fmt.Errorf("open secure directory component %q: %w", component, openErr)
-			}
-			fd = childFD
-		}
+	defer file.Close()
+	var opened unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &opened); err != nil {
+		return nil, FileIdentity{}, fmt.Errorf("stat secure regular file %q: %w", path, err)
+	}
+	identity := fileIdentity(opened)
+	if opened.Size > maxBytes {
+		return nil, identity, fmt.Errorf("%w: secure regular file %q exceeds %d bytes", ErrLimitExceeded, path, maxBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, identity, fmt.Errorf("read secure regular file %q: %w", path, err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, identity, fmt.Errorf("%w: secure regular file %q exceeds %d bytes", ErrLimitExceeded, path, maxBytes)
+	}
+	return raw, identity, nil
+}
+
+func readRootDir(root *Root, path string) ([]os.DirEntry, error) {
+	fd, err := openRootDir(root, path)
+	if err != nil {
+		return nil, err
 	}
 	directory := os.NewFile(uintptr(fd), path)
 	defer directory.Close()
@@ -88,6 +114,75 @@ func readRootDir(root *Root, path string) ([]os.DirEntry, error) {
 		return nil, fmt.Errorf("read secure directory %q: %w", path, err)
 	}
 	return entries, nil
+}
+
+func readRootDirBounded(root *Root, path string, maxEntries int) ([]Entry, error) {
+	if maxEntries < 0 || maxEntries == math.MaxInt {
+		return nil, fmt.Errorf("maximum directory entries must be between 0 and %d", math.MaxInt-1)
+	}
+	fd, err := openRootDir(root, path)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), path)
+	defer directory.Close()
+	dirEntries, err := directory.ReadDir(maxEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("read secure directory %q: %w", path, err)
+	}
+	overflow := len(dirEntries) > maxEntries
+	if overflow {
+		dirEntries = dirEntries[:maxEntries]
+	}
+	entries := make([]Entry, 0, len(dirEntries))
+	for _, dirEntry := range dirEntries {
+		var stat unix.Stat_t
+		if err := unix.Fstatat(fd, dirEntry.Name(), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			return nil, fmt.Errorf("inspect secure directory entry %q: %w", dirEntry.Name(), err)
+		}
+		entries = append(entries, Entry{Name: dirEntry.Name(), Type: entryType(uint32(stat.Mode)), SizeBytes: stat.Size, Identity: fileIdentity(stat)})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	if overflow {
+		return entries, fmt.Errorf("%w: secure directory %q contains more than %d entries", ErrLimitExceeded, path, maxEntries)
+	}
+	return entries, nil
+}
+
+func ensureRootDir(root *Root, path string, mode fs.FileMode) error {
+	if root == nil || root.fd < 0 {
+		return fmt.Errorf("secure root is closed")
+	}
+	components, err := splitRelativePath(path)
+	if err != nil {
+		return err
+	}
+	fd, err := unix.Dup(root.fd)
+	if err != nil {
+		return fmt.Errorf("duplicate secure root %q: %w", root.name, err)
+	}
+	defer func() { _ = unix.Close(fd) }()
+	for _, component := range components {
+		childFD, err := openOrCreateDirectoryAt(fd, component, mode)
+		if err != nil {
+			return fmt.Errorf("ensure secure directory component %q: %w", component, err)
+		}
+		unix.Close(fd)
+		fd = childFD
+	}
+	return nil
+}
+
+func syncRootDir(root *Root, path string) error {
+	fd, err := openRootDir(root, path)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	if err := unix.Fsync(fd); err != nil {
+		return fmt.Errorf("sync secure directory %q: %w", path, err)
+	}
+	return nil
 }
 
 func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
@@ -147,6 +242,9 @@ func replaceRegularAt(parentFD int, leaf, path string, data []byte, mode fs.File
 		return fmt.Errorf("commit restored file %q: %w", path, err)
 	}
 	committed = true
+	if err := unix.Fsync(parentFD); err != nil {
+		return fmt.Errorf("sync secure parent after publishing %q: %w", path, err)
+	}
 	return nil
 }
 
@@ -166,10 +264,119 @@ func removeRootEntry(root *Root, path string) error {
 	if info.Mode&unix.S_IFMT == unix.S_IFDIR {
 		return fmt.Errorf("secure removal %q is a directory; refusing recursive removal", path)
 	}
+	return removeEntryAt(parentFD, leaf, path)
+}
+
+func removeRootEntryIfIdentity(root *Root, path string, expectedType EntryType, identity FileIdentity) error {
+	parentFD, leaf, err := openParent(root, path, false, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+	var info unix.Stat_t
+	if err := unix.Fstatat(parentFD, leaf, &info, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("inspect secure conditional removal %q: %w", path, err)
+	}
+	if entryType(uint32(info.Mode)) != expectedType || fileIdentity(info) != identity {
+		return fmt.Errorf("%w: secure entry %q", ErrIdentityMismatch, path)
+	}
+	if expectedType == EntryTypeDirectory {
+		return fmt.Errorf("secure conditional removal %q is a directory; refusing recursive removal", path)
+	}
+	return removeEntryAt(parentFD, leaf, path)
+}
+
+func removeEntryAt(parentFD int, leaf, path string) error {
 	if err := unix.Unlinkat(parentFD, leaf, 0); err != nil {
 		return fmt.Errorf("remove secure entry %q: %w", path, err)
 	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return fmt.Errorf("sync secure parent after removing %q: %w", path, err)
+	}
 	return nil
+}
+
+func removeRootEmptyDir(root *Root, path string) error {
+	parentFD, leaf, err := openParent(root, path, false, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+	if err := unix.Unlinkat(parentFD, leaf, unix.AT_REMOVEDIR); err != nil {
+		return fmt.Errorf("remove empty secure directory %q: %w", path, err)
+	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return fmt.Errorf("sync secure parent after removing directory %q: %w", path, err)
+	}
+	return nil
+}
+
+func openRootDir(root *Root, path string) (int, error) {
+	if root == nil || root.fd < 0 {
+		return -1, fmt.Errorf("secure root is closed")
+	}
+	fd, err := unix.Openat(root.fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open secure root directory %q: %w", root.name, err)
+	}
+	trimmed := path
+	if trimmed == "" || trimmed == "." {
+		return fd, nil
+	}
+	components, err := splitRelativePath(trimmed)
+	if err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	for _, component := range components {
+		childFD, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		unix.Close(fd)
+		if openErr != nil {
+			return -1, fmt.Errorf("open secure directory component %q: %w", component, openErr)
+		}
+		fd = childFD
+	}
+	return fd, nil
+}
+
+func openOrCreateDirectoryAt(parentFD int, component string, mode fs.FileMode) (int, error) {
+	childFD, err := unix.Openat(parentFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err == nil {
+		return childFD, nil
+	}
+	if !errors.Is(err, unix.ENOENT) {
+		return -1, err
+	}
+	if err := unix.Mkdirat(parentFD, component, uint32(mode.Perm())); err != nil && !errors.Is(err, unix.EEXIST) {
+		return -1, err
+	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return -1, err
+	}
+	return unix.Openat(parentFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+}
+
+func entryType(mode uint32) EntryType {
+	switch mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		return EntryTypeRegular
+	case unix.S_IFDIR:
+		return EntryTypeDirectory
+	case unix.S_IFLNK:
+		return EntryTypeSymlink
+	case unix.S_IFIFO:
+		return EntryTypeFIFO
+	case unix.S_IFSOCK:
+		return EntryTypeSocket
+	case unix.S_IFBLK, unix.S_IFCHR:
+		return EntryTypeDevice
+	default:
+		return EntryTypeOther
+	}
+}
+
+func fileIdentity(stat unix.Stat_t) FileIdentity {
+	return FileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino)}
 }
 
 func openParent(root *Root, path string, create bool, mode fs.FileMode) (int, string, error) {
@@ -198,7 +405,7 @@ func openParent(root *Root, path string, create bool, mode fs.FileMode) (int, st
 
 func openDirectoryAt(parentFD int, component string, create bool, mode fs.FileMode) (int, error) {
 	for range 16 {
-		childFD, err := unix.Openat(parentFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		childFD, err := unix.Openat(parentFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err == nil || !create {
 			return childFD, err
 		}

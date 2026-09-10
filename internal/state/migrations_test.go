@@ -134,6 +134,12 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "provider_invocations", "last_receipt_disposition") {
 		t.Fatal("expected provider_invocations.last_receipt_disposition column to exist after up migration")
 	}
+	if !columnExists(t, db, "provider_invocations", "receipt_inbox_cleaned_at") {
+		t.Fatal("expected provider_invocations.receipt_inbox_cleaned_at column to exist after up migration")
+	}
+	if !indexExists(t, db, "idx_provider_invocations_receipt_ingestion") {
+		t.Fatal("expected receipt ingestion candidate index after up migration")
+	}
 	if !columnExists(t, db, "provider_completion_evidence", "evidence_kind") {
 		t.Fatal("expected provider_completion_evidence.evidence_kind column to exist after up migration")
 	}

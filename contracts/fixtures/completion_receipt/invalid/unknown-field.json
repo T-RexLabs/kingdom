@@ -1,0 +1,9 @@
+{
+  "protocol_version": "v1",
+  "attempt_id": "attempt-1",
+  "invocation_id": "invocation-1",
+  "completion_capability": "capability-1",
+  "final_text": "Implementation complete.",
+  "structured_payload": {},
+  "extra": "forbidden"
+}

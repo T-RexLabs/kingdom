@@ -643,7 +643,12 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 	defer ticker.Stop()
 
 	for {
-		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		if err := r.orchestrator.ingestProviderCompletionReceipts(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			slog.Warn("completion receipt ingestion loop failed", "error", err)
+		} else if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -788,6 +793,9 @@ func (r *Runtime) ForceClose() error {
 func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
+	}
+	if err := r.orchestrator.ingestProviderCompletionReceipts(ctx); err != nil {
+		return fmt.Errorf("replay provider completion receipts: %w", err)
 	}
 	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
 		return err

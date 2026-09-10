@@ -14,8 +14,7 @@ const (
 type completionEvidenceSource string
 
 const (
-	completionEvidenceSourceStream  completionEvidenceSource = "stream"
-	completionEvidenceSourceReceipt completionEvidenceSource = "completion_receipt"
+	completionEvidenceSourceStream completionEvidenceSource = "stream"
 )
 
 type stepFinishReasonKind string
@@ -52,21 +51,17 @@ type attemptCompletionEvidence struct {
 	FailureText                 string
 	PendingToolCount            int
 	LaterEventAfterTerminal     bool
+	ReceiptRequired             bool
 }
 
 type attemptCompletionResult struct {
-	State                           attemptCompletionState
-	ReasonCode                      string
-	FailureText                     string
-	OutputText                      string
-	Tokens                          TokenUsage
-	ProviderSessionID               string
-	EvidenceSource                  completionEvidenceSource
-	ProviderInvocationID            string
-	ProviderInvocationAt            string
-	CompletionReceiptAccepted       bool
-	CompletionReceiptEvidenceID     string
-	CompletionStructuredPayloadJSON string
+	State             attemptCompletionState
+	ReasonCode        string
+	FailureText       string
+	OutputText        string
+	Tokens            TokenUsage
+	ProviderSessionID string
+	EvidenceSource    completionEvidenceSource
 }
 
 type attemptCompletionDecision struct {
@@ -125,6 +120,17 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 		result.FailureText = "opencode stream remained active after terminal response"
 		return attemptCompletionDecision{Result: result}
 	}
+	if e.StepFinishSeen && e.LastStepFinish.Class == stepFinishTerminalFailure {
+		result.State = attemptCompletionStateFailed
+		result.ReasonCode = "provider_terminal_failure"
+		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
+		return attemptCompletionDecision{Result: result}
+	}
+	if e.ReceiptRequired {
+		result.State = attemptCompletionStateSuccess
+		result.ReasonCode = "execution_completed"
+		return attemptCompletionDecision{Result: result}
+	}
 	if e.StepFinishSeen {
 		switch e.LastStepFinish.Class {
 		case stepFinishTerminalSuccessCandidate:
@@ -142,11 +148,6 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 			}
 			result.State = attemptCompletionStateSuccess
 			result.ReasonCode = "execution_completed"
-			return attemptCompletionDecision{Result: result}
-		case stepFinishTerminalFailure:
-			result.State = attemptCompletionStateFailed
-			result.ReasonCode = "provider_terminal_failure"
-			result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
 			return attemptCompletionDecision{Result: result}
 		case stepFinishNonTerminal:
 			result.State = attemptCompletionStateIncompleteTurn

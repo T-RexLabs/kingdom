@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -221,8 +220,6 @@ func (r *startedOpencodeRun) databaseStartupObserved() {
 	r.releaseStartupOnce.Do(r.releaseDatabaseStartup)
 }
 
-const completionReceiptObservationGracePeriod = 750 * time.Millisecond
-
 func (e *IncompleteTerminalStateError) Error() string {
 	return fmt.Sprintf("incomplete terminal state (reason=%q)", strings.TrimSpace(e.Reason))
 }
@@ -237,11 +234,6 @@ func executeResponseForCompletionResult(result attemptCompletionResult) ExecuteR
 		OutputText:                      strings.TrimSpace(result.OutputText),
 		Tokens:                          result.Tokens,
 		ProviderSessionID:               strings.TrimSpace(result.ProviderSessionID),
-		ProviderInvocationID:            strings.TrimSpace(result.ProviderInvocationID),
-		ProviderInvocationAt:            strings.TrimSpace(result.ProviderInvocationAt),
-		CompletionReceiptAccepted:       result.CompletionReceiptAccepted,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(result.CompletionReceiptEvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(result.CompletionStructuredPayloadJSON),
 		Outcome:                         executionOutcomeFromAttemptCompletionResult(result),
 	}
 }
@@ -293,18 +285,6 @@ func executionResultForTimeout(timeoutErr error, providerSessionID string) attem
 		Timeout:           true,
 		FailureText:       firstNonEmpty(strings.TrimSpace(errorString(timeoutErr)), "opencode run timed out"),
 	}).Result
-}
-
-func withCompletionReceiptCandidate(result, candidate attemptCompletionResult, accepted bool) attemptCompletionResult {
-	if !accepted {
-		return result
-	}
-	result.CompletionReceiptAccepted = true
-	result.CompletionReceiptEvidenceID = strings.TrimSpace(candidate.CompletionReceiptEvidenceID)
-	result.CompletionStructuredPayloadJSON = strings.TrimSpace(candidate.CompletionStructuredPayloadJSON)
-	result.ProviderInvocationID = strings.TrimSpace(candidate.ProviderInvocationID)
-	result.ProviderInvocationAt = strings.TrimSpace(candidate.ProviderInvocationAt)
-	return result
 }
 
 func adjudicateFatalExecutionEvidence(evidence attemptCompletionEvidence) (attemptCompletionResult, bool) {
@@ -375,102 +355,6 @@ func pendingToolCount(states map[string]string) int {
 		}
 	}
 	return pending
-}
-
-func completionResultForAcceptedReceipt(accepted CompletionReceiptAcceptance, outputText string, tokens TokenUsage, providerSessionID, invocationID, invocationAt string) attemptCompletionResult {
-	return attemptCompletionResult{
-		State:                           attemptCompletionStateSuccess,
-		ReasonCode:                      "execution_completed",
-		OutputText:                      firstNonEmpty(strings.TrimSpace(accepted.FinalText), strings.TrimSpace(outputText)),
-		Tokens:                          tokens,
-		ProviderSessionID:               strings.TrimSpace(providerSessionID),
-		ProviderInvocationID:            strings.TrimSpace(invocationID),
-		ProviderInvocationAt:            strings.TrimSpace(invocationAt),
-		EvidenceSource:                  completionEvidenceSourceReceipt,
-		CompletionReceiptAccepted:       true,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
-	}
-}
-
-func completionReceiptSettlement(req ExecuteRequest, outputText string, tokens TokenUsage, providerSessionID string) (attemptCompletionResult, bool, bool) {
-	if !completionReceiptModeEnabled(req) {
-		return attemptCompletionResult{}, false, false
-	}
-	processedReceipts, err := processCompletionReceipts(req)
-	if err != nil {
-		return attemptCompletionResult{
-			State:                attemptCompletionStateIncompleteTurn,
-			ReasonCode:           "provider_incomplete_turn",
-			FailureText:          firstNonEmpty(strings.TrimSpace(err.Error()), "provider completion receipt validation failed"),
-			OutputText:           strings.TrimSpace(outputText),
-			Tokens:               tokens,
-			ProviderSessionID:    strings.TrimSpace(providerSessionID),
-			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-			EvidenceSource:       completionEvidenceSourceStream,
-		}, true, false
-	}
-	if processedReceipts.TerminalFailure {
-		return attemptCompletionResult{
-			State:                attemptCompletionStateIncompleteTurn,
-			ReasonCode:           "provider_incomplete_turn",
-			FailureText:          firstNonEmpty(strings.TrimSpace(processedReceipts.FailureReason), "provider completion receipt validation failed"),
-			OutputText:           strings.TrimSpace(outputText),
-			Tokens:               tokens,
-			ProviderSessionID:    strings.TrimSpace(providerSessionID),
-			ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-			ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-			EvidenceSource:       completionEvidenceSourceStream,
-		}, true, false
-	}
-	if !processedReceipts.Accepted {
-		return attemptCompletionResult{}, false, false
-	}
-	return completionResultForAcceptedReceipt(processedReceipts.Acceptance, outputText, tokens, providerSessionID, req.InvocationID, req.InvocationIssuedAt), true, true
-}
-
-func waitForCompletionReceiptSettlement(req ExecuteRequest, outputText string, tokens TokenUsage, providerSessionID string, maxWait time.Duration) (attemptCompletionResult, bool, bool) {
-	if !completionReceiptModeEnabled(req) || maxWait <= 0 {
-		return completionReceiptSettlement(req, outputText, tokens, providerSessionID)
-	}
-	firstReceiptDeadline := time.Now().Add(maxWait)
-	quiescenceDeadline := time.Time{}
-	acceptedResult := attemptCompletionResult{}
-	for {
-		result, settled, accepted := completionReceiptSettlement(req, outputText, tokens, providerSessionID)
-		if settled {
-			if !accepted {
-				return result, true, false
-			}
-			acceptedResult = result
-			quiescenceDeadline = time.Now().Add(maxWait)
-		}
-		now := time.Now()
-		if !quiescenceDeadline.IsZero() {
-			if !now.Before(quiescenceDeadline) {
-				return acceptedResult, true, true
-			}
-		} else if !now.Before(firstReceiptDeadline) {
-			return attemptCompletionResult{}, false, false
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-func receiptRequiredDecision(decision attemptCompletionDecision, providerSessionID, outputText, invocationID, invocationAt string) attemptCompletionDecision {
-	if decision.Result.State != attemptCompletionStateSuccess {
-		return decision
-	}
-	decision.Result.State = attemptCompletionStateIncompleteTurn
-	decision.Result.ReasonCode = "provider_incomplete_turn"
-	decision.Result.FailureText = ""
-	decision.Result.ProviderSessionID = strings.TrimSpace(providerSessionID)
-	decision.Result.ProviderInvocationID = strings.TrimSpace(invocationID)
-	decision.Result.ProviderInvocationAt = strings.TrimSpace(invocationAt)
-	decision.Result.OutputText = firstNonEmpty(strings.TrimSpace(decision.Result.OutputText), strings.TrimSpace(outputText))
-	decision.Result.EvidenceSource = completionEvidenceSourceStream
-	return decision
 }
 
 func errorString(err error) string {
@@ -651,36 +535,6 @@ func mergeStderrCapture(current, next stderrCapture) stderrCapture {
 	return current
 }
 
-type completionReceiptFilePayload struct {
-	ProtocolVersion      string          `json:"protocol_version"`
-	AttemptID            string          `json:"attempt_id"`
-	InvocationID         string          `json:"invocation_id"`
-	CompletionCapability string          `json:"completion_capability"`
-	FinalText            string          `json:"final_text"`
-	StructuredPayload    json.RawMessage `json:"structured_payload"`
-}
-
-type completionReceiptFile struct {
-	Path    string
-	Receipt CompletionReceipt
-}
-
-type completionReceiptProcessingResult struct {
-	Seen            bool
-	Accepted        bool
-	Acceptance      CompletionReceiptAcceptance
-	TerminalFailure bool
-	FailureReason   string
-}
-
-type completionReceiptDisposition string
-
-const (
-	completionReceiptDispositionAccepted       completionReceiptDisposition = "accepted"
-	completionReceiptDispositionRejected       completionReceiptDisposition = "rejected"
-	completionReceiptDispositionTerminalReject completionReceiptDisposition = "terminal_rejected"
-)
-
 func completionReceiptModeEnabled(req ExecuteRequest) bool {
 	return req.CompletionMode == CompletionModeReceiptRequired
 }
@@ -765,133 +619,6 @@ func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, dat
 		inlineConfigContent = defaultInlineConfigContent
 	}
 	return append(env, configContentEnvironment(inlineConfigContent)...)
-}
-
-func loadCompletionReceipts(req ExecuteRequest) ([]completionReceiptFile, error) {
-	receiptDir := strings.TrimSpace(req.CompletionReceiptDir)
-	if receiptDir == "" {
-		return nil, nil
-	}
-	entries, err := os.ReadDir(receiptDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read completion receipt dir: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-	receipts := make([]completionReceiptFile, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		receiptPath := filepath.Join(receiptDir, entry.Name())
-		raw, err := os.ReadFile(receiptPath)
-		if err != nil {
-			return nil, fmt.Errorf("read completion receipt file %q: %w", receiptPath, err)
-		}
-		var payload completionReceiptFilePayload
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			return nil, fmt.Errorf("decode completion receipt file %q: %w", receiptPath, err)
-		}
-		structuredPayloadJSON := "{}"
-		if trimmed := strings.TrimSpace(string(payload.StructuredPayload)); trimmed != "" {
-			structuredPayloadJSON = trimmed
-		}
-		receipts = append(receipts, completionReceiptFile{
-			Path: receiptPath,
-			Receipt: CompletionReceipt{
-				ProtocolVersion:       firstNonEmpty(strings.TrimSpace(payload.ProtocolVersion), completionProtocolVersionForRequest(req)),
-				AttemptID:             strings.TrimSpace(payload.AttemptID),
-				InvocationID:          strings.TrimSpace(payload.InvocationID),
-				CompletionCapability:  strings.TrimSpace(payload.CompletionCapability),
-				FinalText:             strings.TrimSpace(payload.FinalText),
-				StructuredPayloadJSON: structuredPayloadJSON,
-			},
-		})
-	}
-	return receipts, nil
-}
-
-func removeCompletionReceiptFile(path string) error {
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove completion receipt file %q: %w", path, err)
-	}
-	return nil
-}
-
-func completionReceiptDispositionForHandlerResult(result CompletionReceiptAcceptance, err error) (completionReceiptDisposition, error) {
-	if err != nil {
-		return "", err
-	}
-	if result.Rejected {
-		if strings.TrimSpace(result.EvidenceID) != "" || result.Idempotent {
-			return "", fmt.Errorf("completion receipt handler cannot both accept and reject the same receipt")
-		}
-		if result.InvalidatesInvocation {
-			return completionReceiptDispositionTerminalReject, nil
-		}
-		return completionReceiptDispositionRejected, nil
-	}
-	if result.InvalidatesInvocation {
-		return "", fmt.Errorf("completion receipt handler cannot invalidate an invocation without rejecting the receipt")
-	}
-	if strings.TrimSpace(result.EvidenceID) != "" || result.Idempotent {
-		return completionReceiptDispositionAccepted, nil
-	}
-	return "", fmt.Errorf("completion receipt handler must explicitly accept or reject the receipt")
-}
-
-func processCompletionReceipts(req ExecuteRequest) (completionReceiptProcessingResult, error) {
-	if !completionReceiptModeEnabled(req) {
-		return completionReceiptProcessingResult{}, nil
-	}
-	if req.OnCompletionReceipt == nil {
-		return completionReceiptProcessingResult{}, fmt.Errorf("completion receipt handler is required")
-	}
-	receipts, err := loadCompletionReceipts(req)
-	if err != nil {
-		return completionReceiptProcessingResult{}, err
-	}
-	if len(receipts) == 0 {
-		return completionReceiptProcessingResult{}, nil
-	}
-	processed := completionReceiptProcessingResult{Seen: true}
-	for _, receipt := range receipts {
-		result, err := req.OnCompletionReceipt(receipt.Receipt)
-		disposition, dispositionErr := completionReceiptDispositionForHandlerResult(result, err)
-		if dispositionErr != nil {
-			return processed, dispositionErr
-		}
-		switch disposition {
-		case completionReceiptDispositionRejected:
-			if err := removeCompletionReceiptFile(receipt.Path); err != nil {
-				return processed, err
-			}
-			continue
-		case completionReceiptDispositionTerminalReject:
-			if err := removeCompletionReceiptFile(receipt.Path); err != nil {
-				return processed, err
-			}
-			processed.Accepted = false
-			processed.Acceptance = CompletionReceiptAcceptance{}
-			processed.TerminalFailure = true
-			processed.FailureReason = firstNonEmpty(strings.TrimSpace(result.RejectedReason), "provider completion receipt invalidated the invocation")
-			return processed, nil
-		case completionReceiptDispositionAccepted:
-			if err := removeCompletionReceiptFile(receipt.Path); err != nil {
-				return processed, err
-			}
-			processed.Acceptance = result
-			processed.Accepted = true
-			continue
-		default:
-			return processed, fmt.Errorf("unsupported completion receipt disposition: %q", disposition)
-		}
-	}
-	return processed, nil
 }
 
 func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
@@ -1197,9 +924,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			timeoutErr = attemptCtx.Err()
 		}
 		if timeoutErr != nil {
-			receiptResult, _, receiptAccepted := waitForCompletionReceiptSettlement(req, strings.TrimSpace(strings.Join(textChunks, "\n")), accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod)
 			result := executionResultForTimeout(timeoutErr, actualSessionID)
-			result = withCompletionReceiptCandidate(result, receiptResult, receiptAccepted)
 			result.OutputText = strings.TrimSpace(strings.Join(textChunks, "\n"))
 			result.Tokens = accumulatedTokens
 			payload, _ := json.Marshal(buildTimeoutFailurePayload(timeoutErr, diagnostics, execDiag))
@@ -1212,7 +937,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
 		}
 		outputText := strings.TrimSpace(strings.Join(textChunks, "\n"))
-		receiptResult, _, receiptAccepted := waitForCompletionReceiptSettlement(req, outputText, accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod)
 		result := attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
 			ProviderSessionID: actualSessionID,
 			OutputText:        outputText,
@@ -1220,7 +944,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			MalformedProtocol: true,
 			FailureText:       fmt.Sprintf("read opencode stream: %v", err),
 		}).Result
-		result = withCompletionReceiptCandidate(result, receiptResult, receiptAccepted)
 		payload, _ := json.Marshal(map[string]any{
 			"error":                      result.FailureText,
 			"stream_diagnostics":         diagnostics.toMap(),
@@ -1282,16 +1005,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	latestContinuationText := ""
 	decision := attemptCompletionDecision{}
 	result := attemptCompletionResult{}
-	receiptResult := attemptCompletionResult{}
-	settledBeforeContinuation := false
-	receiptAccepted := false
-	receiptRequired := completionReceiptModeEnabled(req)
-	if candidate, settled, accepted := waitForCompletionReceiptSettlement(req, partialCombinedText, accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod); settled {
-		receiptResult = candidate
-		result = candidate
-		receiptAccepted = accepted
-		settledBeforeContinuation = true
-	}
+	adjudicated := false
 
 	timeoutErr := watchdog.Err()
 	if timeoutErr != nil {
@@ -1300,14 +1014,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		timeoutErr = firstNonNilError(waitErr, attemptCtx.Err())
 	}
 	if timeoutErr != nil {
-		if !settledBeforeContinuation {
-			if receiptResult, settled, accepted := waitForCompletionReceiptSettlement(req, partialCombinedText, accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod); settled {
-				result = receiptResult
-				receiptAccepted = accepted
-			}
-		}
 		timeoutResult := executionResultForTimeout(timeoutErr, actualSessionID)
-		timeoutResult = withCompletionReceiptCandidate(timeoutResult, result, receiptAccepted)
 		timeoutResult.OutputText = partialCombinedText
 		timeoutResult.Tokens = accumulatedTokens
 		execDiag.FailedEventAppended = true
@@ -1324,7 +1031,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	if isExecutionCancelled(waitErr) || isExecutionCancelled(attemptCtx.Err()) {
 		cancelErr := firstNonNilError(waitErr, attemptCtx.Err())
 		result := executionResultForCancellation(cancelErr, actualSessionID, firstNonEmpty(errorString(cancelErr), "opencode run cancelled"))
-		result = withCompletionReceiptCandidate(result, receiptResult, receiptAccepted)
 		result.OutputText = partialCombinedText
 		result.Tokens = accumulatedTokens
 		reason := firstNonEmpty(errorString(cancelErr), "opencode run cancelled")
@@ -1340,7 +1046,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 
 	if waitErr != nil {
 		result := executionResultForProcessError(waitErr, actualSessionID, upstreamErrorText, firstNonEmpty(stderrText, waitErr.Error()))
-		result = withCompletionReceiptCandidate(result, receiptResult, receiptAccepted)
 		result.OutputText = partialCombinedText
 		result.Tokens = accumulatedTokens
 		payload, _ := json.Marshal(map[string]any{
@@ -1370,11 +1075,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		PendingToolCount:            pendingToolCount(toolStates),
 		LaterEventAfterTerminal:     laterEventAfterTerminal,
 	}); fatal {
-		result = withCompletionReceiptCandidate(fatalResult, receiptResult, receiptAccepted)
-		settledBeforeContinuation = true
+		result = fatalResult
+		adjudicated = true
 	}
 
-	if shouldContinueLiveStream(lastStepFinish) && !settledBeforeContinuation {
+	if req.CompletionMode == CompletionModeServerResponse && shouldContinueLiveStream(lastStepFinish) && !adjudicated {
 		execDiag.ContinuationTurnsMax = a.maxContinuationTurns - 1
 		remainingTurns := a.maxContinuationTurns - 1
 		for remainingTurns > 0 {
@@ -1476,17 +1181,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			}
 			accumulateTokenUsage(&accumulatedTokens, continuationResult.Tokens)
 			combinedContinuationText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
-			receiptSettled := false
-			if candidate, settled, accepted := waitForCompletionReceiptSettlement(req, combinedContinuationText, accumulatedTokens, actualSessionID, completionReceiptObservationGracePeriod); settled {
-				receiptResult = candidate
-				result = candidate
-				receiptAccepted = accepted
-				settledBeforeContinuation = true
-				receiptSettled = true
-			}
 			if isExecutionCancelled(continuationErr) {
 				result := executionResultForCancellation(continuationErr, actualSessionID, "opencode continuation cancelled")
-				result = withCompletionReceiptCandidate(result, receiptResult, receiptAccepted)
 				result.OutputText = combinedContinuationText
 				result.Tokens = accumulatedTokens
 				execDiag.CancelledEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
@@ -1499,7 +1195,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			}
 			if isExecutionTimedOut(continuationErr) {
 				timeoutResult := executionResultForTimeout(continuationErr, actualSessionID)
-				timeoutResult = withCompletionReceiptCandidate(timeoutResult, receiptResult, receiptAccepted)
 				timeoutResult.OutputText = combinedContinuationText
 				timeoutResult.Tokens = accumulatedTokens
 				payload, _ := json.Marshal(buildTimeoutFailurePayload(continuationErr, diagnostics, execDiag))
@@ -1527,7 +1222,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 					failureEvidence.ProcessFailed = true
 				}
 				failureResult := attemptCompletionAdjudicator{}.Adjudicate(failureEvidence).Result
-				failureResult = withCompletionReceiptCandidate(failureResult, receiptResult, receiptAccepted)
 				payloadMap := map[string]any{
 					"error":                      firstNonEmpty(strings.TrimSpace(failureResult.FailureText), continuationErr.Error()),
 					"stream_diagnostics":         diagnostics.toMap(),
@@ -1559,11 +1253,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				PendingToolCount:            pendingToolCount(toolStates),
 				LaterEventAfterTerminal:     laterEventAfterTerminal,
 			}); fatal {
-				result = withCompletionReceiptCandidate(fatalResult, receiptResult, receiptAccepted)
-				settledBeforeContinuation = true
-				break
-			}
-			if receiptSettled {
+				result = fatalResult
+				adjudicated = true
 				break
 			}
 			if execDiag.TerminalStateClass == "terminal_success_candidate" {
@@ -1585,7 +1276,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 
 	observedCombinedText := strings.TrimSpace(strings.Join(textChunks, "\n"))
 	canonicalCombinedText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
-	if !settledBeforeContinuation {
+	if !adjudicated {
 		decision = attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
 			ProviderSessionID:           actualSessionID,
 			OutputText:                  canonicalCombinedText,
@@ -1598,23 +1289,9 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			CleanEOF:                    waitErr == nil,
 			PendingToolCount:            pendingToolCount(toolStates),
 			LaterEventAfterTerminal:     laterEventAfterTerminal,
+			ReceiptRequired:             req.CompletionMode == CompletionModeReceiptRequired,
 		})
-		if receiptRequired && !receiptAccepted {
-			decision = receiptRequiredDecision(decision, actualSessionID, canonicalCombinedText, req.InvocationID, req.InvocationIssuedAt)
-		}
 		result = decision.Result
-	}
-	if completionReceiptModeEnabled(req) && !receiptAccepted {
-		if result.State == attemptCompletionStateSuccess || result.State == "" {
-			result.State = attemptCompletionStateIncompleteTurn
-			result.ReasonCode = "provider_incomplete_turn"
-			result.FailureText = firstNonEmpty(strings.TrimSpace(result.FailureText), "provider exited without an accepted kingdom_complete_attempt receipt")
-			result.OutputText = firstNonEmpty(strings.TrimSpace(result.OutputText), canonicalCombinedText)
-			result.Tokens = accumulatedTokens
-			result.ProviderSessionID = actualSessionID
-			result.ProviderInvocationID = strings.TrimSpace(req.InvocationID)
-			result.ProviderInvocationAt = strings.TrimSpace(req.InvocationIssuedAt)
-		}
 	}
 
 	if result.State != attemptCompletionStateSuccess {
@@ -1623,11 +1300,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		}
 		reason := firstNonEmpty(result.ReasonCode, execDiag.LastStepFinishReasonKind, execDiag.LastStepFinishReason)
 		if result.State == attemptCompletionStateIncompleteTurn {
-			if receiptRequired {
-				reason = firstNonEmpty(result.ReasonCode, reason)
-			} else {
-				reason = firstNonEmpty(execDiag.LastStepFinishReason, execDiag.LastStepFinishReasonKind, result.ReasonCode)
-			}
+			reason = firstNonEmpty(execDiag.LastStepFinishReason, execDiag.LastStepFinishReasonKind, result.ReasonCode)
 		}
 		errorText := firstNonEmpty(result.FailureText, stderrText, fmt.Sprintf("incomplete terminal state: %s", reason))
 		payload, _ := json.Marshal(map[string]any{

@@ -22,9 +22,6 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 			InvocationID:         "invocation_1",
 			CompletionCapability: "capability_1",
 			CompletionReceiptDir: t.TempDir(),
-			OnCompletionReceipt: func(CompletionReceipt) (CompletionReceiptAcceptance, error) {
-				return CompletionReceiptAcceptance{EvidenceID: "evidence_1"}, nil
-			},
 		}
 	}
 
@@ -51,7 +48,6 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 				req.CompletionProtocolVersion = CompletionProtocolVersion
 				req.CompletionCapability = ""
 				req.CompletionReceiptDir = ""
-				req.OnCompletionReceipt = nil
 				return req
 			}(),
 			want: "completion protocol version",
@@ -62,7 +58,6 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 				req := validReceiptRequest()
 				req.CompletionMode = CompletionModeServerResponse
 				req.CompletionReceiptDir = ""
-				req.OnCompletionReceipt = nil
 				return req
 			}(),
 			want: "completion capability",
@@ -73,21 +68,9 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 				req := validReceiptRequest()
 				req.CompletionMode = CompletionModeServerResponse
 				req.CompletionCapability = ""
-				req.OnCompletionReceipt = nil
 				return req
 			}(),
 			want: "completion receipt dir",
-		},
-		{
-			name: "server response receipt handler",
-			req: func() ExecuteRequest {
-				req := validReceiptRequest()
-				req.CompletionMode = CompletionModeServerResponse
-				req.CompletionCapability = ""
-				req.CompletionReceiptDir = ""
-				return req
-			}(),
-			want: "completion receipt handler",
 		},
 		{
 			name: "receipt required invocation",
@@ -105,11 +88,6 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 			want: "completion receipt dir",
 		},
 		{
-			name: "receipt required receipt handler",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.OnCompletionReceipt = nil; return req }(),
-			want: "completion receipt handler",
-		},
-		{
 			name: "receipt required attempt",
 			req:  func() ExecuteRequest { req := validReceiptRequest(); req.AttemptID = ""; return req }(),
 			want: "attempt id",
@@ -123,6 +101,48 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 				t.Fatalf("validate execute request error = %v, want %q", err, test.want)
 			}
 		})
+	}
+
+	if err := validateExecuteRequest(validReceiptRequest()); err != nil {
+		t.Fatalf("expected receipt mode without callback to validate: %v", err)
+	}
+}
+
+func TestMemoryAdapterReceiptModeDoesNotTouchReceiptPath(t *testing.T) {
+	t.Parallel()
+
+	receiptPath := filepath.Join(t.TempDir(), "opaque-receipt-path")
+	const sentinel = "not a receipt directory"
+	if err := os.WriteFile(receiptPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write receipt path sentinel: %v", err)
+	}
+
+	res, err := NewMemoryAdapter().Execute(context.Background(), ExecuteRequest{
+		CompletionMode:            CompletionModeReceiptRequired,
+		SessionID:                 "session_receipt_observation",
+		AttemptID:                 "attempt_receipt_observation",
+		RunID:                     "run_1",
+		NodeRunID:                 "nr_1",
+		WorkspacePath:             t.TempDir(),
+		Prompt:                    "observe process only",
+		OccurredAt:                "2026-03-01T12:00:00Z",
+		InvocationID:              "invocation_receipt_observation",
+		CompletionProtocolVersion: CompletionProtocolVersion,
+		CompletionCapability:      "capability_receipt_observation",
+		CompletionReceiptDir:      receiptPath,
+	})
+	if err != nil {
+		t.Fatalf("execute receipt-mode process observation: %v", err)
+	}
+	if !res.Accepted || res.Outcome.State != string(attemptCompletionStateSuccess) {
+		t.Fatalf("expected process-only success candidate, got %#v", res)
+	}
+	raw, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read receipt path sentinel: %v", err)
+	}
+	if string(raw) != sentinel {
+		t.Fatalf("receipt path was modified: %q", raw)
 	}
 }
 

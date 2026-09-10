@@ -1,6 +1,7 @@
 package securefs
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,6 +14,40 @@ import (
 type Root struct {
 	fd   int
 	name string
+}
+
+// ErrLimitExceeded reports that a bounded filesystem operation reached its
+// caller-supplied limit.
+var ErrLimitExceeded = errors.New("secure filesystem limit exceeded")
+
+// ErrIdentityMismatch reports that an entry changed after it was read.
+var ErrIdentityMismatch = errors.New("secure filesystem entry identity changed")
+
+// FileIdentity identifies one opened filesystem object without exposing paths.
+type FileIdentity struct {
+	Device uint64
+	Inode  uint64
+}
+
+// EntryType describes an entry without following it.
+type EntryType string
+
+const (
+	EntryTypeRegular   EntryType = "regular"
+	EntryTypeDirectory EntryType = "directory"
+	EntryTypeSymlink   EntryType = "symlink"
+	EntryTypeFIFO      EntryType = "fifo"
+	EntryTypeSocket    EntryType = "socket"
+	EntryTypeDevice    EntryType = "device"
+	EntryTypeOther     EntryType = "other"
+)
+
+// Entry is descriptor-relative metadata for one directory entry.
+type Entry struct {
+	Name      string
+	Type      EntryType
+	SizeBytes int64
+	Identity  FileIdentity
 }
 
 func splitRelativePath(path string) ([]string, error) {
@@ -48,10 +83,36 @@ func (r *Root) OpenRegular(path string) (*os.File, error) {
 	return openRootRegular(r, path)
 }
 
+// ReadRegular reads at most maxBytes from a regular descendant without
+// following any symlink. A file of exactly maxBytes is accepted.
+func (r *Root) ReadRegular(path string, maxBytes int64) ([]byte, error) {
+	raw, _, err := readRootRegular(r, path, maxBytes)
+	return raw, err
+}
+
+// ReadRegularIdentified reads a bounded regular file and returns the identity
+// required to avoid deleting a later replacement by name.
+func (r *Root) ReadRegularIdentified(path string, maxBytes int64) ([]byte, FileIdentity, error) {
+	return readRootRegular(r, path, maxBytes)
+}
+
 // ReadDir reads one descendant directory without following any symlink.
 // An empty path or "." reads the pinned root itself.
 func (r *Root) ReadDir(path string) ([]os.DirEntry, error) {
 	return readRootDir(r, path)
+}
+
+// ReadDirBounded enumerates at most maxEntries from one descendant directory
+// without following any symlink. It returns the bounded prefix together with
+// ErrLimitExceeded when another entry exists.
+func (r *Root) ReadDirBounded(path string, maxEntries int) ([]Entry, error) {
+	return readRootDirBounded(r, path, maxEntries)
+}
+
+// EnsureDir creates a descendant directory chain without following or
+// replacing any existing entry.
+func (r *Root) EnsureDir(path string, mode fs.FileMode) error {
+	return ensureRootDir(r, path, mode)
 }
 
 // ReplaceRegular atomically replaces a descendant with a regular file without
@@ -64,4 +125,29 @@ func (r *Root) ReplaceRegular(path string, data []byte, mode, dirMode fs.FileMod
 // RemoveEntry removes a non-directory descendant without following it.
 func (r *Root) RemoveEntry(path string) error {
 	return removeRootEntry(r, path)
+}
+
+// RemoveRegularIfIdentity removes a regular file only when it still identifies
+// the object returned by ReadRegularIdentified.
+func (r *Root) RemoveRegularIfIdentity(path string, identity FileIdentity) error {
+	return removeRootEntryIfIdentity(r, path, EntryTypeRegular, identity)
+
+}
+
+// RemoveEntryIfIdentity removes a non-directory entry only while both its type
+// and identity still match descriptor-relative enumeration.
+func (r *Root) RemoveEntryIfIdentity(path string, entryType EntryType, identity FileIdentity) error {
+	return removeRootEntryIfIdentity(r, path, entryType, identity)
+}
+
+// RemoveEmptyDir removes only an empty descendant directory without following
+// symlinks or recursively deleting contents.
+func (r *Root) RemoveEmptyDir(path string) error {
+	return removeRootEmptyDir(r, path)
+}
+
+// SyncDir fsyncs one descendant directory. An empty path or "." syncs the
+// pinned root itself.
+func (r *Root) SyncDir(path string) error {
+	return syncRootDir(r, path)
 }

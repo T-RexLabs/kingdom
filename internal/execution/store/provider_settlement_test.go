@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -2112,5 +2113,323 @@ func TestStoreAcceptProviderCompletionReceiptRejectsTerminalSupersededAttempt(t 
 	}
 	if settlementErr.Reason != "attempt_not_active" {
 		t.Fatalf("expected attempt_not_active reason, got %q", settlementErr.Reason)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptAtomicallyAcceptsSafeEvidence(t *testing.T) {
+	t.Parallel()
+	s, db, req := providerReceiptIngestionFixture(t, "atomic")
+
+	result, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ingest provider completion receipt: %v", err)
+	}
+	if result.Disposition != ProviderCompletionReceiptDispositionAccepted || result.Idempotent || result.ExactReplay {
+		t.Fatalf("unexpected accepted ingestion result: %#v", result)
+	}
+	if result.Invocation.InvocationState != ProviderInvocationStateReceiptPersisted || result.Invocation.ReceiptSeenCount != 1 {
+		t.Fatalf("accepted ingestion did not atomically update invocation: %#v", result.Invocation)
+	}
+	if result.AttemptEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceiptAttempt || result.AcceptedEvidence.EvidenceKind != ProviderCompletionEvidenceKindCompletionReceipt {
+		t.Fatalf("accepted ingestion did not persist both evidence rows: %#v", result)
+	}
+	if count := countPhase2Table(t, db, "provider_completion_evidence"); count != 2 {
+		t.Fatalf("expected attempt and accepted evidence in one commit, got %d rows", count)
+	}
+	if strings.Contains(result.AttemptEvidence.PayloadJSON, req.CompletionCapability) {
+		t.Fatal("receipt attempt telemetry persisted the raw completion capability")
+	}
+	var payload struct {
+		EntryName               string          `json:"entry_name"`
+		WireByteCount           int64           `json:"wire_byte_count"`
+		WireSHA256              string          `json:"wire_sha256"`
+		EntryType               string          `json:"entry_type"`
+		CompletionCapabilitySHA string          `json:"completion_capability_sha256"`
+		FinalText               string          `json:"final_text"`
+		StructuredPayload       json.RawMessage `json:"structured_payload"`
+		AcceptedEvidenceID      string          `json:"accepted_evidence_id"`
+	}
+	if err := json.Unmarshal([]byte(result.AttemptEvidence.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode accepted attempt evidence: %v", err)
+	}
+	if payload.EntryName != req.EntryName || payload.WireByteCount != req.WireByteCount || payload.WireSHA256 != req.WireSHA256 || payload.EntryType != req.EntryType {
+		t.Fatalf("safe transport metadata was not preserved: %#v", payload)
+	}
+	if payload.CompletionCapabilitySHA != sha256Hex(req.CompletionCapability) || payload.FinalText != "canonical response" || string(payload.StructuredPayload) != `{"answer":true}` || payload.AcceptedEvidenceID != result.AcceptedEvidence.EvidenceID {
+		t.Fatalf("accepted attempt evidence is incomplete: %#v", payload)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptRetainsOnlySafeRejectedMetadata(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerReceiptIngestionFixture(t, "rejected")
+	req.EntryName = "malformed.json"
+	req.WireByteCount = 37
+	req.WireSHA256 = strings.Repeat("b", 64)
+	req.ValidationSucceeded = false
+	req.FinalText = "raw malformed bytes must not survive"
+	req.StructuredPayloadJSON = `{not-json`
+	req.Disposition = ProviderCompletionReceiptDispositionRejected
+	req.ReasonCode = "schema_validation_failed"
+	req.ReasonText = "receipt is not valid JSON"
+
+	result, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ingest rejected receipt: %v", err)
+	}
+	if result.Disposition != ProviderCompletionReceiptDispositionRejected || result.Invocation.ReceiptSeenCount != 1 || result.AcceptedEvidence.EvidenceID != "" {
+		t.Fatalf("unexpected rejected ingestion result: %#v", result)
+	}
+	payload := result.AttemptEvidence.PayloadJSON
+	if strings.Contains(payload, req.CompletionCapability) || strings.Contains(payload, "raw malformed bytes") || strings.Contains(payload, "not-json") {
+		t.Fatalf("rejected telemetry retained unsafe receipt content: %s", payload)
+	}
+	for _, safe := range []string{`"entry_name":"malformed.json"`, `"wire_byte_count":37`, `"wire_sha256":"` + req.WireSHA256 + `"`, `"reason_code":"schema_validation_failed"`} {
+		if !strings.Contains(payload, safe) {
+			t.Fatalf("rejected telemetry omitted %s: %s", safe, payload)
+		}
+	}
+	if !strings.Contains(payload, sha256Hex(req.CompletionCapability)) {
+		t.Fatalf("rejected telemetry omitted the capability hash: %s", payload)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptExactReplayDoesNotIncrementCounters(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerReceiptIngestionFixture(t, "replay")
+	first, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first receipt ingestion: %v", err)
+	}
+	req.ObservedAt = "2026-03-01T12:00:09Z"
+	replayed, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("exact receipt replay: %v", err)
+	}
+	if !replayed.ExactReplay || !replayed.Idempotent || replayed.AttemptEvidence.EvidenceID != first.AttemptEvidence.EvidenceID || replayed.AcceptedEvidence.EvidenceID != first.AcceptedEvidence.EvidenceID {
+		t.Fatalf("exact replay did not converge on deterministic evidence: first=%#v replay=%#v", first, replayed)
+	}
+	if replayed.Invocation.ReceiptSeenCount != 1 || replayed.Invocation.LastReceiptSeenAt != "2026-03-01T12:00:04Z" {
+		t.Fatalf("exact replay changed receipt telemetry: %#v", replayed.Invocation)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptCanonicalOwnerConflictInvalidates(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*IngestProviderCompletionReceiptRequest)
+		reasonCode string
+	}{
+		{name: "attempt", mutate: func(req *IngestProviderCompletionReceiptRequest) { req.ObservedAttemptID = "another-attempt" }, reasonCode: "attempt_lineage_mismatch"},
+		{name: "invocation", mutate: func(req *IngestProviderCompletionReceiptRequest) { req.ObservedInvocationID = "another-invocation" }, reasonCode: "provider_invocation_claim_mismatch"},
+		{name: "capability", mutate: func(req *IngestProviderCompletionReceiptRequest) { req.CompletionCapability = "another-capability" }, reasonCode: "completion_capability_mismatch"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, _, req := providerReceiptIngestionFixture(t, "canonical_owner_"+tc.name)
+			tc.mutate(&req)
+			result, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+			if err != nil {
+				t.Fatalf("ingest cross-owner receipt: %v", err)
+			}
+			if result.AttemptEvidence.ProviderInvocationID != req.ProviderInvocationID || result.AttemptEvidence.AttemptID != result.Invocation.AttemptID {
+				t.Fatalf("payload claims changed canonical evidence ownership: %#v", result.AttemptEvidence)
+			}
+			if result.Disposition != ProviderCompletionReceiptDispositionInvalidated || result.ReasonCode != tc.reasonCode {
+				t.Fatalf("cross-owner receipt was not invalidated: %#v", result)
+			}
+			if result.Invocation.InvocationState != ProviderInvocationStateInvalidHandshake || result.Invocation.InvalidReason != result.ReasonCode || result.Invocation.ReceiptSeenCount != 1 {
+				t.Fatalf("cross-owner conflict was not atomically applied: %#v", result.Invocation)
+			}
+		})
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptAcceptedDuplicateIsIdempotent(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerReceiptIngestionFixture(t, "accepted_duplicate")
+	first, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("accept first receipt: %v", err)
+	}
+	duplicate := req
+	duplicate.EntryName = "duplicate.json"
+	duplicate.WireSHA256 = strings.Repeat("d", 64)
+	duplicate.ObservedAt = "2026-03-01T12:00:05Z"
+	second, err := s.IngestProviderCompletionReceipt(context.Background(), duplicate)
+	if err != nil {
+		t.Fatalf("ingest accepted duplicate: %v", err)
+	}
+	if second.Disposition != ProviderCompletionReceiptDispositionIdempotentDuplicate || !second.Idempotent || second.ExactReplay {
+		t.Fatalf("accepted duplicate was not idempotent: %#v", second)
+	}
+	if second.AcceptedEvidence.EvidenceID != first.AcceptedEvidence.EvidenceID || second.AttemptEvidence.EvidenceID == first.AttemptEvidence.EvidenceID || second.Invocation.ReceiptSeenCount != 2 {
+		t.Fatalf("accepted duplicate did not preserve canonical evidence: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptConflictingAcceptedReceiptInvalidates(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerReceiptIngestionFixture(t, "accepted_conflict")
+	first, err := s.IngestProviderCompletionReceipt(context.Background(), req)
+	if err != nil {
+		t.Fatalf("accept first receipt: %v", err)
+	}
+	conflict := req
+	conflict.EntryName = "receipt-2.json"
+	conflict.WireSHA256 = strings.Repeat("c", 64)
+	conflict.FinalText = "conflicting response"
+	conflict.ObservedAt = "2026-03-01T12:00:05Z"
+	second, err := s.IngestProviderCompletionReceipt(context.Background(), conflict)
+	if err != nil {
+		t.Fatalf("ingest conflicting accepted receipt: %v", err)
+	}
+	if second.Disposition != ProviderCompletionReceiptDispositionInvalidated || second.ReasonCode != "completion_receipt_conflict" || second.Invocation.InvocationState != ProviderInvocationStateInvalidHandshake {
+		t.Fatalf("conflicting accepted receipt did not invalidate the handshake: %#v", second)
+	}
+	if second.AcceptedEvidence.EvidenceID != "" || first.AcceptedEvidence.EvidenceID == "" || second.Invocation.ReceiptSeenCount != 2 {
+		t.Fatalf("conflicting receipt changed accepted evidence incorrectly: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestStoreIngestProviderCompletionReceiptInfrastructureFailureRollsBackEverything(t *testing.T) {
+	t.Parallel()
+	s, db, req := providerReceiptIngestionFixture(t, "rollback")
+	before, found, err := s.GetProviderInvocation(context.Background(), req.ProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("load invocation before rollback test: found=%t err=%v", found, err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER phase3_ingestion_failure BEFORE INSERT ON provider_completion_evidence
+		WHEN NEW.evidence_kind = 'completion_receipt_attempt'
+		BEGIN SELECT RAISE(ABORT, 'injected ingestion failure'); END`); err != nil {
+		t.Fatalf("install ingestion failure trigger: %v", err)
+	}
+	if _, err := s.IngestProviderCompletionReceipt(context.Background(), req); err == nil || !strings.Contains(err.Error(), "injected ingestion failure") {
+		t.Fatalf("expected injected ingestion failure, got %v", err)
+	}
+	after, found, err := s.GetProviderInvocation(context.Background(), req.ProviderInvocationID)
+	if err != nil || !found {
+		t.Fatalf("load invocation after rollback test: found=%t err=%v", found, err)
+	}
+	if !reflect.DeepEqual(after, before) || countPhase2Table(t, db, "provider_completion_evidence") != 0 {
+		t.Fatalf("infrastructure failure left partial ingestion state: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestStoreListProviderReceiptIngestionCandidatesPaginatesAndIncludesCleanupDebt(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+
+	create := func(sequence int, invocationID string, terminal bool) {
+		t.Helper()
+		nodeRunID := fmt.Sprintf("nr_receipt_candidate_%d", sequence)
+		attemptID := fmt.Sprintf("run_1:receipt_candidate:%d", sequence)
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('%s', 'run_1', 'decree_intake', %d, %d, 'running', 'king', 'agent_king', 1)`, nodeRunID, sequence+1, sequence+1))
+		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeReceiptRequired, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+			t.Fatalf("enqueue candidate %q: %v", invocationID, err)
+		}
+		if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "cap-" + invocationID, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+			t.Fatalf("activate candidate %q: %v", invocationID, err)
+		}
+		if terminal {
+			if _, err := db.Exec(`UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z', committed_at = '2026-03-01T12:00:03Z' WHERE attempt_id = ?`, attemptID); err != nil {
+				t.Fatalf("terminalize candidate attempt %q: %v", invocationID, err)
+			}
+			if _, err := db.Exec(`UPDATE provider_invocations SET invocation_state = 'settled_failed', settled_at = '2026-03-01T12:00:03Z' WHERE provider_invocation_id = ?`, invocationID); err != nil {
+				t.Fatalf("terminalize candidate invocation %q: %v", invocationID, err)
+			}
+		}
+	}
+	create(1, "candidate_a", false)
+	create(2, "candidate_b", false)
+	create(3, "candidate_c", true)
+	mustExec(t, db, `UPDATE provider_invocations SET invocation_state = 'invalid_handshake', invalid_reason = 'bad claim' WHERE provider_invocation_id = 'candidate_b'`)
+
+	first, err := s.ListProviderReceiptIngestionCandidates(ctx, "", 2)
+	if err != nil {
+		t.Fatalf("list first candidate page: %v", err)
+	}
+	if len(first) != 2 || first[0].ProviderInvocationID != "candidate_a" || first[1].ProviderInvocationID != "candidate_b" {
+		t.Fatalf("unexpected first candidate page: %#v", first)
+	}
+	second, err := s.ListProviderReceiptIngestionCandidates(ctx, first[len(first)-1].ProviderInvocationID, 2)
+	if err != nil {
+		t.Fatalf("list second candidate page: %v", err)
+	}
+	if len(second) != 1 || second[0].ProviderInvocationID != "candidate_c" || second[0].InvocationState != ProviderInvocationStateSettledFailed {
+		t.Fatalf("terminal cleanup debt missing from second page: %#v", second)
+	}
+}
+
+func TestStoreMarkProviderReceiptInboxCleanedRequiresTerminalInvocation(t *testing.T) {
+	t.Parallel()
+	s, db, req := providerReceiptIngestionFixture(t, "cleanup")
+	ctx := context.Background()
+	if _, err := s.MarkProviderReceiptInboxCleaned(ctx, MarkProviderReceiptInboxCleanedRequest{ProviderInvocationID: req.ProviderInvocationID, CleanedAt: "2026-03-01T12:00:05Z"}); err == nil {
+		t.Fatal("expected live invocation cleanup marker to be rejected")
+	} else {
+		requireProviderSettlementError(t, err, "mark_provider_receipt_inbox_cleaned", "invocation_not_terminal")
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:05Z', committed_at = '2026-03-01T12:00:05Z' WHERE attempt_id = ?`, req.ObservedAttemptID); err != nil {
+		t.Fatalf("terminalize cleanup attempt: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE provider_invocations SET invocation_state = 'settled_failed', settled_at = '2026-03-01T12:00:05Z' WHERE provider_invocation_id = ?`, req.ProviderInvocationID); err != nil {
+		t.Fatalf("terminalize cleanup invocation: %v", err)
+	}
+	marked, err := s.MarkProviderReceiptInboxCleaned(ctx, MarkProviderReceiptInboxCleanedRequest{ProviderInvocationID: req.ProviderInvocationID, CleanedAt: "2026-03-01T12:00:06Z"})
+	if err != nil {
+		t.Fatalf("mark terminal receipt inbox cleaned: %v", err)
+	}
+	if marked.ReceiptInboxCleanedAt != "2026-03-01T12:00:06Z" {
+		t.Fatalf("cleanup marker did not persist: %#v", marked)
+	}
+	replayed, err := s.MarkProviderReceiptInboxCleaned(ctx, MarkProviderReceiptInboxCleanedRequest{ProviderInvocationID: req.ProviderInvocationID, CleanedAt: "2026-03-01T12:00:07Z"})
+	if err != nil || replayed.ReceiptInboxCleanedAt != marked.ReceiptInboxCleanedAt {
+		t.Fatalf("cleanup marker replay was not idempotent: invocation=%#v err=%v", replayed, err)
+	}
+	candidates, err := s.ListProviderReceiptIngestionCandidates(ctx, "", 10)
+	if err != nil {
+		t.Fatalf("list candidates after cleanup: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("cleaned terminal invocation remained candidate: %#v", candidates)
+	}
+}
+
+func providerReceiptIngestionFixture(t *testing.T, suffix string) (*Store, *sql.DB, IngestProviderCompletionReceiptRequest) {
+	t.Helper()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	attemptID := "run_1:receipt_ingestion:" + suffix
+	invocationID := "invocation_receipt_ingestion_" + suffix
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeReceiptRequired, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+		t.Fatalf("enqueue receipt ingestion fixture: %v", err)
+	}
+	if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_" + suffix, ProviderSessionID: "session_" + suffix, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-" + suffix, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:03Z"}); err != nil {
+		t.Fatalf("activate receipt ingestion fixture: %v", err)
+	}
+	return s, db, IngestProviderCompletionReceiptRequest{
+		ProviderInvocationID:  invocationID,
+		EntryName:             "receipt.json",
+		WireByteCount:         128,
+		WireSHA256:            strings.Repeat("a", 64),
+		EntryType:             "regular",
+		ProtocolVersion:       "v1",
+		ObservedAttemptID:     attemptID,
+		ObservedInvocationID:  invocationID,
+		CompletionCapability:  "capability-" + suffix,
+		ValidationSucceeded:   true,
+		FinalText:             " canonical response ",
+		StructuredPayloadJSON: `{ "answer": true }`,
+		Disposition:           ProviderCompletionReceiptDispositionAccepted,
+		ObservedAt:            "2026-03-01T12:00:04Z",
 	}
 }

@@ -151,7 +151,6 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	metadata := ProviderExecutionMetadata{
 		FinalText:                       strings.TrimSpace(resp.OutputText),
 		ProviderSessionID:               strings.TrimSpace(resp.ProviderSessionID),
-		CompletionStructuredPayloadJSON: firstNonEmpty(strings.TrimSpace(resp.CompletionStructuredPayloadJSON), "{}"),
 		ProviderDiagnosticsJSON:         strings.TrimSpace(resp.ProviderDiagnosticsJSON),
 		OutcomeState:                    strings.TrimSpace(resp.Outcome.State),
 		FailureReasonCode:               strings.TrimSpace(resp.Outcome.ReasonCode),

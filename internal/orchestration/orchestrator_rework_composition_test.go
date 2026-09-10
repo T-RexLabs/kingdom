@@ -62,21 +62,8 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 		ProviderInvocationAt: req.InvocationIssuedAt,
 		StreamObservation:    testSuccessfulExecuteObservation(req, step.output),
 	}
-	if req.OnCompletionReceipt != nil && strings.TrimSpace(req.InvocationID) != "" && strings.TrimSpace(req.CompletionCapability) != "" && strings.TrimSpace(step.output) != "" {
-		acceptance, err := req.OnCompletionReceipt(opencode.CompletionReceipt{
-			ProtocolVersion:       opencode.CompletionProtocolVersion,
-			AttemptID:             req.AttemptID,
-			InvocationID:          req.InvocationID,
-			CompletionCapability:  req.CompletionCapability,
-			FinalText:             step.output,
-			StructuredPayloadJSON: scriptedStructuredPayload(step.output),
-		})
-		if err != nil {
-			return opencode.ExecuteResponse{}, err
-		}
-		response.CompletionReceiptAccepted = true
-		response.CompletionReceiptEvidenceID = acceptance.EvidenceID
-		response.CompletionStructuredPayloadJSON = acceptance.StructuredPayloadJSON
+	if err := writeTestCompletionReceipt(req, step.output, scriptedStructuredPayload(step.output)); err != nil {
+		return opencode.ExecuteResponse{}, err
 	}
 	return response, nil
 }

@@ -343,8 +343,6 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
 	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
 	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
-	result.completionReceiptEvidenceID = strings.TrimSpace(response.CompletionReceiptEvidenceID)
-	result.completionStructuredPayloadJSON = strings.TrimSpace(response.CompletionStructuredPayloadJSON)
 	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
 	result.providerStreamObservation = response.StreamObservation
 	result.outcome = response.Outcome

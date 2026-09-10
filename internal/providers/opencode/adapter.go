@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/core/verdict"
 )
 
 const (
@@ -74,9 +73,6 @@ type ExecuteRequest struct {
 	// or reasoning observations. Callers must not fabricate additional detail.
 	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
 
-	// OnCompletionReceipt persists a runtime-owned settlement receipt before the
-	// adapter returns success for runtime-backed execution.
-	OnCompletionReceipt func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) `json:"-"`
 }
 
 // CompletionMode defines the single, server-owned authority a provider
@@ -109,25 +105,6 @@ type ExecuteActivityObservation struct {
 	RawText        string              `json:"raw_text,omitempty"`
 }
 
-type CompletionReceipt struct {
-	ProtocolVersion       string `json:"protocol_version"`
-	AttemptID             string `json:"attempt_id"`
-	InvocationID          string `json:"invocation_id"`
-	CompletionCapability  string `json:"completion_capability"`
-	FinalText             string `json:"final_text"`
-	StructuredPayloadJSON string `json:"structured_payload_json,omitempty"`
-}
-
-type CompletionReceiptAcceptance struct {
-	EvidenceID            string `json:"evidence_id,omitempty"`
-	FinalText             string `json:"final_text,omitempty"`
-	StructuredPayloadJSON string `json:"structured_payload_json,omitempty"`
-	Idempotent            bool   `json:"idempotent,omitempty"`
-	Rejected              bool   `json:"rejected,omitempty"`
-	InvalidatesInvocation bool   `json:"invalidates_invocation,omitempty"`
-	RejectedReason        string `json:"rejected_reason,omitempty"`
-}
-
 type mockExecutionArtifact struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
@@ -154,18 +131,15 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted                        bool                        `json:"accepted"`
-	OutputText                      string                      `json:"output_text,omitempty"`
-	Tokens                          TokenUsage                  `json:"tokens"`
-	ProviderSessionID               string                      `json:"provider_session_id,omitempty"`
-	ProviderInvocationID            string                      `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt            string                      `json:"provider_invocation_at,omitempty"`
-	Outcome                         ExecutionOutcome            `json:"outcome,omitempty"`
-	CompletionReceiptAccepted       bool                        `json:"completion_receipt_accepted,omitempty"`
-	CompletionReceiptEvidenceID     string                      `json:"completion_receipt_evidence_id,omitempty"`
-	CompletionStructuredPayloadJSON string                      `json:"completion_structured_payload_json,omitempty"`
-	ProviderDiagnosticsJSON         string                      `json:"provider_diagnostics_json,omitempty"`
-	StreamObservation               InvocationStreamObservation `json:"stream_observation"`
+	Accepted                bool                        `json:"accepted"`
+	OutputText              string                      `json:"output_text,omitempty"`
+	Tokens                  TokenUsage                  `json:"tokens"`
+	ProviderSessionID       string                      `json:"provider_session_id,omitempty"`
+	ProviderInvocationID    string                      `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt    string                      `json:"provider_invocation_at,omitempty"`
+	Outcome                 ExecutionOutcome            `json:"outcome,omitempty"`
+	ProviderDiagnosticsJSON string                      `json:"provider_diagnostics_json,omitempty"`
+	StreamObservation       InvocationStreamObservation `json:"stream_observation"`
 }
 
 type CancelRequest struct {
@@ -239,31 +213,19 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
-	accepted, err := acceptSyntheticCompletionReceipt(req, summary)
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-	if req.OnCompletionReceipt != nil {
-		disposition, err := completionReceiptDispositionForHandlerResult(accepted, nil)
-		if err != nil {
-			return ExecuteResponse{}, err
-		}
-		if disposition == completionReceiptDispositionRejected {
-			reason := firstNonEmpty(strings.TrimSpace(accepted.RejectedReason), "completion receipt rejected")
-			return ExecuteResponse{}, fmt.Errorf("synthetic completion receipt rejected: %s", reason)
-		}
-	}
 
 	zero := 0
 	return ExecuteResponse{
-		Accepted:                        true,
-		OutputText:                      summary,
-		ProviderSessionID:               providerSessionID,
-		ProviderInvocationID:            strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
-		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
+		Accepted:             true,
+		OutputText:           summary,
+		ProviderSessionID:    providerSessionID,
+		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		Outcome: ExecutionOutcome{
+			State:          string(attemptCompletionStateSuccess),
+			ReasonCode:     "execution_completed",
+			EvidenceSource: string(completionEvidenceSourceStream),
+		},
 		StreamObservation: InvocationStreamObservation{
 			ProviderSessionID:      providerSessionID,
 			FinalTurnID:            "turn_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
@@ -383,9 +345,6 @@ func validateExecuteRequest(req ExecuteRequest) error {
 		if strings.TrimSpace(req.CompletionReceiptDir) != "" {
 			return fmt.Errorf("completion receipt dir is only valid for receipt_required completion mode")
 		}
-		if req.OnCompletionReceipt != nil {
-			return fmt.Errorf("completion receipt handler is only valid for receipt_required completion mode")
-		}
 	case CompletionModeReceiptRequired:
 		if strings.TrimSpace(req.InvocationID) == "" {
 			return fmt.Errorf("invocation id is required for receipt_required completion mode")
@@ -395,9 +354,6 @@ func validateExecuteRequest(req ExecuteRequest) error {
 		}
 		if strings.TrimSpace(req.CompletionReceiptDir) == "" {
 			return fmt.Errorf("completion receipt dir is required for receipt_required completion mode")
-		}
-		if req.OnCompletionReceipt == nil {
-			return fmt.Errorf("completion receipt handler is required for receipt_required completion mode")
 		}
 	default:
 		return fmt.Errorf("completion mode must be %q or %q", CompletionModeServerResponse, CompletionModeReceiptRequired)
@@ -422,51 +378,6 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	}
 
 	return nil
-}
-
-func acceptSyntheticCompletionReceipt(req ExecuteRequest, finalText string) (CompletionReceiptAcceptance, error) {
-	if req.OnCompletionReceipt == nil {
-		return CompletionReceiptAcceptance{}, nil
-	}
-	if strings.TrimSpace(req.InvocationID) == "" || strings.TrimSpace(req.CompletionCapability) == "" {
-		return CompletionReceiptAcceptance{}, fmt.Errorf("invocation id and completion capability are required when completion receipt handling is enabled")
-	}
-	accepted, err := req.OnCompletionReceipt(CompletionReceipt{
-		ProtocolVersion:       firstNonEmpty(strings.TrimSpace(req.CompletionProtocolVersion), CompletionProtocolVersion),
-		AttemptID:             strings.TrimSpace(req.AttemptID),
-		InvocationID:          strings.TrimSpace(req.InvocationID),
-		CompletionCapability:  strings.TrimSpace(req.CompletionCapability),
-		FinalText:             strings.TrimSpace(finalText),
-		StructuredPayloadJSON: structuredPayloadJSONForOutputText(finalText),
-	})
-	if err != nil {
-		return CompletionReceiptAcceptance{}, err
-	}
-	if _, err := completionReceiptDispositionForHandlerResult(accepted, nil); err != nil {
-		return CompletionReceiptAcceptance{}, err
-	}
-	if accepted.Rejected {
-		return accepted, nil
-	}
-	if strings.TrimSpace(accepted.FinalText) == "" {
-		accepted.FinalText = strings.TrimSpace(finalText)
-	}
-	if strings.TrimSpace(accepted.StructuredPayloadJSON) == "" {
-		accepted.StructuredPayloadJSON = structuredPayloadJSONForOutputText(finalText)
-	}
-	return accepted, nil
-}
-
-func structuredPayloadJSONForOutputText(outputText string) string {
-	verdict := extractReceiptVerdict(outputText)
-	if verdict == "" {
-		return "{}"
-	}
-	return fmt.Sprintf(`{"verdict":%q}`, verdict)
-}
-
-func extractReceiptVerdict(outputText string) string {
-	return verdict.ExtractNearTop(outputText)
 }
 
 func buildMemoryOutput(req ExecuteRequest) (string, error) {
