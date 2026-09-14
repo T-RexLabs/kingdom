@@ -2783,7 +2783,7 @@ export interface components {
             /** @enum {string} */
             execution_mode: "provider_backed" | "runtime_owned";
             /** @enum {string} */
-            status: "queued" | "starting" | "running" | "blocked" | "verifying" | "succeeded" | "failed" | "cancelled";
+            status: "queued" | "starting" | "running" | "blocked" | "paused" | "verifying" | "succeeded" | "failed" | "cancelled";
             logical_session_id?: string;
             provider_session_id?: string;
             /** Format: date-time */
@@ -2807,6 +2807,8 @@ export interface components {
             failure_code?: string;
             failure_text?: string;
             completion_invalid_reason?: string;
+            /** @enum {string} */
+            handoff_state?: "awaiting_quiescence" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
         };
         RunExecutionDetail: components["schemas"]["RunExecution"] & {
             provider_invocation_id?: string;

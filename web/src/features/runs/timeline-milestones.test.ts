@@ -154,6 +154,99 @@ describe("timeline milestones", () => {
 		]));
 	});
 
+	it("keeps a quiescence-blocked retry visibly paused in the timeline", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-paused",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "blocked",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-paused",
+			node_run_id: "nr-builder-paused",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "paused",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+
+		const recoveryEvent: TimelineEvent = {
+			event_id: "evt-retry-paused",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.recovered",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-paused", state: "blocked" },
+		};
+		const retryEvent: TimelineEvent = {
+			event_id: "evt-retry-queued",
+			run_event_seq: 2,
+			attempt_seq: 1,
+			event_type: "attempt.retry_queued",
+			emitted_at: "2026-03-18T11:42:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-paused-2", attempt: 2 },
+		};
+		const milestones = synthesizeMilestones([recoveryEvent, retryEvent], nodes, [], buildTimelineLookups([recoveryEvent, retryEvent], nodes, executions));
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "paused",
+				kind: "node_blocked",
+				detail: "Retry Paused - Previous Attempt Still Running",
+				events: expect.arrayContaining([expect.objectContaining({ event_id: "evt-retry-queued" })]),
+			}),
+		]));
+	});
+
+	it("describes a paused workspace-restoration handoff accurately", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-restore",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "blocked",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-restore",
+			node_run_id: "nr-builder-restore",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "paused",
+			handoff_state: "workspace_restore_failed",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+		const recoveryEvent: TimelineEvent = {
+			event_id: "evt-retry-restore-paused",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.recovered",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-restore", state: "blocked" },
+		};
+
+		const milestones = synthesizeMilestones([recoveryEvent], nodes, [], buildTimelineLookups([recoveryEvent], nodes, executions));
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "paused",
+				detail: "Step Paused - Trusted Workspace Restoration Failed",
+			}),
+		]));
+	});
+
 	it("keeps blocked recovery visible while still showing the queued retry handoff", () => {
 		const nodes: RunGraphNode[] = [{
 			node_id: "delegated_execution_berserker",

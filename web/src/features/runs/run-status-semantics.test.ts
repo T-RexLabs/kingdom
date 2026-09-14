@@ -40,6 +40,9 @@ describe("run status semantics", () => {
 		expect(operatorExecutionStatusText("running")).toBe("This step is still running.");
 		expect(operatorExecutionStatusText("blocked")).toBe("This step is blocked while Kingdom decides or performs recovery.");
 		expect(operatorExecutionStatusText("blocked", "Blocked for retry")).toBe("This step is blocked while Kingdom decides or performs recovery.");
+		expect(operatorExecutionStatusText("paused")).toBe("Kingdom is waiting for the previous attempt to stop before starting the retry.");
+		expect(operatorExecutionStatusText("paused", "Provider running", "workspace_restore_failed")).toBe("Kingdom stopped the previous attempt but could not restore the trusted workspace.");
+		expect(operatorExecutionStatusText("paused", "Provider running", "awaiting_workspace_quiescence")).toBe("Kingdom is waiting for another active step to release the shared workspace.");
 		expect(operatorExecutionStatusText("running", "Retry exhausted")).toBe("Kingdom exhausted provider retries for this step.");
 		expect(operatorExecutionStatusText("verifying")).toBe("Kingdom is still confirming the final result for this step.");
 	});

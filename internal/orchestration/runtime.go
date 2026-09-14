@@ -574,9 +574,6 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
 	}
-	if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
-		return fmt.Errorf("startup lost provider terminal handoff recovery: %w", err)
-	}
 	if _, err := r.reconciler.RunStartup(ctx); err != nil {
 		return fmt.Errorf("startup reconcile: %w", err)
 	}
@@ -915,6 +912,9 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	}
 	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
 		return fmt.Errorf("converge provider terminal handoffs: %w", err)
+	}
+	if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		return fmt.Errorf("settle lost provider terminal handoffs: %w", err)
 	}
 	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
 		return err

@@ -693,6 +693,9 @@ func readIntegerFile(t *testing.T, path string) int {
 func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 	t.Helper()
 
+	if strings.TrimSpace(cfg.WorkspaceRoot) == "" {
+		cfg.WorkspaceRoot = t.TempDir()
+	}
 	if cfg.Adapter == nil {
 		cfg.Adapter = &receiptPublishingTestAdapter{Adapter: opencode.NewMemoryAdapter()}
 	} else if _, ok := cfg.Adapter.(*opencode.MemoryAdapter); ok {
@@ -1213,6 +1216,78 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 	}
 }
 
+func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	store := executionstore.New(db)
+	const (
+		attemptID    = "run_1:decree_intake:1"
+		invocationID = "invocation_lost_handoff"
+	)
+	ctx := context.Background()
+	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		SessionRef:     "session_lost_handoff",
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+	claim, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "runtime_orchestrator",
+		LeaseUntil: "2099-03-01T12:10:00Z",
+		ClaimedAt:  "2026-03-01T12:00:01Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
+	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
+		ProviderInvocationID: invocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
+		ProviderSessionID:    "ses_lost_handoff",
+		CreatedAt:            "2026-03-01T12:00:02Z",
+		OpenedAt:             "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("activate provider invocation: %v", err)
+	}
+	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
+
+	loop := &orchestrationLoop{
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		executionStore: store,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC)
+		},
+	}
+	if err := (&Runtime{orchestrator: loop}).recoverDurableExecutionState(ctx); err != nil {
+		t.Fatalf("recover durable execution state: %v", err)
+	}
+
+	attempt, found, err := store.GetAttempt(ctx, attemptID)
+	if err != nil || !found || attempt.State != "committed_failure" || attempt.FailureCode != "provider_terminal_handoff_lost" {
+		t.Fatalf("expected lost handoff to settle as terminal failure: found=%t attempt=%#v err=%v", found, attempt, err)
+	}
+	var outboxStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+		t.Fatalf("query recovered terminal outbox: %v", err)
+	}
+	if outboxStatus != "published" {
+		t.Fatalf("expected lost handoff projection during startup recovery, got %q", outboxStatus)
+	}
+}
+
 func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 	t.Parallel()
 
@@ -1625,6 +1700,118 @@ func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *t
 	}
 	if outboxStatus != "pending" {
 		t.Fatalf("expected unproven launched retry cancel outbox to remain pending, got %q", outboxStatus)
+	}
+}
+
+func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	now := "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder_restore', 'builder-berserker', 'blocked', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_restore', 'reviewer-shieldmaiden', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_builder_restore', 'wfdef_1', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_reviewer_restore', 'wfdef_1', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_restore', 'run_1', 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent_builder_restore', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_reviewer_restore', 'run_1', 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent_reviewer_restore', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, base_snapshot_id, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_restore', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session_builder_restore', 'snap_attempt_base', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, created_at, updated_at) VALUES ('run_1:execution_review_shieldmaiden:1', 'run_1', 'nr_reviewer_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_reviewer_restore', 'ses_reviewer_restore', '`+now+`', '`+now+`', '`+now+`')`)
+	if err := executionstore.New(db).QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{CancelOutboxID: "cancel_reviewer_restore", AttemptID: "run_1:execution_review_shieldmaiden:1", RunID: "run_1", NodeRunID: "nr_reviewer_restore", SessionID: "session_reviewer_restore", ReasonCode: "agent_unresponsive", RequestedAt: now, CreatedAt: now}); err != nil {
+		t.Fatalf("queue active reviewer cancellation: %v", err)
+	}
+
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime filesystem store: %v", err)
+	}
+	baseRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRoot, "state.txt"), []byte("attempt base\n"), 0o644); err != nil {
+		t.Fatalf("write base workspace: %v", err)
+	}
+	if _, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{SnapshotID: "snap_attempt_base", RunID: "run_1", SnapshotKind: "baseline", RootPath: baseRoot, CreatedAt: now}); err != nil {
+		t.Fatalf("capture attempt base snapshot: %v", err)
+	}
+	trustedRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(trustedRoot, "state.txt"), []byte("newer trusted state\n"), 0o644); err != nil {
+		t.Fatalf("write newer trusted workspace: %v", err)
+	}
+	if _, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{SnapshotID: "snap_newer_trusted", RunID: "run_1", SnapshotKind: "trusted_promotion", RootPath: trustedRoot, CreatedAt: now}); err != nil {
+		t.Fatalf("capture newer trusted snapshot: %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "state.txt"), []byte("dirty workspace\n"), 0o644); err != nil {
+		t.Fatalf("write dirty workspace: %v", err)
+	}
+	if _, err := fsStore.EnsureExecutionTarget(context.Background(), runtimefs.EnsureExecutionTargetRequest{RunID: "run_1", TargetMode: "direct", SourceRoot: baseRoot, ExecutionRoot: workspaceRoot, PublishRoot: baseRoot, TrustedSnapshotID: "snap_newer_trusted", State: "attempt_dirty", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("ensure execution target: %v", err)
+	}
+
+	loop := orchestrationLoop{executionStore: executionstore.New(db), fsStore: fsStore}
+	err = loop.restoreTrustedWorkspaceAfterCancellation(context.Background(), executionstore.AttemptCancelRecord{AttemptID: "run_1:delegated_execution_berserker:1", RunID: "run_1", NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", BaseSnapshotID: "snap_attempt_base"}, now)
+	var blocked workspaceHandoffBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("expected active workspace sibling to block restoration, got %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(workspaceRoot, "state.txt"))
+	if err != nil {
+		t.Fatalf("read blocked workspace: %v", err)
+	}
+	if string(content) != "dirty workspace\n" {
+		t.Fatalf("active workspace sibling allowed restore: %q", content)
+	}
+	if err := executionstore.New(db).MarkAttemptCancelPublished(context.Background(), "cancel_reviewer_restore", now); err != nil {
+		t.Fatalf("publish reviewer cancellation: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_success' WHERE attempt_id = 'run_1:execution_review_shieldmaiden:1'`)
+	mustExec(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at) VALUES ('outbox_reviewer_restore', 'run_1:execution_review_shieldmaiden:1', 'run_1', 'nr_reviewer_restore', 1, 'committed_success', '{}', 'pending', 0, '', '`+now+`', '`+now+`')`)
+	err = loop.restoreTrustedWorkspaceAfterCancellation(context.Background(), executionstore.AttemptCancelRecord{AttemptID: "run_1:delegated_execution_berserker:1", RunID: "run_1", NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", BaseSnapshotID: "snap_attempt_base"}, now)
+	if !errors.As(err, &blocked) {
+		t.Fatalf("expected pending sibling completion projection to block restoration, got %v", err)
+	}
+	if err := executionstore.New(db).MarkOutboxPublished(context.Background(), "outbox_reviewer_restore", now); err != nil {
+		t.Fatalf("publish reviewer completion projection: %v", err)
+	}
+	err = loop.restoreTrustedWorkspaceAfterCancellation(context.Background(), executionstore.AttemptCancelRecord{AttemptID: "run_1:delegated_execution_berserker:1", RunID: "run_1", NodeID: "delegated_execution_berserker", NodeClass: "delegated_execution", BaseSnapshotID: "snap_attempt_base"}, now)
+	if err != nil {
+		t.Fatalf("restore workspace after cancellation: %v", err)
+	}
+	content, err = os.ReadFile(filepath.Join(workspaceRoot, "state.txt"))
+	if err != nil {
+		t.Fatalf("read restored workspace: %v", err)
+	}
+	if string(content) != "attempt base\n" {
+		t.Fatalf("expected the attempt base snapshot, got %q", content)
+	}
+	target, err := fsStore.GetExecutionTarget(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load restored target: %v", err)
+	}
+	if target.TrustedSnapshotID != "snap_attempt_base" || target.State != "trusted" {
+		t.Fatalf("expected restored target to trust attempt base, got %#v", target)
+	}
+}
+
+func TestRestoreTrustedWorkspaceAfterCancellationSkipsResponseOnlyAttempt(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "state.txt"), []byte("unchanged\n"), 0o644); err != nil {
+		t.Fatalf("write workspace: %v", err)
+	}
+	loop := orchestrationLoop{}
+	if err := loop.restoreTrustedWorkspaceAfterCancellation(context.Background(), executionstore.AttemptCancelRecord{RunID: "run_1", NodeID: "plan_drafting", NodeClass: "plan_drafting"}, "2026-03-01T12:00:00Z"); err != nil {
+		t.Fatalf("skip response-only workspace restore: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(workspaceRoot, "state.txt"))
+	if err != nil {
+		t.Fatalf("read workspace: %v", err)
+	}
+	if string(content) != "unchanged\n" {
+		t.Fatalf("response-only cancellation changed workspace: %q", content)
 	}
 }
 

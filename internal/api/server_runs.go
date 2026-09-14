@@ -1228,6 +1228,9 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.CompletionInvalidReason.Valid {
 		item.CompletionInvalidReason = &record.CompletionInvalidReason.String
 	}
+	if record.CancellationHandoffState.Valid {
+		item.HandoffState = &record.CancellationHandoffState.String
+	}
 	return item
 }
 
@@ -1263,6 +1266,9 @@ func buildRunExecutionDetailItem(record executionstore.RunExecutionDetailRecord)
 
 func runExecutionStatus(record executionstore.RunExecutionRecord) string {
 	if strings.TrimSpace(record.NodeStatus) == "blocked" {
+		if record.CancellationPending && record.FailureCode.Valid && strings.TrimSpace(record.FailureCode.String) == "agent_unresponsive" {
+			return "paused"
+		}
 		return "blocked"
 	}
 	switch strings.TrimSpace(record.State) {

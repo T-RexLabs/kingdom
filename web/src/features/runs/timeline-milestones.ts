@@ -360,9 +360,12 @@ export function synthesizeMilestones(
     } else if (effectiveState === "ready" || effectiveState === "pending" || effectiveState === "neutral") {
       status = effectiveState;
       kind = "node_queued";
-    } else if (effectiveState === "blocked") {
-      status = "blocked";
-      kind = "node_blocked";
+	} else if (effectiveState === "blocked" || effectiveState === "paused") {
+		status = "blocked";
+		if (effectiveState === "paused") {
+			status = "paused";
+		}
+		kind = "node_blocked";
     } else if (effectiveState === "cancelled" || effectiveState === "skipped") {
       status = effectiveState;
       kind = "node_cancelled";
@@ -388,8 +391,14 @@ export function synthesizeMilestones(
     } else if (kind === "node_queued") {
 		  const lead = effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
 		  detailText = lead;
-    } else if (kind === "node_blocked") {
-		  detailText = "Blocked";
+	} else if (kind === "node_blocked") {
+		  detailText = status === "paused"
+			? execution?.handoff_state === "workspace_restore_failed"
+				? "Step Paused - Trusted Workspace Restoration Failed"
+				: execution?.handoff_state === "awaiting_workspace_quiescence"
+					? "Retry Paused - Shared Workspace Still in Use"
+				: "Retry Paused - Previous Attempt Still Running"
+			: "Blocked";
     } else if (kind === "node_cancelled") {
 		  const lead = effectiveState === "skipped" ? "Skipped" : "Cancelled";
 		  detailText = lead;
@@ -437,6 +446,7 @@ export function synthesizeMilestones(
 	    const ready = statusCounts.ready;
     const pending = statusCounts.pending;
     const blocked = statusCounts.blocked;
+		const paused = statusCounts.paused;
     const cancelled = statusCounts.cancelled;
     const skipped = statusCounts.skipped;
 	    const rework = statusCounts.rework;
@@ -465,9 +475,12 @@ export function synthesizeMilestones(
 	    if (failed > 0) {
 	      status = "failed";
 	      summaryDetail = `${succeeded} of ${total} succeeded, ${failed} failed${active > 0 ? `, ${active} active` : ""}`;
+		} else if (paused > 0 && blocked === 0) {
+			status = "paused";
+			summaryDetail = `${succeeded} of ${total} succeeded, ${paused} ${paused === 1 ? "retry" : "retries"} paused`;
 	    } else if (blocked > 0) {
 	      status = "blocked";
-	      summaryDetail = `${succeeded} of ${total} succeeded, ${blocked} blocked`;
+	      summaryDetail = `${succeeded} of ${total} succeeded, ${blocked} blocked${paused > 0 ? `, ${paused} ${paused === 1 ? "retry" : "retries"} paused` : ""}`;
 	    } else if (rework > 0) {
 	      status = "rework";
 	      summaryDetail = `${total - rework} of ${total} completed, ${rework} requested rework`;
@@ -655,7 +668,7 @@ function selectMilestoneEventsForVisibleLineage(events: TimelineEvent[], current
 		return events;
 	}
 	const lineageEvents = events.filter((event) => eventNodeRunID(event) === trimmedNodeRunID);
-	if ((visibleLineageState ?? "").trim() !== "blocked") {
+	if ((visibleLineageState ?? "").trim() !== "blocked" && (visibleLineageState ?? "").trim() !== "paused") {
 		return lineageEvents;
 	}
 	const blockedRunEventSeq = latestBlockedRunEventSeq(lineageEvents);
@@ -825,6 +838,8 @@ function executionLifecycleStatus(execution?: RunExecution): RunStatusTone | und
 				return "starting";
 			case "blocked":
 				return "blocked";
+			case "paused":
+				return "paused";
 			case "running":
 			case "verifying":
 				return "running";
@@ -857,6 +872,7 @@ function countMilestoneStatuses(milestones: Milestone[]): Record<RunStatusTone, 
 		ready: 0,
 		pending: 0,
 		blocked: 0,
+		paused: 0,
 		cancelled: 0,
 		skipped: 0,
 		rework: 0,

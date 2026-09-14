@@ -27,6 +27,8 @@ export function normalizedRunStatusTone(state: unknown): RunStatusTone | undefin
 		case "skipped":
 		case "rework":
 			return normalizedToken(state) as RunStatusTone;
+		case "paused":
+			return "paused";
 		default:
 			return undefined;
 	}
@@ -62,7 +64,8 @@ export function isQueuedExecutionStatus(status?: string | null): boolean {
 }
 
 export function isBlockedExecutionStatus(status?: string | null): boolean {
-	return normalizedToken(status) === "blocked";
+	const normalized = normalizedToken(status);
+	return normalized === "blocked" || normalized === "paused";
 }
 
 export function isActiveExecutionStatus(status?: string | null): boolean {
@@ -120,7 +123,17 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 	}
 }
 
-export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null): string | null {
+export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null, handoffState?: string | null): string | null {
+	if (normalizedToken(status) === "paused") {
+		switch (normalizedToken(handoffState)) {
+			case "workspace_restore_failed":
+				return "Kingdom stopped the previous attempt but could not restore the trusted workspace.";
+			case "awaiting_workspace_quiescence":
+				return "Kingdom is waiting for another active step to release the shared workspace.";
+			default:
+				return "Kingdom is waiting for the previous attempt to stop before starting the retry.";
+		}
+	}
 	const liveBody = operatorLiveExecutionLabel(liveLabel);
 	if (liveBody) {
 		return liveBody;
@@ -130,8 +143,8 @@ export function operatorExecutionStatusText(status?: string | null, liveLabel?: 
 				return "This step is launching now.";
 			case "running":
 				return "This step is still running.";
-			case "blocked":
-				return "This step is blocked while Kingdom decides or performs recovery.";
+		case "blocked":
+			return "This step is blocked while Kingdom decides or performs recovery.";
 			case "verifying":
 				return "Kingdom is still confirming the final result for this step.";
 		case "queued":

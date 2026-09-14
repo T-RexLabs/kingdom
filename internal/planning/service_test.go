@@ -37,6 +37,33 @@ func (a *formalizeContextCaptureAgent) FormalizePlanStream(ctx context.Context, 
 
 var defaultPlanningServiceTestScript = planningfixture.DefaultServiceScript()
 
+func TestServiceDefersPeriodicRecoveryUntilExplicitStart(t *testing.T) {
+	t.Parallel()
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, t.TempDir(), func() string { return "2026-04-21T17:00:00Z" }, deterministicID())
+	service.reconcileEvery = time.Hour
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
+
+	select {
+	case <-service.recoveryDone:
+		t.Fatal("periodic planning recovery started during service construction")
+	default:
+	}
+
+	service.StartRecoveryLoop()
+	select {
+	case <-service.recoveryDone:
+		t.Fatal("periodic planning recovery exited before service shutdown")
+	default:
+	}
+}
+
 func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessionID string) string {
 	t.Helper()
 	snapshotID := "context_" + sessionID
@@ -3096,9 +3123,11 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 	// Cancel the service-owned context before calling failOperation.
 	// This is the precondition the router checks for.
 	service.recoveryCancel()
-	// Also drain the recovery loop so it doesn't race with our manual
-	// finalize. The runner.Wait isn't needed because no goroutine has
-	// been started for opID — we're calling failOperation directly.
+	// Start the already-cancelled loop so recoveryDone closes without
+	// allowing recovery work to race with our manual finalize. The
+	// runner.Wait isn't needed because no goroutine has been started for
+	// opID — we're calling failOperation directly.
+	service.StartRecoveryLoop()
 	<-service.recoveryDone
 
 	cursor := newSequenceCursor(1)

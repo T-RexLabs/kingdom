@@ -4943,7 +4943,7 @@ components:
           enum: [provider_backed, runtime_owned]
         status:
           type: string
-          enum: [queued, starting, running, blocked, verifying, succeeded, failed, cancelled]
+          enum: [queued, starting, running, blocked, paused, verifying, succeeded, failed, cancelled]
         logical_session_id:
           type: string
           minLength: 1
@@ -4989,6 +4989,9 @@ components:
         completion_invalid_reason:
           type: string
           minLength: 1
+        handoff_state:
+          type: string
+          enum: [awaiting_quiescence, awaiting_workspace_quiescence, workspace_restore_failed]
 
     RunExecutionDetail:
       allOf:

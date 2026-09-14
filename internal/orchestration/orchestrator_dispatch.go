@@ -275,6 +275,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	baseSnapshotID := ""
 	if executionSpec.RequiresWorkspace {
 		unlockWorkspace := o.lockRunWorkspace(run.RunID)
+		defer unlockWorkspace()
 		workspaceCtx, workspaceCtxErr := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
 		if workspaceCtxErr == nil && strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
 			workspaceCtxErr = fmt.Errorf("execution root is required for execution")
@@ -288,7 +289,6 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		if workspaceCtxErr == nil {
 			workspaceCtxErr = o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now)
 		}
-		unlockWorkspace()
 		if workspaceCtxErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", workspaceCtxErr, now)
 		}

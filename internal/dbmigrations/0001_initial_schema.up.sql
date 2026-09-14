@@ -723,6 +723,7 @@ CREATE TABLE attempt_cancel_outbox (
   reason_text TEXT NOT NULL DEFAULT '',
   requested_at TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'published')),
+  handoff_state TEXT NOT NULL DEFAULT 'awaiting_quiescence' CHECK (handoff_state IN ('awaiting_quiescence', 'awaiting_workspace_quiescence', 'workspace_restore_failed', 'released')),
   publish_attempts INTEGER NOT NULL DEFAULT 0 CHECK (publish_attempts >= 0),
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,

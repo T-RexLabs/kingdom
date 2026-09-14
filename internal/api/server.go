@@ -549,7 +549,11 @@ func (s *Server) RecoverPlanningOperations(ctx context.Context) error {
 	if s == nil || s.planningService == nil {
 		return nil
 	}
-	return s.planningService.RecoverOperations(ctx)
+	if err := s.planningService.RecoverOperations(ctx); err != nil {
+		return err
+	}
+	s.planningService.StartRecoveryLoop()
+	return nil
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
@@ -729,6 +733,7 @@ type runExecutionItem struct {
 	FailureCode             *string    `json:"failure_code,omitempty"`
 	FailureText             *string    `json:"failure_text,omitempty"`
 	CompletionInvalidReason *string    `json:"completion_invalid_reason,omitempty"`
+	HandoffState            *string    `json:"handoff_state,omitempty"`
 }
 
 type runExecutionSettlementDetailItem struct {

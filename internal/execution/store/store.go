@@ -133,31 +133,33 @@ type AttemptExecution struct {
 }
 
 type RunExecutionRecord struct {
-	AttemptID               string
-	RunID                   string
-	NodeRunID               string
-	NodeID                  string
-	Attempt                 int
-	NodeStatus              string
-	RequiredRole            string
-	AgentID                 string
-	State                   string
-	ExecutionMode           ExecutionMode
-	LogicalSessionID        sql.NullString
-	ProviderSessionID       sql.NullString
-	QueuedAt                string
-	ActivityAt              string
-	ProgressEventType       sql.NullString
-	ProgressReasonCode      sql.NullString
-	ProgressAt              sql.NullString
-	LaunchStartedAt         sql.NullString
-	StartedAt               sql.NullString
-	UpdatedAt               string
-	TerminalObservedAt      sql.NullString
-	CommittedAt             sql.NullString
-	FailureCode             sql.NullString
-	FailureText             sql.NullString
-	CompletionInvalidReason sql.NullString
+	AttemptID                string
+	RunID                    string
+	NodeRunID                string
+	NodeID                   string
+	Attempt                  int
+	NodeStatus               string
+	RequiredRole             string
+	AgentID                  string
+	State                    string
+	ExecutionMode            ExecutionMode
+	LogicalSessionID         sql.NullString
+	ProviderSessionID        sql.NullString
+	QueuedAt                 string
+	ActivityAt               string
+	ProgressEventType        sql.NullString
+	ProgressReasonCode       sql.NullString
+	ProgressAt               sql.NullString
+	LaunchStartedAt          sql.NullString
+	StartedAt                sql.NullString
+	UpdatedAt                string
+	TerminalObservedAt       sql.NullString
+	CommittedAt              sql.NullString
+	FailureCode              sql.NullString
+	FailureText              sql.NullString
+	CompletionInvalidReason  sql.NullString
+	CancellationPending      bool
+	CancellationHandoffState sql.NullString
 }
 
 type RunExecutionDetailRecord struct {
@@ -235,6 +237,18 @@ type AttemptCancelRecord struct {
 	Status         string
 	PublishCount   int
 	LastError      string
+	HandoffState   string
+	NodeID         string
+	NodeClass      string
+	BaseSnapshotID string
+}
+
+type ActiveRunAttempt struct {
+	AttemptID           string
+	NodeID              string
+	NodeClass           string
+	State               string
+	CancellationPending bool
 }
 
 type QueueOutboxRequest struct {
@@ -503,7 +517,9 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        ae.committed_at,
 		        NULLIF(TRIM(ae.failure_code), '') AS failure_code,
 		        NULLIF(TRIM(ae.failure_text), '') AS failure_text,
-		        COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason
+		        COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
+		        EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_pending,
+		        (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state
 		 FROM attempt_executions ae
 		 JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		 LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
@@ -551,6 +567,8 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.FailureCode,
 			&rec.FailureText,
 			&rec.CompletionInvalidReason,
+			&rec.CancellationPending,
+			&rec.CancellationHandoffState,
 		); err != nil {
 			return nil, fmt.Errorf("scan run execution row for %q: %w", runID, err)
 		}
@@ -628,6 +646,8 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       NULLIF(TRIM(ae.failure_code), '') AS failure_code,
 	       NULLIF(TRIM(ae.failure_text), '') AS failure_text,
 	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
+	       EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_pending,
+	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
 	       COALESCE(lao.payload_json, '') AS payload_json,
 	       NULLIF(TRIM(ae.active_provider_invocation_id), '') AS active_provider_invocation_id,
 	       NULLIF(TRIM(api.created_at), '') AS active_provider_invocation_at,
@@ -672,6 +692,8 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.FailureCode,
 		&rec.FailureText,
 		&rec.CompletionInvalidReason,
+		&rec.CancellationPending,
+		&rec.CancellationHandoffState,
 		&payloadJSON,
 		&activeProviderInvocationID,
 		&activeProviderInvocationAt,
@@ -1985,9 +2007,13 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 		`SELECT aco.cancel_outbox_id, aco.attempt_id, aco.run_id, aco.node_run_id,
 		        COALESCE(NULLIF(TRIM(ae.provider_session_id), ''), aco.session_id) AS session_id,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
-		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error
+		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
+		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, '')
 		 FROM attempt_cancel_outbox aco
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id
+		 LEFT JOIN node_runs nr ON nr.node_run_id = aco.node_run_id AND nr.run_id = aco.run_id
+		 LEFT JOIN workflow_runs wr ON wr.run_id = aco.run_id
+		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE status = 'pending'
 		 ORDER BY aco.created_at ASC, aco.cancel_outbox_id ASC
 		 LIMIT ?`,
@@ -2002,7 +2028,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 	for rows.Next() {
 		var rec AttemptCancelRecord
 		var executionMode string
-		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError); err != nil {
+		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID); err != nil {
 			return nil, fmt.Errorf("scan pending attempt cancel: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)
@@ -2013,6 +2039,49 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 	}
 
 	return records, nil
+}
+
+// ListActiveRunAttempts returns the other attempts whose completion work may
+// still read or write a run's shared execution workspace.
+func (s *Store) ListActiveRunAttempts(ctx context.Context, runID, excludedAttemptID string) ([]ActiveRunAttempt, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store database is required")
+	}
+	runID = strings.TrimSpace(runID)
+	excludedAttemptID = strings.TrimSpace(excludedAttemptID)
+	if runID == "" || excludedAttemptID == "" {
+		return nil, fmt.Errorf("run_id and excluded attempt_id are required")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ae.attempt_id, nr.node_id, wn.node_class, ae.state,
+		EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending')
+		FROM attempt_executions ae
+		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		JOIN workflow_runs wr ON wr.run_id = ae.run_id
+		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
+		WHERE ae.run_id = ?
+		  AND ae.attempt_id <> ?
+		  AND (
+			  ae.state IN ('starting', 'running', 'terminal_observed')
+			  OR EXISTS (SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending')
+			  OR EXISTS (SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending')
+		  )
+		ORDER BY ae.attempt_id ASC`, runID, excludedAttemptID)
+	if err != nil {
+		return nil, fmt.Errorf("list active run attempts for %q: %w", runID, err)
+	}
+	defer rows.Close()
+	active := make([]ActiveRunAttempt, 0)
+	for rows.Next() {
+		var attempt ActiveRunAttempt
+		if err := rows.Scan(&attempt.AttemptID, &attempt.NodeID, &attempt.NodeClass, &attempt.State, &attempt.CancellationPending); err != nil {
+			return nil, fmt.Errorf("scan active run attempt for %q: %w", runID, err)
+		}
+		active = append(active, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active run attempts for %q: %w", runID, err)
+	}
+	return active, nil
 }
 
 func (s *Store) MarkOutboxPublished(ctx context.Context, outboxID, publishedAt string) error {
@@ -2194,6 +2263,7 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE attempt_cancel_outbox
 		 SET status = 'published',
+		     handoff_state = 'released',
 		     publish_attempts = publish_attempts + 1,
 		     last_error = '',
 		     updated_at = ?,
@@ -2216,18 +2286,22 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 	return nil
 }
 
-func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, lastError, updatedAt string) error {
+func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, lastError, handoffState, updatedAt string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store database is required")
 	}
 	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
 	lastError = strings.TrimSpace(lastError)
+	handoffState = strings.TrimSpace(handoffState)
 	updatedAt = strings.TrimSpace(updatedAt)
 	if cancelOutboxID == "" {
 		return fmt.Errorf("cancel_outbox_id is required")
 	}
 	if lastError == "" {
 		lastError = "attempt cancel failed"
+	}
+	if handoffState != "awaiting_quiescence" && handoffState != "awaiting_workspace_quiescence" && handoffState != "workspace_restore_failed" {
+		return fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
 	}
 	if updatedAt == "" {
 		updatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2237,9 +2311,11 @@ func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, 
 		`UPDATE attempt_cancel_outbox
 		 SET publish_attempts = publish_attempts + 1,
 		     last_error = ?,
+		     handoff_state = ?,
 		     updated_at = ?
 		 WHERE cancel_outbox_id = ? AND status = 'pending'`,
 		lastError,
+		handoffState,
 		updatedAt,
 		cancelOutboxID,
 	)

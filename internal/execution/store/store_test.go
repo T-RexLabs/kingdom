@@ -1181,14 +1181,18 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	if pending[0].SessionID != "session_run_1_decree_intake_1" {
 		t.Fatalf("expected logical fallback session id, got %q", pending[0].SessionID)
 	}
+	if pending[0].HandoffState != "awaiting_quiescence" {
+		t.Fatalf("expected new cancellation to await quiescence, got %q", pending[0].HandoffState)
+	}
 
-	if err := s.RecordAttemptCancelFailure(ctx, "cancel_outbox_1", "transport timeout", "2026-03-01T12:00:03Z"); err != nil {
+	if err := s.RecordAttemptCancelFailure(ctx, "cancel_outbox_1", "transport timeout", "awaiting_quiescence", "2026-03-01T12:00:03Z"); err != nil {
 		t.Fatalf("record attempt cancel failure: %v", err)
 	}
 
 	var publishAttempts int
 	var lastError string
-	if err := db.QueryRow(`SELECT publish_attempts, last_error FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_1'`).Scan(&publishAttempts, &lastError); err != nil {
+	var handoffState string
+	if err := db.QueryRow(`SELECT publish_attempts, last_error, handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_1'`).Scan(&publishAttempts, &lastError, &handoffState); err != nil {
 		t.Fatalf("query attempt cancel failure bookkeeping: %v", err)
 	}
 	if publishAttempts != 1 {
@@ -1196,6 +1200,9 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	}
 	if lastError != "transport timeout" {
 		t.Fatalf("expected last_error to be recorded, got %q", lastError)
+	}
+	if handoffState != "awaiting_quiescence" {
+		t.Fatalf("expected failed cancellation to await quiescence, got %q", handoffState)
 	}
 
 	if err := s.MarkAttemptCancelPublished(ctx, "cancel_outbox_1", "2026-03-01T12:00:04Z"); err != nil {
@@ -1211,11 +1218,14 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	}
 
 	var status string
-	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_1'`).Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT status, handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_1'`).Scan(&status, &handoffState); err != nil {
 		t.Fatalf("query attempt cancel status: %v", err)
 	}
 	if status != "published" {
 		t.Fatalf("expected published attempt cancel status, got %q", status)
+	}
+	if handoffState != "released" {
+		t.Fatalf("expected published cancellation handoff to be released, got %q", handoffState)
 	}
 }
 

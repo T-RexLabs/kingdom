@@ -219,19 +219,19 @@ function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: 
 	}
 	if (isQueuedExecutionStatus(detail.status)) {
 		return {
-			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is queued to start.",
 			note: undefined,
 		};
 	}
 	if (isActiveExecutionStatus(detail.status)) {
 		return {
-			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is still running.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is still running.",
 			note: detail.output_text ? "The output below may still change." : undefined,
 		};
 	}
 	if (isBlockedExecutionStatus(detail.status)) {
 		return {
-			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+			body: operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is blocked while Kingdom decides or performs recovery.",
 			note: detail.output_text ? undefined : missingOutputNote(detail),
 		};
 	}

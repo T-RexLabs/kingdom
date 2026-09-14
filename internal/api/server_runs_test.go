@@ -3055,6 +3055,69 @@ func TestServerListRunExecutionsUsesBlockedStatusFromNodeState(t *testing.T) {
 	}
 }
 
+func TestServerListRunExecutionsUsesPausedStatusOnlyWhileStaleCancellationIsPending(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+	attemptID := runID + `:delegated_execution_berserker:1`
+	store := executionstore.New(db)
+
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-paused', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-paused', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-paused', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-paused', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-builder-paused', 'ses-builder-paused', ?, ?, ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now, now, now)
+	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel-builder-paused",
+		AttemptID:      attemptID,
+		RunID:          runID,
+		NodeRunID:      "nr-builder-paused",
+		SessionID:      "ses-builder-paused",
+		ReasonCode:     "agent_unresponsive",
+		ReasonText:     "provider stopped responding",
+		RequestedAt:    now,
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatalf("queue stale cancellation: %v", err)
+	}
+
+	assertExecutionStatus := func(expectedStatus, expectedHandoffState string) {
+		t.Helper()
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
+		if res.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+		}
+		var payload struct {
+			Items []struct {
+				AttemptID    string  `json:"attempt_id"`
+				Status       string  `json:"status"`
+				HandoffState *string `json:"handoff_state"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode executions payload: %v", err)
+		}
+		if len(payload.Items) != 1 || payload.Items[0].AttemptID != attemptID || payload.Items[0].Status != expectedStatus {
+			t.Fatalf("expected %q execution status, got %#v", expectedStatus, payload.Items)
+		}
+		if expectedHandoffState == "" {
+			if payload.Items[0].HandoffState != nil {
+				t.Fatalf("expected no active handoff state, got %#v", payload.Items[0].HandoffState)
+			}
+		} else if payload.Items[0].HandoffState == nil || *payload.Items[0].HandoffState != expectedHandoffState {
+			t.Fatalf("expected handoff state %q, got %#v", expectedHandoffState, payload.Items[0].HandoffState)
+		}
+	}
+
+	assertExecutionStatus("paused", "awaiting_quiescence")
+	mustExecSQL(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'workspace_restore_failed' WHERE cancel_outbox_id = 'cancel-builder-paused'`)
+	assertExecutionStatus("paused", "workspace_restore_failed")
+	if err := store.MarkAttemptCancelPublished(context.Background(), "cancel-builder-paused", "2026-03-01T13:00:01Z"); err != nil {
+		t.Fatalf("publish stale cancellation: %v", err)
+	}
+	assertExecutionStatus("blocked", "")
+}
+
 func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	t.Parallel()
 

@@ -2855,7 +2855,7 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 	}
 	if strings.TrimSpace(status) == "pending" {
 		if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
-			SET status = 'published', publish_attempts = publish_attempts + 1, last_error = '', updated_at = ?, published_at = ?
+			SET status = 'published', handoff_state = 'released', publish_attempts = publish_attempts + 1, last_error = '', updated_at = ?, published_at = ?
 			WHERE attempt_id = ? AND status = 'pending'`, occurredAt, occurredAt, sourceAttemptID); err != nil {
 			return false, fmt.Errorf("publish stale cancellation handoff: %w", err)
 		}

@@ -16,6 +16,12 @@ import (
 
 const attemptCancelOutboxWriteTimeout = 5 * time.Second
 
+type workspaceHandoffBlockedError struct{}
+
+func (workspaceHandoffBlockedError) Error() string {
+	return "another workspace-owning attempt is still active"
+}
+
 func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, error) {
 	if o == nil || o.executionStore == nil {
 		return 0, nil
@@ -64,7 +70,15 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		var missing *opencode.AttemptNotFoundError
 		if quiescent && (err == nil || errors.As(err, &missing)) {
 			if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
-				if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, restoreErr, publishedAt); recordErr != nil {
+				slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
+				var blocked workspaceHandoffBlockedError
+				var recordErr error
+				if errors.As(restoreErr, &blocked) {
+					recordErr = o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec.CancelOutboxID, publishedAt)
+				} else {
+					recordErr = o.recordAttemptWorkspaceRestoreFailure(ctx, rec.CancelOutboxID, publishedAt)
+				}
+				if recordErr != nil {
 					return processed, recordErr
 				}
 				continue
@@ -93,7 +107,7 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 			err = fmt.Errorf("managed provider process quiescence has not been proven")
 		}
 		slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", err)
-		if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, err, publishedAt); recordErr != nil {
+		if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, publishedAt); recordErr != nil {
 			return processed, recordErr
 		}
 	}
@@ -102,23 +116,53 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 }
 
 func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context.Context, rec executionstore.AttemptCancelRecord, restoredAt string) error {
-	if o == nil || o.fsStore == nil || strings.TrimSpace(rec.RunID) == "" {
+	if o == nil || strings.TrimSpace(rec.RunID) == "" {
 		return nil
+	}
+	spec := executionSpecForNode(rec.NodeID, rec.NodeClass)
+	if !spec.RequiresWorkspace {
+		return nil
+	}
+	if o.fsStore == nil {
+		return fmt.Errorf("runtime filesystem store is required for workspace restoration")
+	}
+	baseSnapshotID := strings.TrimSpace(rec.BaseSnapshotID)
+	if baseSnapshotID == "" {
+		return fmt.Errorf("workspace-owning attempt has no trusted base snapshot")
 	}
 	unlock := o.lockRunWorkspace(rec.RunID)
 	defer unlock()
+	activeAttempts, err := o.executionStore.ListActiveRunAttempts(ctx, rec.RunID, rec.AttemptID)
+	if err != nil {
+		return err
+	}
+	for _, active := range activeAttempts {
+		if !executionSpecForNode(active.NodeID, active.NodeClass).RequiresWorkspace {
+			continue
+		}
+		if !active.CancellationPending {
+			return workspaceHandoffBlockedError{}
+		}
+		quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, active.AttemptID)
+		if err != nil {
+			return err
+		}
+		if !quiescent {
+			return workspaceHandoffBlockedError{}
+		}
+	}
 
 	target, err := o.fsStore.GetExecutionTarget(ctx, rec.RunID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return fmt.Errorf("workspace-owning attempt has no execution target")
 	}
 	if err != nil {
 		return fmt.Errorf("load execution target for cancellation handoff: %w", err)
 	}
-	if strings.TrimSpace(target.TrustedSnapshotID) == "" || strings.TrimSpace(target.ExecutionRoot) == "" {
-		return nil
+	if strings.TrimSpace(target.ExecutionRoot) == "" {
+		return fmt.Errorf("workspace-owning attempt has no execution root")
 	}
-	if err := o.restoreExecutionTarget(ctx, rec.RunID, target.ExecutionRoot, target.TrustedSnapshotID, restoredAt); err != nil {
+	if err := o.restoreExecutionTarget(ctx, rec.RunID, target.ExecutionRoot, baseSnapshotID, restoredAt); err != nil {
 		return fmt.Errorf("restore trusted workspace after cancellation: %w", err)
 	}
 	return nil
@@ -154,14 +198,22 @@ func (o *orchestrationLoop) markAttemptCancelPublished(ctx context.Context, canc
 	return o.executionStore.MarkAttemptCancelPublished(writeCtx, cancelOutboxID, publishedAt)
 }
 
-func (o *orchestrationLoop) recordAttemptCancelFailure(ctx context.Context, cancelOutboxID string, cause error, updatedAt string) error {
-	message := "attempt cancel failed"
-	if cause != nil {
-		message = strings.TrimSpace(cause.Error())
-	}
+func (o *orchestrationLoop) recordAttemptCancelFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom could not confirm that the previous provider process stopped.", "awaiting_quiescence", updatedAt)
+}
+
+func (o *orchestrationLoop) recordAttemptWorkspaceRestoreFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom could not restore the trusted workspace after cancellation.", "workspace_restore_failed", updatedAt)
+}
+
+func (o *orchestrationLoop) recordAttemptWorkspaceQuiescenceFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom is waiting for another active step to release the shared workspace.", "awaiting_workspace_quiescence", updatedAt)
+}
+
+func (o *orchestrationLoop) recordAttemptCancelFailureMessage(ctx context.Context, cancelOutboxID, message, handoffState, updatedAt string) error {
 	writeCtx, cancel := attemptCancelOutboxWriteContext(ctx)
 	defer cancel()
-	return o.executionStore.RecordAttemptCancelFailure(writeCtx, cancelOutboxID, message, updatedAt)
+	return o.executionStore.RecordAttemptCancelFailure(writeCtx, cancelOutboxID, message, handoffState, updatedAt)
 }
 
 func attemptCancelOutboxWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {

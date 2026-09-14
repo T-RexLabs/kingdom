@@ -27,6 +27,7 @@ type Service struct {
 	recoveryCtx    context.Context
 	recoveryCancel context.CancelFunc
 	recoveryDone   chan struct{}
+	recoveryStart  sync.Once
 
 	// Admission gate. closing flips true once Close has been called;
 	// new writes after that get ErrServiceShuttingDown. activeWrites
@@ -80,8 +81,18 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 		recoveryDone:   make(chan struct{}),
 		forced:         make(chan struct{}),
 	}
-	svc.startRecoveryLoop()
 	return svc
+}
+
+// StartRecoveryLoop enables periodic planning-operation recovery. Runtime
+// startup calls this only after execution process recovery has completed.
+func (s *Service) StartRecoveryLoop() {
+	if s == nil {
+		return
+	}
+	s.recoveryStart.Do(func() {
+		s.startRecoveryLoop()
+	})
 }
 
 func (s *Service) startRecoveryLoop() {
@@ -198,6 +209,10 @@ func (s *Service) Close(ctx context.Context) error {
 	if s.recoveryCancel != nil {
 		s.recoveryCancel()
 	}
+	// A service can be closed before runtime startup reaches planning recovery.
+	// Starting the already-cancelled loop closes recoveryDone without allowing
+	// recovery work to run.
+	s.StartRecoveryLoop()
 	var recoveryDrainErr error
 	if s.recoveryDone != nil {
 		select {

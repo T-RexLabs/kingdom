@@ -307,16 +307,16 @@ function executionSummary(
 	if (isQueuedExecutionStatus(state)) {
 		return {
 			title,
-			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(state, progressLabel, execution.handoff_state) ?? "This step is queued to start.",
 		};
 	}
 	if (isActiveExecutionStatus(state)) {
-		return { title, body: operatorExecutionStatusText(state, progressLabel) ?? "This step is still running." };
+		return { title, body: operatorExecutionStatusText(state, progressLabel, execution.handoff_state) ?? "This step is still running." };
 	}
 	if (isBlockedExecutionStatus(state)) {
 		return {
 			title,
-			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+			body: operatorExecutionStatusText(state, progressLabel, execution.handoff_state) ?? "This step is blocked while Kingdom decides or performs recovery.",
 		};
 	}
 	if (state === "failed") {
