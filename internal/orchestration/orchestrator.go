@@ -85,6 +85,7 @@ type orchestrationLoop struct {
 	asyncDrain                     *executionDrainTracker
 	notifyCompletionReady          func()
 	closeMode                      *runtimeCloseMode
+	processGuardRuntimeRoot        string
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {

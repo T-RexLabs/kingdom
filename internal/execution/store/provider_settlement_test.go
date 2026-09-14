@@ -173,6 +173,7 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{AttemptID: attemptID, LeaseOwner: "worker_atomic", LeaseUntil: "2026-03-01T12:10:00Z", AcquiredAt: "2026-03-01T12:00:03Z", StateOnLease: "running"}); err != nil || !acquired {
 		t.Fatalf("acquire settlement lease: acquired=%t err=%v", acquired, err)
 	}
+	acknowledgeQuiescentProviderProcessGuard(t, s, "invocation_atomic_1", attemptID, "run_1", "nr_1", "worker_atomic", 1)
 	zero := 0
 	observation := providerexecution.InvocationStreamObservation{
 		ProviderSessionID:      "ses_atomic",
@@ -306,6 +307,37 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 	}
 }
 
+func TestStoreRecoveredGuardQuiescenceSettlesExpiredInvocationOnlyAsFailure(t *testing.T) {
+	t.Parallel()
+	s, db, req := atomicProviderSettlementFixture(t)
+	if _, err := db.Exec(`UPDATE attempt_executions SET lease_expires_at = '2026-03-01T11:59:00Z' WHERE attempt_id = ?`, req.Settlement.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	req.RecoveredGuardQuiescence = true
+	req.Settlement.Outcome = ProviderCompletionOutcomeFailed
+	req.Settlement.FinalText = ""
+	req.Settlement.FailureReasonCode = "provider_terminal_handoff_lost"
+	req.Settlement.FailureReasonText = "Provider execution ended, but its terminal observation was lost before durable handoff."
+	req.Terminal.TerminalState = "committed_failure"
+	req.Terminal.FailureCode = req.Settlement.FailureReasonCode
+	req.Terminal.FailureText = req.Settlement.FailureReasonText
+	req.Terminal.TerminalReasonCode = req.Settlement.FailureReasonCode
+	if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err != nil {
+		t.Fatalf("settle recovered quiescence failure: %v", err)
+	}
+
+	s2, db2, success := atomicProviderSettlementFixture(t)
+	if _, err := db2.Exec(`UPDATE attempt_executions SET lease_expires_at = '2026-03-01T11:59:00Z' WHERE attempt_id = ?`, success.Settlement.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	success.RecoveredGuardQuiescence = true
+	if _, err := s2.SettleProviderCompletionAndTerminal(context.Background(), success); err == nil {
+		t.Fatal("recovered guard quiescence authorized success")
+	} else {
+		requireProviderSettlementError(t, err, "settle_provider_completion_and_terminal", "recovered_quiescence_cannot_succeed")
+	}
+}
+
 func TestStoreSettleProviderCompletionAndTerminalRejectsInvalidLeaseWithoutPartialWrites(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -366,6 +398,100 @@ func TestStoreSettleProviderCompletionAndTerminalRejectsInvalidLeaseWithoutParti
 				t.Fatalf("lease rejection changed canonical attempt state: %#v", attempt)
 			}
 		})
+	}
+}
+
+func TestStoreSettleProviderCompletionAndTerminalRequiresQuiescentUnforcedGuards(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome ProviderCompletionOutcome
+		prepare func(t *testing.T, s *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest)
+		reason  string
+	}{
+		{
+			name: "success missing guard",
+			prepare: func(t *testing.T, _ *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest) {
+				if _, err := db.Exec(`DELETE FROM provider_process_guards WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+					t.Fatalf("delete fixture guards: %v", err)
+				}
+			},
+			reason: "provider_process_guard_missing",
+		},
+		{
+			name: "success nonquiescent guard",
+			prepare: func(t *testing.T, s *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest) {
+				if _, err := db.Exec(`DELETE FROM provider_process_guards WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+					t.Fatalf("delete fixture guards: %v", err)
+				}
+				acknowledgeProviderProcessGuard(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
+			},
+			reason: "provider_process_guard_not_quiescent",
+		},
+		{
+			name:    "failure nonquiescent launched guard",
+			outcome: ProviderCompletionOutcomeFailed,
+			prepare: func(t *testing.T, s *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest) {
+				if _, err := db.Exec(`DELETE FROM provider_process_guards WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+					t.Fatalf("delete fixture guards: %v", err)
+				}
+				acknowledgeProviderProcessGuard(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
+			},
+			reason: "provider_process_guard_not_quiescent",
+		},
+		{
+			name: "success forced guard",
+			prepare: func(t *testing.T, _ *Store, db *sql.DB, req *SettleProviderCompletionAndTerminalRequest) {
+				if _, err := db.Exec(`UPDATE provider_process_guards SET termination_forced = 1 WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+					t.Fatalf("force fixture guard: %v", err)
+				}
+			},
+			reason: "provider_process_guard_forced",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, db, req := phase2ProviderSettlementFixture(t)
+			if tc.outcome != "" {
+				req.Settlement.Outcome = tc.outcome
+				req.Settlement.FailureReasonCode = "provider_failed"
+				req.Settlement.FailureReasonText = "provider process failed"
+				req.Terminal.TerminalState = "committed_failure"
+				req.Terminal.FailureCode = "provider_failed"
+				req.Terminal.FailureText = "provider process failed"
+			}
+			tc.prepare(t, s, db, &req)
+			if req.Settlement.Outcome == ProviderCompletionOutcomeSuccess {
+				attachTerminalHandoffToSettlement(t, s, &req)
+			}
+			_, err := s.SettleProviderCompletionAndTerminal(context.Background(), req)
+			requireProviderSettlementError(t, err, "settle_provider_completion_and_terminal", tc.reason)
+			if count := countPhase2Table(t, db, "provider_completion_settlements"); count != 0 {
+				t.Fatalf("guard rejection persisted %d settlement rows", count)
+			}
+		})
+	}
+}
+
+func TestStoreSettleProviderCompletionAndTerminalAllowsUnlaunchedFailureWithoutGuard(t *testing.T) {
+	t.Parallel()
+	s, db, req := phase2ProviderSettlementFixture(t)
+	if _, err := db.Exec(`DELETE FROM provider_process_guards WHERE provider_invocation_id = ?`, req.Settlement.ProviderInvocationID); err != nil {
+		t.Fatalf("delete fixture guards: %v", err)
+	}
+	req.Settlement.Outcome = ProviderCompletionOutcomeFailed
+	req.Settlement.FailureReasonCode = "provider_failed"
+	req.Settlement.FailureReasonText = "provider process failed before launch acknowledgement"
+	req.Terminal.TerminalState = "committed_failure"
+	req.Terminal.FailureCode = "provider_failed"
+	req.Terminal.FailureText = "provider process failed before launch acknowledgement"
+
+	settlement, err := s.SettleProviderCompletionAndTerminal(context.Background(), req)
+	if err != nil {
+		t.Fatalf("settle unlaunched provider failure: %v", err)
+	}
+	if settlement.Outcome != ProviderCompletionOutcomeFailed {
+		t.Fatalf("expected failed settlement, got %#v", settlement)
 	}
 }
 
@@ -1006,6 +1132,7 @@ func atomicProviderSettlementFixture(t *testing.T) (*Store, *sql.DB, SettleProvi
 	if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_atomic_lease_rejection", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_atomic", CompletionMode: ProviderCompletionModeServerResponse, ProviderSessionID: "ses_atomic", IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("activate fixture invocation: %v", err)
 	}
+	acknowledgeQuiescentProviderProcessGuard(t, s, "invocation_atomic_lease_rejection", attemptID, "run_1", "nr_1", "worker-a", 1)
 	zero := 0
 	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses_atomic", FinalTurnID: "turn_atomic", FinalStepID: "step_atomic", FinalSequence: 1, RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalText: "canonical response", ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true}
 	return s, db, SettleProviderCompletionAndTerminalRequest{
@@ -1055,6 +1182,7 @@ func phase2ProviderSettlementFixture(t *testing.T) (*Store, *sql.DB, SettleProvi
 	if err != nil {
 		t.Fatalf("accept phase 2 fixture receipt: %v", err)
 	}
+	acknowledgeQuiescentProviderProcessGuard(t, s, invocationID, attemptID, "run_1", "nr_1", "worker-phase2", 1)
 	zero := 0
 	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses_phase2", FinalTurnID: "turn_phase2", FinalStepID: "step_phase2", FinalSequence: 1, RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalText: "canonical response", Tokens: providerexecution.TokenUsage{InputTokens: 10, OutputTokens: 4, TotalTokens: 14, ReasoningTokens: 2}, ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true}
 	return s, db, SettleProviderCompletionAndTerminalRequest{
@@ -1088,6 +1216,60 @@ func attachTerminalHandoffToSettlement(t *testing.T, store *Store, req *SettlePr
 		t.Fatalf("persist required terminal handoff: %v", err)
 	}
 	req.TerminalHandoffID = result.Handoff.HandoffID
+}
+
+func acknowledgeProviderProcessGuard(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
+	t.Helper()
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), AcknowledgeProviderProcessGuardRequest{
+		GuardID:               "guard_" + sanitizeProviderSettlementToken(invocationID),
+		ProviderInvocationID:  invocationID,
+		AttemptID:             attemptID,
+		RunID:                 runID,
+		NodeRunID:             nodeRunID,
+		CommandOrdinal:        1,
+		Platform:              "unix_process_group",
+		GuardianPID:           1001,
+		GuardianIdentityToken: "guardian-start-1001",
+		ChildPID:              1002,
+		ChildIdentityToken:    "child-start-1002",
+		TreeID:                "1002",
+		TreeIdentityToken:     "tree-start-1002",
+		QuiescenceCapability:  "quiescence-capability-" + invocationID,
+		ExpectedLeaseOwner:    leaseOwner,
+		ExpectedLeaseVersion:  leaseVersion,
+		StartedAt:             "2026-03-01T12:00:02Z",
+		AcknowledgedAt:        "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("acknowledge provider process guard: %v", err)
+	}
+}
+
+func acknowledgeQuiescentProviderProcessGuard(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
+	t.Helper()
+	acknowledgeProviderProcessGuard(t, s, invocationID, attemptID, runID, nodeRunID, leaseOwner, leaseVersion)
+	guardID := "guard_" + sanitizeProviderSettlementToken(invocationID)
+	evidence := `{"type":"result","result":{"GuardID":"` + guardID + `","ChildPID":1002,"TreeID":1002,"Platform":"unix_process_group","Quiescent":true,"ExitCode":0,"ExitSignal":0,"Forced":false,"FailureCode":"","FailureText":""}}`
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), IngestProviderProcessGuardQuiescenceRequest{
+		GuardID:               guardID,
+		ProviderInvocationID:  invocationID,
+		AttemptID:             attemptID,
+		RunID:                 runID,
+		NodeRunID:             nodeRunID,
+		Platform:              "unix_process_group",
+		GuardianPID:           1001,
+		GuardianIdentityToken: "guardian-start-1001",
+		ChildPID:              1002,
+		ChildIdentityToken:    "child-start-1002",
+		TreeID:                "1002",
+		TreeIdentityToken:     "tree-start-1002",
+		QuiescenceCapability:  "quiescence-capability-" + invocationID,
+		ExitedAt:              "2026-03-01T12:00:03Z",
+		QuiescentAt:           "2026-03-01T12:00:03Z",
+		EvidenceSHA256:        sha256Hex(evidence),
+		EvidenceJSON:          evidence,
+	}); err != nil {
+		t.Fatalf("ingest provider process guard quiescence: %v", err)
+	}
 }
 
 func capturePhase2ProviderSettlementState(t *testing.T, s *Store, db *sql.DB, attemptID, invocationID string) phase2ProviderSettlementState {

@@ -23,6 +23,7 @@ import (
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
@@ -1514,7 +1515,7 @@ func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T)
 	}
 }
 
-func TestDrainAttemptCancelOutboxTreatsAttemptNotFoundAsPublished(t *testing.T) {
+func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1565,11 +1566,11 @@ func TestDrainAttemptCancelOutboxTreatsAttemptNotFoundAsPublished(t *testing.T) 
 		t.Fatalf("query attempt cancel outbox status after attempt-not-found: %v", err)
 	}
 	if status != "published" {
-		t.Fatalf("expected published attempt cancel outbox status after attempt-not-found, got %q", status)
+		t.Fatalf("expected prelaunch attempt-not-found cancellation to publish, got %q", status)
 	}
 }
 
-func TestDrainAttemptCancelOutboxProjectsBlockedSupersededRetryToCancelled(t *testing.T) {
+func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1614,16 +1615,16 @@ func TestDrainAttemptCancelOutboxProjectsBlockedSupersededRetryToCancelled(t *te
 	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_retry_provider_blocked'`).Scan(&nodeStatus); err != nil {
 		t.Fatalf("query blocked retry node status after cancel drain: %v", err)
 	}
-	if nodeStatus != "cancelled" {
-		t.Fatalf("expected blocked superseded retry to project to cancelled after cancel dispatch, got %q", nodeStatus)
+	if nodeStatus != "blocked" {
+		t.Fatalf("expected unproven launched retry to remain blocked, got %q", nodeStatus)
 	}
 
 	var outboxStatus string
 	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&outboxStatus); err != nil {
 		t.Fatalf("query blocked retry cancel outbox status: %v", err)
 	}
-	if outboxStatus != "published" {
-		t.Fatalf("expected blocked retry cancel outbox to publish after projection, got %q", outboxStatus)
+	if outboxStatus != "pending" {
+		t.Fatalf("expected unproven launched retry cancel outbox to remain pending, got %q", outboxStatus)
 	}
 }
 
@@ -4955,6 +4956,7 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: providerSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
+	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
 
 	clockNow := time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC)
 	loop := orchestrationLoop{
@@ -9845,6 +9847,7 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 	providerSessionID := "ses_test_" + sanitizeFileToken(providerInvocationID)
 	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerSessionID, providerInvocationID, "2026-03-01T12:00:00Z")
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', launch_started_at = '2026-03-01T12:00:03Z', started_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:decree_intake:1'`)
+	attachQuiescentProviderProcessGuard(t, execStore, providerInvocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:04Z")
 
 	closedEventsDB := openTestDB(t)
 	if err := closedEventsDB.Close(); err != nil {
@@ -10578,6 +10581,7 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	}); err != nil {
 		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
 	}
+	attachQuiescentProviderProcessGuard(t, store, providerInvocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion, createdAt)
 	structuredPayloadJSON := canonicalStructuredPayloadForExecutionOutput(outputText)
 	var requiredRole string
 	if err := db.QueryRow(`SELECT required_role FROM node_runs WHERE node_run_id = ?`, nodeRunID).Scan(&requiredRole); err != nil {
@@ -10603,6 +10607,8 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		ProcessExitCode:        &zero,
 		StdoutDrained:          true,
 		StderrDrained:          true,
+		ProcessQuiescent:       true,
+		ProcessGuards:          []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_" + sanitizeFileToken(providerInvocationID), GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}},
 	}
 	outboxID := fmt.Sprintf("outbox_exec_%s", sanitizeFileToken(attemptID))
 	if _, err := store.SettleProviderCompletionAndTerminal(context.Background(), executionstore.SettleProviderCompletionAndTerminalRequest{
@@ -10640,6 +10646,36 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	}
 	if err := store.MarkOutboxPublished(context.Background(), outboxID, createdAt); err != nil {
 		t.Fatalf("mark canonical execution output %q projected: %v", attemptID, err)
+	}
+}
+
+func attachQuiescentProviderProcessGuard(t *testing.T, store *executionstore.Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64, occurredAt string) {
+	t.Helper()
+	guardID := "fixture_guard_" + sanitizeFileToken(invocationID)
+	capability := "fixture-guardian-capability"
+	acknowledged, err := store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
+		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
+		CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child",
+		QuiescenceCapability: capability, ExpectedLeaseOwner: leaseOwner, ExpectedLeaseVersion: leaseVersion, StartedAt: occurredAt, AcknowledgedAt: occurredAt,
+	})
+	if err != nil || acknowledged.Idempotent {
+		t.Fatalf("acknowledge fixture process guard %q: result=%#v err=%v", invocationID, acknowledged, err)
+	}
+	result := processguardian.Result{Ownership: processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: 2, TreeIdentityToken: "fixture-child", Platform: "unix_process_group", QuiescenceCapability: capability}, ExitCode: 0, Quiescent: true}
+	evidence, err := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(evidence)
+	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
+		Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child", QuiescenceCapability: capability,
+		ExitedAt: occurredAt, QuiescentAt: occurredAt, EvidenceSHA256: fmt.Sprintf("%x", sum[:]), EvidenceJSON: string(evidence),
+	}); err != nil {
+		t.Fatalf("ingest fixture process guard %q: %v", invocationID, err)
 	}
 }
 
@@ -11336,19 +11372,19 @@ func TestRuntimeAppliesNodeWallClockWarningAndTimeoutFailure(t *testing.T) {
 		}
 	}()
 
-	warningSeen := false
-	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if !warningSeen {
-			warningSeen = queryEventCount(t, db, "run_timeout_diag", "attempt.timeout_warning") > 0
+	testutil.Eventually(t, 3*time.Second, 25*time.Millisecond, func() error {
+		if queryEventCount(t, db, "run_timeout_diag", "attempt.timeout_warning") == 0 {
+			return fmt.Errorf("timeout warning has not been recorded")
 		}
-		if status != "failed" {
-			return fmt.Errorf("run_timeout_diag status=%s", status)
+		var status string
+		if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_timeout_diag'`).Scan(&status); err != nil {
+			return err
 		}
-		if !warningSeen {
-			return fmt.Errorf("expected timeout warning event before timeout failure")
+		if status != "running" {
+			return fmt.Errorf("unproven cancellation must keep run running, got %s", status)
 		}
-		if count := queryEventCount(t, db, "run_timeout_diag", "attempt.failed"); count == 0 {
-			return fmt.Errorf("expected attempt.failed event for timeout breach")
+		if queryEventCount(t, db, "run_timeout_diag", "attempt.failed") != 0 {
+			return fmt.Errorf("unproven cancellation must not terminalize")
 		}
 		return nil
 	})
@@ -11774,12 +11810,16 @@ func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testi
 		}
 	}()
 
-	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
-			return fmt.Errorf("run_timeout_diag status=%s", status)
+	testutil.Eventually(t, 3*time.Second, 25*time.Millisecond, func() error {
+		if queryEventCount(t, db, "run_timeout_diag", "attempt.timeout_warning") == 0 {
+			return fmt.Errorf("timeout warning has not been recorded")
 		}
-		if count := queryEventCount(t, db, "run_timeout_diag", "attempt.failed"); count == 0 {
-			return fmt.Errorf("expected attempt.failed event for persisted timeout snapshot")
+		var status string
+		if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_timeout_diag'`).Scan(&status); err != nil {
+			return err
+		}
+		if status != "running" {
+			return fmt.Errorf("unproven cancellation must keep run running, got %s", status)
 		}
 		return nil
 	})
@@ -12043,7 +12083,7 @@ func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
 	}
 }
 
-func TestRuntimeClassifiesNeverStartedTimedOutAttemptDistinctly(t *testing.T) {
+func TestRuntimeKeepsTimedOutAttemptPendingWhenAdapterCannotProveOwnership(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedRunForTimeoutDiagnostics(t, db)
@@ -12072,31 +12112,16 @@ func TestRuntimeClassifiesNeverStartedTimedOutAttemptDistinctly(t *testing.T) {
 		}
 	}()
 
-	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
-			return fmt.Errorf("run_timeout_diag status=%s", status)
+	testutil.Eventually(t, 3*time.Second, 25*time.Millisecond, func() error {
+		if queryEventCount(t, db, "run_timeout_diag", "attempt.timeout_warning") == 0 {
+			return fmt.Errorf("timeout warning has not been recorded")
 		}
-		payload := queryLatestEventPayload(t, db, "run_timeout_diag:decree_intake:1", "attempt.failed")
-		if reason := queryLatestAttemptReasonCode(t, db, "run_timeout_diag:decree_intake:1", "attempt.failed"); reason != "execution_not_started" {
-			return fmt.Errorf("expected execution_not_started terminal reason, got %q", reason)
+		var status string
+		if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_timeout_diag'`).Scan(&status); err != nil {
+			return err
 		}
-		providerDiag, ok := payload["provider_diagnostics"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected provider_diagnostics map, got %#v", payload["provider_diagnostics"])
-		}
-		execDiag, ok := providerDiag["execution_diagnostics"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected execution_diagnostics map, got %#v", providerDiag["execution_diagnostics"])
-		}
-		if fmt.Sprint(execDiag["stream_error"]) == "" {
-			return fmt.Errorf("expected stream_error in execution diagnostics, got %#v", execDiag)
-		}
-		cancelDiag, ok := providerDiag["cancel_diagnostics"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected cancel_diagnostics map, got %#v", providerDiag["cancel_diagnostics"])
-		}
-		if strings.TrimSpace(fmt.Sprint(cancelDiag["result"])) != "attempt_not_found" {
-			return fmt.Errorf("expected cancel result attempt_not_found, got %#v", cancelDiag["result"])
+		if status != "running" {
+			return fmt.Errorf("missing adapter ownership must not terminalize, got %s", status)
 		}
 		return nil
 	})
@@ -12690,6 +12715,22 @@ type errorMetadataExecutionAdapter struct {
 }
 
 func callOnProcessStarted(req opencode.ExecuteRequest) {
+	guardID := "test_guard_" + sanitizeFileToken(req.InvocationID)
+	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 101, GuardianIdentityToken: "test-guardian", ChildPID: 102, ChildIdentityToken: "test-child", TreeID: 102, TreeIdentityToken: "test-child", Platform: "unix_process_group", QuiescenceCapability: "test-guardian-capability"}
+	if req.OnProcessGuardOwnership != nil {
+		_ = req.OnProcessGuardOwnership(context.Background(), opencode.ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership})
+	}
+	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
+	evidence, _ := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: result})
+	sum := sha256.Sum256(evidence)
+	result.EvidenceJSON = string(evidence)
+	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
+	if req.OnProcessGuardQuiescence != nil {
+		_ = req.OnProcessGuardQuiescence(context.Background(), opencode.ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result})
+	}
 	if req.OnProcessStarted != nil {
 		req.OnProcessStarted()
 	}
@@ -12713,6 +12754,8 @@ func testSuccessfulExecuteObservation(req opencode.ExecuteRequest, outputText st
 		ProcessExitCode:        &zero,
 		StdoutDrained:          true,
 		StderrDrained:          true,
+		ProcessQuiescent:       true,
+		ProcessGuards:          []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "test_guard_" + sanitizeFileToken(req.InvocationID), GuardianPID: 101, ChildPID: 102, TreeID: 102, Platform: "unix_process_group", Quiescent: true}},
 	}
 }
 

@@ -464,18 +464,20 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 	var executionMode sql.NullString
 	var activeProviderInvocationID sql.NullString
 	var canonicalSettlementID sql.NullString
+	var startedAt sql.NullString
 	err := r.db.QueryRowContext(ctx,
 		`SELECT state,
 		        execution_mode,
 		        COALESCE(active_provider_invocation_id, ''),
-		        COALESCE(canonical_settlement_id, '')
+		        COALESCE(canonical_settlement_id, ''),
+		        started_at
 		 FROM attempt_executions
 		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
 		 LIMIT 1`,
 		trimmedAttemptID,
 		strings.TrimSpace(attempt.RunID),
 		strings.TrimSpace(attempt.NodeRunID),
-	).Scan(&state, &executionMode, &activeProviderInvocationID, &canonicalSettlementID)
+	).Scan(&state, &executionMode, &activeProviderInvocationID, &canonicalSettlementID, &startedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -489,7 +491,14 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 	if executionstore.NormalizeExecutionMode(executionMode.String) == executionstore.ExecutionModeProviderBacked &&
 		strings.TrimSpace(activeProviderInvocationID.String) != "" &&
 		strings.TrimSpace(canonicalSettlementID.String) == "" {
-		return true, nil
+		var guardCount int
+		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM provider_process_guards WHERE provider_invocation_id = ?`, strings.TrimSpace(activeProviderInvocationID.String)).Scan(&guardCount); err != nil {
+			return false, err
+		}
+		if guardCount > 0 {
+			return true, nil
+		}
+		return strings.TrimSpace(state.String) != "starting" || strings.TrimSpace(startedAt.String) != "", nil
 	}
 	return false, nil
 }

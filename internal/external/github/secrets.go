@@ -14,10 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"kingdom/internal/securefs"
 )
@@ -123,10 +121,10 @@ func (s *KeyStore) WithConnectionLock(connectionID string, fn func() error) erro
 	if err = validateOwner(info); err != nil {
 		return err
 	}
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err = lockFile(lock); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck -- best-effort unlock during close
+	defer unlockFile(lock) //nolint:errcheck -- best-effort unlock during close
 	return fn()
 }
 
@@ -496,17 +494,7 @@ func validateConnectionID(connectionID string) error {
 }
 
 func validateOwner(info fs.FileInfo) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot verify github key ownership")
-	}
-	if int(stat.Uid) != os.Geteuid() {
-		return fmt.Errorf("github key path must be owned by current user")
-	}
-	return nil
+	return validateFileOwner(info)
 }
 
 func validatePrivateKeyInfo(info fs.FileInfo) error {
@@ -519,11 +507,5 @@ func validatePrivateKeyInfo(info fs.FileInfo) error {
 	if err := validateOwner(info); err != nil {
 		return err
 	}
-	if runtime.GOOS != "windows" {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Nlink != 1 {
-			return fmt.Errorf("github private key must have exactly one link")
-		}
-	}
-	return nil
+	return validateFileSingleLink(info, "github private key")
 }

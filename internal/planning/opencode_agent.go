@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -21,6 +22,8 @@ type OpenCodeAgent struct {
 	adapter     plannerExecuteAdapter
 	idGenerator func(prefix string) string
 }
+
+func (*OpenCodeAgent) RequiresProcessGuard() bool { return true }
 
 type plannerExecuteAdapter interface {
 	Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error)
@@ -110,7 +113,7 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	}
 
 	resp, err := a.adapter.Execute(ctx, opencode.ExecuteRequest{
-		CompletionMode: opencode.CompletionModeServerResponse,
+		CompletionMode:    opencode.CompletionModeServerResponse,
 		SessionID:         sessionID,
 		AttemptID:         attemptID,
 		RunID:             "planner-" + input.SessionID,
@@ -129,6 +132,18 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 			if providerInvocation != nil && providerInvocation.OnProviderSession != nil {
 				providerInvocation.OnProviderSession(providerSessionID)
 			}
+		},
+		OnProcessGuardOwnership: func(ctx context.Context, guard opencode.ProcessGuardOwnership) error {
+			if providerInvocation == nil || providerInvocation.OnProcessGuardOwnership == nil {
+				return fmt.Errorf("planning process guard ownership callback is required")
+			}
+			return providerInvocation.OnProcessGuardOwnership(ctx, guard)
+		},
+		OnProcessGuardQuiescence: func(ctx context.Context, guard opencode.ProcessGuardQuiescence) error {
+			if providerInvocation == nil || providerInvocation.OnProcessGuardQuiescence == nil {
+				return fmt.Errorf("planning process guard quiescence callback is required")
+			}
+			return providerInvocation.OnProcessGuardQuiescence(ctx, guard)
 		},
 		OnActivity: func(observation opencode.ExecuteActivityObservation) {
 			if providerInvocation == nil || providerInvocation.OnActivity == nil {
@@ -149,17 +164,21 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 		},
 	})
 	metadata := ProviderExecutionMetadata{
-		FinalText:                       strings.TrimSpace(resp.OutputText),
-		ProviderSessionID:               strings.TrimSpace(resp.ProviderSessionID),
-		ProviderDiagnosticsJSON:         strings.TrimSpace(resp.ProviderDiagnosticsJSON),
-		OutcomeState:                    strings.TrimSpace(resp.Outcome.State),
-		FailureReasonCode:               strings.TrimSpace(resp.Outcome.ReasonCode),
-		FailureReasonText:               strings.TrimSpace(resp.Outcome.FailureText),
+		FinalText:               strings.TrimSpace(resp.OutputText),
+		ProviderSessionID:       strings.TrimSpace(resp.ProviderSessionID),
+		ProviderDiagnosticsJSON: strings.TrimSpace(resp.ProviderDiagnosticsJSON),
+		OutcomeState:            strings.TrimSpace(resp.Outcome.State),
+		FailureReasonCode:       strings.TrimSpace(resp.Outcome.ReasonCode),
+		FailureReasonText:       strings.TrimSpace(resp.Outcome.FailureText),
+		StreamObservation:       resp.StreamObservation,
 	}
 	if err != nil {
 		return metadata, executionError(metadata, fmt.Errorf("opencode execute: %w", err))
 	}
 	if providerInvocation != nil {
+		if err := providerexecution.ValidateServerResponseSuccess(resp.StreamObservation); err != nil {
+			return metadata, executionError(metadata, fmt.Errorf("invalid guarded planner terminal observation: %w", err))
+		}
 		if err := requirePlannerTurnSettled(metadata); err != nil {
 			return metadata, executionError(metadata, err)
 		}

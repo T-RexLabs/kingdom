@@ -138,7 +138,7 @@ printf '{"type":"step_finish","sessionID":"ses_override","part":{"type":"step_fi
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "adapter-default.db"), FirstEventTimeout: time.Second, StreamInactivityTimeout: time.Second})
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "adapter-default.db"), FirstEventTimeout: 5 * time.Second, StreamInactivityTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 	t.Setenv("DB_TWO", databaseTwo)
 	t.Setenv("DB_ONE_READY", filepath.Join(dir, "one-ready"))
 	t.Setenv("DB_TWO_READY", filepath.Join(dir, "two-ready"))
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "shared-default.db"), FirstEventTimeout: 2 * time.Second, StreamInactivityTimeout: time.Second})
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "shared-default.db"), FirstEventTimeout: 5 * time.Second, StreamInactivityTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

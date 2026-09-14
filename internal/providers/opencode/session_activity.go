@@ -20,6 +20,7 @@ type SessionActivityRequest struct {
 	AttemptID           string
 	InvocationID        string
 	InvocationStartedAt time.Time
+	Runner              GuardianRunner
 }
 
 type SessionActivityItem struct {
@@ -37,7 +38,7 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 	if binaryPath == "" {
 		binaryPath = "opencode"
 	}
-	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath}
+	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath, runner: req.Runner}
 	return inspectSessionActivityWithExporter(ctx, req, exporter)
 }
 

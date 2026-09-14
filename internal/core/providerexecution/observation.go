@@ -30,6 +30,8 @@ type InvocationStreamObservation struct {
 	ProcessExitSignal           *int                        `json:"process_exit_signal,omitempty"`
 	StdoutDrained               bool                        `json:"stdout_drained"`
 	StderrDrained               bool                        `json:"stderr_drained"`
+	ProcessQuiescent            bool                        `json:"process_quiescent"`
+	ProcessGuards               []ProcessGuardObservation   `json:"process_guards,omitempty"`
 	TimedOut                    bool                        `json:"timed_out"`
 	Cancelled                   bool                        `json:"cancelled"`
 	ProviderError               string                      `json:"provider_error,omitempty"`
@@ -37,6 +39,22 @@ type InvocationStreamObservation struct {
 	ConflictingTerminalEvidence bool                        `json:"conflicting_terminal_evidence"`
 	LaterEventAfterTerminal     bool                        `json:"later_event_after_terminal"`
 	MeaningfulProgress          bool                        `json:"meaningful_progress"`
+}
+
+// ProcessGuardObservation intentionally excludes the guardian's raw
+// quiescence capability. It is persisted only through orchestration callbacks.
+type ProcessGuardObservation struct {
+	CommandOrdinal int    `json:"command_ordinal"`
+	GuardID        string `json:"guard_id,omitempty"`
+	GuardianPID    int    `json:"guardian_pid,omitempty"`
+	ChildPID       int    `json:"child_pid,omitempty"`
+	TreeID         int    `json:"tree_id,omitempty"`
+	Platform       string `json:"platform,omitempty"`
+	Quiescent      bool   `json:"quiescent"`
+	Forced         bool   `json:"forced"`
+	EvidenceSHA256 string `json:"evidence_sha256,omitempty"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	FailureText    string `json:"failure_text,omitempty"`
 }
 
 type InvocationToolObservation struct {

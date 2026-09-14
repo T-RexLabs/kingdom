@@ -570,6 +570,9 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning))
+	if req.Kind != FinalizeFail && req.Kind != FinalizeCancel {
+		opUpdate.Where("lease_expires_at > ?", strings.TrimSpace(req.FinishedAt))
+	}
 
 	opResult, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
@@ -1245,12 +1248,13 @@ func (s *PlanningStore) RenewOperationLease(ctx context.Context, operationID str
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE planning_operations
 		 SET lease_expires_at = ?, last_heartbeat_at = ?
-		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running'`,
+		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running' AND lease_expires_at > ?`,
 		trimmedLeaseExpiresAt,
 		trimmedHeartbeatAt,
 		trimmedOperationID,
 		trimmedLeaseOwner,
 		leaseVersion,
+		trimmedHeartbeatAt,
 	)
 	if err != nil {
 		return fmt.Errorf("renew planning operation lease: %w", err)

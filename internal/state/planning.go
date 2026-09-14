@@ -409,7 +409,14 @@ type FinalizeGenerateTitleAbortRequest struct {
 }
 
 type PlanningStore struct {
-	db *sql.DB
+	db                      *sql.DB
+	processGuardRuntimeRoot string
+}
+
+func (s *PlanningStore) SetProcessGuardRuntimeRoot(root string) {
+	if s != nil {
+		s.processGuardRuntimeRoot = strings.TrimSpace(root)
+	}
 }
 
 type sqlExecutor interface {

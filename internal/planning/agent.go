@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -28,12 +29,14 @@ type ProviderActivity struct {
 }
 
 type ProviderInvocationContext struct {
-	AttemptID         string
-	LogicalSessionID  string
-	ProviderSessionID string
-	InvocationID      string
-	OnProviderSession func(sessionID string)
-	OnActivity        func(activity ProviderActivity)
+	AttemptID                string
+	LogicalSessionID         string
+	ProviderSessionID        string
+	InvocationID             string
+	OnProviderSession        func(sessionID string)
+	OnActivity               func(activity ProviderActivity)
+	OnProcessGuardOwnership  func(context.Context, opencode.ProcessGuardOwnership) error
+	OnProcessGuardQuiescence func(context.Context, opencode.ProcessGuardQuiescence) error
 }
 
 type AgentContext struct {
@@ -57,6 +60,7 @@ type ProviderExecutionMetadata struct {
 	OutcomeState                    string
 	FailureReasonCode               string
 	FailureReasonText               string
+	StreamObservation               opencode.InvocationStreamObservation
 }
 
 type AgentExecutionError struct {

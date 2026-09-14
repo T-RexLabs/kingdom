@@ -286,8 +286,21 @@ func (s *operationService) CancelOperationByAcpRunID(ctx context.Context, acpRun
 			return operation, nil
 		}
 	}
-	if s.runner == nil || !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
-		return operation, nil
+	if s.runner == nil {
+		return state.PlanningOperation{}, fmt.Errorf("planning operation runner is unavailable")
+	}
+	if !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
+		if err := s.runner.CancelRecoveredOperation(ctx, operation, trimmedReason); err != nil {
+			return state.PlanningOperation{}, err
+		}
+		updated, found, err := s.deps.store.GetOperation(ctx, operation.OperationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !found {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		return updated, nil
 	}
 	return s.waitForTerminalOperation(ctx, operation.OperationID)
 }

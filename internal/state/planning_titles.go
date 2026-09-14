@@ -51,7 +51,8 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		Where("operation_id = ?", strings.TrimSpace(req.OperationID)).
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
-		Where("status = ?", string(PlanningOperationStatusRunning))
+		Where("status = ?", string(PlanningOperationStatusRunning)).
+		Where("lease_expires_at > ?", strings.TrimSpace(req.FinishedAt))
 	res, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", fmt.Errorf("finalize generate title operation: %w", err))

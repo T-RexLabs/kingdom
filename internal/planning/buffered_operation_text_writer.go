@@ -27,7 +27,7 @@ type bufferedOperationTextWriter struct {
 	operationID string
 	cursor      *sequenceCursor
 	appendEvent appendOperationEventFunc
-	payload      map[string]any
+	payload     map[string]any
 	timer       *time.Timer
 	buffer      strings.Builder
 	closed      bool

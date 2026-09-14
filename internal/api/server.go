@@ -32,6 +32,7 @@ import (
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/planning"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
@@ -60,6 +61,7 @@ type ServerConfig struct {
 	RoleCommPolicyPath         string
 	RoleCommSchemaPath         string
 	ProjectRoot                string
+	RuntimeRoot                string
 	DefaultPublishMode         string
 	Now                        func() time.Time
 	IDGenerator                func(prefix string) string
@@ -289,6 +291,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
+	plannerRuntimeRoot := strings.TrimSpace(cfg.RuntimeRoot)
+	if plannerRuntimeRoot == "" {
+		plannerRuntimeRoot = filepath.Join(projectRoot, ".kingdom", "runtime")
+	}
+	planningStore.SetProcessGuardRuntimeRoot(plannerRuntimeRoot)
 	rawDefaultPublishMode := strings.ToLower(strings.TrimSpace(cfg.DefaultPublishMode))
 	if rawDefaultPublishMode != "" && !workspace.IsSupportedPublishMode(rawDefaultPublishMode) {
 		return nil, fmt.Errorf("unsupported default publish mode %q", cfg.DefaultPublishMode)
@@ -460,6 +467,10 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if timeoutErr != nil {
 			return nil, fmt.Errorf("parse provider execution timeouts: %w", timeoutErr)
 		}
+		plannerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{RuntimeRoot: plannerRuntimeRoot})
+		if runnerErr != nil {
+			return nil, fmt.Errorf("init planner process guardian: %w", runnerErr)
+		}
 		plannerAdapter, adapterErr := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
 			BinaryPath:              cfg.OpenCodeBinaryPath,
 			WorkDir:                 strings.TrimSpace(cfg.ProjectRoot),
@@ -470,6 +481,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			SkipPermissions:         true,
 			FirstEventTimeout:       firstEventTimeout,
 			StreamInactivityTimeout: streamInactivityTimeout,
+			Runner:                  plannerRunner,
 		})
 		if adapterErr != nil {
 			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
@@ -498,9 +510,6 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		defer cancel()
 		_ = s.planningService.Close(closeCtx)
 	}()
-	if err := s.planningService.RecoverOperations(startupCtx); err != nil {
-		return nil, fmt.Errorf("recover planning operations: %w", err)
-	}
 	if s.providerModelCatalog == nil {
 		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
 	}
@@ -534,6 +543,13 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	constructorOK = true
 	lifecycleTransferred = true
 	return s, nil
+}
+
+func (s *Server) RecoverPlanningOperations(ctx context.Context) error {
+	if s == nil || s.planningService == nil {
+		return nil
+	}
+	return s.planningService.RecoverOperations(ctx)
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {

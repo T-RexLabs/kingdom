@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // The registry answers "which summons are running on this machine, and where".
@@ -176,10 +175,10 @@ func withSummonRegistryLock(fn func(path string) error) error {
 		return fmt.Errorf("open summon registry lock: %w", err)
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockSummonFile(lock); err != nil {
 		return fmt.Errorf("lock summon registry: %w", err)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck -- best-effort unlock before close
+	defer unlockSummonFile(lock) //nolint:errcheck -- best-effort unlock before close
 	return fn(path)
 }
 

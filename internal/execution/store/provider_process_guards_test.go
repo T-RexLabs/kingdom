@@ -1,0 +1,163 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"testing"
+)
+
+func TestStoreAcknowledgeProviderProcessGuardFencesActiveLeaseAndReplaysExactly(t *testing.T) {
+	t.Parallel()
+	s, db, req := providerProcessGuardFixture(t)
+	ack := providerProcessGuardAcknowledgement(req, "guard_fenced", 1)
+
+	stale := ack
+	stale.ExpectedLeaseOwner = "stale-worker"
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), stale); err == nil {
+		t.Fatal("expected stale lease owner to be fenced")
+	} else {
+		requireProviderSettlementError(t, err, "acknowledge_provider_process_guard", "lease_lineage_mismatch")
+	}
+	if count := countPhase2Table(t, db, "provider_process_guards"); count != 0 {
+		t.Fatalf("stale acknowledgement persisted %d guards", count)
+	}
+
+	first, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack)
+	if err != nil || first.Idempotent || first.Guard.Lifecycle != ProviderProcessGuardLifecycleAcknowledged {
+		t.Fatalf("unexpected first acknowledgement: result=%#v err=%v", first, err)
+	}
+	replay, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack)
+	if err != nil || !replay.Idempotent || replay.Guard != first.Guard {
+		t.Fatalf("exact acknowledgement replay did not converge: first=%#v replay=%#v err=%v", first, replay, err)
+	}
+
+	conflict := ack
+	conflict.ChildIdentityToken = "different-child-start"
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), conflict); err == nil {
+		t.Fatal("expected changed acknowledgement to conflict")
+	} else {
+		requireProviderSettlementError(t, err, "acknowledge_provider_process_guard", "guard_conflict")
+	}
+}
+
+func TestStoreProviderProcessGuardQuiescenceIsIdempotentAndRejectsConflicts(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerProcessGuardFixture(t)
+	ack := providerProcessGuardAcknowledgement(req, "guard_quiescence", 1)
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+		t.Fatalf("acknowledge guard: %v", err)
+	}
+	proof := providerProcessGuardQuiescenceProof(ack)
+	first, err := s.IngestProviderProcessGuardQuiescence(context.Background(), proof)
+	if err != nil || first.Idempotent || first.Guard.Lifecycle != ProviderProcessGuardLifecycleQuiescent {
+		t.Fatalf("unexpected first quiescence proof: result=%#v err=%v", first, err)
+	}
+	replay, err := s.IngestProviderProcessGuardQuiescence(context.Background(), proof)
+	if err != nil || !replay.Idempotent || replay.Guard != first.Guard {
+		t.Fatalf("exact quiescence replay did not converge: first=%#v replay=%#v err=%v", first, replay, err)
+	}
+
+	conflict := proof
+	conflict.TerminationForced = true
+	conflict.EvidenceJSON = providerProcessGuardEvidenceJSON(conflict, true)
+	conflict.EvidenceSHA256 = sha256Hex(conflict.EvidenceJSON)
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), conflict); err == nil {
+		t.Fatal("expected changed quiescence proof to conflict")
+	} else {
+		requireProviderSettlementError(t, err, "ingest_provider_process_guard_quiescence", "quiescence_conflict")
+	}
+
+	invalidCapability := proof
+	invalidCapability.QuiescenceCapability = "wrong-capability"
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), invalidCapability); err == nil {
+		t.Fatal("expected capability mismatch to be rejected")
+	} else {
+		requireProviderSettlementError(t, err, "ingest_provider_process_guard_quiescence", "quiescence_capability_mismatch")
+	}
+}
+
+func TestStoreListPendingProviderProcessGuardsUsesKeyset(t *testing.T) {
+	t.Parallel()
+	s, _, req := providerProcessGuardFixture(t)
+	firstAck := providerProcessGuardAcknowledgement(req, "guard_a", 1)
+	secondAck := providerProcessGuardAcknowledgement(req, "guard_b", 2)
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), firstAck); err != nil {
+		t.Fatalf("acknowledge first guard: %v", err)
+	}
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), secondAck); err != nil {
+		t.Fatalf("acknowledge second guard: %v", err)
+	}
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(firstAck)); err != nil {
+		t.Fatalf("quiesce first guard: %v", err)
+	}
+	pending, err := s.ListPendingProviderProcessGuards(context.Background(), "", 1)
+	if err != nil || len(pending) != 1 || pending[0].GuardID != firstAck.GuardID {
+		t.Fatalf("unexpected pending guard page: guards=%#v err=%v", pending, err)
+	}
+	last, err := s.ListPendingProviderProcessGuards(context.Background(), pending[0].GuardID, 1)
+	if err != nil || len(last) != 1 || last[0].GuardID != secondAck.GuardID {
+		t.Fatalf("unexpected pending guard continuation: guards=%#v err=%v", last, err)
+	}
+	if _, err := s.ListPendingProviderProcessGuards(context.Background(), "", 0); err == nil {
+		t.Fatal("expected positive pending guard limit")
+	}
+}
+
+func providerProcessGuardFixture(t *testing.T) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
+	t.Helper()
+	s, db, req := atomicProviderSettlementFixture(t)
+	mustExec(t, db, `DELETE FROM provider_process_guards`)
+	return s, db, req
+}
+
+func providerProcessGuardAcknowledgement(req SettleProviderCompletionAndTerminalRequest, guardID string, commandOrdinal int64) AcknowledgeProviderProcessGuardRequest {
+	return AcknowledgeProviderProcessGuardRequest{
+		GuardID:               guardID,
+		ProviderInvocationID:  req.Settlement.ProviderInvocationID,
+		AttemptID:             req.Settlement.AttemptID,
+		RunID:                 req.Settlement.RunID,
+		NodeRunID:             req.Settlement.NodeRunID,
+		CommandOrdinal:        commandOrdinal,
+		Platform:              "unix_process_group",
+		GuardianPID:           2001 + commandOrdinal,
+		GuardianIdentityToken: fmt.Sprintf("guardian-%d", commandOrdinal),
+		ChildPID:              3001 + commandOrdinal,
+		ChildIdentityToken:    fmt.Sprintf("child-%d", commandOrdinal),
+		TreeID:                fmt.Sprintf("%d", 3001+commandOrdinal),
+		TreeIdentityToken:     fmt.Sprintf("tree-%d", commandOrdinal),
+		QuiescenceCapability:  "capability-" + guardID,
+		ExpectedLeaseOwner:    req.ExpectedLeaseOwner,
+		ExpectedLeaseVersion:  req.ExpectedLeaseVersion,
+		StartedAt:             "2026-03-01T12:00:02Z",
+		AcknowledgedAt:        "2026-03-01T12:00:03Z",
+	}
+}
+
+func providerProcessGuardQuiescenceProof(ack AcknowledgeProviderProcessGuardRequest) IngestProviderProcessGuardQuiescenceRequest {
+	proof := IngestProviderProcessGuardQuiescenceRequest{
+		GuardID:               ack.GuardID,
+		ProviderInvocationID:  ack.ProviderInvocationID,
+		AttemptID:             ack.AttemptID,
+		RunID:                 ack.RunID,
+		NodeRunID:             ack.NodeRunID,
+		Platform:              ack.Platform,
+		GuardianPID:           ack.GuardianPID,
+		GuardianIdentityToken: ack.GuardianIdentityToken,
+		ChildPID:              ack.ChildPID,
+		ChildIdentityToken:    ack.ChildIdentityToken,
+		TreeID:                ack.TreeID,
+		TreeIdentityToken:     ack.TreeIdentityToken,
+		QuiescenceCapability:  ack.QuiescenceCapability,
+		ExitedAt:              "2026-03-01T12:00:04Z",
+		QuiescentAt:           "2026-03-01T12:00:04Z",
+		EvidenceJSON:          "",
+	}
+	proof.EvidenceJSON = providerProcessGuardEvidenceJSON(proof, false)
+	proof.EvidenceSHA256 = sha256Hex(proof.EvidenceJSON)
+	return proof
+}
+
+func providerProcessGuardEvidenceJSON(proof IngestProviderProcessGuardQuiescenceRequest, forced bool) string {
+	return fmt.Sprintf(`{"type":"result","result":{"GuardID":%q,"ChildPID":%d,"TreeID":%s,"Platform":%q,"Quiescent":true,"ExitCode":%d,"ExitSignal":%d,"Forced":%t,"FailureCode":%q,"FailureText":%q}}`, proof.GuardID, proof.ChildPID, proof.TreeID, proof.Platform, proof.ExitCode, proof.ExitSignal, forced, proof.FailureCode, proof.FailureText)
+}

@@ -830,6 +830,7 @@ func (h receiptIngestionHarness) runningHandoffJob(t *testing.T, invocation exec
 	if _, err := h.db.Exec(`UPDATE attempt_executions SET state = 'running' WHERE attempt_id = ?`, invocation.AttemptID); err != nil {
 		t.Fatalf("mark handoff attempt running: %v", err)
 	}
+	attachQuiescentProviderProcessGuard(t, h.store, invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, job.expectedLeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:01Z")
 	return job
 }
 

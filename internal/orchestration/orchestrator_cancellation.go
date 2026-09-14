@@ -56,8 +56,12 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		err := o.adapter.Cancel(cancelCtx, request)
 		cancel()
 
+		quiescent, queryErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+		if queryErr != nil {
+			return processed, queryErr
+		}
 		var missing *opencode.AttemptNotFoundError
-		if err == nil || errors.As(err, &missing) {
+		if quiescent && (err == nil || errors.As(err, &missing)) {
 			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
 				return processed, err
 			}

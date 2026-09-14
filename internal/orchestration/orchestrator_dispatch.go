@@ -734,6 +734,12 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			CompletionMode:            opencode.CompletionMode(job.completionMode),
 			CompletionCapability:      completionCapabilityForMode(job.completionMode, job.completionCapability),
 			CompletionReceiptDir:      completionReceiptDirForMode(job.completionMode, job.completionReceiptDir),
+			OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
+				return o.acknowledgeProviderProcessGuard(callbackCtx, job, guard)
+			},
+			OnProcessGuardQuiescence: func(callbackCtx context.Context, guard opencode.ProcessGuardQuiescence) error {
+				return o.ingestProviderProcessGuardQuiescence(callbackCtx, job, guard)
+			},
 			OnProcessStarted: func() {
 				launchObserved = true
 				launchObservedAt = o.now().UTC().Format(time.RFC3339)
@@ -774,6 +780,12 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			cancelHandoff()
 			if err != nil {
 				o.recordProviderTerminalHandoffError(job, err)
+				_, _ = o.db.ExecContext(context.WithoutCancel(ctx), `UPDATE provider_process_guards SET terminal_recovery_required_at = COALESCE(terminal_recovery_required_at, ?) WHERE provider_invocation_id = ?`, o.now().UTC().Format(time.RFC3339Nano), job.providerInvocationID)
+				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be persisted.", EvidenceSource: "process_guard"}
+				job.err = err
+				if settleErr := o.commitRecoveredGuardFailure(ctx, job); settleErr != nil {
+					o.recordProviderTerminalHandoffError(job, settleErr)
+				}
 				return
 			}
 		}
@@ -801,6 +813,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			// Async completions must outlive the dispatch tick context because the
 			// execution store is the durable handoff into the canonical completion path.
 			if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
+				_, _ = o.db.ExecContext(context.WithoutCancel(ctx), `UPDATE provider_process_guards SET terminal_recovery_required_at = COALESCE(terminal_recovery_required_at, ?) WHERE provider_invocation_id = ?`, o.now().UTC().Format(time.RFC3339Nano), job.providerInvocationID)
 				if !o.forceCloseActive() {
 					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error()})
 				}

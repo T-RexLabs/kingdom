@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"runtime"
-	"syscall"
 )
 
 type Directory struct {
@@ -72,17 +70,6 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 		return nil, fmt.Errorf("secure path component %q changed while opening", component.Name)
 	}
 	return child, nil
-}
-
-func CurrentUserOwns(info fs.FileInfo) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != os.Geteuid() {
-		return fmt.Errorf("must be owned by the current user")
-	}
-	return nil
 }
 
 // OpenRegularFile opens a leaf without following a symlink and verifies that

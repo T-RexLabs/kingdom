@@ -11,10 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"kingdom/internal/securefs"
@@ -184,10 +182,10 @@ func (s *UserTokenStore) WithConnectionLock(connectionID string, fn func() error
 	if err := validateProtectedRegularFile(lock, ".lifecycle.lock"); err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(lock); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	defer unlockFile(lock) //nolint:errcheck
 	return fn()
 }
 
@@ -378,13 +376,7 @@ func validateProtectedRegularFile(file *os.File, name string) error {
 	if err := securefs.CurrentUserOwns(info); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	if runtime.GOOS != "windows" {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Nlink != 1 {
-			return fmt.Errorf("%s must have exactly one link", name)
-		}
-	}
-	return nil
+	return validateFileSingleLink(info, name)
 }
 
 func userTokenTempName() (string, error) {

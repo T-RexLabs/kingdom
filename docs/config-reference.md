@@ -48,7 +48,6 @@ provider:
   binary_path: <path>
   model: <string>
   agent: <string>
-  attach_url: <url>
   skip_permissions: <bool>
 
 github:
@@ -124,9 +123,6 @@ github:
 
 - `agent`
   - optional summon-time provider default agent
-
-- `attach_url`
-  - optional OpenCode attach URL
 
 - `skip_permissions`
   - default: `true`

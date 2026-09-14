@@ -265,13 +265,14 @@ type FinalizeProviderCompletionSettlementRequest struct {
 // durable terminal attempt record. Its outbox is deliberately only a handoff
 // for projections after the canonical result has committed.
 type SettleProviderCompletionAndTerminalRequest struct {
-	Settlement           FinalizeProviderCompletionSettlementRequest
-	StreamObservation    *providerexecution.InvocationStreamObservation
-	ExpectedLeaseOwner   string
-	ExpectedLeaseVersion int64
-	TerminalHandoffID    string
-	TokenUsage           *ProviderInvocationTokenUsage
-	Terminal             CommitTerminalRequest
+	Settlement               FinalizeProviderCompletionSettlementRequest
+	StreamObservation        *providerexecution.InvocationStreamObservation
+	ExpectedLeaseOwner       string
+	ExpectedLeaseVersion     int64
+	TerminalHandoffID        string
+	RecoveredGuardQuiescence bool
+	TokenUsage               *ProviderInvocationTokenUsage
+	Terminal                 CommitTerminalRequest
 }
 
 type ProviderInvocationTokenUsage struct {
@@ -1330,9 +1331,15 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 			} else if found {
 				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "terminal_handoff_required", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 			}
-			leaseExpiresAt, parseErr := time.Parse(time.RFC3339Nano, authority.LeaseExpiresAt)
-			if parseErr != nil || !leaseExpiresAt.After(s.currentTime()) {
-				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_expired", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+			if req.RecoveredGuardQuiescence {
+				if settlementReq.Outcome == ProviderCompletionOutcomeSuccess {
+					return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "recovered_quiescence_cannot_succeed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+				}
+			} else {
+				leaseExpiresAt, parseErr := time.Parse(time.RFC3339Nano, authority.LeaseExpiresAt)
+				if parseErr != nil || !leaseExpiresAt.After(s.currentTime()) {
+					return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "lease_expired", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+				}
 			}
 		} else {
 			if invocation.CompletionMode != ProviderCompletionModeReceiptRequired {
@@ -1355,6 +1362,11 @@ func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req Set
 				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "terminal_handoff_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 			}
 			useTerminalHandoff = true
+		}
+	}
+	if !existingCanonical {
+		if err := validateProviderProcessGuardsForSettlementTx(ctx, tx, invocation, settlementReq.Outcome, authority.State); err != nil {
+			return ProviderCompletionSettlement{}, err
 		}
 	}
 

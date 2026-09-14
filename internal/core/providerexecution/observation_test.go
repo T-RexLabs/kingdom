@@ -9,8 +9,8 @@ func TestValidateServerResponseSuccess(t *testing.T) {
 	t.Parallel()
 	zero := 0
 	valid := InvocationStreamObservation{
-		FinalTurnID:           "turn_1",
-		FinalStepID:           "step_1",
+		FinalTurnID:            "turn_1",
+		FinalStepID:            "step_1",
 		FinalSequence:          3,
 		RawFinishReason:        "stop",
 		NormalizedFinishReason: "stop",

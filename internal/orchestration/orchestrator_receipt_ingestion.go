@@ -30,11 +30,11 @@ type providerCompletionReceiptWire struct {
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceipts(ctx context.Context) error {
-	_, err := o.ingestProviderCompletionReceiptPass(ctx)
+	_, err := o.ingestProviderCompletionReceiptPass(ctx, false)
 	return err
 }
 
-func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Context) (int, error) {
+func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Context, strict bool) (int, error) {
 	if o == nil || o.executionStore == nil || o.fsStore == nil || o.schemas == nil {
 		return 0, fmt.Errorf("provider completion receipt ingestion is not configured")
 	}
@@ -53,7 +53,7 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Cont
 	for _, candidate := range candidates {
 		if err := o.ingestProviderCompletionReceiptCandidate(ctx, candidate); err != nil {
 			var infrastructureErr *providerReceiptInfrastructureError
-			if !errors.As(err, &infrastructureErr) {
+			if strict || !errors.As(err, &infrastructureErr) {
 				ingestionErr = errors.Join(ingestionErr, fmt.Errorf("ingest provider completion receipt invocation %q: %w", candidate.ProviderInvocationID, err))
 			}
 		}

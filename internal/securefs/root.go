@@ -12,8 +12,9 @@ import (
 
 // Root pins a trusted directory for descriptor-relative descendant access.
 type Root struct {
-	fd   int
-	name string
+	fd           int
+	name         string
+	platformRoot *os.Root
 }
 
 // ErrLimitExceeded reports that a bounded filesystem operation reached its

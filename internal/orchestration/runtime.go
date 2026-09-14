@@ -11,9 +11,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,6 +26,7 @@ import (
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
@@ -143,15 +144,22 @@ type Runtime struct {
 	fsStore         *runtimefs.Store
 	closeMode       *runtimeCloseMode
 
-	mu               sync.Mutex
-	periodicDone     chan error
-	cancelPeriodic   context.CancelFunc
-	dispatchDone     chan error
-	cancelDispatch   context.CancelFunc
-	completionDone   chan error
-	cancelCompletion context.CancelFunc
-	completionWake   chan struct{}
-	started          bool
+	mu                  sync.Mutex
+	periodicDone        chan error
+	cancelPeriodic      context.CancelFunc
+	dispatchDone        chan error
+	cancelDispatch      context.CancelFunc
+	completionDone      chan error
+	cancelCompletion    context.CancelFunc
+	completionWake      chan struct{}
+	started             bool
+	preDispatchRecovery func(context.Context) error
+}
+
+func (r *Runtime) SetPreDispatchRecovery(recover func(context.Context) error) {
+	if r != nil {
+		r.preDispatchRecovery = recover
+	}
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -258,6 +266,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider cancellation timeouts: %w", err)
 	}
+	if cfg.ProviderSession.Runner == nil {
+		providerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
+			RuntimeRoot: workspaceRoot,
+			CancelGrace: cancelGraceTimeout,
+			CancelForce: cancelForceTimeout,
+		})
+		if runnerErr != nil {
+			return nil, fmt.Errorf("initialize provider process guardian: %w", runnerErr)
+		}
+		cfg.ProviderSession.Runner = providerRunner
+	}
 
 	cfg.ProviderSession.FirstEventTimeout = firstEventTimeout
 	cfg.ProviderSession.StreamInactivityTimeout = streamInactivityTimeout
@@ -291,6 +310,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	closeMode := newRuntimeCloseMode()
 
+	orchestrator := newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
+	orchestrator.processGuardRuntimeRoot = workspaceRoot
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
 		paths:           cfg.Paths,
@@ -308,7 +329,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		outputValidator: outputValidator,
 		adapter:         adapter,
 		providerEngine:  providerEngine,
-		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
+		orchestrator:    orchestrator,
 		fsStore:         fsStore,
 		closeMode:       closeMode,
 		completionWake:  make(chan struct{}, 1),
@@ -343,7 +364,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 		if cfg.ProviderStrict {
 			validationCtx, cancelValidation := context.WithTimeout(startupCtx, strictStartupTotalTimeout)
 			defer cancelValidation()
-			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
+			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.Runner, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
 				return nil, "", err
 			}
 		}
@@ -353,7 +374,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 	}
 }
 
-func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
+func validateOpenCodeAgentResolution(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
 	resolvedBinary := strings.TrimSpace(binaryPath)
 	if resolvedBinary == "" {
 		resolvedBinary = "opencode"
@@ -378,10 +399,10 @@ func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, wor
 		agents = append(agents, agent)
 	}
 	sort.Strings(agents)
-	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
+	return validateOpenCodeAgentsConcurrently(ctx, runner, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
 }
 
-func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
+func validateOpenCodeAgentsConcurrently(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
 	if len(agents) == 0 {
 		return nil
 	}
@@ -415,7 +436,7 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 				if !ok {
 					return
 				}
-				if err := validateOpenCodeAgent(ctx, binaryPath, workDir, configDir, databasePath, agent); err != nil {
+				if err := validateOpenCodeAgent(ctx, runner, binaryPath, workDir, configDir, databasePath, agent); err != nil {
 					reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusFailed, CurrentItem: agent, Total: len(agents), Message: err.Error()})
 					select {
 					case errCh <- err:
@@ -464,19 +485,13 @@ func reportStartup(reporter StartupReporter, event StartupEvent) {
 	reporter.Report(event)
 }
 
-func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
-	cmd := exec.CommandContext(ctx, binaryPath, "debug", "agent", agent)
-	if workDir != "" {
-		cmd.Dir = workDir
-	}
-	cmd.Env = append(os.Environ(), opencode.ConfigDirEnvironment(configDir)...)
+func validateOpenCodeAgent(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
 	isolatedDBPath, cleanupDBPath, err := isolatedValidationDatabasePath(databasePath)
 	if err != nil {
 		return fmt.Errorf("prepare isolated validation database for %q: %w", agent, err)
 	}
 	defer cleanupDBPath()
-	cmd.Env = append(cmd.Env, opencode.DatabasePathEnvironment(isolatedDBPath)...)
-	output, err := cmd.CombinedOutput()
+	output, err := runGuardedValidationCommand(ctx, runner, processguardian.Command{Path: binaryPath, Args: []string{"debug", "agent", agent}, Dir: workDir, Env: append(os.Environ(), append(opencode.ConfigDirEnvironment(configDir), opencode.DatabasePathEnvironment(isolatedDBPath)...)...)})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, ctxErr)
@@ -488,6 +503,39 @@ func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir strin
 		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, err)
 	}
 	return nil
+}
+
+func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRunner, command processguardian.Command) ([]byte, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("process guardian runner is required")
+	}
+	handle, err := runner.Start(ctx, command, nil)
+	if err != nil {
+		return nil, err
+	}
+	stdoutDone := make(chan []byte, 1)
+	stderrDone := make(chan []byte, 1)
+	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
+	go func() { defer stdoutStream.Close(); raw, _ := io.ReadAll(stdoutStream); stdoutDone <- raw }()
+	go func() { defer stderrStream.Close(); raw, _ := io.ReadAll(stderrStream); stderrDone <- raw }()
+	cancelDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = handle.Cancel(context.Background())
+		case <-cancelDone:
+		}
+	}()
+	result, waitErr := handle.Wait(context.Background())
+	close(cancelDone)
+	stdout, stderr := <-stdoutDone, <-stderrDone
+	if waitErr != nil {
+		return append(stdout, stderr...), waitErr
+	}
+	if !result.Quiescent || result.ExitCode != 0 || result.ExitSignal != 0 || result.FailureCode != "" {
+		return append(stdout, stderr...), fmt.Errorf("guarded command failed: %s", result.FailureText)
+	}
+	return append(stdout, stderr...), nil
 }
 
 func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
@@ -520,8 +568,19 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
+	if err := r.orchestrator.ingestPendingProviderProcessGuards(ctx); err != nil {
+		return fmt.Errorf("startup provider process guard recovery: %w", err)
+	}
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
+	}
+	if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		return fmt.Errorf("startup lost provider terminal handoff recovery: %w", err)
+	}
+	if r.preDispatchRecovery != nil {
+		if err := r.preDispatchRecovery(ctx); err != nil {
+			return fmt.Errorf("startup pre-dispatch recovery: %w", err)
+		}
 	}
 
 	if _, err := r.reconciler.RunStartup(ctx); err != nil {
@@ -643,6 +702,12 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 	defer ticker.Stop()
 
 	for {
+		if err := r.orchestrator.ingestPendingProviderProcessGuards(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			slog.Warn("provider process guard ingestion loop failed", "error", err)
+		}
 		if err := r.orchestrator.ingestProviderCompletionReceipts(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
@@ -654,6 +719,12 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				return nil
 			}
 			slog.Warn("provider terminal handoff convergence loop failed", "error", err)
+		}
+		if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, true); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			slog.Warn("lost provider terminal handoff recovery loop failed", "error", err)
 		}
 		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -691,7 +762,7 @@ func (r *Runtime) drainProviderCompletionReceipts(ctx context.Context) error {
 		return nil
 	}
 	for {
-		visited, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx)
+		visited, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx, true)
 		if err != nil {
 			return err
 		}
@@ -706,7 +777,7 @@ func (r *Runtime) drainProviderTerminalHandoffs(ctx context.Context) error {
 		return nil
 	}
 	for {
-		visited, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx)
+		visited, err := r.orchestrator.convergeProviderTerminalHandoffsStrict(ctx)
 		if err != nil {
 			return err
 		}
@@ -940,10 +1011,6 @@ func (r *Runtime) cancelInflightAttempts() {
 				OccurredAt: occurredAt,
 			})
 			if err == nil {
-				return
-			}
-			var missing *opencode.AttemptNotFoundError
-			if errors.As(err, &missing) {
 				return
 			}
 			slog.Warn("runtime force close failed to cancel attempt", "attempt_id", attemptID, "error", err)
@@ -1196,6 +1263,41 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"last_receipt_disposition",
 		},
 		"provider_terminal_handoffs": nil,
+		"provider_process_guards": {
+			"guard_id",
+			"owner_kind",
+			"owner_id",
+			"provider_invocation_id",
+			"attempt_id",
+			"run_id",
+			"node_run_id",
+			"command_ordinal",
+			"lifecycle",
+			"platform",
+			"guardian_pid",
+			"guardian_identity_token",
+			"child_pid",
+			"child_identity_token",
+			"tree_id",
+			"tree_identity_token",
+			"quiescence_capability_hash",
+			"lease_owner",
+			"lease_version",
+			"started_at",
+			"acknowledged_at",
+			"termination_requested_at",
+			"exited_at",
+			"quiescent_at",
+			"exit_code",
+			"exit_signal",
+			"termination_forced",
+			"failure_code",
+			"failure_text",
+			"quiescence_evidence_sha256",
+			"quiescence_evidence_json",
+			"created_at",
+			"updated_at",
+		},
 	}
 	tableNames := []string{
 		"workflow_runs",
@@ -1206,6 +1308,7 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"attempt_cancel_outbox",
 		"provider_invocations",
 		"provider_terminal_handoffs",
+		"provider_process_guards",
 		"run_worktrees",
 		"run_execution_targets",
 		"filesystem_snapshots",

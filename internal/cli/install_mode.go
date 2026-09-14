@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -127,7 +126,6 @@ type installConfig struct {
 		BinaryPath      string `yaml:"binary_path"`
 		Model           string `yaml:"model"`
 		Agent           string `yaml:"agent"`
-		AttachURL       string `yaml:"attach_url"`
 		SkipPermissions *bool  `yaml:"skip_permissions"`
 	} `yaml:"provider"`
 	GitHub struct {
@@ -692,7 +690,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			WorkDir:         filepath.Dir(cfg.KingdomHome),
 			Model:           cfg.Provider.Model,
 			Agent:           cfg.Provider.Agent,
-			AttachURL:       cfg.Provider.AttachURL,
 			SkipPermissions: skipPermissions,
 		},
 	})
@@ -715,6 +712,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		RoleCommPolicyPath:         filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
+		RuntimeRoot:                filepath.Join(cfg.KingdomHome, "runtime"),
 		DefaultPublishMode:         cfg.Publish.Mode,
 		OperatorCredential:         operatorCredential,
 		ExternalAdapter:            deps.externalAdapter,
@@ -724,6 +722,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	if err != nil {
 		return fmt.Errorf("build api handler: %w", err)
 	}
+	runtimeInstance.SetPreDispatchRecovery(apiHandler.RecoverPlanningOperations)
 	if err := runtimeInstance.Start(ctx); err != nil {
 		_ = apiHandler.Close(context.Background())
 		return fmt.Errorf("start runtime: %w", err)
@@ -817,7 +816,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	}
 
 	signalCh := make(chan os.Signal, 2)
-	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signalCh, summonSignals()...)
 	defer signal.Stop(signalCh)
 
 	err = awaitSummonTermination(
@@ -1058,7 +1057,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opt
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureDetachedCommand(cmd)
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -1139,6 +1138,9 @@ func normalizeSummonListenAddress(listen string) (string, error) {
 	}
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("summon listen host cannot be empty")
+	}
+	if !isLoopbackAPIHost(host) {
+		return "", fmt.Errorf("summon listen host must be loopback until TLS listener support exists")
 	}
 	return net.JoinHostPort(host, strconv.Itoa(portNum)), nil
 }
@@ -1416,7 +1418,7 @@ func stopSummonProcess(stdout io.Writer, pid int, cleanup func() error) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("find summon process: %w", err)
 	}
-	if err := process.Signal(syscall.SIGTERM); err != nil {
+	if err := signalSummonProcess(process); err != nil {
 		if !isProcessRunning(pid) {
 			if cleanup != nil {
 				_ = cleanup()
@@ -2425,9 +2427,4 @@ func readRunningPID(path string) (int, bool, error) {
 	}
 
 	return pid, true, nil
-}
-
-func isProcessRunning(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
 }

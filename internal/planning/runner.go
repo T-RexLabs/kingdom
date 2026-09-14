@@ -269,6 +269,24 @@ func (r *operationRunner) RequestCancel(operationID, reason string) bool {
 	return true
 }
 
+func (r *operationRunner) CancelRecoveredOperation(ctx context.Context, operation state.PlanningOperation, reason string) error {
+	if err := r.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx); err != nil {
+		return err
+	}
+	unresolved, err := r.deps.store.PlanningOperationHasUnresolvedProcessGuard(ctx, operation.OperationID)
+	if err != nil {
+		return err
+	}
+	if unresolved {
+		return fmt.Errorf("planning operation process quiescence is not yet proven")
+	}
+	next, err := r.nextOperationEventSeq(ctx, operation.OperationID)
+	if err != nil {
+		return err
+	}
+	return r.cancelOperation(ctx, operation, newSequenceCursor(next), reason)
+}
+
 func (r *operationRunner) cancelReasonOrNil(operationID string) *string {
 	if r == nil {
 		return nil
@@ -304,11 +322,13 @@ func (r *operationRunner) execute(ctx context.Context, operationID string, sourc
 		return nil
 	}
 
-	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
+	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(executionCtx)
 	defer cancelHeartbeat()
-	heartbeatErrCh := r.startHeartbeat(heartbeatCtx, claimed)
+	heartbeatErrCh := r.startHeartbeat(heartbeatCtx, claimed, cancelExecution)
 
-	execErr := r.executeClaimed(ctx, claimed, source)
+	execErr := r.executeClaimed(executionCtx, claimed, source)
 	cancelHeartbeat()
 	if heartbeatErr := <-heartbeatErrCh; execErr == nil && heartbeatErr != nil {
 		execErr = heartbeatErr
@@ -1468,7 +1488,7 @@ func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, ou
 	}
 }
 
-func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.PlanningOperation) <-chan error {
+func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.PlanningOperation, cancelExecution context.CancelFunc) <-chan error {
 	result := make(chan error, 1)
 	go func() {
 		defer close(result)
@@ -1482,6 +1502,9 @@ func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.Pl
 			case <-ticker.C:
 				now := nowTime(r.deps.nowString())
 				if err := r.deps.store.RenewOperationLease(ctx, operation.OperationID, operation.LeaseOwner, operation.LeaseVersion, now.Add(planningOperationLeaseTTL).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+					if cancelExecution != nil {
+						cancelExecution()
+					}
 					result <- err
 					return
 				}

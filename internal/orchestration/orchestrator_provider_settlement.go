@@ -164,6 +164,14 @@ func (o *orchestrationLoop) observeProviderSessionForInvocation(ctx context.Cont
 }
 
 func (o *orchestrationLoop) commitProviderExecutionCompletion(ctx context.Context, result asyncExecutionResult) error {
+	return o.commitProviderExecutionCompletionWithRecovery(ctx, result, false)
+}
+
+func (o *orchestrationLoop) commitRecoveredGuardFailure(ctx context.Context, result asyncExecutionResult) error {
+	return o.commitProviderExecutionCompletionWithRecovery(ctx, result, true)
+}
+
+func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx context.Context, result asyncExecutionResult, recoveredGuardQuiescence bool) error {
 	if o == nil || o.executionStore == nil || strings.TrimSpace(result.providerInvocationID) == "" {
 		return fmt.Errorf("provider invocation identity is required for completion settlement")
 	}
@@ -252,11 +260,12 @@ func (o *orchestrationLoop) commitProviderExecutionCompletion(ctx context.Contex
 	canonicalSettledAt := ""
 	if err := o.retrySQLiteBusyWrite(settleCtx, func(writeCtx context.Context) error {
 		committed, err := o.transitionService().SettleProviderExecution(writeCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
-			Settlement:           settlement,
-			StreamObservation:    &result.providerStreamObservation,
-			ExpectedLeaseOwner:   result.expectedLeaseOwner,
-			ExpectedLeaseVersion: result.expectedLeaseVersion,
-			TerminalHandoffID:    strings.TrimSpace(result.terminalHandoffID),
+			Settlement:               settlement,
+			StreamObservation:        &result.providerStreamObservation,
+			ExpectedLeaseOwner:       result.expectedLeaseOwner,
+			ExpectedLeaseVersion:     result.expectedLeaseVersion,
+			TerminalHandoffID:        strings.TrimSpace(result.terminalHandoffID),
+			RecoveredGuardQuiescence: recoveredGuardQuiescence,
 			TokenUsage: &executionstore.ProviderInvocationTokenUsage{
 				RequiredRole: result.node.RequiredRole,
 				Model:        result.model,

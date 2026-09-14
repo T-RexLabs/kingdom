@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -269,11 +267,10 @@ sleep 30
 		t.Fatalf("parse fake provider pid: %v", err)
 	}
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
+		if providerTestProcessAbsent(pid) {
 			return nil
 		}
-		return fmt.Errorf("provider process %d is still present: %v", pid, err)
+		return fmt.Errorf("provider process %d is still present", pid)
 	})
 }
 

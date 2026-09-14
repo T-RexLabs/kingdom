@@ -314,6 +314,9 @@ func (s *Service) RecoverOperations(ctx context.Context) error {
 	if s == nil || s.recovery == nil {
 		return fmt.Errorf("planning service recovery runtime is required")
 	}
+	if err := s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx); err != nil {
+		return err
+	}
 	return s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck)
 }
 
@@ -342,6 +345,13 @@ func (s *Service) FinaliseIfStuck(ctx context.Context, operationID string) (bool
 	}
 	now := nowTime(s.operations.deps.nowString())
 	if !IsStuckOperation(op, now) {
+		return false, nil
+	}
+	unresolved, err := s.operations.deps.store.PlanningOperationHasUnresolvedProcessGuard(ctx, operationID)
+	if err != nil {
+		return false, err
+	}
+	if unresolved {
 		return false, nil
 	}
 	if err := s.recovery.failStuck(ctx, op, idleFor(op, now)); err != nil {

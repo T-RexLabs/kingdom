@@ -1608,6 +1608,7 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 	}); err != nil {
 		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
 	}
+	acknowledgeQuiescentProviderProcessGuard(t, s, providerInvocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion)
 	structuredPayloadJSON := canonicalStructuredPayloadForStoreTest(outputText)
 	var requiredRole string
 	if err := db.QueryRow(`SELECT required_role FROM node_runs WHERE node_run_id = ?`, nodeRunID).Scan(&requiredRole); err != nil {

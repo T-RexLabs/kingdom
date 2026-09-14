@@ -250,6 +250,14 @@ func providerTerminalHandoffStoreRequest(wire providerTerminalHandoffWire) execu
 }
 
 func (o *orchestrationLoop) convergeProviderTerminalHandoffs(ctx context.Context) (int, error) {
+	return o.convergeProviderTerminalHandoffsMode(ctx, false)
+}
+
+func (o *orchestrationLoop) convergeProviderTerminalHandoffsStrict(ctx context.Context) (int, error) {
+	return o.convergeProviderTerminalHandoffsMode(ctx, true)
+}
+
+func (o *orchestrationLoop) convergeProviderTerminalHandoffsMode(ctx context.Context, strict bool) (int, error) {
 	if o == nil || o.executionStore == nil {
 		return 0, fmt.Errorf("provider terminal handoff convergence is not configured")
 	}
@@ -270,7 +278,8 @@ func (o *orchestrationLoop) convergeProviderTerminalHandoffs(ctx context.Context
 			var infrastructureErr *providerReceiptInfrastructureError
 			if errors.As(err, &infrastructureErr) {
 				slog.Warn("provider terminal handoff receipt infrastructure will retry", "handoff_id", handoff.HandoffID, "error", err)
-			} else {
+			}
+			if strict || !errors.As(err, &infrastructureErr) {
 				convergenceErr = errors.Join(convergenceErr, fmt.Errorf("converge provider terminal handoff %q: %w", handoff.HandoffID, err))
 			}
 		}

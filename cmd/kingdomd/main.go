@@ -24,6 +24,7 @@ import (
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
@@ -41,6 +42,9 @@ const (
 )
 
 func main() {
+	if exitCode, handled := processguardian.DispatchHiddenMode(os.Args); handled {
+		os.Exit(exitCode)
+	}
 	os.Exit(run())
 }
 
@@ -72,7 +76,6 @@ func run() (exitCode int) {
 		providerBinary       string
 		providerModel        string
 		providerAgent        string
-		providerAttach       string
 		credentialFile       string
 		githubSharedSlug     string
 		githubSharedClientID string
@@ -88,7 +91,6 @@ func run() (exitCode int) {
 	flag.StringVar(&providerBinary, "provider-binary", envOrDefault("KINGDOM_PROVIDER_BINARY", "opencode"), "opencode binary path")
 	flag.StringVar(&providerModel, "provider-model", envOrDefault("KINGDOM_PROVIDER_MODEL", ""), "optional model override for opencode")
 	flag.StringVar(&providerAgent, "provider-agent", envOrDefault("KINGDOM_PROVIDER_AGENT", ""), "optional agent override for opencode")
-	flag.StringVar(&providerAttach, "provider-attach-url", envOrDefault("KINGDOM_PROVIDER_ATTACH_URL", ""), "optional attach URL for opencode")
 	flag.StringVar(&credentialFile, "credential-file", "./.kingdom/secrets/operator-token", "local operator credential file")
 	flag.StringVar(&githubSharedSlug, "github-shared-app-slug", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_SLUG", githubexternal.OfficialSharedAppSlug), "public shared GitHub App slug (paired with client id)")
 	flag.StringVar(&githubSharedClientID, "github-shared-app-client-id", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_CLIENT_ID", githubexternal.OfficialSharedAppClientID), "public shared GitHub App client id (paired with slug)")
@@ -151,7 +153,6 @@ func run() (exitCode int) {
 			WorkDir:    repoRoot,
 			Model:      providerModel,
 			Agent:      providerAgent,
-			AttachURL:  providerAttach,
 		},
 	})
 	if err != nil {
@@ -171,6 +172,7 @@ func run() (exitCode int) {
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                repoRoot,
+		RuntimeRoot:                filepath.Join(filepath.Dir(dbPath), "runtime"),
 		OperatorCredential:         operatorCredential,
 		GitHubSharedAppSlug:        githubSharedSlug,
 		GitHubSharedAppClientID:    githubSharedClientID,
@@ -179,6 +181,7 @@ func run() (exitCode int) {
 		log.Printf("build api handler: %v", err)
 		return exitFatalStartup
 	}
+	runtime.SetPreDispatchRecovery(apiServer.RecoverPlanningOperations)
 	if err := runtime.Start(ctx); err != nil {
 		_ = apiServer.Close(context.Background())
 		log.Printf("start runtime: %v", err)

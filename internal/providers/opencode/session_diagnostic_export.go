@@ -1,16 +1,14 @@
 package opencode
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"kingdom/internal/processguardian"
 )
 
 type sessionDiagnosticExporter interface {
@@ -50,6 +48,7 @@ type sessionActivityInvocationBoundary struct {
 
 type cliSessionDiagnosticExporter struct {
 	binaryPath string
+	runner     GuardianRunner
 }
 
 func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDiagnosticExportRequest) (sessionDiagnosticExportResult, error) {
@@ -62,38 +61,15 @@ func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDia
 		args = append(args, "--sanitize")
 	}
 	args = append(args, providerSessionID)
-	cmd := exec.CommandContext(ctx, e.binaryPath, args...)
-	if strings.TrimSpace(req.WorkDir) != "" {
-		cmd.Dir = strings.TrimSpace(req.WorkDir)
-	}
-	cmd.Env = opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))
-	stdoutFile, err := os.CreateTemp("", "opencode-export-*.json")
-	if err != nil {
-		return sessionDiagnosticExportResult{}, fmt.Errorf("create temp export file: %w", err)
-	}
-	defer func() {
-		_ = stdoutFile.Close()
-		_ = os.Remove(stdoutFile.Name())
-	}()
-	var stderr bytes.Buffer
-	cmd.Stdout = stdoutFile
-	cmd.Stderr = &stderr
 	releaseStartup, err := opencodeDatabaseStartupGates.acquire(ctx, req.DatabasePath)
 	if err != nil {
 		return sessionDiagnosticExportResult{}, fmt.Errorf("wait for opencode database startup: %w", err)
 	}
 	defer releaseStartup()
-	err = cmd.Run()
-	if _, seekErr := stdoutFile.Seek(0, 0); seekErr != nil {
-		return sessionDiagnosticExportResult{}, fmt.Errorf("rewind temp export file: %w", seekErr)
-	}
-	stdout, readErr := io.ReadAll(stdoutFile)
-	if readErr != nil {
-		return sessionDiagnosticExportResult{}, fmt.Errorf("read temp export file: %w", readErr)
-	}
+	stdout, stderr, _, err := runGuardedCommand(ctx, e.runner, processguardian.Command{Path: e.binaryPath, Args: args, Dir: strings.TrimSpace(req.WorkDir), Env: opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))})
 	result := sessionDiagnosticExportResult{
 		Stdout: append([]byte(nil), stdout...),
-		Stderr: strings.TrimSpace(stderr.String()),
+		Stderr: strings.TrimSpace(string(stderr)),
 	}
 	if err != nil {
 		diagnostic := firstNonEmpty(result.Stderr, strings.TrimSpace(string(result.Stdout)))

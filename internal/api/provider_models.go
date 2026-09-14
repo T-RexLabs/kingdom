@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"kingdom/internal/processguardian"
 
 	gen "kingdom/internal/apigen"
 
@@ -351,8 +355,37 @@ func executeOpenCodeVerboseModels(ctx context.Context, binaryPath string, refres
 	if refresh {
 		args = append(args, "--refresh")
 	}
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	return cmd.Output()
+	runner, err := processguardian.NewRunner(processguardian.Config{})
+	if err != nil {
+		return nil, err
+	}
+	handle, err := runner.Start(ctx, processguardian.Command{Path: binaryPath, Args: args, Env: os.Environ()}, nil)
+	if err != nil {
+		return nil, err
+	}
+	stdoutDone := make(chan []byte, 1)
+	stderrDone := make(chan []byte, 1)
+	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
+	go func() { defer stdoutStream.Close(); raw, _ := io.ReadAll(stdoutStream); stdoutDone <- raw }()
+	go func() { defer stderrStream.Close(); raw, _ := io.ReadAll(stderrStream); stderrDone <- raw }()
+	cancelDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = handle.Cancel(context.Background())
+		case <-cancelDone:
+		}
+	}()
+	result, waitErr := handle.Wait(context.Background())
+	close(cancelDone)
+	stdout, stderr := <-stdoutDone, <-stderrDone
+	if waitErr != nil {
+		return stdout, waitErr
+	}
+	if !result.Quiescent || result.ExitCode != 0 || result.ExitSignal != 0 || result.FailureCode != "" {
+		return stdout, fmt.Errorf("guarded model catalog command failed: %s", strings.TrimSpace(string(stderr)))
+	}
+	return stdout, nil
 }
 
 func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {

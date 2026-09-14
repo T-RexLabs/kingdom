@@ -338,11 +338,6 @@ func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID
 		}
 	}
 
-	var missing *opencode.AttemptNotFoundError
-	if errors.As(err, &missing) {
-		diagnostics["result"] = "attempt_not_found"
-		return diagnostics, nil
-	}
 	diagnostics["result"] = "error"
 	diagnostics["error"] = err.Error()
 	return diagnostics, fmt.Errorf("cancel timed-out attempt %s: %w", attemptID, err)

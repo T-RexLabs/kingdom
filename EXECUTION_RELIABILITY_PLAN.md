@@ -37,7 +37,7 @@ The final implementation must enforce all of the following:
 6. A builder succeeds only from one accepted invocation-scoped completion receipt and a valid terminal settlement.
 7. Receipt directory ownership and SQLite lineage determine routing; receipt payload identifiers are claims, never routing authority.
 8. Receipt publication and ingestion are bounded, no-follow, crash-safe, and idempotent.
-9. An OpenCode process cannot outlive Kingdom without an independent guardian terminating it.
+9. A managed OpenCode process group cannot outlive Kingdom without an independent guardian terminating it.
 10. A stale replacement cannot dispatch until its predecessor is proven quiescent and the workspace is restored to trusted state.
 11. Completion and stale revocation compete through one durable authority boundary; exactly one wins.
 12. Automatic retries are at-least-once execution with exactly-once canonical settlement.
@@ -77,7 +77,7 @@ The canonical node class resolves completion mode, and the resolved mode is pers
 
 ### Process Quiescence
 
-Kingdom uses guardian-owned provider process trees and bounded cancellation.
+Kingdom uses guardian-owned provider process groups and bounded cancellation.
 
 If process quiescence cannot be proven, Kingdom visibly pauses the retry. It does not silently wait forever and does not dispatch a replacement into a potentially writable workspace.
 
@@ -492,7 +492,7 @@ Cover:
 
 ### Goal
 
-Ensure an OpenCode process cannot continue unowned after Kingdom exits, crashes, or cancels an invocation.
+Ensure a managed OpenCode process group cannot continue unowned after Kingdom exits, crashes, or cancels an invocation.
 
 ### Process Runner
 
@@ -514,9 +514,9 @@ Kingdom creates guard identity and private control pipes
 
 OpenCode cannot pass the launch gate before Kingdom knows and durably records its process identity.
 
-If Kingdom dies, control-pipe EOF instructs the guardian to terminate the complete child tree.
+If Kingdom dies, control-pipe EOF instructs the guardian to terminate the complete managed child process group.
 
-If the guardian dies while Kingdom remains alive, Kingdom uses the already acknowledged process identity to terminate the child tree. A guardian failure before acknowledgement closes the launch gate and prevents OpenCode execution.
+If the guardian dies while Kingdom remains alive, Kingdom uses the already acknowledged process-group identity to terminate the managed group. A guardian failure before acknowledgement closes the launch gate and prevents OpenCode execution.
 
 ### Platform Behavior
 
@@ -563,7 +563,7 @@ Replace direct `exec.Cmd` ownership and PID-only liveness checks with a guardian
 
 Cancellation succeeds only when:
 
-- The complete process tree is absent.
+- The managed process group or Job Object is absent.
 - Guardian quiescence evidence is valid.
 - stdout and stderr are drained.
 - Adapter post-processing has exited.

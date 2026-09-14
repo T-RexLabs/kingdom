@@ -8,6 +8,8 @@ package opencode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"sync"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/processguardian"
 )
 
 const (
@@ -33,6 +36,8 @@ type Adapter interface {
 }
 
 const CompletionProtocolVersion = "v1"
+
+const MaxPromptBytes = 24 * 1024
 
 type ExecuteRequest struct {
 	CompletionMode            CompletionMode `json:"completion_mode"`
@@ -69,10 +74,38 @@ type ExecuteRequest struct {
 	// but before stream decoding begins.
 	OnProcessStarted func() `json:"-"`
 
+	// OnProcessGuardOwnership durably records guardian ownership before the
+	// provider launch gate is released. The raw quiescence capability is limited
+	// to this orchestration callback and is never included in diagnostics.
+	OnProcessGuardOwnership func(context.Context, ProcessGuardOwnership) error `json:"-"`
+
+	// OnProcessGuardQuiescence records the guardian's terminal proof after the
+	// command tree is quiescent and its streams have been drained.
+	OnProcessGuardQuiescence func(context.Context, ProcessGuardQuiescence) error `json:"-"`
+
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
 	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
+}
 
+// GuardianRunner starts provider command trees behind a durable launch gate.
+// It is intentionally narrow so adapter tests can supply deterministic handles.
+type GuardianRunner interface {
+	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
+}
+
+type ProcessGuardOwnership struct {
+	CommandOrdinal int
+	StartedAt      string
+	AcknowledgedAt string
+	Ownership      processguardian.Ownership
+}
+
+type ProcessGuardQuiescence struct {
+	CommandOrdinal int
+	ExitedAt       string
+	QuiescentAt    string
+	Result         processguardian.Result
 }
 
 // CompletionMode defines the single, server-owned authority a provider
@@ -120,6 +153,8 @@ type TokenUsage = providerexecution.TokenUsage
 type InvocationStreamObservation = providerexecution.InvocationStreamObservation
 
 type InvocationToolObservation = providerexecution.InvocationToolObservation
+
+type ProcessGuardObservation = providerexecution.ProcessGuardObservation
 
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
@@ -186,6 +221,9 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	if strings.TrimSpace(req.WorkspacePath) == "" {
 		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
 	}
+	if err := invokeSyntheticGuardCallbacks(req); err != nil {
+		return ExecuteResponse{}, err
+	}
 	if req.OnProcessStarted != nil {
 		req.OnProcessStarted()
 	}
@@ -238,8 +276,44 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 			ProcessExitCode:        &zero,
 			StdoutDrained:          true,
 			StderrDrained:          true,
+			ProcessQuiescent:       true,
+			ProcessGuards:          []ProcessGuardObservation{syntheticProcessGuardObservation(req)},
 		},
 	}, nil
+}
+
+// invokeSyntheticGuardCallbacks keeps the in-memory test double compatible
+// with the durable guard contract without pretending that it launches a host
+// provider process. Production OpenCode commands always use SessionAdapter.
+func invokeSyntheticGuardCallbacks(req ExecuteRequest) error {
+	guardID := "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID))
+	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "memory-guardian", ChildPID: 1, ChildIdentityToken: "memory-child", TreeID: 1, TreeIdentityToken: "memory-child", Platform: "unix_process_group", QuiescenceCapability: "memory-guardian-capability"}
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(context.Background(), ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}); err != nil {
+			return err
+		}
+	}
+	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
+	evidence, err := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: result})
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(evidence)
+	result.EvidenceJSON = string(evidence)
+	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syntheticProcessGuardObservation(req ExecuteRequest) ProcessGuardObservation {
+	return ProcessGuardObservation{CommandOrdinal: 1, GuardID: "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)), GuardianPID: 1, ChildPID: 1, TreeID: 1, Platform: "unix_process_group", Quiescent: true}
 }
 
 func (a *MemoryAdapter) Cancel(_ context.Context, req CancelRequest) error {
@@ -372,6 +446,9 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	}
 	if req.Prompt == "" {
 		return fmt.Errorf("prompt is required")
+	}
+	if len(req.Prompt) > MaxPromptBytes {
+		return fmt.Errorf("provider prompt exceeds %d-byte limit", MaxPromptBytes)
 	}
 	if req.OccurredAt == "" {
 		return fmt.Errorf("occurred_at is required")
