@@ -10,9 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/retryengine"
 	executionstore "kingdom/internal/execution/store"
 )
+
+type alwaysRetryPlanner struct{}
+
+func (alwaysRetryPlanner) Plan(errorcatalog.Code, int) (retryengine.PlanResult, error) {
+	return retryengine.PlanResult{ShouldRetry: true, MaxRetries: 1}, nil
+}
 
 func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	t.Parallel()
@@ -58,7 +65,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 
 	retryNodeRunID := "nr_1_retry_2"
 	if got := queryNodeStatus(t, db, retryNodeRunID); got != "ready" {
-		t.Fatalf("expected reassigned retry node to be ready for orchestrator dispatch, got %q", got)
+		t.Fatalf("expected provider-free reassigned retry node to be ready, got %q", got)
 	}
 	if startedAt := queryNodeStartedAt(t, db, retryNodeRunID); startedAt != "" {
 		t.Fatalf("expected retry node started_at to remain empty before dispatch, got %q", startedAt)
@@ -84,7 +91,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	}
 
 	if got := queryTransitionCount(t, db, "run_1"); got != 2 {
-		t.Fatalf("expected two recovery transitions, got %d", got)
+		t.Fatalf("expected blocked and released recovery transitions, got %d", got)
 	}
 	if got := queryEventTypeCount(t, db, "run_1", "attempt.restarted"); got != 0 {
 		t.Fatalf("expected reconciler to avoid direct attempt.restarted events, got %d", got)
@@ -187,6 +194,26 @@ func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T
 	}
 }
 
+func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	now := time.Date(2026, 3, 1, 12, 13, 0, 0, time.UTC)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-03-01T12:20:00Z', 1, 'session_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+
+	stale, err := findStaleAttemptsWithQuerier(context.Background(), db, now, time.Minute)
+	if err != nil {
+		t.Fatalf("find stale attempts: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("expected a live provider execution lease to prevent stale fencing, got %#v", stale)
+	}
+}
+
 func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing.T) {
 	t.Parallel()
 
@@ -264,24 +291,11 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *t
 	if got := queryNodeStatus(t, db, "nr_starting_stale_1"); got != "blocked" {
 		t.Fatalf("expected stale starting attempt to become blocked, got %q", got)
 	}
-	if got := queryNodeStatus(t, db, "nr_starting_stale_1_retry_2"); got != "ready" {
-		t.Fatalf("expected retry attempt to be ready after stale starting recovery, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_starting_stale_1_retry_2"); got != "pending" {
+		t.Fatalf("expected retry attempt to remain pending after stale starting recovery, got %q", got)
 	}
 	if got := queryNodeAssignedAgent(t, db, "nr_starting_stale_1_retry_2"); got != "agent_noble_backup" {
 		t.Fatalf("expected stale starting retry to move to backup agent, got %q", got)
-	}
-	payload := queryLatestEventPayloadForType(t, db, "run_starting_stale", "attempt.retry_queued")
-	if got, _ := payload["node_id"].(string); got != "advisor_consultation_noble" {
-		t.Fatalf("expected retry payload node_id, got %#v", payload)
-	}
-	if got, _ := payload["attempt_id"].(string); got != "run_starting_stale:advisor_consultation_noble:2" {
-		t.Fatalf("expected retry payload attempt_id, got %#v", payload)
-	}
-	if got, _ := payload["required_role"].(string); got != "noble-delegate" {
-		t.Fatalf("expected retry payload required_role, got %#v", payload)
-	}
-	if got, _ := payload["execution_mode"].(string); got != "provider_backed" {
-		t.Fatalf("expected retry payload execution_mode, got %#v", payload)
 	}
 }
 
@@ -318,8 +332,8 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing
 	if got := queryNodeStatus(t, db, "nr_starting_expired_1"); got != "blocked" {
 		t.Fatalf("expected expired starting attempt to become blocked, got %q", got)
 	}
-	if got := queryNodeStatus(t, db, "nr_starting_expired_1_retry_2"); got != "ready" {
-		t.Fatalf("expected retry attempt to be ready after lease-expiry recovery, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_starting_expired_1_retry_2"); got != "pending" {
+		t.Fatalf("expected retry attempt to remain pending after lease-expiry recovery, got %q", got)
 	}
 }
 
@@ -332,6 +346,7 @@ func TestReconcilerFailsAndEscalatesWhenRetryBudgetExhausted(t *testing.T) {
 
 	now := "2026-03-01T12:13:00Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2', 'entry_nr2', '2026-03-01T12:08:00Z')`)
@@ -360,7 +375,7 @@ func TestReconcilerFailsAndEscalatesWhenRetryBudgetExhausted(t *testing.T) {
 	}
 }
 
-func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
+func TestReconcilerFencesStaleProviderInvocationBeforeSchedulingRetry(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -372,6 +387,7 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	store := executionstore.New(db)
 
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_stale_settlement', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_stale_settlement', 'caus_nr2_stale_settlement', 'prev_nr2_stale_settlement', 'entry_nr2_stale_settlement', '2026-03-01T12:08:00Z')`, attemptID))
@@ -410,8 +426,7 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}
 
-	engine := loadRetryEngine(t)
-	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
 	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
 	if err != nil {
 		t.Fatalf("reconcile stale provider-backed attempt: %v", err)
@@ -419,11 +434,11 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	if result.StaleAttemptsFound != 1 {
 		t.Fatalf("expected one stale provider-backed attempt, got %d", result.StaleAttemptsFound)
 	}
-	if result.AttemptsFailed != 0 || result.AttemptsReassigned != 0 {
-		t.Fatalf("expected provider-backed attempt to bypass generic recovery, got %#v", result)
+	if result.AttemptsFailed != 0 || result.AttemptsReassigned != 1 {
+		t.Fatalf("expected provider-backed attempt to schedule a fenced retry, got %#v", result)
 	}
-	if got := queryNodeStatus(t, db, "nr_2"); got != "running" {
-		t.Fatalf("expected stale provider-backed node to remain running for fencing, got %q", got)
+	if got := queryNodeStatus(t, db, "nr_2"); got != "blocked" {
+		t.Fatalf("expected stale provider-backed node to become blocked, got %q", got)
 	}
 
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
@@ -433,8 +448,8 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	if !found {
 		t.Fatal("expected durable attempt execution to exist")
 	}
-	if attempt.State != "running" || attempt.FailureCode != "" {
-		t.Fatalf("expected provider-backed attempt to remain nonterminal, got %#v", attempt)
+	if attempt.State != "committed_cancelled" || attempt.FailureCode != "agent_unresponsive" {
+		t.Fatalf("expected stale provider-backed attempt to be durably cancelled, got %#v", attempt)
 	}
 	if strings.TrimSpace(attempt.CanonicalSettlementID) != "" {
 		t.Fatalf("expected stale failure to remain without a canonical settlement, got %#v", attempt)
@@ -447,8 +462,8 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	if !found {
 		t.Fatal("expected provider invocation to exist")
 	}
-	if invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
-		t.Fatalf("expected stale attempt recovery not to settle the provider invocation, got %#v", invocation)
+	if invocation.InvocationState != executionstore.ProviderInvocationStateSuperseded {
+		t.Fatalf("expected stale attempt recovery to revoke provider authority, got %#v", invocation)
 	}
 
 	settlement, found, err := store.GetProviderCompletionSettlementByInvocation(context.Background(), "invocation_stale_failure")
@@ -458,9 +473,23 @@ func TestReconcilerLeavesStaleProviderInvocationForFencing(t *testing.T) {
 	if found {
 		t.Fatalf("expected stale attempt failure not to create a provider settlement, got %#v", settlement)
 	}
+	var retryStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 3`).Scan(&retryStatus); err != nil {
+		t.Fatalf("load fenced retry node: %v", err)
+	}
+	if retryStatus != "pending" {
+		t.Fatalf("expected replacement to wait for cancellation handoff, got %q", retryStatus)
+	}
+	var cancelStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE attempt_id = ?`, attemptID).Scan(&cancelStatus); err != nil {
+		t.Fatalf("load stale cancellation handoff: %v", err)
+	}
+	if cancelStatus != "pending" {
+		t.Fatalf("expected stale cancellation handoff to remain pending, got %q", cancelStatus)
+	}
 }
 
-func TestReconcilerDoesNotReassignStaleProviderInvocationWithoutSettlement(t *testing.T) {
+func TestReconcilerLeavesProviderReplacementPendingUntilCancellationHandoff(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -500,23 +529,26 @@ func TestReconcilerDoesNotReassignStaleProviderInvocationWithoutSettlement(t *te
 		t.Fatalf("open provider invocation: %v", err)
 	}
 
-	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
 	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:05:30Z"})
 	if err != nil {
 		t.Fatalf("reconcile stale provider attempt with replacement: %v", err)
 	}
-	if result.StaleAttemptsFound != 1 || result.AttemptsReassigned != 0 || result.AttemptsFailed != 0 {
-		t.Fatalf("expected stale provider attempt to remain fenced from generic recovery, got %#v", result)
+	if result.StaleAttemptsFound != 1 || result.AttemptsReassigned != 1 || result.AttemptsFailed != 0 {
+		t.Fatalf("expected stale provider attempt to schedule a fenced retry, got %#v", result)
 	}
-	if got := queryNodeStatus(t, db, "nr_1"); got != "running" {
-		t.Fatalf("stale provider attempt changed node state to %q", got)
+	if got := queryNodeStatus(t, db, "nr_1"); got != "blocked" {
+		t.Fatalf("expected stale provider attempt to remain visibly blocked, got %q", got)
 	}
 	var retries int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 1`).Scan(&retries); err != nil {
 		t.Fatalf("count provider retry attempts: %v", err)
 	}
-	if retries != 0 {
-		t.Fatalf("stale provider attempt created %d retries", retries)
+	if retries != 1 {
+		t.Fatalf("expected one pending fenced provider retry, got %d", retries)
+	}
+	if got := queryNodeStatus(t, db, "nr_1_retry_2"); got != "pending" {
+		t.Fatalf("expected provider retry to wait for cancellation handoff, got %q", got)
 	}
 }
 

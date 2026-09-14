@@ -810,6 +810,11 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			}
 		}
 	}
+	unlockWorkspace := func() {}
+	if strings.TrimSpace(result.workspacePath) != "" {
+		unlockWorkspace = o.lockRunWorkspace(result.run.RunID)
+		defer unlockWorkspace()
+	}
 	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
 		snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, result, now)
 		if snapshotErr != nil {

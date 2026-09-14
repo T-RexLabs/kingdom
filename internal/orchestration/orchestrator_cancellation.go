@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -62,6 +63,22 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		}
 		var missing *opencode.AttemptNotFoundError
 		if quiescent && (err == nil || errors.As(err, &missing)) {
+			if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
+				if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, restoreErr, publishedAt); recordErr != nil {
+					return processed, recordErr
+				}
+				continue
+			}
+			if rec.ReasonCode == "agent_unresponsive" {
+				released, releaseErr := o.transitionService().ReleaseFencedStaleRetryAfterCancellation(ctx, rec.AttemptID, publishedAt)
+				if releaseErr != nil {
+					return processed, releaseErr
+				}
+				if released {
+					processed++
+					continue
+				}
+			}
 			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
 				return processed, err
 			}
@@ -72,6 +89,9 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 			return processed, ctx.Err()
 		}
 
+		if err == nil && !quiescent {
+			err = fmt.Errorf("managed provider process quiescence has not been proven")
+		}
 		slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", err)
 		if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, err, publishedAt); recordErr != nil {
 			return processed, recordErr
@@ -79,6 +99,29 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 	}
 
 	return processed, nil
+}
+
+func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context.Context, rec executionstore.AttemptCancelRecord, restoredAt string) error {
+	if o == nil || o.fsStore == nil || strings.TrimSpace(rec.RunID) == "" {
+		return nil
+	}
+	unlock := o.lockRunWorkspace(rec.RunID)
+	defer unlock()
+
+	target, err := o.fsStore.GetExecutionTarget(ctx, rec.RunID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load execution target for cancellation handoff: %w", err)
+	}
+	if strings.TrimSpace(target.TrustedSnapshotID) == "" || strings.TrimSpace(target.ExecutionRoot) == "" {
+		return nil
+	}
+	if err := o.restoreExecutionTarget(ctx, rec.RunID, target.ExecutionRoot, target.TrustedSnapshotID, restoredAt); err != nil {
+		return fmt.Errorf("restore trusted workspace after cancellation: %w", err)
+	}
+	return nil
 }
 
 func (o *orchestrationLoop) publishAttemptCancelAfterProjection(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) error {

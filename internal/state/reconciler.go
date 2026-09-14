@@ -222,6 +222,14 @@ func (r *Reconciler) projectDurableTerminalNodes(ctx context.Context, nowTime ti
 	SELECT run_id, node_run_id, attempt_id
 	FROM latest_attempts
 	WHERE rn = 1
+	  -- A fenced stale attempt is durably cancelled but remains the visible
+	  -- authority until its cancellation handoff releases the replacement.
+	  AND NOT (state = 'committed_cancelled' AND node_status = 'blocked' AND EXISTS (
+	    SELECT 1
+	    FROM node_runs replacement
+	    WHERE replacement.handoff_source_attempt_id = latest_attempts.attempt_id
+	      AND replacement.node_status IN ('pending', 'ready')
+	  ))
 	  AND ((state = 'committed_success' AND node_status <> 'succeeded')
 	    OR (state = 'committed_failure' AND node_status <> 'failed')
 	    OR (state = 'committed_cancelled' AND node_status <> 'cancelled'))
@@ -362,7 +370,7 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 	}
 
 	if plan.ShouldRetry && (hasReplacement || allowSelfRetry) {
-		if _, err := r.transition.ReassignStaleAttemptForRetry(ctx, ReassignStaleAttemptRequest{
+		if _, err := r.transition.ScheduleFencedStaleRetry(ctx, ScheduleFencedStaleRetryRequest{
 			Attempt:            attempt,
 			ReplacementAgentID: replacementAgentID,
 			HasReplacement:     hasReplacement,
@@ -461,23 +469,15 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 		return false, nil
 	}
 	var state sql.NullString
-	var executionMode sql.NullString
-	var activeProviderInvocationID sql.NullString
-	var canonicalSettlementID sql.NullString
-	var startedAt sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		`SELECT state,
-		        execution_mode,
-		        COALESCE(active_provider_invocation_id, ''),
-		        COALESCE(canonical_settlement_id, ''),
-		        started_at
+		`SELECT state
 		 FROM attempt_executions
 		 WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
 		 LIMIT 1`,
 		trimmedAttemptID,
 		strings.TrimSpace(attempt.RunID),
 		strings.TrimSpace(attempt.NodeRunID),
-	).Scan(&state, &executionMode, &activeProviderInvocationID, &canonicalSettlementID, &startedAt)
+	).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -488,17 +488,26 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 	case "terminal_observed", "committed_success", "committed_failure", "committed_cancelled":
 		return true, nil
 	}
-	if executionstore.NormalizeExecutionMode(executionMode.String) == executionstore.ExecutionModeProviderBacked &&
-		strings.TrimSpace(activeProviderInvocationID.String) != "" &&
-		strings.TrimSpace(canonicalSettlementID.String) == "" {
-		var guardCount int
-		if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM provider_process_guards WHERE provider_invocation_id = ?`, strings.TrimSpace(activeProviderInvocationID.String)).Scan(&guardCount); err != nil {
-			return false, err
-		}
-		if guardCount > 0 {
-			return true, nil
-		}
-		return strings.TrimSpace(state.String) != "starting" || strings.TrimSpace(startedAt.String) != "", nil
+	var invocationState string
+	err = r.db.QueryRowContext(ctx, `SELECT invocation_state
+		FROM provider_invocations
+		WHERE provider_invocation_id = (
+			SELECT active_provider_invocation_id
+			FROM attempt_executions
+			WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
+		)
+		LIMIT 1`, trimmedAttemptID, strings.TrimSpace(attempt.RunID), strings.TrimSpace(attempt.NodeRunID)).Scan(&invocationState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load provider invocation state for stale recovery: %w", err)
+	}
+	switch strings.TrimSpace(invocationState) {
+	case string(executionstore.ProviderInvocationStateReceiptPersisted), string(executionstore.ProviderInvocationStateInvalidHandshake):
+		// Receipt evidence cannot authorize stale recovery without the matching
+		// terminal process observation, and an invalid handshake is already fenced.
+		return true, nil
 	}
 	return false, nil
 }
@@ -799,6 +808,11 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		       AND n.started_at IS NOT NULL
 		       AND COALESCE(ae.state, '') NOT IN ('starting', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')
 		       AND n.started_at <= ?
+		       AND (
+		         COALESCE(ae.execution_mode, 'runtime_owned') <> 'provider_backed' OR
+		         COALESCE(ae.lease_expires_at, '') = '' OR
+		         ae.lease_expires_at <= ?
+		       )
 		     )
 		   )
 		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`, staleActiveSessionLeaseConditionSQL("sl"))
@@ -809,6 +823,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		cutoff,
 		nowTime.UTC().Format(time.RFC3339),
 		cutoff,
+		nowTime.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query stale attempts: %w", err)

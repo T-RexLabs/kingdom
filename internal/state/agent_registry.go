@@ -114,18 +114,19 @@ type ReassignAgentRequest struct {
 }
 
 type CreateNodeAttemptRequest struct {
-	NodeRunID    string
-	RunID        string
-	NodeID       string
-	Attempt      int
-	Wave         int
-	NodeStatus   string
-	RequiredRole string
-	AgentID      string
-	RowVersion   int
-	CreatedAt    string
-	StartedAt    sql.NullString
-	FinishedAt   sql.NullString
+	NodeRunID              string
+	RunID                  string
+	NodeID                 string
+	Attempt                int
+	Wave                   int
+	NodeStatus             string
+	RequiredRole           string
+	AgentID                string
+	RowVersion             int
+	HandoffSourceAttemptID string
+	CreatedAt              string
+	StartedAt              sql.NullString
+	FinishedAt             sql.NullString
 }
 
 type RunParticipant struct {

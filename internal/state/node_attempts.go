@@ -18,8 +18,8 @@ func insertNodeAttemptTx(ctx context.Context, tx *sql.Tx, req CreateNodeAttemptR
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, handoff_source_attempt_id, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.NodeRunID,
 		req.RunID,
 		req.NodeID,
@@ -29,6 +29,7 @@ func insertNodeAttemptTx(ctx context.Context, tx *sql.Tx, req CreateNodeAttemptR
 		req.RequiredRole,
 		req.AgentID,
 		req.RowVersion,
+		req.HandoffSourceAttemptID,
 		req.StartedAt,
 		req.FinishedAt,
 	); err != nil {

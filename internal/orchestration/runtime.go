@@ -577,17 +577,19 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
 		return fmt.Errorf("startup lost provider terminal handoff recovery: %w", err)
 	}
+	if _, err := r.reconciler.RunStartup(ctx); err != nil {
+		return fmt.Errorf("startup reconcile: %w", err)
+	}
+	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
+		slog.Warn("startup stale cancellation replay will retry during runtime", "error", err)
+	}
+	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("startup run repair: %w", err)
+	}
 	if r.preDispatchRecovery != nil {
 		if err := r.preDispatchRecovery(ctx); err != nil {
 			return fmt.Errorf("startup pre-dispatch recovery: %w", err)
 		}
-	}
-
-	if _, err := r.reconciler.RunStartup(ctx); err != nil {
-		return fmt.Errorf("startup reconcile: %w", err)
-	}
-	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("startup run repair: %w", err)
 	}
 
 	r.mu.Lock()

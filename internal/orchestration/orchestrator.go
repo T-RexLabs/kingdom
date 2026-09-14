@@ -79,6 +79,7 @@ type orchestrationLoop struct {
 	receiptIngestionCursor         string
 	terminalHandoffMu              sync.Mutex
 	terminalHandoffCursor          string
+	workspaceLocks                 sync.Map
 	inflightExec                   map[string]struct{}
 	inflightSettlements            map[string]string
 	executionResults               map[string]chan asyncExecutionResult
@@ -110,6 +111,16 @@ func (o *orchestrationLoop) canonicalExecutionStore() *executionstore.Store {
 		return o.executionStore
 	}
 	return executionstore.New(o.db)
+}
+
+func (o *orchestrationLoop) lockRunWorkspace(runID string) func() {
+	if o == nil || strings.TrimSpace(runID) == "" {
+		return func() {}
+	}
+	value, _ := o.workspaceLocks.LoadOrStore(runID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 type runSnapshot struct {

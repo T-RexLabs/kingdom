@@ -83,7 +83,7 @@ type PlanDecisionRecordResult struct {
 	QueuedAttempts []QueuedNodeAttempt
 }
 
-type ReassignStaleAttemptRequest struct {
+type ScheduleFencedStaleRetryRequest struct {
 	Attempt            staleAttempt
 	ReplacementAgentID string
 	HasReplacement     bool
@@ -1484,10 +1484,10 @@ func (s *TransitionService) TerminalizeRunAndCancelLiveNodes(ctx context.Context
 	return nil
 }
 
-func (s *TransitionService) ReassignStaleAttemptForRetry(ctx context.Context, req ReassignStaleAttemptRequest) (QueuedNodeAttempt, error) {
+func (s *TransitionService) ScheduleFencedStaleRetry(ctx context.Context, req ScheduleFencedStaleRetryRequest) (QueuedNodeAttempt, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		queued, err := s.reassignStaleAttemptForRetryOnce(ctx, req)
+		queued, err := s.scheduleFencedStaleRetryOnce(ctx, req)
 		if err == nil {
 			return queued, nil
 		}
@@ -2680,7 +2680,7 @@ func closeAttemptSessionLeaseTx(ctx context.Context, tx *sql.Tx, sessionID, upda
 	return nil
 }
 
-func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context, req ReassignStaleAttemptRequest) (QueuedNodeAttempt, error) {
+func (s *TransitionService) scheduleFencedStaleRetryOnce(ctx context.Context, req ScheduleFencedStaleRetryRequest) (QueuedNodeAttempt, error) {
 	attempt := req.Attempt
 	occurredAt := strings.TrimSpace(req.OccurredAt)
 	if occurredAt == "" {
@@ -2696,8 +2696,12 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 			_ = tx.Rollback()
 		}
 	}()
-	if err := ensureGenericRecoveryMayMutateAttemptTx(ctx, tx, req.CurrentAttemptID, attempt.RunID, attempt.NodeRunID); err != nil {
+	current, err := loadLiveNodeAttemptForStaleRetryTx(ctx, tx, req.CurrentAttemptID, attempt)
+	if err != nil {
 		return QueuedNodeAttempt{}, err
+	}
+	if isDurablyTerminalAttemptExecutionState(current.ExecutionState) {
+		return QueuedNodeAttempt{}, fmt.Errorf("stale retry lost terminal authority for attempt %q", current.AttemptID)
 	}
 
 	if req.HasReplacement {
@@ -2742,6 +2746,15 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	}); err != nil {
 		return QueuedNodeAttempt{}, err
 	}
+	if err := fenceStaleAttemptExecutionTx(ctx, tx, current, occurredAt); err != nil {
+		return QueuedNodeAttempt{}, err
+	}
+	if err := closeAttemptSessionLeaseTx(ctx, tx, current.SessionID, occurredAt); err != nil {
+		return QueuedNodeAttempt{}, err
+	}
+	if err := queueAttemptCancelOutboxForReasonTx(ctx, tx, current, "agent_unresponsive", staleAttemptFailureReasonText, occurredAt, nil); err != nil {
+		return QueuedNodeAttempt{}, err
+	}
 
 	nextAttempt, err := nextAttemptNumberTx(ctx, tx, attempt.RunID, attempt.NodeID)
 	if err != nil {
@@ -2754,16 +2767,17 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	}
 	retryNodeRunID := fmt.Sprintf("%s_retry_%d", attempt.NodeRunID, nextAttempt)
 	if err := insertNodeAttemptTx(ctx, tx, CreateNodeAttemptRequest{
-		NodeRunID:    retryNodeRunID,
-		RunID:        attempt.RunID,
-		NodeID:       attempt.NodeID,
-		Attempt:      nextAttempt,
-		Wave:         attempt.Wave,
-		NodeStatus:   "pending",
-		RequiredRole: attempt.RequiredRole,
-		AgentID:      req.ReplacementAgentID,
-		RowVersion:   1,
-		CreatedAt:    occurredAt,
+		NodeRunID:              retryNodeRunID,
+		RunID:                  attempt.RunID,
+		NodeID:                 attempt.NodeID,
+		Attempt:                nextAttempt,
+		Wave:                   attempt.Wave,
+		NodeStatus:             "pending",
+		RequiredRole:           attempt.RequiredRole,
+		AgentID:                req.ReplacementAgentID,
+		HandoffSourceAttemptID: current.AttemptID,
+		RowVersion:             1,
+		CreatedAt:              occurredAt,
 	}); err != nil {
 		return QueuedNodeAttempt{}, err
 	}
@@ -2775,34 +2789,30 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 		RequiredRole: attempt.RequiredRole,
 		AgentID:      req.ReplacementAgentID,
 	}
-
-	readyPayload, err := marshalQueuedNodeAttemptEventPayload(attempt.RunID, queuedAttempt, "ready", nil)
+	retryPayload, err := marshalQueuedNodeAttemptEventPayload(attempt.RunID, queuedAttempt, "pending", nil)
 	if err != nil {
-		return QueuedNodeAttempt{}, fmt.Errorf("marshal stale retry queued payload: %w", err)
+		return QueuedNodeAttempt{}, fmt.Errorf("marshal fenced stale retry payload: %w", err)
 	}
-	if err := s.applyTx(ctx, tx, TransitionRequest{
-		TransitionID:    fmt.Sprintf("tr_reconcile_%s_%s_%d_ready", attempt.RunID, attempt.NodeID, queuedAttempt.Attempt),
-		EventID:         fmt.Sprintf("evt_reconcile_%s_%s_%d_ready", attempt.RunID, attempt.NodeID, queuedAttempt.Attempt),
-		RunID:           attempt.RunID,
-		NodeRunID:       sql.NullString{String: queuedAttempt.NodeRunID, Valid: true},
-		Entity:          EntityTypeNode,
-		FromState:       "pending",
-		ToState:         "ready",
-		ActorID:         "reconciler",
-		RoleID:          attempt.RequiredRole,
-		AuthoritySource: "system.reconciler",
-		ReasonCode:      "agent_unresponsive",
-		ReasonText:      "stale attempt retry promoted to ready",
-		CorrelationID:   fmt.Sprintf("corr_reconcile_%s", attempt.RunID),
-		CausationID:     fmt.Sprintf("caus_reconcile_%s_%s", attempt.RunID, queuedAttempt.NodeRunID),
-		OccurredAt:      occurredAt,
-		AttemptID:       composeAttemptID(attempt.RunID, attempt.NodeID, queuedAttempt.Attempt),
-		SchemaVersion:   "v1",
-		EventType:       "attempt.retry_queued",
-		EventSeq:        1,
-		PayloadJSON:     readyPayload,
-	}); err != nil {
+	retrySeq, err := nextAttemptExecutionSeqTx(ctx, tx, current.AttemptID)
+	if err != nil {
 		return QueuedNodeAttempt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
+		VALUES (?, ?, ?, ?, ?, 'attempt.retry_scheduled', 'agent_unresponsive', ?, ?)`,
+		fmt.Sprintf("attempt_event:%s:%d", current.AttemptID, retrySeq),
+		current.AttemptID,
+		current.RunID,
+		current.NodeRunID,
+		retrySeq,
+		retryPayload,
+		occurredAt,
+	); err != nil {
+		return QueuedNodeAttempt{}, fmt.Errorf("append fenced stale retry event: %w", err)
+	}
+	if current.ExecutionMode != executionstore.ExecutionModeProviderBacked || !attemptCancelDispatchRequired(current) {
+		if err := s.releaseFencedStaleRetryTx(ctx, tx, current.AttemptID, occurredAt); err != nil {
+			return QueuedNodeAttempt{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2810,6 +2820,219 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	}
 	committed = true
 	return queuedAttempt, nil
+}
+
+// ReleaseFencedStaleRetryAfterCancellation is the durable handoff boundary:
+// cancellation publication and replacement readiness become visible together.
+func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context.Context, sourceAttemptID, occurredAt string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("transition service database is required")
+	}
+	sourceAttemptID = strings.TrimSpace(sourceAttemptID)
+	if sourceAttemptID == "" {
+		return false, fmt.Errorf("source attempt id is required")
+	}
+	if strings.TrimSpace(occurredAt) == "" {
+		occurredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin stale cancellation handoff transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM attempt_cancel_outbox WHERE attempt_id = ?`, sourceAttemptID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load stale cancellation handoff: %w", err)
+	}
+	if strings.TrimSpace(status) == "pending" {
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+			SET status = 'published', publish_attempts = publish_attempts + 1, last_error = '', updated_at = ?, published_at = ?
+			WHERE attempt_id = ? AND status = 'pending'`, occurredAt, occurredAt, sourceAttemptID); err != nil {
+			return false, fmt.Errorf("publish stale cancellation handoff: %w", err)
+		}
+	}
+	if err := s.releaseFencedStaleRetryTx(ctx, tx, sourceAttemptID, occurredAt); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit stale cancellation handoff transaction: %w", err)
+	}
+	committed = true
+	return true, nil
+}
+
+func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *sql.Tx, sourceAttemptID, occurredAt string) error {
+	var successor QueuedNodeAttempt
+	err := tx.QueryRowContext(ctx, `SELECT node_id, node_run_id, attempt, wave, required_role, agent_id
+		FROM node_runs
+		WHERE handoff_source_attempt_id = ? AND node_status = 'pending'
+		ORDER BY attempt ASC, node_run_id ASC
+		LIMIT 1`, strings.TrimSpace(sourceAttemptID)).Scan(
+		&successor.NodeID,
+		&successor.NodeRunID,
+		&successor.Attempt,
+		&successor.Wave,
+		&successor.RequiredRole,
+		&successor.AgentID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load fenced stale retry successor: %w", err)
+	}
+	var runID string
+	if err := tx.QueryRowContext(ctx, `SELECT run_id FROM node_runs WHERE node_run_id = ?`, successor.NodeRunID).Scan(&runID); err != nil {
+		return fmt.Errorf("load fenced stale retry run: %w", err)
+	}
+	payload, err := marshalQueuedNodeAttemptEventPayload(runID, successor, "ready", nil)
+	if err != nil {
+		return fmt.Errorf("marshal released stale retry payload: %w", err)
+	}
+	return s.applyTx(ctx, tx, TransitionRequest{
+		TransitionID:    fmt.Sprintf("tr_retry_handoff_%s_%s_%d_ready", runID, successor.NodeID, successor.Attempt),
+		EventID:         fmt.Sprintf("evt_retry_handoff_%s_%s_%d_ready", runID, successor.NodeID, successor.Attempt),
+		RunID:           runID,
+		NodeRunID:       sql.NullString{String: successor.NodeRunID, Valid: true},
+		Entity:          EntityTypeNode,
+		FromState:       "pending",
+		ToState:         "ready",
+		ActorID:         "runtime_orchestrator",
+		RoleID:          successor.RequiredRole,
+		AuthoritySource: "runtime.orchestrator",
+		ReasonCode:      "agent_unresponsive",
+		ReasonText:      "stale attempt cancellation handoff completed",
+		CorrelationID:   fmt.Sprintf("corr_retry_handoff_%s", runID),
+		CausationID:     fmt.Sprintf("caus_retry_handoff_%s_%s", runID, successor.NodeRunID),
+		OccurredAt:      occurredAt,
+		AttemptID:       composeAttemptID(runID, successor.NodeID, successor.Attempt),
+		SchemaVersion:   "v1",
+		EventType:       "attempt.retry_queued",
+		EventSeq:        1,
+		PayloadJSON:     payload,
+	})
+}
+
+func loadLiveNodeAttemptForStaleRetryTx(ctx context.Context, tx *sql.Tx, attemptID string, stale staleAttempt) (liveNodeAttempt, error) {
+	current := liveNodeAttempt{
+		AttemptID:    strings.TrimSpace(attemptID),
+		RunID:        strings.TrimSpace(stale.RunID),
+		NodeRunID:    strings.TrimSpace(stale.NodeRunID),
+		NodeID:       strings.TrimSpace(stale.NodeID),
+		Attempt:      stale.Attempt,
+		NodeStatus:   strings.TrimSpace(stale.CurrentStatus),
+		RequiredRole: strings.TrimSpace(stale.RequiredRole),
+		AgentID:      strings.TrimSpace(stale.AgentID),
+	}
+	if current.AttemptID == "" || current.RunID == "" || current.NodeRunID == "" {
+		return liveNodeAttempt{}, fmt.Errorf("stale retry attempt lineage is required")
+	}
+	if err := ensureAttemptExecutionRowForDirectTerminalTx(ctx, tx, current.AttemptID, current.RunID, current.NodeRunID, current.NodeStatus, stale.StartedAt); err != nil {
+		return liveNodeAttempt{}, err
+	}
+	var executionMode string
+	err := tx.QueryRowContext(ctx, `SELECT state, execution_mode, session_ref, COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(provider_session_id, ''), COALESCE(active_provider_invocation_id, '')
+		FROM attempt_executions
+		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?`, current.AttemptID, current.RunID, current.NodeRunID).Scan(
+		&current.ExecutionState,
+		&executionMode,
+		&current.SessionID,
+		&current.LaunchStartedAt,
+		&current.StartedAt,
+		&current.ProviderSessionID,
+		&current.ActiveProviderInvocationID,
+	)
+	if err != nil {
+		return liveNodeAttempt{}, fmt.Errorf("load stale retry attempt execution: %w", err)
+	}
+	current.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
+	return current, nil
+}
+
+func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
+	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
+		result, err := tx.ExecContext(ctx, `UPDATE provider_invocations
+			SET invocation_state = 'superseded',
+			    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN ? ELSE completion_capability_revoked_at END,
+			    failure_reason_code = 'agent_unresponsive',
+			    failure_reason_text = ?,
+			    updated_at = ?
+			WHERE provider_invocation_id = ?
+			  AND invocation_state IN ('issued', 'open', 'receipt_persisted')`,
+			occurredAt,
+			staleAttemptFailureReasonText,
+			occurredAt,
+			attempt.ActiveProviderInvocationID,
+		)
+		if err != nil {
+			return fmt.Errorf("supersede stale provider invocation: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read stale provider invocation supersession rows: %w", err)
+		}
+		if rows != 1 {
+			return fmt.Errorf("stale retry lost provider invocation authority for %q", attempt.ActiveProviderInvocationID)
+		}
+	}
+	seq, err := nextAttemptExecutionSeqTx(ctx, tx, attempt.AttemptID)
+	if err != nil {
+		return err
+	}
+	payload := fmt.Sprintf(`{"node_run_id":%q,"node_id":%q,"reason":"stale_attempt"}`, attempt.NodeRunID, attempt.NodeID)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
+		VALUES (?, ?, ?, ?, ?, 'attempt.cancelled', 'agent_unresponsive', ?, ?)`,
+		fmt.Sprintf("attempt_event:%s:%d", attempt.AttemptID, seq),
+		attempt.AttemptID,
+		attempt.RunID,
+		attempt.NodeRunID,
+		seq,
+		payload,
+		occurredAt,
+	); err != nil {
+		return fmt.Errorf("append stale attempt cancellation event: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+		SET state = 'committed_cancelled',
+		    terminal_observed_at = ?,
+		    committed_at = ?,
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    failure_code = 'agent_unresponsive',
+		    failure_text = ?,
+		    updated_at = ?
+		WHERE attempt_id = ?
+		  AND run_id = ?
+		  AND node_run_id = ?
+		  AND state IN ('queued', 'starting', 'running')`,
+		occurredAt,
+		occurredAt,
+		staleAttemptFailureReasonText,
+		occurredAt,
+		attempt.AttemptID,
+		attempt.RunID,
+		attempt.NodeRunID,
+	)
+	if err != nil {
+		return fmt.Errorf("commit stale attempt cancellation: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stale attempt cancellation rows: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("stale retry lost attempt authority for %q", attempt.AttemptID)
+	}
+	return nil
 }
 
 func claimReusableAgentTx(ctx context.Context, tx *sql.Tx, agentID, updatedAt string) error {

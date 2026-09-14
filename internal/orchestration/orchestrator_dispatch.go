@@ -274,21 +274,23 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	workspacePath := ""
 	baseSnapshotID := ""
 	if executionSpec.RequiresWorkspace {
+		unlockWorkspace := o.lockRunWorkspace(run.RunID)
 		workspaceCtx, workspaceCtxErr := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
+		if workspaceCtxErr == nil && strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
+			workspaceCtxErr = fmt.Errorf("execution root is required for execution")
+		}
+		if workspaceCtxErr == nil {
+			workspaceCtxErr = o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx)
+		}
+		if workspaceCtxErr == nil {
+			workspaceCtxErr = o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID)
+		}
+		if workspaceCtxErr == nil {
+			workspaceCtxErr = o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now)
+		}
+		unlockWorkspace()
 		if workspaceCtxErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve execution workspace context", workspaceCtxErr, now)
-		}
-		if strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", fmt.Errorf("execution root is required for execution"), now)
-		}
-		if err := o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", err, now)
-		}
-		if err := o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID); err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record attempt base snapshot", err, now)
-		}
-		if err := o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now); err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark execution target dirty", err, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", workspaceCtxErr, now)
 		}
 		workspacePath = strings.TrimSpace(workspaceCtx.ExecutionRoot)
 		baseSnapshotID = strings.TrimSpace(workspaceCtx.TrustedSnapshotID)

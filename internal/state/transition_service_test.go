@@ -918,7 +918,7 @@ func TestTransitionServiceAllowsTerminalToRunningReplayTransition(t *testing.T) 
 	}
 }
 
-func TestTransitionServiceReassignStaleAttemptProjectsReplacementParticipant(t *testing.T) {
+func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementParticipant(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -927,7 +927,7 @@ func TestTransitionServiceReassignStaleAttemptProjectsReplacementParticipant(t *
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'King Backup', 'idle', NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`)
 
 	svc := NewTransitionService(db, nil)
-	queued, err := svc.ReassignStaleAttemptForRetry(context.Background(), ReassignStaleAttemptRequest{
+	queued, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
 		Attempt: staleAttempt{
 			NodeRunID:     "nr_1",
 			RunID:         "run_1",
@@ -946,13 +946,30 @@ func TestTransitionServiceReassignStaleAttemptProjectsReplacementParticipant(t *
 		CurrentEventSeq:    2,
 	})
 	if err != nil {
-		t.Fatalf("reassign stale attempt: %v", err)
+		t.Fatalf("schedule fenced stale retry: %v", err)
 	}
 	if queued.AgentID != "agent_king_backup" {
 		t.Fatalf("expected queued replacement agent, got %#v", queued)
 	}
 	if queued.Wave != 1 {
 		t.Fatalf("expected stale retry to preserve wave=1, got %#v", queued)
+	}
+	if got := queryNodeStatus(t, db, queued.NodeRunID); got != "ready" {
+		t.Fatalf("expected provider-free replacement to become ready immediately, got %q", got)
+	}
+	var handoffSource string
+	if err := db.QueryRow(`SELECT handoff_source_attempt_id FROM node_runs WHERE node_run_id = ?`, queued.NodeRunID).Scan(&handoffSource); err != nil {
+		t.Fatalf("load retry handoff dependency: %v", err)
+	}
+	if handoffSource != "att_1" {
+		t.Fatalf("expected retry handoff source att_1, got %q", handoffSource)
+	}
+	var scheduledEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = 'att_1' AND event_type = 'attempt.retry_scheduled'`).Scan(&scheduledEvents); err != nil {
+		t.Fatalf("count fenced retry events: %v", err)
+	}
+	if scheduledEvents != 1 {
+		t.Fatalf("expected one fenced retry-scheduled event, got %d", scheduledEvents)
 	}
 
 	var projectedCount int
@@ -973,7 +990,7 @@ func TestTransitionServiceReassignStaleAttemptProjectsReplacementParticipant(t *
 	}
 }
 
-func TestTransitionServiceReassignStaleAttemptClaimsReplacementAgentAfterStatusDrift(t *testing.T) {
+func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterStatusDrift(t *testing.T) {
 	t.Parallel()
 
 	for _, replacementStatus := range []string{"busy", "blocked"} {
@@ -986,7 +1003,7 @@ func TestTransitionServiceReassignStaleAttemptClaimsReplacementAgentAfterStatusD
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'King Backup', %q, NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`, replacementStatus))
 
 			svc := NewTransitionService(db, nil)
-			queued, err := svc.ReassignStaleAttemptForRetry(context.Background(), ReassignStaleAttemptRequest{
+			queued, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
 				Attempt: staleAttempt{
 					NodeRunID:     "nr_1",
 					RunID:         "run_1",
@@ -1005,7 +1022,7 @@ func TestTransitionServiceReassignStaleAttemptClaimsReplacementAgentAfterStatusD
 				CurrentEventSeq:    2,
 			})
 			if err != nil {
-				t.Fatalf("reassign stale attempt with drifted replacement status: %v", err)
+				t.Fatalf("schedule fenced stale retry with drifted replacement status: %v", err)
 			}
 			if queued.AgentID != "agent_king_backup" {
 				t.Fatalf("expected queued replacement agent, got %#v", queued)
