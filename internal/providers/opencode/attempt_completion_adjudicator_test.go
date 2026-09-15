@@ -100,10 +100,31 @@ func TestAttemptCompletionAdjudicatorExplicitUpstreamErrorFails(t *testing.T) {
 	if decision.Result.State != attemptCompletionStateFailed {
 		t.Fatalf("expected failed state, got %q", decision.Result.State)
 	}
-	if decision.Result.ReasonCode != "provider_upstream_error" {
-		t.Fatalf("expected provider_upstream_error reason, got %q", decision.Result.ReasonCode)
+	if decision.Result.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected provider_unknown_failure reason, got %q", decision.Result.ReasonCode)
 	}
 	if decision.Result.FailureText != "provider exploded" {
 		t.Fatalf("expected upstream error message, got %q", decision.Result.FailureText)
+	}
+}
+
+func TestAttemptCompletionAdjudicatorNormalizesTerminalProviderFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		evidence attemptCompletionEvidence
+	}{
+		{name: "process failure", evidence: attemptCompletionEvidence{ProcessFailed: true}},
+		{name: "malformed protocol", evidence: attemptCompletionEvidence{MalformedProtocol: true}},
+		{name: "terminal failure", evidence: attemptCompletionEvidence{StepFinishSeen: true, LastStepFinish: buildStepFinishReasonEvidence("error", true)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := attemptCompletionAdjudicator{}.Adjudicate(tt.evidence)
+			if decision.Result.State != attemptCompletionStateFailed || decision.Result.ReasonCode != "provider_unknown_failure" {
+				t.Fatalf("terminal provider failure = %#v, want failed/provider_unknown_failure", decision.Result)
+			}
+		})
 	}
 }

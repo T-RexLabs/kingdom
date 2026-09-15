@@ -556,7 +556,15 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		SetExpr("lease_version", "lease_version + 1").
 		Set("last_heartbeat_at", nil).
 		Set("finished_at", strings.TrimSpace(req.FinishedAt))
-	if strings.TrimSpace(req.ObservedOutputText) != "" {
+	if req.Kind != FinalizeFail && req.Kind != FinalizeCancel {
+		// Provider settlement text is the canonical successful result. Always
+		// overwrite provisional output from a prior invocation or retry.
+		finalText := strings.TrimSpace(req.ObservedOutputText)
+		if req.ProviderSettlement != nil {
+			finalText = strings.TrimSpace(req.ProviderSettlement.FinalText)
+		}
+		opUpdate.Set("observed_output_text", finalText)
+	} else if strings.TrimSpace(req.ObservedOutputText) != "" {
 		opUpdate.Set("observed_output_text", strings.TrimSpace(req.ObservedOutputText))
 	}
 	switch req.Kind {
@@ -570,8 +578,8 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning))
-	if req.Kind != FinalizeFail && req.Kind != FinalizeCancel {
-		opUpdate.Where("lease_expires_at > ?", strings.TrimSpace(req.FinishedAt))
+	if !req.AllowExpiredLease {
+		opUpdate.Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
 	}
 
 	opResult, err := opUpdate.Exec(ctx, tx)
@@ -665,6 +673,15 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
 		return rollbackPlanningTx(tx, "finalize planning operation", err)
 	}
+	if req.Kind == FinalizeCancel {
+		if err := resolveCancelledPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	} else if req.Kind != FinalizeFail {
+		if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize planning operation: %w", err)
@@ -720,6 +737,9 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 		return rollbackPlanningTx(tx, "cancel queued planning operation", fmt.Errorf("cancel queued planning operation rows affected: %w", err))
 	} else if affected == 0 {
 		return rollbackPlanningTx(tx, "cancel queued planning operation", ErrPlanningLeaseConflict)
+	}
+	if err := resolveCancelledPlanningRetryTx(ctx, tx, operation.OperationID, req.FinishedAt); err != nil {
+		return rollbackPlanningTx(tx, "cancel queued planning operation", err)
 	}
 
 	sessionUpdate := newUpdateBuilder("planning_sessions").Set("updated_at", strings.TrimSpace(req.UpdatedAt))
@@ -1155,10 +1175,35 @@ func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, 
 		return PlanningOperation{}, false, fmt.Errorf("operation id and lease fields are required")
 	}
 
-	// Queued-only claim. Running rows stay owned by the current worker until
-	// shutdown or stuck-operation recovery finalizes them; reclaiming them here
-	// would race in-flight planner work inside the grace window.
-	row := s.db.QueryRowContext(ctx,
+	// Queued-only claim. The due decision is transitioned to dispatched in this
+	// transaction with the lease claim, so a second worker cannot launch the
+	// same retry and a crash leaves an unambiguous durable owner.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperation{}, false, fmt.Errorf("begin claim planning operation: %w", err)
+	}
+	var retryDecisionID, retryDueAt string
+	err = tx.QueryRowContext(ctx, `SELECT retry_decision_id FROM retry_decisions
+		WHERE subject_kind = 'planning_invocation' AND planning_operation_id = ?
+		  AND decision = 'retry' AND dispatch_state = 'pending'
+		ORDER BY created_at DESC, retry_decision_id DESC LIMIT 1`, trimmedOperationID).Scan(&retryDecisionID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", err)
+	}
+	if retryDecisionID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT due_at FROM retry_decisions WHERE retry_decision_id = ?`, retryDecisionID).Scan(&retryDueAt); err != nil {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", err)
+		}
+		dueAt, dueErr := parseRetryTime(retryDueAt)
+		nowAt, nowErr := parseRetryTime(trimmedHeartbeatAt)
+		if dueErr != nil || nowErr != nil {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("parse planning retry due time: %w", errors.Join(dueErr, nowErr)))
+		}
+		if dueAt.After(nowAt) {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
+		}
+	}
+	row := tx.QueryRowContext(ctx,
 		`UPDATE planning_operations
 		 SET status = ?, lease_owner = ?, lease_expires_at = ?, lease_version = lease_version + 1,
 		     last_heartbeat_at = ?, started_at = CASE WHEN TRIM(COALESCE(started_at, '')) = '' THEN ? ELSE started_at END,
@@ -1179,9 +1224,26 @@ func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, 
 	var claimed PlanningOperation
 	if err := scanPlanningOperation(row, &claimed); err != nil {
 		if err == sql.ErrNoRows {
-			return PlanningOperation{}, false, nil
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", nil)
 		}
-		return PlanningOperation{}, false, fmt.Errorf("claim planning operation: %w", err)
+		return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("claim planning operation: %w", err))
+	}
+	if retryDecisionID != "" {
+		result, err := tx.ExecContext(ctx, `UPDATE retry_decisions SET dispatch_state = 'dispatched', dispatched_at = ? WHERE retry_decision_id = ? AND dispatch_state = 'pending'`, trimmedHeartbeatAt, retryDecisionID)
+		if err != nil {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", fmt.Errorf("mark planning retry dispatched: %w", err))
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", err)
+		}
+		if changed != 1 {
+			return PlanningOperation{}, false, rollbackPlanningTx(tx, "claim planning operation", ErrPlanningLeaseConflict)
+		}
+		claimed.AutomaticRetry = true
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperation{}, false, fmt.Errorf("commit claim planning operation: %w", err)
 	}
 	return claimed, true, nil
 }
@@ -1248,7 +1310,7 @@ func (s *PlanningStore) RenewOperationLease(ctx context.Context, operationID str
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE planning_operations
 		 SET lease_expires_at = ?, last_heartbeat_at = ?
-		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running' AND lease_expires_at > ?`,
+		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running' AND julianday(lease_expires_at) > julianday(?)`,
 		trimmedLeaseExpiresAt,
 		trimmedHeartbeatAt,
 		trimmedOperationID,

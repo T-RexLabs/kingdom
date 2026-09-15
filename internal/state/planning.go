@@ -137,6 +137,9 @@ type PlanningOperation struct {
 	CreatedAt                  string
 	StartedAt                  *string
 	FinishedAt                 *string
+	// AutomaticRetry is populated only by a due retry claim. It is not stored
+	// on planning_operations; retry_decisions remains durable authority.
+	AutomaticRetry bool
 }
 
 type PlanningOperationEvent struct {
@@ -351,6 +354,9 @@ type FinalizeOperationRequest struct {
 	OperationID  string
 	LeaseOwner   string // owner from claim — required to fence the terminal write
 	LeaseVersion int    // version from claim — required to fence the terminal write
+	// AllowExpiredLease is reserved for the stale-operation recovery authority.
+	// Normal worker finalization must only settle an unexpired lease.
+	AllowExpiredLease bool
 
 	ConversationState PlanningSessionConversationState
 	UpdatedAt         string
@@ -394,10 +400,11 @@ type FinalizeGenerateTitleRequest struct {
 // FinalizeGenerateTitleAbortRequest terminates a generated-title operation as
 // failed or cancelled without touching the interactive session lane.
 type FinalizeGenerateTitleAbortRequest struct {
-	SessionID    string
-	OperationID  string
-	LeaseOwner   string
-	LeaseVersion int
+	SessionID         string
+	OperationID       string
+	LeaseOwner        string
+	LeaseVersion      int
+	AllowExpiredLease bool
 
 	Status             PlanningOperationStatus
 	UpdatedAt          string

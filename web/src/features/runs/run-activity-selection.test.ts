@@ -17,6 +17,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		updated_at: "2026-03-01T10:09:00Z",
 		committed_at: "2026-03-01T10:09:00Z",
 		...overrides,
+		stop_retry_available: overrides.stop_retry_available ?? false,
 	};
 }
 

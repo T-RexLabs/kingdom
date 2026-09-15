@@ -91,8 +91,8 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		activity_at: "2026-03-01T10:09:00Z",
 		updated_at: "2026-03-01T10:09:00Z",
 		committed_at: "2026-03-01T10:09:00Z",
-		stop_retry_available: false,
 		...overrides,
+		stop_retry_available: overrides.stop_retry_available ?? false,
 	};
 }
 
@@ -437,6 +437,9 @@ describe("run execution surface", () => {
 				isDetailLoading={false}
 				detailErrorMessage={null}
 				onRetryDetail={() => {}}
+				onRetryStop={() => {}}
+				isStopRetryPending={false}
+				stopRetryErrorMessage={null}
 				events={[]}
 				hasMoreEvents={false}
 				onLoadMoreEvents={() => {}}

@@ -134,6 +134,7 @@ describe("run-live-execution-projection", () => {
 			updated_at: "2026-03-01T10:08:00Z",
 			terminal_observed_at: "2026-03-01T10:08:00Z",
 			committed_at: "2026-03-01T10:08:00Z",
+			stop_retry_available: false,
 		} as const;
 
 		expect(overlayExecutionItem(execution, {
@@ -173,6 +174,7 @@ describe("run-live-execution-projection", () => {
 			activity_at: "2026-03-01T10:08:10Z",
 			updated_at: "2026-03-01T10:08:10Z",
 			launch_started_at: "2026-03-01T10:08:00Z",
+			stop_retry_available: false,
 			started_at: "2026-03-01T10:08:03Z",
 			provider_session_id: "ses-2",
 			provider_invocation_id: "inv-2",
@@ -193,6 +195,7 @@ describe("run-live-execution-projection", () => {
 			activity_at: execution.activity_at,
 			updated_at: execution.updated_at,
 			launch_started_at: execution.launch_started_at,
+			stop_retry_available: execution.stop_retry_available,
 			started_at: execution.started_at,
 			provider_session_id: execution.provider_session_id,
 		}, {
@@ -230,6 +233,7 @@ describe("run-live-execution-projection", () => {
 			activity_at: "2026-03-01T10:08:00Z",
 			updated_at: "2026-03-01T10:08:00Z",
 			provider_session_id: "ses-1",
+			stop_retry_available: false,
 			provider_invocation_id: "inv-1",
 			settlement_status: "pending",
 			output_status: "none",
@@ -278,6 +282,7 @@ describe("run-live-execution-projection", () => {
 				queued_at: "2026-03-01T10:09:00Z",
 				activity_at: "2026-03-01T10:09:00Z",
 				updated_at: "2026-03-01T10:09:00Z",
+				stop_retry_available: false,
 				started_at: "2026-03-01T10:09:00Z",
 			},
 		]);

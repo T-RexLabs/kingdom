@@ -70,7 +70,7 @@ func (a *OpenCodeAgent) GenerateTitle(ctx context.Context, input AgentContext, o
 
 func (a *OpenCodeAgent) FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
 	prompt := buildFormalizePrompt(input)
-	metadata, err := a.execute(ctx, input, prompt, false, onChunk)
+	metadata, err := a.execute(ctx, input, prompt, input.ForceNewSession, onChunk)
 	if err != nil {
 		return FormalizedPlan{}, err
 	}

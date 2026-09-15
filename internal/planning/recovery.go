@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -33,7 +32,7 @@ func IsStuckOperation(op state.PlanningOperation, now time.Time) bool {
 	if op.LeaseExpiresAt == nil {
 		return false
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*op.LeaseExpiresAt))
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*op.LeaseExpiresAt))
 	if err != nil {
 		return false
 	}
@@ -94,7 +93,13 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 				}
 				continue
 			}
-			r.runner.StartRecovered(operation.OperationID)
+			due, err := r.deps.store.PlanningOperationRetryDue(ctx, operation.OperationID, r.deps.nowString())
+			if err != nil {
+				return fmt.Errorf("check queued planning retry due %s: %w", operation.OperationID, err)
+			}
+			if due {
+				r.runner.StartRecovered(operation.OperationID)
+			}
 		}
 		if len(operations) < state.DefaultPlanningOperationListLimit {
 			break
@@ -178,17 +183,8 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 // (recovery + SSE) both go through Service.FinaliseIfStuck which decides
 // whether to call us; this function unconditionally finalises.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
-	cause := fmt.Errorf("operation exceeded heartbeat deadline (idle for %s)", idleFor.Round(time.Second))
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, acp.RunFailedEventType, plannerMessagePayload(op, map[string]any{"error": cause.Error()}))
-	if err != nil {
-		return err
-	}
-	now := r.deps.nowString()
-	providerSettlement := providerSettlementForFailure(op, ProviderExecutionMetadata{}, now, cause.Error(), cause, false)
-	// Bootstrap and generated-title operations do not own the interactive
-	// current_operation_id slot, so recovery must finalize them through their
-	// dedicated abort paths rather than the interactive FinalizeOperation fence.
-	finalizeErr := r.runner.finalizeAbortOperation(ctx, op, state.PlanningOperationStatusFailed, now, cause.Error(), "", providerSettlement, terminalEvent)
+	cause := fmt.Errorf("%w (idle for %s)", ErrOperationStuck, idleFor.Round(time.Second))
+	_, finalizeErr := r.runner.finalizeFailureWithRetry(ctx, op, nil, cause, "", true)
 	if finalizeErr != nil {
 		// A concurrent finaliser (e.g. recovery vs SSE-observer) winning
 		// the lease race is benign — the op is terminal either way. The
@@ -218,7 +214,7 @@ func idleFor(op state.PlanningOperation, now time.Time) time.Duration {
 	if op.LeaseExpiresAt == nil {
 		return 0
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*op.LeaseExpiresAt))
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*op.LeaseExpiresAt))
 	if err != nil {
 		return 0
 	}

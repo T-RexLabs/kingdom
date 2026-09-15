@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
@@ -52,7 +53,6 @@ type ReconcileResult struct {
 type Reconciler struct {
 	db             *sql.DB
 	transition     *TransitionService
-	eventIngestor  *AttemptEventIngestor
 	registry       *AgentRegistry
 	sessionManager *SessionManager
 	retryPlanner   retryPlanner
@@ -74,7 +74,6 @@ func NewReconcilerWithRoleCommunicationPolicy(db *sql.DB, sessionManager *Sessio
 	return &Reconciler{
 		db:             db,
 		transition:     NewTransitionService(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		eventIngestor:  NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
 		registry:       NewAgentRegistry(db),
 		sessionManager: sessionManager,
 		retryPlanner:   planner,
@@ -83,7 +82,7 @@ func NewReconcilerWithRoleCommunicationPolicy(db *sql.DB, sessionManager *Sessio
 }
 
 func (r *Reconciler) RunStartup(ctx context.Context) (ReconcileResult, error) {
-	return r.Reconcile(ctx, ReconcileRequest{Now: r.now().UTC().Format(time.RFC3339)})
+	return r.Reconcile(ctx, ReconcileRequest{Now: r.now().UTC().Format(time.RFC3339Nano)})
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (ReconcileResult, error) {
@@ -93,6 +92,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 	}
 
 	if err := r.convergeProviderSettledAttempts(ctx, nowTime); err != nil {
+		return ReconcileResult{}, err
+	}
+	if err := r.recoverUnprojectedAutomaticDecreeRetries(ctx, nowTime); err != nil {
 		return ReconcileResult{}, err
 	}
 
@@ -193,6 +195,114 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 	}
 
 	return result, nil
+}
+
+func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Context, now time.Time) error {
+	rows, err := r.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, nr.node_id, nr.required_role, nr.node_status, COALESCE(ae.failure_code, ''), COALESCE(pcs.provider_diagnostics_json, '{}'), COALESCE(pce.payload_json, '{}'), COALESCE(ae.committed_at, ae.updated_at)
+		FROM attempt_executions ae
+		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		JOIN workflow_runs wr ON wr.run_id = ae.run_id
+		LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
+		LEFT JOIN provider_completion_evidence pce ON pce.provider_invocation_id = ae.active_provider_invocation_id AND pce.evidence_kind = 'stream_observation'
+		LEFT JOIN retry_decisions rd ON rd.source_attempt_id = ae.attempt_id AND rd.subject_kind = 'decree_attempt'
+		WHERE ae.execution_mode = 'provider_backed' AND ae.state = 'committed_failure' AND nr.node_status IN ('starting', 'running') AND wr.run_status = 'running' AND rd.retry_decision_id IS NULL
+		  AND COALESCE(ae.failure_code, '') NOT IN ('execution_review_rework', 'validation_gate_rework')
+		ORDER BY ae.committed_at, ae.attempt_id`)
+	if err != nil {
+		return fmt.Errorf("list unprojected automatic decree retries: %w", err)
+	}
+	defer rows.Close()
+	type candidate struct {
+		attemptID, runID, nodeRunID, nodeID, roleID, nodeStatus, code, diagnostics, evidence, settledAt string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var candidate candidate
+		if err := rows.Scan(&candidate.attemptID, &candidate.runID, &candidate.nodeRunID, &candidate.nodeID, &candidate.roleID, &candidate.nodeStatus, &candidate.code, &candidate.diagnostics, &candidate.evidence, &candidate.settledAt); err != nil {
+			return fmt.Errorf("scan unprojected automatic decree retry: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		settledAt, err := time.Parse(time.RFC3339Nano, candidate.settledAt)
+		if err != nil {
+			return fmt.Errorf("parse automatic retry settlement timestamp: %w", err)
+		}
+		var evidence struct {
+			Observation providerexecution.InvocationStreamObservation `json:"observation"`
+		}
+		_ = json.Unmarshal([]byte(candidate.evidence), &evidence)
+		count, err := r.transition.CountDecreeRetryDecisions(ctx, candidate.runID, candidate.nodeID)
+		if err != nil {
+			return err
+		}
+		code := canonicalRetryDecisionCode(candidate.code)
+		plan, err := r.retryPlanner.Plan(code, count)
+		if err != nil {
+			return err
+		}
+		kind := RetryDecisionFailFast
+		if plan.ShouldRetry && !evidence.Observation.MeaningfulProgress {
+			kind = RetryDecisionRetry
+		} else if plan.DeadLetter && !evidence.Observation.MeaningfulProgress {
+			kind = RetryDecisionExhausted
+		}
+		retryIndex := count
+		if kind == RetryDecisionRetry {
+			retryIndex++
+		}
+		if retryIndex > plan.MaxRetries {
+			retryIndex = plan.MaxRetries
+		}
+		providerRetryAt := providerexecution.RetryAtFromDiagnostics(candidate.diagnostics, settledAt)
+		dueAt := settledAt.UTC().Add(plan.NextDelay)
+		if providerRetryAt != nil && providerRetryAt.After(dueAt) {
+			dueAt = *providerRetryAt
+		}
+		eventSeq, err := r.nextEventSeq(ctx, candidate.attemptID)
+		if err != nil {
+			return err
+		}
+		_, _, err = r.transition.RecordAutomaticDecreeRetry(ctx, AutomaticDecreeRetryRecordRequest{Transition: TransitionRequest{TransitionID: fmt.Sprintf("tr_reconcile_%s_retry_projection", candidate.attemptID), EventID: fmt.Sprintf("evt_reconcile_%s_retry_projection", candidate.attemptID), RunID: candidate.runID, NodeRunID: sql.NullString{String: candidate.nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: candidate.nodeStatus, ToState: "failed", ActorID: "reconciler", RoleID: candidate.roleID, AuthoritySource: "system.reconciler", ReasonCode: string(code), ReasonText: "recovered settled provider failure", CorrelationID: "corr_reconcile_" + candidate.runID, CausationID: "caus_reconcile_" + candidate.attemptID, OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: candidate.attemptID, SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: eventSeq, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(candidate.attemptID, ":", "_")), SubjectKind: RetrySubjectKindDecreeAttempt, RunID: candidate.runID, NodeID: candidate.nodeID, NodeRunID: candidate.nodeRunID, SourceAttemptID: candidate.attemptID, PolicyID: retryPlannerPolicyID(r.retryPlanner), RetryClass: plan.RetryClass, ErrorCode: string(code), OperatorText: automaticRetryDecisionText(kind, evidence.Observation.MeaningfulProgress), MeaningfulProgress: evidence.Observation.MeaningfulProgress, Decision: kind, RetryIndex: retryIndex, MaxRetries: plan.MaxRetries, PolicyDelay: plan.NextDelay, ProviderRetryAt: providerRetryAt, DueAt: dueAt, CreatedAt: settledAt.UTC(), EscalationTarget: plan.EscalationTarget}})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func canonicalRetryDecisionCode(raw string) errorcatalog.Code {
+	code := errorcatalog.Code(strings.TrimSpace(raw))
+	if code == "provider_timeout" {
+		code = errorcatalog.CodeTimeout
+	}
+	if _, ok := errorcatalog.Lookup(code); ok {
+		return code
+	}
+	return errorcatalog.CodeProviderUnknownFailure
+}
+
+func automaticRetryDecisionText(kind RetryDecisionKind, meaningfulProgress bool) string {
+	if meaningfulProgress {
+		return "The provider made meaningful progress, so automatic retry is disabled."
+	}
+	if kind == RetryDecisionRetry {
+		return "The provider failure is eligible for one delayed automatic retry."
+	}
+	if kind == RetryDecisionExhausted {
+		return "The provider retry limit is exhausted and has been escalated."
+	}
+	return "The provider failure is classified fail-fast and will not retry automatically."
+}
+
+func retryPlannerPolicyID(planner retryPlanner) string {
+	if withPolicyID, ok := planner.(interface{ PolicyID() string }); ok && strings.TrimSpace(withPolicyID.PolicyID()) != "" {
+		return strings.TrimSpace(withPolicyID.PolicyID())
+	}
+	return "retry-policy"
 }
 
 func (r *Reconciler) projectDurableTerminalNodes(ctx context.Context, nowTime time.Time) error {
@@ -335,11 +445,6 @@ type providerSettlementRecoveryCandidate struct {
 const staleAttemptFailureReasonText = "agent became unresponsive before completion could be confirmed"
 
 func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, nowTime time.Time) (recoveryOutcome, error) {
-	plan, err := r.retryPlanner.Plan(errorcatalog.CodeAgentUnresponsive, maxInt(0, attempt.Attempt-1))
-	if err != nil {
-		return recoveryOutcome{}, fmt.Errorf("plan stale-attempt retry for node_run=%q: %w", attempt.NodeRunID, err)
-	}
-
 	currentAttemptID, err := r.resolveAttemptID(ctx, attempt)
 	if err != nil {
 		return recoveryOutcome{}, err
@@ -354,6 +459,18 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 	} else if shouldSkip {
 		return recoveryOutcome{}, nil
 	}
+	meaningfulProgress, err := r.hasMeaningfulStaleAttemptProgress(ctx, currentAttemptID)
+	if err != nil {
+		return recoveryOutcome{}, err
+	}
+	retriesAttempted, err := r.transition.CountDecreeRetryDecisions(ctx, attempt.RunID, attempt.NodeID)
+	if err != nil {
+		return recoveryOutcome{}, err
+	}
+	plan, err := r.retryPlanner.Plan(errorcatalog.CodeAgentUnresponsive, retriesAttempted)
+	if err != nil {
+		return recoveryOutcome{}, fmt.Errorf("plan stale-attempt retry for node_run=%q: %w", attempt.NodeRunID, err)
+	}
 
 	nextSeq, err := r.nextEventSeq(ctx, currentAttemptID)
 	if err != nil {
@@ -364,21 +481,51 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 	if err != nil {
 		return recoveryOutcome{}, err
 	}
-	allowSelfRetry := plan.ShouldRetry && !hasReplacement && isPlanningNodeID(attempt.NodeID) && attempt.Attempt <= 1
+	// A same-agent execution retry remains fenced behind the cancellation and
+	// workspace handoff. Planning retains its narrower first-attempt policy.
+	allowSelfRetry := plan.ShouldRetry && !meaningfulProgress && !hasReplacement && (!isPlanningNodeID(attempt.NodeID) || attempt.Attempt <= 1)
 	if allowSelfRetry {
 		replacementAgentID = attempt.AgentID
 	}
 
-	if plan.ShouldRetry && (hasReplacement || allowSelfRetry) {
-		if _, err := r.transition.ScheduleFencedStaleRetry(ctx, ScheduleFencedStaleRetryRequest{
+	if plan.ShouldRetry && !meaningfulProgress && (hasReplacement || allowSelfRetry) {
+		dueAt := nowTime.UTC().Add(plan.NextDelay)
+		var retryDecision *RetryDecisionCreateRequest
+		if plan.RetryClass != "" && plan.EscalationTarget != "" {
+			retryDecision = &RetryDecisionCreateRequest{
+				DecisionID:       fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(currentAttemptID, ":", "_")),
+				SubjectKind:      RetrySubjectKindDecreeAttempt,
+				RunID:            attempt.RunID,
+				NodeID:           attempt.NodeID,
+				NodeRunID:        attempt.NodeRunID,
+				SourceAttemptID:  currentAttemptID,
+				PolicyID:         retryPlannerPolicyID(r.retryPlanner),
+				RetryClass:       plan.RetryClass,
+				ErrorCode:        string(errorcatalog.CodeAgentUnresponsive),
+				OperatorText:     "The stale provider attempt is eligible for one delayed automatic retry.",
+				Decision:         RetryDecisionRetry,
+				RetryIndex:       retriesAttempted + 1,
+				MaxRetries:       plan.MaxRetries,
+				PolicyDelay:      plan.NextDelay,
+				DueAt:            dueAt,
+				CreatedAt:        nowTime.UTC(),
+				EscalationTarget: plan.EscalationTarget,
+			}
+		}
+		queued, err := r.transition.ScheduleFencedStaleRetry(ctx, ScheduleFencedStaleRetryRequest{
 			Attempt:            attempt,
 			ReplacementAgentID: replacementAgentID,
 			HasReplacement:     hasReplacement,
 			OccurredAt:         nowTime.UTC().Format(time.RFC3339),
 			CurrentAttemptID:   currentAttemptID,
 			CurrentEventSeq:    nextSeq,
-		}); err != nil {
+			RetryDecision:      retryDecision,
+		})
+		if err != nil {
 			return recoveryOutcome{}, err
+		}
+		if queued.NodeRunID == "" {
+			return recoveryOutcome{failed: true, agentBlocked: hasReplacement}, nil
 		}
 
 		return recoveryOutcome{reassigned: true, agentBlocked: hasReplacement}, nil
@@ -400,29 +547,30 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 		return recoveryOutcome{}, err
 	}
 	payloadRaw, err := json.Marshal(map[string]any{
-		"error":                    staleAttemptFailureReasonText,
-		"node_run_id":              attempt.NodeRunID,
-		"run_id":                   attempt.RunID,
-		"node_id":                  attempt.NodeID,
-		"candidate_started_at":     strings.TrimSpace(attempt.StartedAt),
-		"evaluated_at":             nowTime.UTC().Format(time.RFC3339),
-		"stale_threshold_seconds":  int(DefaultReassignCandidateThreshold.Seconds()),
-		"planning_grace_seconds":   int(defaultPlanningStaleGraceWindow().Seconds()),
-		"reason":                   "stale_attempt",
-		"retry_allowed":            plan.ShouldRetry,
-		"replacement_available":    hasReplacement,
-		"retries_attempted":        maxInt(0, attempt.Attempt-1),
-		"max_retries":              maxInt(0, plan.MaxRetries),
-		"stale_duration_seconds":   staleSeconds,
-		"reconciler_authority":     "system.reconciler",
-		"planning_node_self_retry": allowSelfRetry,
-		"latest_progress":          progressDiagnostics,
+		"error":                   staleAttemptFailureReasonText,
+		"node_run_id":             attempt.NodeRunID,
+		"run_id":                  attempt.RunID,
+		"node_id":                 attempt.NodeID,
+		"candidate_started_at":    strings.TrimSpace(attempt.StartedAt),
+		"evaluated_at":            nowTime.UTC().Format(time.RFC3339),
+		"stale_threshold_seconds": int(DefaultReassignCandidateThreshold.Seconds()),
+		"planning_grace_seconds":  int(defaultPlanningStaleGraceWindow().Seconds()),
+		"reason":                  "stale_attempt",
+		"retry_allowed":           plan.ShouldRetry && !meaningfulProgress,
+		"meaningful_progress":     meaningfulProgress,
+		"replacement_available":   hasReplacement,
+		"retries_attempted":       retriesAttempted,
+		"max_retries":             maxInt(0, plan.MaxRetries),
+		"stale_duration_seconds":  staleSeconds,
+		"reconciler_authority":    "system.reconciler",
+		"same_agent_retry":        allowSelfRetry,
+		"latest_progress":         progressDiagnostics,
 	})
 	if err != nil {
 		return recoveryOutcome{}, fmt.Errorf("marshal stale attempt failure payload: %w", err)
 	}
 
-	if err := r.transition.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: TransitionRequest{
+	terminalTransition := TransitionRequest{
 		TransitionID:        fmt.Sprintf("tr_reconcile_%s_%s_%d_failed", attempt.RunID, attempt.NodeID, attempt.Attempt),
 		EventID:             fmt.Sprintf("evt_reconcile_%s_%s_%d_failed", attempt.RunID, attempt.NodeID, attempt.Attempt),
 		RunID:               attempt.RunID,
@@ -447,17 +595,179 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 		EventType:           "attempt.failed",
 		EventSeq:            nextSeq,
 		PayloadJSON:         string(payloadRaw),
-	}}); err != nil {
+	}
+	if meaningfulProgress || plan.DeadLetter {
+		decision := RetryDecisionExhausted
+		if meaningfulProgress {
+			decision = RetryDecisionFailFast
+		}
+		retryIndex := retriesAttempted
+		if retryIndex > plan.MaxRetries {
+			retryIndex = plan.MaxRetries
+		}
+		if err := r.transition.RecordDirectExecutionTerminalWithRetry(ctx, DirectExecutionTerminalWithRetryRequest{
+			Transition: terminalTransition,
+			Decision: RetryDecisionCreateRequest{
+				DecisionID:         fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(currentAttemptID, ":", "_")),
+				SubjectKind:        RetrySubjectKindDecreeAttempt,
+				RunID:              attempt.RunID,
+				NodeID:             attempt.NodeID,
+				NodeRunID:          attempt.NodeRunID,
+				SourceAttemptID:    currentAttemptID,
+				PolicyID:           retryPlannerPolicyID(r.retryPlanner),
+				RetryClass:         plan.RetryClass,
+				ErrorCode:          string(errorcatalog.CodeAgentUnresponsive),
+				OperatorText:       automaticRetryDecisionText(decision, meaningfulProgress),
+				MeaningfulProgress: meaningfulProgress,
+				Decision:           decision,
+				RetryIndex:         retryIndex,
+				MaxRetries:         plan.MaxRetries,
+				PolicyDelay:        plan.NextDelay,
+				DueAt:              nowTime.UTC().Add(plan.NextDelay),
+				CreatedAt:          nowTime.UTC(),
+				EscalationTarget:   plan.EscalationTarget,
+			},
+			EscalationFromAgentID: attempt.AgentID,
+		}); err != nil {
+			return recoveryOutcome{}, err
+		}
+	} else if err := r.transition.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: terminalTransition}); err != nil {
 		return recoveryOutcome{}, err
 	}
 
-	if plan.DeadLetter {
-		if err := r.insertEscalationEvent(ctx, attempt, plan, currentAttemptID, nowTime); err != nil {
-			return recoveryOutcome{}, err
-		}
+	return recoveryOutcome{failed: true, agentBlocked: true}, nil
+}
+
+// hasMeaningfulStaleAttemptProgress only admits durable provider-produced work.
+// Runtime diagnostics and lifecycle heartbeats are intentionally excluded: they
+// establish liveness, not work that makes an automatic retry unsafe.
+func (r *Reconciler) hasMeaningfulStaleAttemptProgress(ctx context.Context, attemptID string) (bool, error) {
+	if r == nil || r.db == nil || strings.TrimSpace(attemptID) == "" {
+		return false, nil
 	}
 
-	return recoveryOutcome{failed: true, agentBlocked: true}, nil
+	rows, err := r.db.QueryContext(ctx, `SELECT event_type, reason_code, payload_json
+		FROM events
+		WHERE attempt_id = ?
+		  AND event_type IN ('attempt.progress', 'attempt.activity')`, strings.TrimSpace(attemptID))
+	if err != nil {
+		return false, fmt.Errorf("load stale attempt progress evidence: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eventType, reasonCode, payload string
+		if err := rows.Scan(&eventType, &reasonCode, &payload); err != nil {
+			return false, fmt.Errorf("scan stale attempt progress evidence: %w", err)
+		}
+		if staleAttemptEventShowsMeaningfulProgress(eventType, reasonCode, payload) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate stale attempt progress evidence: %w", err)
+	}
+
+	var tokenCount int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1)
+		FROM token_usage
+		WHERE attempt_id = ?
+		  AND (input_tokens > 0 OR output_tokens > 0 OR total_tokens > 0 OR reasoning_tokens > 0 OR cache_read_tokens > 0 OR cache_write_tokens > 0)`, strings.TrimSpace(attemptID)).Scan(&tokenCount); err != nil {
+		return false, fmt.Errorf("load stale attempt token evidence: %w", err)
+	}
+	if tokenCount > 0 {
+		return true, nil
+	}
+
+	var workspaceDeltaCount int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1)
+		FROM attempt_executions ae
+		JOIN filesystem_snapshot_entries fse ON fse.snapshot_id = ae.result_snapshot_id
+		WHERE ae.attempt_id = ?
+		  AND TRIM(ae.base_snapshot_id) <> ''
+		  AND TRIM(ae.result_snapshot_id) <> ''`, strings.TrimSpace(attemptID)).Scan(&workspaceDeltaCount); err != nil {
+		return false, fmt.Errorf("load stale attempt workspace evidence: %w", err)
+	}
+	if workspaceDeltaCount > 0 {
+		return true, nil
+	}
+
+	return r.providerEvidenceShowsMeaningfulProgress(ctx, attemptID)
+}
+
+func staleAttemptEventShowsMeaningfulProgress(eventType, reasonCode, payloadRaw string) bool {
+	var payload map[string]any
+	if json.Unmarshal([]byte(payloadRaw), &payload) != nil {
+		return false
+	}
+	switch strings.TrimSpace(eventType) {
+	case "attempt.progress":
+		return strings.TrimSpace(stringValue(payload["text"])) != ""
+	case AttemptActivityEventType:
+		if strings.TrimSpace(reasonCode) != "provider_activity" {
+			return false
+		}
+		switch strings.TrimSpace(stringValue(payload["kind"])) {
+		case "kingdom.reasoning", "kingdom.tool":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func (r *Reconciler) providerEvidenceShowsMeaningfulProgress(ctx context.Context, attemptID string) (bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT payload_json
+		FROM provider_completion_evidence
+		WHERE attempt_id = ? AND evidence_kind = 'stream_observation'
+		UNION ALL
+		SELECT stream_observation_json
+		FROM provider_terminal_handoffs
+		WHERE attempt_id = ?`, strings.TrimSpace(attemptID), strings.TrimSpace(attemptID))
+	if err != nil {
+		return false, fmt.Errorf("load stale provider stream evidence: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return false, fmt.Errorf("scan stale provider stream evidence: %w", err)
+		}
+		if providerStreamEvidenceShowsMeaningfulProgress(payload) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate stale provider stream evidence: %w", err)
+	}
+	return false, nil
+}
+
+func providerStreamEvidenceShowsMeaningfulProgress(payloadRaw string) bool {
+	var envelope struct {
+		Observation *providerexecution.InvocationStreamObservation `json:"observation"`
+	}
+	if json.Unmarshal([]byte(payloadRaw), &envelope) != nil {
+		return false
+	}
+	observation := providerexecution.InvocationStreamObservation{}
+	if envelope.Observation != nil {
+		observation = *envelope.Observation
+	} else {
+		if json.Unmarshal([]byte(payloadRaw), &observation) != nil {
+			return false
+		}
+	}
+	return observation.MeaningfulProgress ||
+		strings.TrimSpace(observation.CanonicalTerminalText) != "" ||
+		len(observation.ToolCalls) > 0 ||
+		observation.Tokens.InputTokens > 0 ||
+		observation.Tokens.OutputTokens > 0 ||
+		observation.Tokens.TotalTokens > 0 ||
+		observation.Tokens.ReasoningTokens > 0 ||
+		observation.Tokens.CacheReadTokens > 0 ||
+		observation.Tokens.CacheWriteTokens > 0
 }
 
 func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleAttempt, attemptID string) (bool, error) {
@@ -773,7 +1083,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 	if threshold <= 0 {
 		threshold = DefaultReassignCandidateThreshold
 	}
-	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339)
+	cutoff := nowTime.Add(-threshold).UTC()
 	query := fmt.Sprintf(`SELECT n.node_run_id,
 		        n.run_id,
 		        n.node_id,
@@ -798,7 +1108,6 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		       n.node_status = 'starting'
 		       AND COALESCE(ae.state, '') = 'starting'
 		       AND COALESCE(ae.launch_started_at, '') != ''
-		       AND ae.launch_started_at <= ?
 		       AND (
 		         sl.session_id IS NULL OR
 		         %s
@@ -807,7 +1116,6 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		       n.node_status = 'running'
 		       AND n.started_at IS NOT NULL
 		       AND COALESCE(ae.state, '') NOT IN ('starting', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')
-		       AND n.started_at <= ?
 		       AND (
 		         COALESCE(ae.execution_mode, 'runtime_owned') <> 'provider_backed' OR
 		         COALESCE(ae.lease_expires_at, '') = '' OR
@@ -819,11 +1127,9 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 
 	rows, err := q.QueryContext(ctx,
 		query,
-		cutoff,
-		cutoff,
-		nowTime.UTC().Format(time.RFC3339),
-		cutoff,
-		nowTime.UTC().Format(time.RFC3339),
+		cutoff.Format(time.RFC3339Nano),
+		nowTime.UTC().Format(time.RFC3339Nano),
+		nowTime.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query stale attempts: %w", err)
@@ -857,12 +1163,14 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 
 	stale := make([]staleAttempt, 0, len(candidates))
 	for _, candidate := range candidates {
+		startedAt, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(candidate.StartedAt))
+		if parseErr != nil || startedAt.UTC().After(cutoff) {
+			continue
+		}
 		if isPlanningNodeID(candidate.NodeID) {
 			planningCutoff := nowTime.Add(-(threshold + defaultPlanningStaleGraceWindow())).UTC()
-			if startedAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(candidate.StartedAt)); parseErr == nil {
-				if startedAt.UTC().After(planningCutoff) {
-					continue
-				}
+			if startedAt.UTC().After(planningCutoff) {
+				continue
 			}
 		}
 		grace := threshold
@@ -1009,56 +1317,12 @@ func (r *Reconciler) nextEventSeq(ctx context.Context, attemptID string) (int, e
 	return seq + 1, nil
 }
 
-func (r *Reconciler) insertEscalationEvent(ctx context.Context, attempt staleAttempt, plan retryengine.PlanResult, attemptID string, nowTime time.Time) error {
-	targetRole := strings.TrimSpace(plan.EscalationTarget)
-	if targetRole == "" {
-		targetRole = attempt.RequiredRole
-	}
-
-	exists, err := roleExists(ctx, r.db, targetRole)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		targetRole = attempt.RequiredRole
-	}
-
-	nextSeq, err := r.nextEventSeq(ctx, attemptID)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.eventIngestor.Ingest(ctx, AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_reconcile_%s_%s_%d_dead_letter", attempt.RunID, attempt.NodeID, attempt.Attempt),
-		RunID:           attempt.RunID,
-		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: true},
-		AttemptID:       attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "escalation.raised",
-		Seq:             nextSeq,
-		PayloadJSON:     fmt.Sprintf(`{"run_id":%q,"node_id":%q,"attempt":%d,"reason":"%s","target_role":%q}`, attempt.RunID, attempt.NodeID, attempt.Attempt, plan.EscalationReason, targetRole),
-		ActorID:         "reconciler",
-		RoleID:          targetRole,
-		AuthoritySource: "system.reconciler",
-		ReasonCode:      string(errorcatalog.CodeAgentUnresponsive),
-		ReasonText:      "stale running attempt exceeded retry policy; escalation raised",
-		CorrelationID:   fmt.Sprintf("corr_reconcile_%s", attempt.RunID),
-		CausationID:     fmt.Sprintf("caus_reconcile_%s_%s_dead_letter", attempt.RunID, attempt.NodeRunID),
-		CreatedAt:       nowTime.UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return fmt.Errorf("insert dead-letter escalation event for node_run=%q: %w", attempt.NodeRunID, err)
-	}
-
-	return nil
-}
-
 func normalizeReconcileInputs(req ReconcileRequest, nowFn func() time.Time) (time.Time, time.Duration, time.Duration, error) {
 	var nowTime time.Time
 	if strings.TrimSpace(req.Now) == "" {
 		nowTime = nowFn().UTC()
 	} else {
-		parsed, err := time.Parse(time.RFC3339, req.Now)
+		parsed, err := time.Parse(time.RFC3339Nano, req.Now)
 		if err != nil {
 			return time.Time{}, 0, 0, fmt.Errorf("parse reconcile now timestamp: %w", err)
 		}
@@ -1076,21 +1340,6 @@ func normalizeReconcileInputs(req ReconcileRequest, nowFn func() time.Time) (tim
 	}
 
 	return nowTime, reassignThreshold, staleHeartbeatThreshold, nil
-}
-
-func roleExists(ctx context.Context, db *sql.DB, roleID string) (bool, error) {
-	var found string
-	err := db.QueryRowContext(ctx,
-		`SELECT role_id FROM roles WHERE role_id = ?`,
-		roleID,
-	).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("query role existence for %q: %w", roleID, err)
-	}
-	return true, nil
 }
 
 func composeAttemptID(runID, nodeID string, attempt int) string {

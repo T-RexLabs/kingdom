@@ -310,7 +310,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	closeMode := newRuntimeCloseMode()
 
-	orchestrator := newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
+	orchestrator := newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
 	orchestrator.processGuardRuntimeRoot = workspaceRoot
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
@@ -580,7 +580,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
 		slog.Warn("startup stale cancellation replay will retry during runtime", "error", err)
 	}
-	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339)); err != nil {
+	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("startup run repair: %w", err)
 	}
 	if r.preDispatchRecovery != nil {
@@ -653,11 +653,11 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 		case <-ctx.Done():
 			return nil
 		case tickAt := <-ticker.C:
-			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339)}); err != nil {
+			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)}); err != nil {
 				slog.Warn("periodic reconcile failed", "error", err)
 				continue
 			}
-			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339)); err != nil {
+			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				slog.Warn("periodic failed-run repair failed", "error", err)
 			}
 		}

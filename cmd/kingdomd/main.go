@@ -173,6 +173,7 @@ func run() (exitCode int) {
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                repoRoot,
 		RuntimeRoot:                filepath.Join(filepath.Dir(dbPath), "runtime"),
+		RetryEngine:                runtime.RetryEngine(),
 		OperatorCredential:         operatorCredential,
 		GitHubSharedAppSlug:        githubSharedSlug,
 		GitHubSharedAppClientID:    githubSharedClientID,

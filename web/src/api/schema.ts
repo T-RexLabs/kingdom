@@ -1717,7 +1717,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */
@@ -2452,6 +2452,15 @@ export interface components {
             retry_index: number;
             retry_max: number;
             delay_seconds: number;
+            source_node_run_id: string;
+            target_node_run_id?: string;
+            /** @enum {string} */
+            phase: "scheduled" | "dispatched" | "recovered" | "failed" | "cancelled" | "exhausted" | "fail_fast";
+            /** @enum {string} */
+            status: "pending" | "dispatched" | "recovered" | "failed" | "cancelled" | "escalated" | "not_applicable";
+            reason_code: string;
+            /** Format: date-time */
+            due_at: string;
         };
         /**
          * @example {
@@ -2518,9 +2527,15 @@ export interface components {
          *         {
          *           "node_id": "delegated_execution_berserker",
          *           "node_run_id": "nr_123",
+         *           "source_node_run_id": "nr_122",
+         *           "target_node_run_id": "nr_123",
          *           "retry_index": 2,
          *           "retry_max": 3,
-         *           "delay_seconds": 10
+         *           "delay_seconds": 10,
+         *           "phase": "scheduled",
+         *           "status": "pending",
+         *           "reason_code": "timeout",
+         *           "due_at": "2026-04-30T12:29:10Z"
          *         }
          *       ]
          *     }

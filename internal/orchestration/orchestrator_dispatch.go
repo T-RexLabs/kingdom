@@ -66,7 +66,6 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	if autoSucceededAtCap {
 		return nil
 	}
-
 	executionSpec := executionSpecForNode(node.NodeID, node.NodeClass)
 	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
 	sessionID := ""
@@ -744,7 +743,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			},
 			OnProcessStarted: func() {
 				launchObserved = true
-				launchObservedAt = o.now().UTC().Format(time.RFC3339)
+				launchObservedAt = o.now().UTC().Format(time.RFC3339Nano)
 				o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
 			},
 			OnProviderSession: func(providerSessionID string) {
@@ -817,7 +816,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
 				_, _ = o.db.ExecContext(context.WithoutCancel(ctx), `UPDATE provider_process_guards SET terminal_recovery_required_at = COALESCE(terminal_recovery_required_at, ?) WHERE provider_invocation_id = ?`, o.now().UTC().Format(time.RFC3339Nano), job.providerInvocationID)
 				if !o.forceCloseActive() {
-					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339), map[string]any{"error": err.Error()})
+					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339Nano), map[string]any{"error": err.Error()})
 				}
 				slog.Warn("failed to queue execution completion outbox", "attempt_id", job.attemptID, "error", err)
 			} else {
@@ -952,7 +951,7 @@ func (o *orchestrationLoop) ensureExecutionLaunchPersisted(ctx context.Context, 
 		return nil
 	}
 	if strings.TrimSpace(occurredAt) == "" {
-		occurredAt = o.now().UTC().Format(time.RFC3339)
+		occurredAt = o.now().UTC().Format(time.RFC3339Nano)
 	}
 	o.eventSeqMu.Lock()
 	defer o.eventSeqMu.Unlock()
@@ -993,7 +992,7 @@ func (o *orchestrationLoop) ensureProviderInvokedEventRecorded(ctx context.Conte
 	if err != nil {
 		return err
 	}
-	occurredAt := o.now().UTC().Format(time.RFC3339)
+	occurredAt := o.now().UTC().Format(time.RFC3339Nano)
 	o.eventSeqMu.Lock()
 	defer o.eventSeqMu.Unlock()
 	recorded, err := o.providerInvokedRecorded(ctx, job)

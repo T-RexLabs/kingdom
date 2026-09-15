@@ -1,6 +1,11 @@
 package opencode
 
-import "testing"
+import (
+	"fmt"
+	"math"
+	"testing"
+	"time"
+)
 
 func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
 	event, err := parseOpencodeRunEvent(`{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"read","id":"prt_1","callID":"call_1","messageID":"msg_1","state":{"status":"error","title":"package.json"}}}`)
@@ -58,5 +63,54 @@ func TestParseOpencodeRunEventReadsProviderErrorDataMessage(t *testing.T) {
 	}
 	if event.ErrorText != "Forbidden: unauthorized: not licensed to use Copilot" {
 		t.Fatalf("expected safe nested provider message, got %q", event.ErrorText)
+	}
+}
+
+func TestParseOpencodeRunEventReadsValidProviderRetryHints(t *testing.T) {
+	event, err := parseOpencodeRunEvent(`{"type":"error","error":{"data":{"message":"rate limited","retry_at":"2026-05-22T08:45:00.987654321Z","retry_after_ms":1500}}}`)
+	if err != nil {
+		t.Fatalf("parse opencode run event: %v", err)
+	}
+	if event.RetryAt != "2026-05-22T08:45:00.987654321Z" || event.RetryAfterMS == nil || *event.RetryAfterMS != 1500 {
+		t.Fatalf("provider retry hints = retry_at=%q retry_after_ms=%#v", event.RetryAt, event.RetryAfterMS)
+	}
+}
+
+func TestParseOpencodeRunEventReadsStructuredProviderErrorMetadata(t *testing.T) {
+	event, err := parseOpencodeRunEvent(`{"type":"error","error":{"code":"rate_limit_exceeded","category":"provider","data":{"statusCode":429}}}`)
+	if err != nil {
+		t.Fatalf("parse opencode run event: %v", err)
+	}
+	if event.ProviderErrorCode != "rate_limit_exceeded" || event.ProviderErrorCategory != "provider" || event.ProviderErrorStatus != 429 {
+		t.Fatalf("structured provider error metadata = %#v", event)
+	}
+}
+
+func TestParseOpencodeRunEventOmitsMalformedProviderRetryHints(t *testing.T) {
+	event, err := parseOpencodeRunEvent(`{"type":"error","error":{"data":{"retry_at":"not-a-time","retry_after_ms":-1}}}`)
+	if err != nil {
+		t.Fatalf("parse opencode run event: %v", err)
+	}
+	if event.RetryAt != "" || event.RetryAfterMS != nil {
+		t.Fatalf("malformed provider retry hints must be ignored, got retry_at=%q retry_after_ms=%#v", event.RetryAt, event.RetryAfterMS)
+	}
+}
+
+func TestParseOpencodeRunEventRetryAfterMSDurationBoundary(t *testing.T) {
+	boundary := float64(math.MaxInt64) / float64(time.Millisecond)
+	event, err := parseOpencodeRunEvent(fmt.Sprintf(`{"type":"error","error":{"data":{"retry_after_ms":%.17g}}}`, boundary))
+	if err != nil {
+		t.Fatalf("parse boundary retry hint: %v", err)
+	}
+	if event.RetryAfterMS == nil || *event.RetryAfterMS != boundary {
+		t.Fatalf("boundary retry hint=%#v, want %v", event.RetryAfterMS, boundary)
+	}
+
+	event, err = parseOpencodeRunEvent(fmt.Sprintf(`{"type":"error","error":{"data":{"retry_after_ms":%.17g}}}`, math.Nextafter(boundary, math.Inf(1))))
+	if err != nil {
+		t.Fatalf("parse overflowing retry hint: %v", err)
+	}
+	if event.RetryAfterMS != nil {
+		t.Fatalf("one-overflow retry hint=%#v, want nil", event.RetryAfterMS)
 	}
 }

@@ -86,6 +86,8 @@ type CreatePlanningProviderInvocationRequest struct {
 	PlanningSessionID            string
 	LogicalSessionID             string
 	CreatedAt                    string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type MarkPlanningProviderInvocationOpenRequest struct {
@@ -93,6 +95,8 @@ type MarkPlanningProviderInvocationOpenRequest struct {
 	PlanningOperationID          string
 	ProviderSessionID            string
 	OpenedAt                     string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
@@ -103,6 +107,8 @@ type ActivatePlanningProviderInvocationRequest struct {
 	ProviderSessionID            string
 	CreatedAt                    string
 	OpenedAt                     string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type FinalizePlanningProviderSettlementRequest struct {
@@ -184,10 +190,19 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 			ELSE active_provider_invocation_id
 		END
 		WHERE operation_id = ?
-		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
+		  AND planning_session_id = ?
+		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND julianday(lease_expires_at) > julianday(?)`,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
+		invocation.PlanningSessionID,
 		invocation.PlanningProviderInvocationID,
+		normalized.LeaseOwner,
+		normalized.LeaseVersion,
+		normalized.CreatedAt,
 	)
 	if err != nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("link planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
@@ -281,36 +296,29 @@ func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, 
 	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, normalized.ProviderSessionID, string(invocation.InvocationState), "mark_planning_provider_invocation_open"); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
+	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, normalized); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
+		result, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
 			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
-			WHERE planning_provider_invocation_id = ?`,
+			WHERE planning_provider_invocation_id = ? AND invocation_state = 'issued'`,
 			normalized.ProviderSessionID,
 			normalized.ProviderSessionID,
 			normalized.OpenedAt,
 			normalized.OpenedAt,
 			invocation.PlanningProviderInvocationID,
-		); err != nil {
+		)
+		if err != nil {
 			return PlanningProviderInvocation{}, fmt.Errorf("mark planning provider invocation %q open: %w", invocation.PlanningProviderInvocationID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_operations
-			SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-			    active_provider_invocation_id = CASE
-			      WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
-			      ELSE active_provider_invocation_id
-			    END
-			WHERE operation_id = ?
-			  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
-			normalized.ProviderSessionID,
-			normalized.ProviderSessionID,
-			invocation.PlanningProviderInvocationID,
-			invocation.PlanningOperationID,
-			invocation.PlanningProviderInvocationID,
-		); err != nil {
-			return PlanningProviderInvocation{}, fmt.Errorf("link planning operation %q provider session: %w", invocation.PlanningOperationID, err)
+		if affected, err := result.RowsAffected(); err != nil {
+			return PlanningProviderInvocation{}, fmt.Errorf("read planning provider invocation %q open rows affected: %w", invocation.PlanningProviderInvocationID, err)
+		} else if affected != 1 {
+			return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 	}
 	invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
@@ -558,12 +566,17 @@ func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProvider
 		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),
 		LogicalSessionID:             strings.TrimSpace(req.LogicalSessionID),
 		CreatedAt:                    strings.TrimSpace(req.CreatedAt),
+		LeaseOwner:                   strings.TrimSpace(req.LeaseOwner),
+		LeaseVersion:                 req.LeaseVersion,
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" || normalized.PlanningSessionID == "" {
 		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation, operation, and session ids are required")
 	}
 	if normalized.CreatedAt == "" {
 		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation created_at is required")
+	}
+	if normalized.LeaseOwner == "" || normalized.LeaseVersion < 1 {
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation requires an active operation lease")
 	}
 	return normalized, nil
 }
@@ -574,12 +587,17 @@ func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProvider
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		ProviderSessionID:            strings.TrimSpace(req.ProviderSessionID),
 		OpenedAt:                     strings.TrimSpace(req.OpenedAt),
+		LeaseOwner:                   strings.TrimSpace(req.LeaseOwner),
+		LeaseVersion:                 req.LeaseVersion,
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" {
 		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation id and planning operation id are required")
 	}
 	if normalized.OpenedAt == "" {
 		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation opened_at is required")
+	}
+	if normalized.LeaseOwner == "" || normalized.LeaseVersion < 1 {
+		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation open requires an active operation lease")
 	}
 	return normalized, nil
 }
@@ -591,6 +609,8 @@ func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProv
 		PlanningSessionID:            req.PlanningSessionID,
 		LogicalSessionID:             req.LogicalSessionID,
 		CreatedAt:                    req.CreatedAt,
+		LeaseOwner:                   req.LeaseOwner,
+		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
 		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
@@ -600,6 +620,8 @@ func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProv
 		PlanningOperationID:          createReq.PlanningOperationID,
 		ProviderSessionID:            req.ProviderSessionID,
 		OpenedAt:                     firstNonEmptyPlanningProvider(req.OpenedAt, createReq.CreatedAt),
+		LeaseOwner:                   req.LeaseOwner,
+		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
 		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
@@ -652,56 +674,94 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 	if err := ensurePlanningProviderInvocationStateForOpen(invocation); err != nil {
 		return err
 	}
-	var activeInvocationID sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT NULLIF(TRIM(active_provider_invocation_id), '') FROM planning_operations WHERE operation_id = ?`, invocation.PlanningOperationID).Scan(&activeInvocationID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return planningProviderError("activate_planning_provider_invocation", "operation_not_found", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		return fmt.Errorf("load planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
-	}
-	if activeInvocationID.Valid && strings.TrimSpace(activeInvocationID.String) != "" && strings.TrimSpace(activeInvocationID.String) != invocation.PlanningProviderInvocationID {
-		return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
 	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, openReq.ProviderSessionID, string(invocation.InvocationState), "activate_planning_provider_invocation"); err != nil {
 		return err
 	}
+	if err := linkPlanningOperationActiveInvocationTx(ctx, tx, invocation, openReq); err != nil {
+		return err
+	}
+	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, openReq); err != nil {
+		return err
+	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
+		result, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
 			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
-			WHERE planning_provider_invocation_id = ?`,
+			WHERE planning_provider_invocation_id = ? AND invocation_state = 'issued'`,
 			openReq.ProviderSessionID,
 			openReq.ProviderSessionID,
 			openReq.OpenedAt,
 			openReq.OpenedAt,
 			invocation.PlanningProviderInvocationID,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("mark planning provider invocation %q open during activation: %w", invocation.PlanningProviderInvocationID, err)
 		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("read planning provider invocation %q activation rows affected: %w", invocation.PlanningProviderInvocationID, err)
+		} else if affected != 1 {
+			return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE planning_operations
-		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-		    active_provider_invocation_id = ?
+	return nil
+}
+
+func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
-		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
-		openReq.ProviderSessionID,
-		openReq.ProviderSessionID,
+		  AND COALESCE(TRIM(active_provider_invocation_id), '') = ''
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND julianday(lease_expires_at) > julianday(?)`,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
-		invocation.PlanningProviderInvocationID,
+		req.LeaseOwner,
+		req.LeaseVersion,
+		req.OpenedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("link planning operation %q active invocation during activation: %w", invocation.PlanningOperationID, err)
+		return fmt.Errorf("link planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
 	}
-	rows, err := res.RowsAffected()
+	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read planning operation active invocation rows affected for %q: %w", invocation.PlanningOperationID, err)
 	}
-	if rows == 0 {
-		return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	if rows != 1 {
+		return planningProviderError("activate_planning_provider_invocation", "active_invocation_or_lease_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	}
+	return nil
+}
+
+func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END
+		WHERE operation_id = ?
+		  AND active_provider_invocation_id = ?
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND julianday(lease_expires_at) > julianday(?)`,
+		req.ProviderSessionID,
+		req.ProviderSessionID,
+		invocation.PlanningOperationID,
+		invocation.PlanningProviderInvocationID,
+		req.LeaseOwner,
+		req.LeaseVersion,
+		req.OpenedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("fence planning operation %q provider session: %w", invocation.PlanningOperationID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read planning operation provider session rows affected for %q: %w", invocation.PlanningOperationID, err)
+	}
+	if rows != 1 {
+		return planningProviderError("fence_planning_operation_provider_session", "active_invocation_or_lease_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return nil
 }

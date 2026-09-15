@@ -12,26 +12,36 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"kingdom/internal/core/retryengine"
 	"kingdom/internal/state"
 )
 
 type runtimeDeps struct {
-	store       *state.PlanningStore
-	planner     Agent
-	now         clockFunc
-	ids         idFunc
-	projectRoot string
-	leaseOwner  string
-	broker      *operationEventBroker
-	metrics     *plannerMetrics
+	store             *state.PlanningStore
+	planner           Agent
+	now               clockFunc
+	ids               idFunc
+	projectRoot       string
+	leaseOwner        string
+	broker            *operationEventBroker
+	metrics           *plannerMetrics
+	retryEngine       *retryengine.Engine
+	retryWake         func(time.Time)
+	retryWakeProgress func()
 }
 
 func (d runtimeDeps) nowString() string {
 	if d.now == nil {
 		return ""
 	}
-	return d.now()
+	value := d.now()
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return value
+	}
+	return parsed.UTC().Format(time.RFC3339Nano)
 }
 
 func (d runtimeDeps) nextID(prefix string) string {
@@ -63,7 +73,7 @@ func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningO
 	}, nil
 }
 
-func (d runtimeDeps) titleAgentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage) (AgentContext, error) {
+func (d runtimeDeps) titleAgentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage, forceNewSession bool) (AgentContext, error) {
 	snapshot, err := d.store.LoadPlanningOperationContextSnapshot(ctx, operation)
 	if err != nil {
 		return AgentContext{}, err
@@ -81,7 +91,7 @@ func (d runtimeDeps) titleAgentContext(ctx context.Context, operation state.Plan
 		ExternalContext:     externalContext,
 		ExternalSnapshotIDs: snapshotIDs,
 		ModelSelection:      decodeModelSelection(session.ModelSelectionJSON),
-		ForceNewSession:     false,
+		ForceNewSession:     forceNewSession,
 	}, nil
 }
 

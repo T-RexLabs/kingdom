@@ -126,6 +126,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 		const recovered: TimelineEvent = {
@@ -174,6 +175,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 
@@ -226,6 +228,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 		const recoveryEvent: TimelineEvent = {
@@ -267,6 +270,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:42:00Z",
 			updated_at: "2026-03-18T11:42:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 		const events: TimelineEvent[] = [
@@ -392,6 +396,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:00Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 			started_at: "2026-03-18T11:40:15Z",
 		}];
@@ -445,6 +450,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 			progress_at: "2026-03-18T11:40:15Z",
 		}];
@@ -631,6 +637,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:41:00Z",
 			activity_at: "2026-03-18T11:41:30Z",
 			updated_at: "2026-03-18T11:41:30Z",
+			stop_retry_available: false,
 			terminal_observed_at: "2026-03-18T11:41:30Z",
 		}];
 		const events: TimelineEvent[] = [{
@@ -678,6 +685,7 @@ describe("timeline milestones", () => {
 				queued_at: "2026-03-18T11:41:00Z",
 				activity_at: "2026-03-18T11:42:00Z",
 				updated_at: "2026-03-18T11:42:00Z",
+				stop_retry_available: false,
 				committed_at: "2026-03-18T11:42:00Z",
 				failure_code: "provider_incomplete_turn",
 				failure_text: "older failed attempt",
@@ -694,6 +702,7 @@ describe("timeline milestones", () => {
 				queued_at: "2026-03-18T11:41:00Z",
 				activity_at: "2026-03-18T11:41:00Z",
 				updated_at: "2026-03-18T11:41:00Z",
+				stop_retry_available: false,
 				started_at: "2026-03-18T11:41:00Z",
 			},
 		];
@@ -789,6 +798,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			committed_at: "2026-03-18T11:41:00Z",
 			failure_code: "provider_incomplete_turn",
 			failure_text: "conflicting provider completion receipts invalidated the invocation",
@@ -841,6 +851,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			committed_at: "2026-03-18T11:41:00Z",
 			failure_code: "provider_incomplete_turn",
 			failure_text: "conflicting provider completion receipts invalidated the invocation",
@@ -889,6 +900,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			committed_at: "2026-03-18T11:41:00Z",
 			failure_code: "provider_incomplete_turn",
 			failure_text: "completion_receipt_conflict: unrelated execution failure text",

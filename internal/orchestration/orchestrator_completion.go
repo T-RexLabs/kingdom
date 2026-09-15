@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/executionoutput"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
@@ -69,7 +71,7 @@ func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, erro
 		return 0, nil
 	}
 
-	publishedAt := o.now().UTC().Format(time.RFC3339)
+	publishedAt := o.now().UTC().Format(time.RFC3339Nano)
 	processed := 0
 	for _, rec := range pending {
 		result, hasResultPayload, decodeErr := decodeExecutionOutboxPayload(rec)
@@ -191,7 +193,7 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 		TerminalSeq:       terminalSeq,
 		TerminalState:     terminalState,
 		PayloadJSON:       raw,
-		ObservedAt:        o.now().UTC().Format(time.RFC3339),
+		ObservedAt:        o.now().UTC().Format(time.RFC3339Nano),
 		FailureCode:       failureCode,
 		FailureText:       failureText,
 		ProviderSessionID: strings.TrimSpace(job.providerSessionID),
@@ -199,7 +201,7 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 		return err
 	}
 	if strings.TrimSpace(job.sessionID) != "" {
-		if err := o.closeSessionLease(ctx, job.sessionID, o.now().UTC().Format(time.RFC3339)); err != nil {
+		if err := o.closeSessionLease(ctx, job.sessionID, o.now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}
@@ -222,9 +224,9 @@ func (o *orchestrationLoop) persistObservedExecutionLaunch(ctx context.Context, 
 		return fmt.Errorf("persist observed execution launch for attempt %q: %w", job.attemptID, err)
 	}
 	if err := o.ensureProviderInvokedEventRecorded(ctx, job); err != nil {
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
 		if o != nil && o.now != nil {
-			now = o.now().UTC().Format(time.RFC3339)
+			now = o.now().UTC().Format(time.RFC3339Nano)
 		}
 		o.emitCompletionLifecycleObservation(ctx, job, "provider_invoked_backfill_failed", now, map[string]any{"error": err.Error()})
 		slog.Warn("failed to record provider invoked event during completion handoff", "attempt_id", job.attemptID, "error", err)
@@ -359,7 +361,10 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 
 func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) opencode.ExecutionOutcome {
 	outcome.State = strings.TrimSpace(outcome.State)
-	outcome.ReasonCode = strings.TrimSpace(outcome.ReasonCode)
+	outcome.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(outcome.ReasonCode)
+	if outcome.ReasonCode == "provider_timeout" {
+		outcome.ReasonCode = "timeout"
+	}
 	outcome.FailureText = strings.TrimSpace(outcome.FailureText)
 	outcome.EvidenceSource = strings.TrimSpace(outcome.EvidenceSource)
 	if err == nil {
@@ -461,6 +466,97 @@ func currentExecutionReasonCode(outcome opencode.ExecutionOutcome, err error) st
 	return classifyExecutionReasonCode(err)
 }
 
+func (o *orchestrationLoop) planAutomaticDecreeRetry(ctx context.Context, result asyncExecutionResult, reasonCode, occurredAt string) (state.RetryDecisionCreateRequest, bool, error) {
+	if o == nil || o.retryEngine == nil {
+		return state.RetryDecisionCreateRequest{}, false, nil
+	}
+	code := canonicalAutomaticRetryCode(reasonCode)
+	retriesAttempted, err := o.transitionService().CountDecreeRetryDecisions(ctx, result.run.RunID, result.node.NodeID)
+	if err != nil {
+		return state.RetryDecisionCreateRequest{}, false, err
+	}
+	plan, err := o.retryEngine.Plan(code, retriesAttempted)
+	if err != nil {
+		return state.RetryDecisionCreateRequest{}, false, err
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, occurredAt)
+	if err != nil {
+		return state.RetryDecisionCreateRequest{}, false, fmt.Errorf("parse automatic retry timestamp: %w", err)
+	}
+	providerRetryAt := providerexecution.RetryAtFromDiagnostics(result.providerDiagnosticsJSON, createdAt)
+	dueAt := createdAt.Add(plan.NextDelay)
+	if providerRetryAt != nil && providerRetryAt.After(dueAt) {
+		dueAt = *providerRetryAt
+	}
+	decision := state.RetryDecisionFailFast
+	if plan.ShouldRetry && !result.providerStreamObservation.MeaningfulProgress {
+		decision = state.RetryDecisionRetry
+	} else if plan.DeadLetter && !result.providerStreamObservation.MeaningfulProgress {
+		decision = state.RetryDecisionExhausted
+	}
+	retryIndex := retriesAttempted
+	if decision == state.RetryDecisionRetry {
+		retryIndex++
+	}
+	if retryIndex > plan.MaxRetries {
+		retryIndex = plan.MaxRetries
+	}
+	return state.RetryDecisionCreateRequest{
+		DecisionID:         fmt.Sprintf("retry_decision_%s", sanitizeFileToken(result.attemptID)),
+		SubjectKind:        state.RetrySubjectKindDecreeAttempt,
+		RunID:              result.run.RunID,
+		NodeID:             result.node.NodeID,
+		NodeRunID:          result.attempt.NodeRunID,
+		SourceAttemptID:    result.attemptID,
+		PolicyID:           o.retryEngine.PolicyID(),
+		RetryClass:         plan.RetryClass,
+		ErrorCode:          string(code),
+		OperatorText:       automaticRetryOperatorText(decision, result.providerStreamObservation.MeaningfulProgress),
+		MeaningfulProgress: result.providerStreamObservation.MeaningfulProgress,
+		Decision:           decision,
+		RetryIndex:         retryIndex,
+		MaxRetries:         plan.MaxRetries,
+		PolicyDelay:        plan.NextDelay,
+		ProviderRetryAt:    providerRetryAt,
+		DueAt:              dueAt,
+		CreatedAt:          createdAt,
+		EscalationTarget:   plan.EscalationTarget,
+	}, true, nil
+}
+
+func canonicalAutomaticRetryCode(raw string) errorcatalog.Code {
+	code := errorcatalog.Code(strings.TrimSpace(raw))
+	if code == "provider_timeout" {
+		code = errorcatalog.CodeTimeout
+	}
+	if _, known := errorcatalog.Lookup(code); known {
+		return code
+	}
+	return errorcatalog.CodeProviderUnknownFailure
+}
+
+func automaticRetryOperatorText(decision state.RetryDecisionKind, meaningfulProgress bool) string {
+	if meaningfulProgress {
+		return "The provider made meaningful progress, so automatic retry is disabled."
+	}
+	if decision == state.RetryDecisionRetry {
+		return "The provider failure is eligible for one delayed automatic retry."
+	}
+	if decision == state.RetryDecisionExhausted {
+		return "The provider retry limit is exhausted and has been escalated."
+	}
+	return "The provider failure is classified fail-fast and will not retry automatically."
+}
+
+func isWorkflowReworkFailure(reasonCode string) bool {
+	switch strings.TrimSpace(reasonCode) {
+	case "execution_review_rework", "validation_gate_rework":
+		return true
+	default:
+		return false
+	}
+}
+
 func executionOutcomeFromTerminalState(terminalState, failureCode, failureText string) opencode.ExecutionOutcome {
 	switch strings.TrimSpace(terminalState) {
 	case "committed_success":
@@ -522,7 +618,7 @@ func receiptDecisionFailureOutcome(nodeID, nodeClass, finalText, structuredPaylo
 }
 
 func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncExecutionResult) error {
-	now := o.now().UTC().Format(time.RFC3339)
+	now := o.now().UTC().Format(time.RFC3339Nano)
 	o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_entered", now, nil)
 	originalOutputText := strings.TrimSpace(result.outputText)
 
@@ -566,6 +662,14 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	terminalPayload := executionTerminalPayloadJSON(result, terminalReasonCode, nil)
 	if execErr != nil {
 		terminalPayload = executionTerminalPayloadJSON(result, terminalReasonCode, execErr)
+	}
+	fence, guardErr := o.loadExecutionCompletionFence(ctx, result.run.RunID, result.attempt.NodeRunID)
+	if guardErr != nil {
+		return guardErr
+	}
+	terminalSourceState := "running"
+	if fence.found && isTerminalProjectionSourceNodeStatus(fence.nodeStatus) {
+		terminalSourceState = fence.nodeStatus
 	}
 	result.outcome = currentOutcome
 	result.err = execErr
@@ -680,7 +784,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		RunID:           result.run.RunID,
 		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: true},
 		Entity:          state.EntityTypeNode,
-		FromState:       "running",
+		FromState:       terminalSourceState,
 		ToState:         terminalState,
 		ActorID:         "runtime_orchestrator",
 		RoleID:          result.node.RequiredRole,
@@ -706,10 +810,6 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			planningOutput = &req
 		}
 	}
-	fence, guardErr := o.loadExecutionCompletionFence(ctx, result.run.RunID, result.attempt.NodeRunID)
-	if guardErr != nil {
-		return guardErr
-	}
 	projectionAllowed := false
 	transitionCommitted := false
 	runStatus := strings.TrimSpace(fence.runStatus)
@@ -721,17 +821,32 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	case nodeStatus == terminalState && !runTerminalized:
 		projectionAllowed = true
 		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_retry", now, map[string]any{"terminal_state": terminalState})
-	case runStatus != "running" || nodeStatus != "running":
+	case runStatus != "running" || !isTerminalProjectionSourceNodeStatus(nodeStatus):
 		if !runTerminalized && decision.LatestAttempt && isDurableExecutionTerminalState(actualAttemptState) && nodeStatus != projectedNodeTerminalState(currentOutcome) {
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_deferred_to_durable_projection", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
 		} else {
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_skipped_terminalized", now, map[string]any{"run_status": fence.runStatus, "node_status": fence.nodeStatus})
 		}
 	default:
-		err := o.transitionService().RecordNodeCompletion(ctx, state.NodeCompletionRecordRequest{
-			Transition:     transitionReq,
-			PlanningOutput: planningOutput,
-		})
+		retryRecorded := false
+		var transitionErr error
+		if result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && actualAttemptState == "committed_failure" && decision.LatestAttempt && !isWorkflowReworkFailure(terminalReasonCode) {
+			retryReq, planned, planErr := o.planAutomaticDecreeRetry(ctx, result, terminalReasonCode, now)
+			if planErr != nil {
+				return planErr
+			}
+			if planned {
+				_, _, transitionErr = o.transitionService().RecordAutomaticDecreeRetry(ctx, state.AutomaticDecreeRetryRecordRequest{Transition: transitionReq, Decision: retryReq})
+				retryRecorded = transitionErr == nil
+			}
+		}
+		if transitionErr == nil && !retryRecorded {
+			transitionErr = o.transitionService().RecordNodeCompletion(ctx, state.NodeCompletionRecordRequest{
+				Transition:     transitionReq,
+				PlanningOutput: planningOutput,
+			})
+		}
+		err := transitionErr
 		if err != nil {
 			var conflict *state.StateConflictError
 			if errors.As(err, &conflict) {
@@ -908,6 +1023,18 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	return nil
 }
 
+// A provider process can finish after launch ownership is durable but before
+// the asynchronous running observation commits. Its canonical settlement is
+// sufficient terminal evidence for this narrow starting -> terminal path.
+func isTerminalProjectionSourceNodeStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "starting", "running":
+		return true
+	default:
+		return false
+	}
+}
+
 func (o *orchestrationLoop) loadAttemptExecutionMetadata(ctx context.Context, attemptID string) (executionstore.AttemptExecution, bool, error) {
 	if o == nil || o.executionStore == nil || strings.TrimSpace(attemptID) == "" {
 		return executionstore.AttemptExecution{}, false, nil
@@ -949,7 +1076,7 @@ func (o *orchestrationLoop) completionProjectionDecision(ctx context.Context, re
 		}, nil
 	}
 	if durableExecutionTerminalState(result.outcome) == "committed_success" {
-		adopted, err := o.adoptOlderSuccessfulAttemptBeforeLaunch(ctx, result, o.now().UTC().Format(time.RFC3339))
+		adopted, err := o.adoptOlderSuccessfulAttemptBeforeLaunch(ctx, result, o.now().UTC().Format(time.RFC3339Nano))
 		if err != nil {
 			return completionProjectionDecision{}, err
 		}
@@ -1224,7 +1351,7 @@ func classifyExecutionReasonCode(err error) string {
 		return "provider_cancelled"
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return "provider_timeout"
+		return "timeout"
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "policy violation") {
 		return "policy_violation"

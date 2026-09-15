@@ -44,15 +44,19 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		SetExpr("lease_version", "lease_version + 1").
 		Set("last_heartbeat_at", nil).
 		Set("finished_at", strings.TrimSpace(req.FinishedAt))
-	if strings.TrimSpace(req.ObservedOutputText) != "" {
-		opUpdate.Set("observed_output_text", strings.TrimSpace(req.ObservedOutputText))
+	// Provider settlement text is the canonical successful result. Always
+	// overwrite provisional output from a prior invocation or retry.
+	finalText := strings.TrimSpace(req.ObservedOutputText)
+	if req.ProviderSettlement != nil {
+		finalText = strings.TrimSpace(req.ProviderSettlement.FinalText)
 	}
+	opUpdate.Set("observed_output_text", finalText)
 	opUpdate.
 		Where("operation_id = ?", strings.TrimSpace(req.OperationID)).
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning)).
-		Where("lease_expires_at > ?", strings.TrimSpace(req.FinishedAt))
+		Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
 	res, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", fmt.Errorf("finalize generate title operation: %w", err))
@@ -86,6 +90,9 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	}
 
 	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return rollbackPlanningTx(tx, "finalize generate title", err)
+	}
+	if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
 
@@ -140,6 +147,9 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning))
+	if !req.AllowExpiredLease {
+		opUpdate.Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
+	}
 	res, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title abort", fmt.Errorf("finalize generate title abort operation: %w", err))
@@ -171,6 +181,11 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 
 	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title abort", err)
+	}
+	if req.Status == PlanningOperationStatusCancelled {
+		if err := resolveCancelledPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize generate title abort", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

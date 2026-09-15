@@ -13,6 +13,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
@@ -64,6 +65,7 @@ type orchestrationLoop struct {
 	publishMode                    string
 	roleComm                       rolecomm.Policy
 	providerPolicy                 providerpolicy.Policy
+	retryEngine                    *retryengine.Engine
 	governanceMode                 string
 	autonomousApprovals            bool
 	runWorktrees                   *workspace.RunWorktreeStore
@@ -255,7 +257,7 @@ func marshalAsyncExecutionAttemptEventPayload(result asyncExecutionResult, reaso
 	return marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 }
 
-func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
+func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, retryEngine *retryengine.Engine, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
@@ -282,6 +284,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		publishMode:            normalizePublishMode(publishMode),
 		roleComm:               policy,
 		providerPolicy:         providerPolicy,
+		retryEngine:            retryEngine,
 		governanceMode:         normalizeGovernanceMode(governanceMode),
 		autonomousApprovals:    autonomousApprovals,
 		runWorktrees:           workspace.NewRunWorktreeStore(db),
@@ -360,7 +363,7 @@ func (o *orchestrationLoop) waitForAsyncDrain(ctx context.Context) error {
 }
 
 func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) error {
-	now := o.now().UTC().Format(time.RFC3339)
+	now := o.now().UTC().Format(time.RFC3339Nano)
 
 	if run.RunStatus == "pending" {
 		if err := o.transition.Apply(ctx, state.TransitionRequest{
@@ -421,6 +424,13 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.enforceRunningAttemptTimeouts(ctx, run, latestAttempts, now); err != nil {
 		return err
 	}
+	if _, err := o.transitionService().ReleaseDueDecreeRetries(ctx, run.RunID, now); err != nil {
+		return err
+	}
+	latestAttempts, err = o.loadLatestAttempts(ctx, run.RunID)
+	if err != nil {
+		return err
+	}
 
 	if err := o.promoteReadyNodes(ctx, run, nodes, edges, latestAttempts, now); err != nil {
 		return err
@@ -443,7 +453,6 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.enforceRunningAttemptTimeouts(ctx, run, latestAttempts, now); err != nil {
 		return err
 	}
-
 	if err := o.dispatchReadyNodes(ctx, run, nodes, latestAttempts, now); err != nil {
 		return err
 	}

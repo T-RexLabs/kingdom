@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/retryengine"
+	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
@@ -107,6 +110,33 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 	if int(plannerPayload["planning_stream_resume_count"].(float64)) < 1 {
 		t.Fatalf("expected resume count >= 1, got %#v", plannerPayload["planning_stream_resume_count"])
+	}
+}
+
+func TestServerPlanningClockRetainsNanosecondPrecision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 3, 12, 0, 0, 123456789, time.UTC)
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{Now: func() time.Time { return now }})
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/planning-sessions",
+		idempotencyKey: "idem-planning-clock-precision",
+		body:           map[string]any{"model_selection": map[string]any{"model": "gpt-5.4"}},
+	})
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create planning session: status=%d body=%s", res.Code, res.Body.String())
+	}
+	var created gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode planning session: %v", err)
+	}
+	var createdAt string
+	if err := db.QueryRow(`SELECT created_at FROM planning_sessions WHERE planning_session_id = ?`, created.Session.PlanningSessionId).Scan(&createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if createdAt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("planning session created_at=%s, want %s", createdAt, now.Format(time.RFC3339Nano))
 	}
 }
 
@@ -224,8 +254,8 @@ sleep 30
 	if err != nil || !found {
 		t.Fatalf("get canonical provider settlement: found=%t err=%v", found, err)
 	}
-	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_timeout" {
-		t.Fatalf("expected failed provider_timeout settlement, got %+v", settlement)
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "timeout" {
+		t.Fatalf("expected failed timeout settlement, got %+v", settlement)
 	}
 	if !strings.Contains(settlement.FailureReasonText, "stream_inactivity_timeout") || !strings.Contains(settlement.FailureReasonText, "event_count=1") {
 		t.Fatalf("expected settlement inactivity diagnostics, got %q", settlement.FailureReasonText)
@@ -234,7 +264,7 @@ sleep 30
 	if err != nil || !found {
 		t.Fatalf("get provider invocation: found=%t err=%v", found, err)
 	}
-	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed || invocation.ProviderSessionID != "ses_planner_stall" || invocation.FailureReasonCode != "provider_timeout" {
+	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed || invocation.ProviderSessionID != "ses_planner_stall" || invocation.FailureReasonCode != "timeout" {
 		t.Fatalf("expected settled failed provider invocation, got %+v", invocation)
 	}
 	session, found, err := store.GetSession(t.Context(), created.Session.PlanningSessionId)
@@ -552,6 +582,129 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	if run.OutputText == nil || *run.OutputText != "Partial decree body" {
 		t.Fatalf("expected output_text to expose persisted terminal text, got %+v", run.OutputText)
 	}
+}
+
+func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	policy, err := retryengine.LoadPolicyFromFile(filepath.Join("..", "..", "policies", "retry_policy.yaml"), filepath.Join("..", "..", "contracts", "schemas", "retry_policy.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retries, err := retryengine.NewEngine(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC)
+	agent := &retryOutputPlannerAgent{observed: make(chan struct{}, 2)}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
+		ProjectRoot:  projectRoot,
+		Now:          func() time.Time { return now },
+		PlannerAgent: agent,
+		RetryEngine:  retries,
+	})
+	server := handler.(*Server)
+	session, err := server.planningService.CreateSession(context.Background(), "Retry Output", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := server.planningService.CreateOperation(context.Background(), session.PlanningSessionID, planning.CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Plan this", AnswerPayloadJSON: `{"text":"Plan this"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-agent.observed
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		operation, found, err := state.NewPlanningStore(db).GetOperation(context.Background(), op.Operation.OperationID)
+		if err != nil {
+			return err
+		}
+		if !found || operation.Status != state.PlanningOperationStatusQueued {
+			return fmt.Errorf("retry operation status=%q found=%t", operation.Status, found)
+		}
+		if operation.ObservedOutputText != "" {
+			return fmt.Errorf("retry retained failed partial output %q", operation.ObservedOutputText)
+		}
+		return nil
+	})
+	var dueAt string
+	if err := db.QueryRow(`SELECT due_at FROM retry_decisions WHERE planning_operation_id = ?`, op.Operation.OperationID).Scan(&dueAt); err != nil {
+		t.Fatal(err)
+	}
+	now, err = time.Parse(time.RFC3339Nano, dueAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.planningService.RecoverOperations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-agent.observed
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		operation, found, err := state.NewPlanningStore(db).GetOperation(context.Background(), op.Operation.OperationID)
+		if err != nil {
+			return err
+		}
+		if !found || operation.Status != state.PlanningOperationStatusSucceeded {
+			return fmt.Errorf("retry operation status=%q found=%t", operation.Status, found)
+		}
+		if operation.ObservedOutputText != "current successful response" {
+			return fmt.Errorf("retry output=%q", operation.ObservedOutputText)
+		}
+		return nil
+	})
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/acp/runs/" + acp.PlannerRunID(op.Operation.OperationID)})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected acp run 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.OutputText == nil || *run.OutputText != "current successful response" {
+		t.Fatalf("acp output=%v, want current successful response", run.OutputText)
+	}
+}
+
+type retryOutputPlannerAgent struct {
+	calls    int
+	observed chan struct{}
+}
+
+func (a *retryOutputPlannerAgent) OpeningTurn(ctx context.Context, input planning.AgentContext) (planning.AgentTurn, error) {
+	return (&testPlannerAgent{}).OpeningTurn(ctx, input)
+}
+
+func (a *retryOutputPlannerAgent) OpeningTurnStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.AgentTurn, error) {
+	return (&testPlannerAgent{}).OpeningTurnStream(ctx, input, onChunk)
+}
+
+func (a *retryOutputPlannerAgent) ContinueTurnStream(_ context.Context, input planning.AgentContext, onChunk func(string)) (planning.AgentTurn, error) {
+	a.calls++
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		input.ProviderInvocation.OnProviderSession("retry-output-session")
+	}
+	a.observed <- struct{}{}
+	if a.calls == 1 {
+		if onChunk != nil {
+			onChunk("failed partial response")
+		}
+		return planning.AgentTurn{}, &planning.AgentExecutionError{Metadata: planning.ProviderExecutionMetadata{FinalText: "failed partial response", OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timeout"}, Err: errors.New("timeout")}
+	}
+	metadata, err := apiTestReceiptMetadata(input, "current successful response")
+	if err != nil {
+		return planning.AgentTurn{}, err
+	}
+	return planning.AgentTurn{ContentMarkdown: "current successful response", Metadata: metadata}, nil
+}
+
+func (a *retryOutputPlannerAgent) FormalizePlanStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.FormalizedPlan, error) {
+	return (&testPlannerAgent{}).FormalizePlanStream(ctx, input, onChunk)
+}
+
+func (a *retryOutputPlannerAgent) GenerateTitle(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.GeneratedTitle, error) {
+	return (&testPlannerAgent{}).GenerateTitle(ctx, input, onChunk)
 }
 
 func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.T) {

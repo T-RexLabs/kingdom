@@ -63,10 +63,15 @@ type sessionAttemptRecord struct {
 }
 
 type opencodeRunEvent struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionID"`
-	ErrorText string `json:"-"`
-	Part      struct {
+	Type                  string   `json:"type"`
+	SessionID             string   `json:"sessionID"`
+	ErrorText             string   `json:"-"`
+	ProviderErrorCode     string   `json:"-"`
+	ProviderErrorCategory string   `json:"-"`
+	ProviderErrorStatus   int      `json:"-"`
+	RetryAt               string   `json:"-"`
+	RetryAfterMS          *float64 `json:"-"`
+	Part                  struct {
 		Type          string `json:"type"`
 		ID            string `json:"id"`
 		CallID        string `json:"callID"`
@@ -179,6 +184,12 @@ type continuationTurnResult struct {
 	LastReason                  stepFinishReasonEvidence
 	ProviderSessionID           string
 	UpstreamErrorText           string
+	ProviderErrorPresent        bool
+	ProviderErrorCode           string
+	ProviderErrorCategory       string
+	ProviderErrorStatus         int
+	RetryAt                     string
+	RetryAfterMS                *float64
 	Stderr                      stderrCapture
 	WaitError                   string
 	EventCount                  int
@@ -285,6 +296,7 @@ func executionResultForTimeout(timeoutErr error, providerSessionID string) attem
 func adjudicateFatalExecutionEvidence(evidence attemptCompletionEvidence) (attemptCompletionResult, bool) {
 	fatal := evidence.Cancelled ||
 		evidence.Timeout ||
+		evidence.ProviderErrorPresent ||
 		strings.TrimSpace(evidence.UpstreamErrorText) != "" ||
 		evidence.ProcessFailed ||
 		evidence.MalformedProtocol ||
@@ -306,12 +318,16 @@ func providerProcessObservationFailed(processExited bool, exitCode, exitSignal *
 		!stderrDrained
 }
 
-func executionResultForProcessError(err error, providerSessionID, upstreamErrorText, failureText string) attemptCompletionResult {
+func executionResultForProcessError(err error, providerSessionID, upstreamErrorText string, providerErrorPresent bool, providerErrorCode, providerErrorCategory string, providerErrorStatus int, failureText string) attemptCompletionResult {
 	return attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
-		ProviderSessionID: strings.TrimSpace(providerSessionID),
-		UpstreamErrorText: strings.TrimSpace(upstreamErrorText),
-		ProcessFailed:     true,
-		FailureText:       firstNonEmpty(strings.TrimSpace(failureText), strings.TrimSpace(errorString(err)), "opencode run failed"),
+		ProviderSessionID:     strings.TrimSpace(providerSessionID),
+		UpstreamErrorText:     strings.TrimSpace(upstreamErrorText),
+		ProviderErrorPresent:  providerErrorPresent,
+		ProviderErrorCode:     strings.TrimSpace(providerErrorCode),
+		ProviderErrorCategory: strings.TrimSpace(providerErrorCategory),
+		ProviderErrorStatus:   providerErrorStatus,
+		ProcessFailed:         true,
+		FailureText:           firstNonEmpty(strings.TrimSpace(failureText), strings.TrimSpace(errorString(err)), "opencode run failed"),
 	}).Result
 }
 
@@ -823,6 +839,12 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	stderrSnapshot := stderrCapture{}
 	lastStepFinish := buildStepFinishReasonEvidence("", false)
 	upstreamErrorText := ""
+	providerErrorSeen := false
+	providerErrorCode := ""
+	providerErrorCategory := ""
+	providerErrorStatus := 0
+	providerRetryAt := ""
+	var providerRetryAfterMS *float64
 	terminalSuccessSeen := false
 	terminalFailureSeen := false
 	conflictingTerminalEvidence := false
@@ -864,7 +886,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			ProcessGuards:               append([]ProcessGuardObservation(nil), processGuards...),
 			TimedOut:                    watchdog.Err() != nil || continuationTimedOut || isExecutionTimedOut(attemptCtx.Err()),
 			Cancelled:                   isExecutionCancelled(attemptCtx.Err()),
+			ProviderErrorPresent:        providerErrorSeen,
 			ProviderError:               strings.TrimSpace(upstreamErrorText),
+			ProviderErrorCode:           strings.TrimSpace(providerErrorCode),
+			ProviderErrorCategory:       strings.TrimSpace(providerErrorCategory),
+			ProviderErrorStatus:         providerErrorStatus,
 			MalformedProtocolCount:      execDiag.StdoutMalformedLineCount,
 			ConflictingTerminalEvidence: conflictingTerminalEvidence,
 			LaterEventAfterTerminal:     laterEventAfterTerminal,
@@ -875,7 +901,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		resp.ProviderSessionID = firstNonEmpty(strings.TrimSpace(resp.ProviderSessionID), observation.ProviderSessionID)
 		resp.Tokens = observation.Tokens
 		resp = withInvocationStreamObservation(resp, observation)
-		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot))
+		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, providerRetryAt, providerRetryAfterMS))
 	}
 	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
@@ -901,9 +927,17 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		}
 		execDiag.LastStdoutEventAt = now.Format(time.RFC3339)
 		execDiag.StdoutEventCount++
-		if strings.TrimSpace(event.ErrorText) != "" && strings.TrimSpace(event.Type) == "error" {
-			upstreamErrorText = strings.TrimSpace(event.ErrorText)
+		if strings.TrimSpace(event.Type) == "error" {
+			providerErrorSeen = true
+			upstreamErrorText = firstNonEmpty(strings.TrimSpace(event.ErrorText), upstreamErrorText)
+			providerErrorCode = firstNonEmpty(strings.TrimSpace(event.ProviderErrorCode), providerErrorCode)
+			providerErrorCategory = firstNonEmpty(strings.TrimSpace(event.ProviderErrorCategory), providerErrorCategory)
+			if event.ProviderErrorStatus != 0 {
+				providerErrorStatus = event.ProviderErrorStatus
+			}
 			execDiag.UpstreamErrorText = upstreamErrorText
+			providerRetryAt = event.RetryAt
+			providerRetryAfterMS = event.RetryAfterMS
 		}
 
 		if terminalSuccessSeen || terminalFailureSeen {
@@ -1132,7 +1166,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	}
 
 	if waitErr != nil {
-		result := executionResultForProcessError(waitErr, actualSessionID, upstreamErrorText, firstNonEmpty(stderrText, waitErr.Error()))
+		result := executionResultForProcessError(waitErr, actualSessionID, upstreamErrorText, providerErrorSeen, providerErrorCode, providerErrorCategory, providerErrorStatus, firstNonEmpty(stderrText, waitErr.Error()))
 		result.OutputText = partialCombinedText
 		result.Tokens = accumulatedTokens
 		payload, _ := json.Marshal(map[string]any{
@@ -1156,6 +1190,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		StepFinishSeen:              execDiag.StepFinishSeen,
 		LastStepFinish:              lastStepFinish,
 		UpstreamErrorText:           upstreamErrorText,
+		ProviderErrorPresent:        providerErrorSeen,
+		ProviderErrorCode:           providerErrorCode,
+		ProviderErrorCategory:       providerErrorCategory,
+		ProviderErrorStatus:         providerErrorStatus,
 		ConflictingTerminalEvidence: conflictingTerminalEvidence,
 		MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 		ProcessFailed:               providerProcessObservationFailed(allProcessesExited, execDiag.ExitCode, execDiag.ExitSignal, allStdoutDrained, allStderrDrained),
@@ -1255,6 +1293,14 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			if strings.TrimSpace(continuationResult.UpstreamErrorText) != "" {
 				upstreamErrorText = strings.TrimSpace(continuationResult.UpstreamErrorText)
 				execDiag.UpstreamErrorText = upstreamErrorText
+				providerRetryAt = continuationResult.RetryAt
+				providerRetryAfterMS = continuationResult.RetryAfterMS
+			}
+			providerErrorSeen = providerErrorSeen || continuationResult.ProviderErrorPresent
+			providerErrorCode = firstNonEmpty(continuationResult.ProviderErrorCode, providerErrorCode)
+			providerErrorCategory = firstNonEmpty(continuationResult.ProviderErrorCategory, providerErrorCategory)
+			if continuationResult.ProviderErrorStatus != 0 {
+				providerErrorStatus = continuationResult.ProviderErrorStatus
 			}
 			continuationTimedOut = continuationTimedOut || continuationResult.TimedOut
 			if continuationResult.ProviderSessionID != "" {
@@ -1296,12 +1342,16 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			}
 			if continuationErr != nil {
 				failureEvidence := attemptCompletionEvidence{
-					ProviderSessionID: actualSessionID,
-					OutputText:        combinedContinuationText,
-					Tokens:            accumulatedTokens,
-					UpstreamErrorText: strings.TrimSpace(continuationResult.UpstreamErrorText),
-					FailureText:       continuationErr.Error(),
-					MalformedProtocol: continuationResult.MalformedCount > 0,
+					ProviderSessionID:     actualSessionID,
+					OutputText:            combinedContinuationText,
+					Tokens:                accumulatedTokens,
+					UpstreamErrorText:     strings.TrimSpace(continuationResult.UpstreamErrorText),
+					ProviderErrorPresent:  continuationResult.ProviderErrorPresent,
+					ProviderErrorCode:     continuationResult.ProviderErrorCode,
+					ProviderErrorCategory: continuationResult.ProviderErrorCategory,
+					ProviderErrorStatus:   continuationResult.ProviderErrorStatus,
+					FailureText:           continuationErr.Error(),
+					MalformedProtocol:     continuationResult.MalformedCount > 0,
 				}
 				var timeoutTyped *providerTimeoutError
 				if errors.As(continuationErr, &timeoutTyped) {
@@ -1335,6 +1385,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				StepFinishSeen:              execDiag.StepFinishSeen,
 				LastStepFinish:              lastStepFinish,
 				UpstreamErrorText:           upstreamErrorText,
+				ProviderErrorPresent:        providerErrorSeen,
+				ProviderErrorCode:           providerErrorCode,
+				ProviderErrorCategory:       providerErrorCategory,
+				ProviderErrorStatus:         providerErrorStatus,
 				ConflictingTerminalEvidence: conflictingTerminalEvidence,
 				MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 				ProcessFailed:               providerProcessObservationFailed(allProcessesExited, execDiag.ExitCode, execDiag.ExitSignal, allStdoutDrained, allStderrDrained),
@@ -1372,6 +1426,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			StepFinishSeen:              execDiag.StepFinishSeen,
 			LastStepFinish:              lastStepFinish,
 			UpstreamErrorText:           upstreamErrorText,
+			ProviderErrorPresent:        providerErrorSeen,
+			ProviderErrorCode:           providerErrorCode,
+			ProviderErrorCategory:       providerErrorCategory,
+			ProviderErrorStatus:         providerErrorStatus,
 			ConflictingTerminalEvidence: conflictingTerminalEvidence,
 			MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 			CleanEOF:                    waitErr == nil,
@@ -1432,7 +1490,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	return finish(executeResponseForCompletionResult(result)), nil
 }
 
-func buildProviderDiagnosticsJSON(req ExecuteRequest, diagnostics streamDiagnostics, execDiagnostics executionPathDiagnostics, stderr stderrCapture) string {
+func buildProviderDiagnosticsJSON(req ExecuteRequest, diagnostics streamDiagnostics, execDiagnostics executionPathDiagnostics, stderr stderrCapture, retryAt string, retryAfterMS *float64) string {
 	payload := map[string]any{
 		"completion_receipt_mode_enabled": completionReceiptModeEnabled(req),
 		"stream_diagnostics":              diagnostics.toMap(),
@@ -1452,6 +1510,12 @@ func buildProviderDiagnosticsJSON(req ExecuteRequest, diagnostics streamDiagnost
 	}
 	if strings.TrimSpace(stderr.scannerError) != "" {
 		payload["stderr_scan_error"] = strings.TrimSpace(stderr.scannerError)
+	}
+	if strings.TrimSpace(retryAt) != "" {
+		payload["retry_at"] = strings.TrimSpace(retryAt)
+	}
+	if retryAfterMS != nil {
+		payload["retry_after_ms"] = *retryAfterMS
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -1664,8 +1728,14 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		if strings.TrimSpace(event.Part.MessageID) != "" {
 			result.FinalTurnID = strings.TrimSpace(event.Part.MessageID)
 		}
-		if strings.TrimSpace(event.ErrorText) != "" && strings.TrimSpace(event.Type) == "error" {
+		if strings.TrimSpace(event.Type) == "error" {
+			result.ProviderErrorPresent = true
 			result.UpstreamErrorText = strings.TrimSpace(event.ErrorText)
+			result.ProviderErrorCode = strings.TrimSpace(event.ProviderErrorCode)
+			result.ProviderErrorCategory = strings.TrimSpace(event.ProviderErrorCategory)
+			result.ProviderErrorStatus = event.ProviderErrorStatus
+			result.RetryAt = event.RetryAt
+			result.RetryAfterMS = event.RetryAfterMS
 		}
 		if event.Type == "step_start" {
 			stepText.startStep()

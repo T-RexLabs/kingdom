@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
@@ -110,6 +111,155 @@ func TestPlanningLogicalSessionIDIsolatesGeneratedTitleRuns(t *testing.T) {
 	}
 }
 
+func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_stale_callback",
+		Title:              "Stale callback",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_stale_callback",
+		ProjectRoot:        t.TempDir(),
+		ModelSelectionJSON: `{"model":"github-copilot/gpt-5.4"}`,
+		CreatedAt:          "2026-05-22T08:40:00Z",
+		UpdatedAt:          "2026-05-22T08:40:00Z",
+	}); err != nil {
+		t.Fatalf("create planning session: %v", err)
+	}
+	bindPlanningContextForTest(t, store, "ps_stale_callback")
+	operation, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID:        "po_stale_callback",
+		PlanningSessionID:  "ps_stale_callback",
+		Type:               state.PlanningOperationTypeReply,
+		Status:             state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{"content_markdown":"retry me"}`,
+		LeaseOwner:         "worker_old",
+		LeaseExpiresAt:     "2026-05-22T08:45:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-05-22T08:40:01Z",
+		StartedAt:          "2026-05-22T08:40:01Z",
+	})
+	if err != nil {
+		t.Fatalf("create planning operation: %v", err)
+	}
+	runner := newOperationRunner(runtimeDeps{
+		store: store,
+		now:   func() string { return "2026-05-22T08:41:00Z" },
+	}, ctx)
+	oldInvocation, err := runner.createPlanningProviderInvocation(ctx, state.PlanningSession{PlanningSessionID: operation.PlanningSessionID}, operation, "")
+	if err != nil {
+		t.Fatalf("create old provider invocation: %v", err)
+	}
+
+	retryScheduled, err := store.FinalizePlanningFailureWithRetry(ctx, state.FinalizePlanningFailureWithRetryRequest{
+		SessionID:    operation.PlanningSessionID,
+		OperationID:  operation.OperationID,
+		LeaseOwner:   operation.LeaseOwner,
+		LeaseVersion: operation.LeaseVersion,
+		UpdatedAt:    "2026-05-22T08:41:00Z",
+		FinishedAt:   "2026-05-22T08:41:00Z",
+		ErrorMessage: "provider failed",
+		ProviderSettlement: &state.FinalizePlanningProviderSettlementRequest{
+			SettlementID:                 "settlement_stale_callback_old",
+			PlanningProviderInvocationID: oldInvocation.InvocationID,
+			PrimaryEvidenceID:            "evidence_stale_callback_old",
+			PrimaryEvidenceKind:          state.PlanningProviderCompletionEvidenceKindStreamObservation,
+			PrimaryEvidencePayloadJSON:   `{"state":"failed"}`,
+			PrimaryEvidenceCreatedAt:     "2026-05-22T08:41:00Z",
+			Outcome:                      state.PlanningProviderCompletionOutcomeFailed,
+			FailureReasonCode:            "timeout",
+			FailureReasonText:            "provider failed",
+			SettledAt:                    "2026-05-22T08:41:00Z",
+		},
+		RetryDecision: state.RetryDecisionCreateRequest{
+			DecisionID:                 "retry_stale_callback_old",
+			SubjectKind:                state.RetrySubjectKindPlanningInvocation,
+			PlanningOperationID:        operation.OperationID,
+			SourcePlanningInvocationID: oldInvocation.InvocationID,
+			PolicyID:                   "test-policy",
+			RetryClass:                 "transient",
+			ErrorCode:                  "timeout",
+			OperatorText:               "The provider failure is eligible for one delayed automatic retry.",
+			Decision:                   state.RetryDecisionRetry,
+			RetryIndex:                 1,
+			MaxRetries:                 1,
+			DueAt:                      mustParsePlanningTime(t, "2026-05-22T08:41:00Z"),
+			CreatedAt:                  mustParsePlanningTime(t, "2026-05-22T08:41:00Z"),
+			EscalationTarget:           "chancellor",
+		},
+		Event: &state.AppendPlanningOperationEventRequest{
+			EventID:     "po_stale_callback:1",
+			OperationID: operation.OperationID,
+			Seq:         1,
+			EventType:   "generic",
+			PayloadJSON: `{}`,
+			CreatedAt:   "2026-05-22T08:41:00Z",
+		},
+	})
+	if err != nil || !retryScheduled {
+		t.Fatalf("schedule planning retry: scheduled=%v err=%v", retryScheduled, err)
+	}
+	retried, claimed, err := store.ClaimOperation(ctx, operation.OperationID, "worker_new", "2026-05-22T08:46:00Z", "2026-05-22T08:42:00Z")
+	if err != nil || !claimed {
+		t.Fatalf("claim retried operation: claimed=%v err=%v", claimed, err)
+	}
+	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: "ppinv_stale_callback_new",
+		PlanningOperationID:          retried.OperationID,
+		PlanningSessionID:            retried.PlanningSessionID,
+		LogicalSessionID:             "planner-ps_stale_callback",
+		CreatedAt:                    "2026-05-22T08:42:01Z",
+		LeaseOwner:                   retried.LeaseOwner,
+		LeaseVersion:                 retried.LeaseVersion,
+	}); err != nil {
+		t.Fatalf("create retry provider invocation: %v", err)
+	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
+		PlanningProviderInvocationID: "ppinv_stale_callback_new",
+		PlanningOperationID:          retried.OperationID,
+		ProviderSessionID:            "ses_retry_current",
+		OpenedAt:                     "2026-05-22T08:42:02Z",
+		LeaseOwner:                   retried.LeaseOwner,
+		LeaseVersion:                 retried.LeaseVersion,
+	}); err != nil {
+		t.Fatalf("open retry provider invocation: %v", err)
+	}
+
+	oldInvocation.OnProviderSession("ses_stale_old")
+
+	persisted, found, err := store.GetOperation(ctx, operation.OperationID)
+	if err != nil || !found {
+		t.Fatalf("get retried operation: found=%v err=%v", found, err)
+	}
+	if persisted.ActiveProviderInvocationID == nil || *persisted.ActiveProviderInvocationID != "ppinv_stale_callback_new" {
+		t.Fatalf("stale callback replaced active invocation: %#v", persisted)
+	}
+	if persisted.ProviderSessionID == nil || *persisted.ProviderSessionID != "ses_retry_current" {
+		t.Fatalf("stale callback replaced provider session: %#v", persisted)
+	}
+	oldPersisted, found, err := store.GetPlanningProviderInvocation(ctx, oldInvocation.InvocationID)
+	if err != nil || !found {
+		t.Fatalf("get old provider invocation: found=%v err=%v", found, err)
+	}
+	if oldPersisted.InvocationState != state.PlanningProviderInvocationStateSettledFailed || oldPersisted.ProviderSessionID != "" {
+		t.Fatalf("stale callback changed old provider invocation: %#v", oldPersisted)
+	}
+}
+
+func mustParsePlanningTime(t *testing.T, raw string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("parse planning time %q: %v", raw, err)
+	}
+	return parsed
+}
+
 func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 	t.Parallel()
 
@@ -127,10 +277,34 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 		{
 			name: "explicit metadata reason wins",
 			metadata: ProviderExecutionMetadata{
-				FailureReasonCode: "provider_timeout",
+				FailureReasonCode: "timeout",
 			},
 			cause:      context.DeadlineExceeded,
-			wantReason: "provider_timeout",
+			wantReason: "timeout",
+		},
+		{
+			name: "adapter process failure normalizes to unknown provider failure",
+			metadata: ProviderExecutionMetadata{
+				FailureReasonCode: "provider_process_failed",
+			},
+			cause:      contextError("planner adapter failed"),
+			wantReason: "provider_unknown_failure",
+		},
+		{
+			name: "adapter malformed protocol normalizes to unknown provider failure",
+			metadata: ProviderExecutionMetadata{
+				FailureReasonCode: "provider_malformed_protocol",
+			},
+			cause:      contextError("planner adapter failed"),
+			wantReason: "provider_unknown_failure",
+		},
+		{
+			name: "adapter terminal failure normalizes to unknown provider failure",
+			metadata: ProviderExecutionMetadata{
+				FailureReasonCode: "provider_terminal_failure",
+			},
+			cause:      contextError("planner adapter failed"),
+			wantReason: "provider_unknown_failure",
 		},
 		{
 			name:       "cancelled uses provider cancelled",
@@ -140,16 +314,17 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 		{
 			name:       "deadline exceeded maps to provider timeout",
 			cause:      context.DeadlineExceeded,
-			wantReason: "provider_timeout",
+			wantReason: "timeout",
 		},
 		{
-			name: "empty final text after provider success maps to incomplete turn",
+			name: "empty final text after provider success maps to empty output",
 			metadata: ProviderExecutionMetadata{
-				OutcomeState: "success",
-				FinalText:    "",
+				OutcomeState:      "success",
+				FinalText:         "",
+				FailureReasonCode: "provider_incomplete_turn",
 			},
 			cause:      context.DeadlineExceeded,
-			wantReason: "provider_incomplete_turn",
+			wantReason: "provider_empty_output",
 		},
 		{
 			name:       "incomplete terminal state maps to incomplete turn",

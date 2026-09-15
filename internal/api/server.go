@@ -26,6 +26,7 @@ import (
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
@@ -66,6 +67,7 @@ type ServerConfig struct {
 	Now                        func() time.Time
 	IDGenerator                func(prefix string) string
 	PlannerAgent               planning.Agent
+	RetryEngine                *retryengine.Engine
 	ExternalAdapter            external.Adapter
 	GitHubKeyStore             *githubexternal.KeyStore
 	GitHubUserTokenStore       *githubexternal.UserTokenStore
@@ -489,9 +491,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		s.plannerRuntimeWarmer = plannerAdapter
 		plannerAgent = planning.NewOpenCodeAgent(plannerAdapter, idGenerator)
 	}
-	s.planningService = planning.NewService(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
-		return now().UTC().Format(time.RFC3339)
-	}, idGenerator)
+	s.planningService = planning.NewServiceWithRetryEngine(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
+		return now().UTC().Format(time.RFC3339Nano)
+	}, idGenerator, cfg.RetryEngine)
 	// Lifecycle ownership: from this point on, NewHandler owns
 	// s.planningService and must close it on any subsequent error
 	// path. Without this, a downstream constructor failure
@@ -972,7 +974,7 @@ func decodeStrictJSON(r *http.Request, target any) error {
 }
 
 func mustParseRFC3339(value string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, value)
+	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Unix(0, 0).UTC()
 	}

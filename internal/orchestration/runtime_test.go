@@ -3340,8 +3340,6 @@ func TestOrchestratorTickReturnsErrorWhenRunStartTransitionFails(t *testing.T) {
 }
 
 func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
-	t.Parallel()
-
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedParallelReadyDispatchRun(t, db)
@@ -5353,8 +5351,8 @@ func TestClassifyExecutionReasonCodeMapsProviderTimeout(t *testing.T) {
 	t.Parallel()
 
 	err := fmt.Errorf("wrapped: %w", context.DeadlineExceeded)
-	if got := classifyExecutionReasonCode(err); got != "provider_timeout" {
-		t.Fatalf("expected provider_timeout, got %q", got)
+	if got := classifyExecutionReasonCode(err); got != "timeout" {
+		t.Fatalf("expected timeout, got %q", got)
 	}
 }
 
@@ -11791,7 +11789,7 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 	}()
 
 	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
+		if status != "succeeded" {
 			return fmt.Errorf("run_timeout_diag status=%s", status)
 		}
 		if adapter.cancelCalls() == 0 {
@@ -11833,7 +11831,7 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	}()
 
 	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
+		if status != "succeeded" {
 			return fmt.Errorf("run_timeout_diag status=%s", status)
 		}
 		if adapter.cancelCalls() == 0 {
@@ -12054,7 +12052,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	}()
 
 	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
+		if status != "succeeded" {
 			return fmt.Errorf("run_timeout_diag status=%s", status)
 		}
 		if adapter.cancelCalls() == 0 {

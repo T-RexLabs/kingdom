@@ -29,6 +29,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		failure_code: overrides.failure_code,
 		failure_text: overrides.failure_text,
 		completion_invalid_reason: overrides.completion_invalid_reason,
+		stop_retry_available: overrides.stop_retry_available ?? false,
 	};
 }
 

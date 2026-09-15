@@ -192,6 +192,7 @@ var legalNodeTransitions = map[string]map[string]struct{}{
 	"starting": {
 		"blocked":   {},
 		"running":   {},
+		"succeeded": {},
 		"failed":    {},
 		"cancelled": {},
 	},

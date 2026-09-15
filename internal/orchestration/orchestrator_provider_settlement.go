@@ -45,10 +45,10 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 	if o == nil || o.executionStore == nil {
 		return "", "", "", "", fmt.Errorf("execution store is required for provider invocation activation")
 	}
-	now, err := time.Parse(time.RFC3339, strings.TrimSpace(issuedAt))
+	now, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(issuedAt))
 	if err != nil {
 		now = o.now().UTC()
-		issuedAt = now.Format(time.RFC3339)
+		issuedAt = now.Format(time.RFC3339Nano)
 	}
 	providerInvocationID := newProviderInvocationID(attemptID, now)
 	completionCapability := ""
@@ -155,7 +155,7 @@ func (o *orchestrationLoop) observeProviderSessionForInvocation(ctx context.Cont
 		ProviderInvocationID: trimmedInvocationID,
 		AttemptID:            trimmedAttemptID,
 		ProviderSessionID:    trimmedProviderSessionID,
-		OpenedAt:             o.now().UTC().Format(time.RFC3339),
+		OpenedAt:             o.now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		// The durable attempt path should continue even if a late provider-session
 		// observation races with a retry or superseded invocation.

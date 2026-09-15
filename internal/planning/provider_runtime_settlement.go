@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -55,6 +56,8 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 			PlanningSessionID:            session.PlanningSessionID,
 			LogicalSessionID:             logicalSessionID,
 			CreatedAt:                    issuedAt,
+			LeaseOwner:                   operation.LeaseOwner,
+			LeaseVersion:                 operation.LeaseVersion,
 		}); err != nil {
 			return nil, err
 		}
@@ -66,14 +69,10 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		ProviderSessionID:            providerSessionID,
 		CreatedAt:                    issuedAt,
 		OpenedAt:                     issuedAt,
+		LeaseOwner:                   operation.LeaseOwner,
+		LeaseVersion:                 operation.LeaseVersion,
 	}); err != nil {
 		return nil, err
-	}
-	if err := r.deps.store.UpdateOperation(ctx, state.UpdatePlanningOperationRequest{
-		OperationID:                operation.OperationID,
-		ActiveProviderInvocationID: &invocationID,
-	}); err != nil {
-		return nil, fmt.Errorf("persist planning provider invocation linkage: %w", err)
 	}
 	if guarded, ok := r.deps.planner.(interface{ RequiresProcessGuard() bool }); ok && guarded.RequiresProcessGuard() {
 		if err := r.deps.store.RequirePlanningProviderProcessGuard(ctx, invocationID, operation.OperationID); err != nil {
@@ -88,22 +87,23 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		InvocationID:      invocationID,
 		OnProviderSession: func(providerSessionID string) {
 			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
-			if trimmedProviderSessionID != "" {
-				invocationContext.ProviderSessionID = trimmedProviderSessionID
-			}
 			markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer cancel()
-			_, _ = r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
+			if _, err := r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
 				PlanningProviderInvocationID: invocationID,
 				PlanningOperationID:          operation.OperationID,
 				ProviderSessionID:            trimmedProviderSessionID,
 				OpenedAt:                     r.deps.nowString(),
-			})
+				LeaseOwner:                   operation.LeaseOwner,
+				LeaseVersion:                 operation.LeaseVersion,
+			}); err != nil {
+				return
+			}
 			if trimmedProviderSessionID != "" {
-				_ = r.deps.store.UpdateOperation(markCtx, state.UpdatePlanningOperationRequest{
-					OperationID:       operation.OperationID,
-					ProviderSessionID: &trimmedProviderSessionID,
-				})
+				invocationContext.ProviderSessionID = trimmedProviderSessionID
+			}
+			if invocationContext.OnProviderSessionOpened != nil {
+				invocationContext.OnProviderSessionOpened(trimmedProviderSessionID)
 			}
 		},
 		OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
@@ -228,14 +228,18 @@ func providerMetadataFromError(err error) ProviderExecutionMetadata {
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
+	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" {
+		return "provider_empty_output"
+	}
 	if reasonCode := strings.TrimSpace(metadata.FailureReasonCode); reasonCode != "" {
+		reasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(reasonCode)
+		if reasonCode == "provider_timeout" {
+			return "timeout"
+		}
 		return reasonCode
 	}
 	if cancelled || errors.Is(cause, context.Canceled) {
 		return "provider_cancelled"
-	}
-	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" {
-		return "provider_incomplete_turn"
 	}
 	if strings.TrimSpace(metadata.OutcomeState) == "incomplete_turn" {
 		return "provider_incomplete_turn"
@@ -245,7 +249,10 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 		return "provider_incomplete_turn"
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {
-		return "provider_timeout"
+		return "timeout"
+	}
+	if errors.Is(cause, ErrOperationStuck) {
+		return "agent_unresponsive"
 	}
 	return "internal_error"
 }

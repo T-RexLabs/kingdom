@@ -427,7 +427,8 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !request.ForceNewSession))
+	forceNewSession := request.ForceNewSession || operation.AutomaticRetry
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !forceNewSession))
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -436,7 +437,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, forceNewSession)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -564,7 +565,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession || operation.AutomaticRetry)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -669,7 +670,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, false)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, operation.AutomaticRetry)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -764,7 +765,7 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	streamCtx := decoupleCancellation(ctx)
 	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
-	agentContext, err := r.deps.titleAgentContext(ctx, operation, session, messages)
+	agentContext, err := r.deps.titleAgentContext(ctx, operation, session, messages, operation.AutomaticRetry)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -854,17 +855,23 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	if cause == nil {
 		cause = fmt.Errorf("planner operation failed")
 	}
-	errPayload := plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": cause.Error()})
-	terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, acp.RunFailedEventType, errPayload)
-	if eventErr != nil {
-		return eventErr
-	}
 	now := r.deps.nowString()
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))
 	observedOutputText = sanitizeObservedPlannerOutput(operation.Type, observedOutputText)
-	providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
-	finalizeErr := r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent)
+	finalizeErr := error(nil)
+	if operation.ActiveProviderInvocationID != nil && r.deps.retryEngine != nil {
+		// Retry-aware finalization chooses and persists its one terminal event
+		// after the durable retry decision is known.
+		_, finalizeErr = r.finalizeFailureWithRetry(ctx, operation, cursor, cause, observedOutputText, false)
+	} else {
+		terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, acp.RunFailedEventType, plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": cause.Error()}))
+		if eventErr != nil {
+			return eventErr
+		}
+		providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
+		finalizeErr = r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, false)
+	}
 	if finalizeErr != nil {
 		// A concurrent finaliser (recovery vs SSE-observer, or any
 		// other observer that already finalised this op) winning the
@@ -924,7 +931,7 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 	}
 	now := r.deps.nowString()
 	providerSettlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, now, reason, nil, true)
-	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent); err != nil {
+	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, false); err != nil {
 		return err
 	}
 	if r.deps.broker != nil {
@@ -936,7 +943,7 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 	return context.Canceled
 }
 
-func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest) error {
+func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest, allowExpiredLease bool) error {
 	switch operation.Type {
 	case state.PlanningOperationTypeGenerateTitle:
 		return r.deps.store.FinalizeGenerateTitleAbort(ctx, state.FinalizeGenerateTitleAbortRequest{
@@ -949,6 +956,7 @@ func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation 
 			FinishedAt:         now,
 			ErrorMessage:       reason,
 			ObservedOutputText: observedOutputText,
+			AllowExpiredLease:  allowExpiredLease,
 			ProviderSettlement: providerSettlement,
 			TerminalEvent:      terminalEvent,
 		})
@@ -968,6 +976,7 @@ func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation 
 			FinishedAt:         now,
 			ErrorMessage:       reason,
 			ObservedOutputText: observedOutputText,
+			AllowExpiredLease:  allowExpiredLease,
 			ProviderSettlement: providerSettlement,
 			TerminalEvent:      terminalEvent,
 		})
@@ -1053,10 +1062,10 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 		return
 	}
 	_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_launching", nil))
-	originalProviderSession := invocation.OnProviderSession
-	invocation.OnProviderSession = func(providerSessionID string) {
-		if originalProviderSession != nil {
-			originalProviderSession(providerSessionID)
+	originalProviderSessionOpened := invocation.OnProviderSessionOpened
+	invocation.OnProviderSessionOpened = func(providerSessionID string) {
+		if originalProviderSessionOpened != nil {
+			originalProviderSessionOpened(providerSessionID)
 		}
 		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_session_open", map[string]any{"provider_session_id": strings.TrimSpace(providerSessionID)}))
 	}
@@ -1160,12 +1169,12 @@ func (r *operationRunner) reconcileProviderSessionActivity(ctx context.Context, 
 func inspectPlannerProviderSessionActivity(ctx context.Context, projectRoot, operationID, providerSessionID, invocationID string, startedAt *string, createdAt string) ([]sessionActivityItem, error) {
 	invocationStartedAt := time.Time{}
 	if startedAt != nil && strings.TrimSpace(*startedAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*startedAt)); err == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*startedAt)); err == nil {
 			invocationStartedAt = parsed.UTC()
 		}
 	}
 	if invocationStartedAt.IsZero() && strings.TrimSpace(createdAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAt)); err == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(createdAt)); err == nil {
 			invocationStartedAt = parsed.UTC()
 		}
 	}
@@ -1365,7 +1374,7 @@ func (r *operationRunner) buildTerminalEventFromCursor(ctx context.Context, oper
 
 func (r *operationRunner) claimOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, error) {
 	now := nowTime(r.deps.nowString())
-	claimed, ok, err := r.deps.store.ClaimOperation(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339), now.Format(time.RFC3339))
+	claimed, ok, err := r.deps.store.ClaimOperation(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil || !ok {
 		return claimed, ok, err
 	}
@@ -1379,6 +1388,9 @@ func (r *operationRunner) claimOperationWithRetry(ctx context.Context, operation
 		if err == nil {
 			if ok {
 				r.observeClaimSuccess(source)
+				if r.deps.retryWakeProgress != nil {
+					r.deps.retryWakeProgress()
+				}
 			}
 			return claimed, ok, nil
 		}
@@ -1449,11 +1461,11 @@ func queueAgeMilliseconds(operation state.PlanningOperation) int64 {
 	if strings.TrimSpace(operation.CreatedAt) == "" || operation.StartedAt == nil || strings.TrimSpace(*operation.StartedAt) == "" {
 		return -1
 	}
-	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(operation.CreatedAt))
+	createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(operation.CreatedAt))
 	if err != nil {
 		return -1
 	}
-	startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*operation.StartedAt))
+	startedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*operation.StartedAt))
 	if err != nil || startedAt.Before(createdAt) {
 		return -1
 	}
@@ -1501,7 +1513,7 @@ func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.Pl
 				return
 			case <-ticker.C:
 				now := nowTime(r.deps.nowString())
-				if err := r.deps.store.RenewOperationLease(ctx, operation.OperationID, operation.LeaseOwner, operation.LeaseVersion, now.Add(planningOperationLeaseTTL).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+				if err := r.deps.store.RenewOperationLease(ctx, operation.OperationID, operation.LeaseOwner, operation.LeaseVersion, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 					if cancelExecution != nil {
 						cancelExecution()
 					}
@@ -1606,7 +1618,7 @@ func answerPayloadMap(raw string) map[string]any {
 }
 
 func nowTime(now string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, now)
+	parsed, err := time.Parse(time.RFC3339Nano, now)
 	if err == nil {
 		return parsed
 	}

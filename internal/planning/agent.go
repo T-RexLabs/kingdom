@@ -34,6 +34,7 @@ type ProviderInvocationContext struct {
 	ProviderSessionID        string
 	InvocationID             string
 	OnProviderSession        func(sessionID string)
+	OnProviderSessionOpened  func(sessionID string)
 	OnActivity               func(activity ProviderActivity)
 	OnProcessGuardOwnership  func(context.Context, opencode.ProcessGuardOwnership) error
 	OnProcessGuardQuiescence func(context.Context, opencode.ProcessGuardQuiescence) error

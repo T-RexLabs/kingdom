@@ -713,6 +713,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
 		RuntimeRoot:                filepath.Join(cfg.KingdomHome, "runtime"),
+		RetryEngine:                runtimeInstance.RetryEngine(),
 		DefaultPublishMode:         cfg.Publish.Mode,
 		OperatorCredential:         operatorCredential,
 		ExternalAdapter:            deps.externalAdapter,

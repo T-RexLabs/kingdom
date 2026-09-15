@@ -192,7 +192,7 @@ type parallelAutoTitlePlanner struct {
 
 // emptyOutputAgent models a provider that reports a terminal success outcome
 // but produces no assembled output text. Server-side settlement must reject
-// this as an incomplete turn rather than persisting an empty canonical message.
+// this as empty provider output rather than persisting an empty canonical message.
 type emptyOutputAgent struct{ mockAgent }
 
 func (m *emptyOutputAgent) ContinueTurnStream(_ context.Context, _ AgentContext, onChunk func(text string)) (AgentTurn, error) {
@@ -656,7 +656,8 @@ func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
-	service := NewService(store, &emptyOutputAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	service := NewServiceWithRetryEngine(store, &emptyOutputAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
 
 	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
 	if err != nil {
@@ -681,7 +682,14 @@ func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 	if terminal.Error == nil || !strings.Contains(*terminal.Error, "missing settled final text") {
 		t.Fatalf("expected missing settled final text failure, got %+v", terminal.Error)
 	}
-	// A success outcome with no assembled output settles as an incomplete turn,
+	var decision, reasonCode, resolution string
+	if err := db.QueryRow(`SELECT decision, error_code, resolution FROM retry_decisions WHERE planning_operation_id = ?`, operation.Operation.OperationID).Scan(&decision, &reasonCode, &resolution); err != nil {
+		t.Fatalf("load retry-aware empty output decision: %v", err)
+	}
+	if decision != string(state.RetryDecisionFailFast) || reasonCode != "provider_empty_output" || resolution != string(state.RetryDecisionResolutionNotApplicable) {
+		t.Fatalf("retry-aware empty output decision=%q reason=%q resolution=%q", decision, reasonCode, resolution)
+	}
+	// A success outcome with no assembled output settles as provider_empty_output,
 	// and no canonical assistant reply message is persisted. The immediate
 	// opening question legitimately carries empty content with a non-empty
 	// question payload, so a genuinely empty reply is one with neither content
@@ -713,7 +721,7 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 		{
 			name:       "timeout",
 			err:        context.DeadlineExceeded,
-			wantReason: "provider_timeout",
+			wantReason: "timeout",
 		},
 		{
 			name:       "generic internal error",
@@ -1733,6 +1741,8 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 		PlanningSessionID:            "ps_stuck_e2e",
 		LogicalSessionID:             "planner-ps_stuck_e2e",
 		CreatedAt:                    "2026-04-26T08:55:02Z",
+		LeaseOwner:                   "abandoned-worker",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("create provider invocation: %v", err)
 	}
@@ -1741,6 +1751,8 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 		PlanningOperationID:          "po_stuck_e2e",
 		ProviderSessionID:            "ses_stuck_e2e",
 		OpenedAt:                     "2026-04-26T08:55:03Z",
+		LeaseOwner:                   "abandoned-worker",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("mark provider invocation open: %v", err)
 	}

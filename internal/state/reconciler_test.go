@@ -64,8 +64,8 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	}
 
 	retryNodeRunID := "nr_1_retry_2"
-	if got := queryNodeStatus(t, db, retryNodeRunID); got != "ready" {
-		t.Fatalf("expected provider-free reassigned retry node to be ready, got %q", got)
+	if got := queryNodeStatus(t, db, retryNodeRunID); got != "pending" {
+		t.Fatalf("expected delayed reassigned retry node to remain pending, got %q", got)
 	}
 	if startedAt := queryNodeStartedAt(t, db, retryNodeRunID); startedAt != "" {
 		t.Fatalf("expected retry node started_at to remain empty before dispatch, got %q", startedAt)
@@ -90,8 +90,8 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 		t.Fatalf("expected idle session expiry to remain unchanged on close, got %q", idleExpiry)
 	}
 
-	if got := queryTransitionCount(t, db, "run_1"); got != 2 {
-		t.Fatalf("expected blocked and released recovery transitions, got %d", got)
+	if got := queryTransitionCount(t, db, "run_1"); got != 1 {
+		t.Fatalf("expected blocked recovery transition before due release, got %d", got)
 	}
 	if got := queryEventTypeCount(t, db, "run_1", "attempt.restarted"); got != 0 {
 		t.Fatalf("expected reconciler to avoid direct attempt.restarted events, got %d", got)
@@ -211,6 +211,51 @@ func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *t
 	}
 	if len(stale) != 0 {
 		t.Fatalf("expected a live provider execution lease to prevent stale fencing, got %#v", stale)
+	}
+}
+
+func TestFindStaleAttemptsRespectsFractionalSecondCutoff(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:00:00.100000001Z' WHERE node_run_id = 'nr_1'`)
+
+	now := time.Date(2026, 3, 1, 12, 1, 0, 100000000, time.UTC)
+	stale, err := findStaleAttemptsWithQuerier(context.Background(), db, now, time.Minute)
+	if err != nil {
+		t.Fatalf("find stale attempts: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("attempt after fractional cutoff was classified stale: %#v", stale)
+	}
+}
+
+func TestReconcilerSchedulesRetryForStartingProviderFailure(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	const attemptID = "run_1:decree_intake:1"
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExecArgs(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, committed_at) VALUES (?, 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', 'llm_rate_limited', 'provider rate limit', '2026-03-01T12:00:00.123456789Z', '2026-03-01T12:00:01.123456789Z', '2026-03-01T12:00:01.123456789Z')`, attemptID)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	if _, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:01:00.123456789Z"}); err != nil {
+		t.Fatalf("reconcile starting provider failure: %v", err)
+	}
+	var decisions, successors int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE source_attempt_id = ? AND decision = 'retry'`, attemptID).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 2`).Scan(&successors); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 1 || successors != 1 {
+		t.Fatalf("recovery created decisions=%d successors=%d, want one each", decisions, successors)
 	}
 }
 
@@ -337,7 +382,7 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing
 	}
 }
 
-func TestReconcilerFailsAndEscalatesWhenRetryBudgetExhausted(t *testing.T) {
+func TestReconcilerDoesNotUseNodeAttemptOrdinalAsRetryBudget(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -359,19 +404,131 @@ func TestReconcilerFailsAndEscalatesWhenRetryBudgetExhausted(t *testing.T) {
 		t.Fatalf("reconcile stale exhausted attempt: %v", err)
 	}
 
-	if result.AttemptsReassigned != 0 {
-		t.Fatalf("expected no reassignment, got %d", result.AttemptsReassigned)
+	if result.AttemptsReassigned != 1 {
+		t.Fatalf("expected one reassignment, got %d", result.AttemptsReassigned)
 	}
-	if result.AttemptsFailed != 1 {
-		t.Fatalf("expected one failed attempt recovery, got %d", result.AttemptsFailed)
-	}
-
-	if got := queryNodeStatus(t, db, "nr_2"); got != "failed" {
-		t.Fatalf("expected stale exhausted attempt to fail, got %q", got)
+	if result.AttemptsFailed != 0 {
+		t.Fatalf("expected no failed attempt recovery, got %d", result.AttemptsFailed)
 	}
 
-	if got := queryEscalationEventCount(t, db, "run_1", "agent_unresponsive"); got != 1 {
-		t.Fatalf("expected one dead-letter escalation event, got %d", got)
+	if got := queryNodeStatus(t, db, "nr_2"); got != "blocked" {
+		t.Fatalf("expected stale attempt to be fenced, got %q", got)
+	}
+
+	if got := queryNodeStatus(t, db, "nr_2_retry_3"); got != "pending" {
+		t.Fatalf("expected decision-counted retry successor to remain pending, got %q", got)
+	}
+}
+
+func TestReconcilerStaleRetryDoesNotCreateSixtyFirstRunAttempt(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	now := "2026-03-01T12:05:30Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	for i := 0; i < DefaultMaxAttemptsPerRun-1; i++ {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-stale-%d', 'run_1', 'budget-stale-node-%d', 1, 1, 'failed', 'king', 'agent_king', 1, '2026-03-01T11:58:00Z', '2026-03-01T11:59:00Z')`, i, i))
+	}
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile stale budget boundary: %v", err)
+	}
+	if result.AttemptsReassigned != 0 || result.AttemptsFailed != 1 {
+		t.Fatalf("stale budget recovery result=%+v", result)
+	}
+	var attempts, pendingRetries int
+	var decision, reason, runStatus string
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1'`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT decision, error_code FROM retry_decisions WHERE node_run_id = 'nr_1'`).Scan(&decision, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_1'`).Scan(&runStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE decision = 'retry' AND dispatch_state = 'pending'`).Scan(&pendingRetries); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != DefaultMaxAttemptsPerRun || decision != string(RetryDecisionFailFast) || reason != "budget_exceeded" || runStatus != "failed" || pendingRetries != 0 {
+		t.Fatalf("stale budget outcome attempts=%d decision=%q reason=%q run=%q pending=%d", attempts, decision, reason, runStatus, pendingRetries)
+	}
+}
+
+func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	firstNow := "2026-03-01T12:05:30Z"
+	if result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: firstNow}); err != nil || result.AttemptsReassigned != 1 {
+		t.Fatalf("schedule stale successor result=%+v err=%v", result, err)
+	}
+	var successor, dueAt string
+	if err := db.QueryRow(`SELECT target_node_run_id, due_at FROM retry_decisions WHERE node_run_id = 'nr_1'`).Scan(&successor, &dueAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_1", dueAt); err != nil {
+		t.Fatalf("release stale successor: %v", err)
+	}
+	exhaustedAttemptID := composeAttemptID("run_1", "decree_intake", 2)
+	store := executionstore.New(db)
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: exhaustedAttemptID, RunID: "run_1", NodeRunID: successor, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_stale_successor", CreatedAt: "2026-03-01T12:06:00Z"}); err != nil {
+		t.Fatalf("enqueue stale successor: %v", err)
+	}
+	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{ProviderInvocationID: "invocation_stale_successor", AttemptID: exhaustedAttemptID, RunID: "run_1", NodeRunID: successor, LogicalSessionID: "session_stale_successor", CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: "2026-03-01T12:06:00Z", CreatedAt: "2026-03-01T12:06:00Z"}); err != nil {
+		t.Fatalf("create stale successor invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{ProviderInvocationID: "invocation_stale_successor", AttemptID: exhaustedAttemptID, ProviderSessionID: "provider_stale_successor", OpenedAt: "2026-03-01T12:06:01Z"}); err != nil {
+		t.Fatalf("open stale successor invocation: %v", err)
+	}
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '2026-03-01T12:06:00Z', finished_at = NULL WHERE node_run_id = '`+successor+`'`)
+
+	secondNow := "2026-03-01T12:10:00Z"
+	staleSuccessor := staleAttempt{NodeRunID: successor, RunID: "run_1", NodeID: "decree_intake", Attempt: 2, Wave: 1, RequiredRole: "king", AgentID: "agent_king_backup", CurrentStatus: "running", StartedAt: "2026-03-01T12:06:00Z"}
+	if result, err := reconciler.recoverAttempt(context.Background(), staleSuccessor, mustParseRFC3339(t, secondNow)); err != nil || !result.failed {
+		t.Fatalf("exhaust stale successor result=%+v err=%v", result, err)
+	}
+	if result, err := reconciler.recoverAttempt(context.Background(), staleSuccessor, mustParseRFC3339(t, secondNow)); err != nil || result.failed || result.reassigned {
+		t.Fatalf("repeat exhausted stale recovery: %v", err)
+	}
+
+	var decision, resolution, target, invocationState, cancelState string
+	var decisions, escalations, deliveries, cancellations int
+	if err := db.QueryRow(`SELECT decision, resolution, escalation_target, source_attempt_id FROM retry_decisions WHERE node_run_id = ?`, successor).Scan(&decision, &resolution, &target, &exhaustedAttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE node_run_id = ?`, successor).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = 'escalation.raised'`, exhaustedAttemptID).Scan(&escalations); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_1' AND message_type = 'escalation' AND to_agent_id = 'agent_chancellor'`).Scan(&deliveries); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id = 'invocation_stale_successor'`).Scan(&invocationState); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1), COALESCE(MAX(status), '') FROM attempt_cancel_outbox WHERE attempt_id = ?`, exhaustedAttemptID).Scan(&cancellations, &cancelState); err != nil {
+		t.Fatal(err)
+	}
+	if decision != string(RetryDecisionExhausted) || resolution != string(RetryDecisionResolutionEscalated) || target != "chancellor" || decisions != 1 || escalations != 1 || deliveries != 1 || invocationState != "superseded" || cancellations != 1 || cancelState != "pending" {
+		t.Fatalf("stale exhaustion decision=%q resolution=%q target=%q decisions=%d events=%d deliveries=%d invocation=%q cancellations=%d cancel_state=%q", decision, resolution, target, decisions, escalations, deliveries, invocationState, cancellations, cancelState)
 	}
 }
 
@@ -486,6 +643,193 @@ func TestReconcilerFencesStaleProviderInvocationBeforeSchedulingRetry(t *testing
 	}
 	if cancelStatus != "pending" {
 		t.Fatalf("expected stale cancellation handoff to remain pending, got %q", cancelStatus)
+	}
+}
+
+func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccessor(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:1"
+	const invocationID = "invocation_stale_meaningful_progress"
+	const now = "2026-03-01T12:13:00Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+
+	store := executionstore.New(db)
+	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_stale_meaningful_progress", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue stale attempt: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:00Z', base_snapshot_id = 'snap_stale_base', result_snapshot_id = 'snap_stale_result' WHERE attempt_id = '`+attemptID+`'`)
+	if _, err := store.CreateProviderInvocation(ctx, executionstore.CreateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_stale_meaningful_progress", CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: "2026-03-01T12:00:01Z", CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(ctx, executionstore.MarkProviderInvocationOpenRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, ProviderSessionID: "ses_stale_meaningful_progress", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		t.Fatalf("open provider invocation: %v", err)
+	}
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_stale_meaningful_progress', 'agent_king', 'active', '2026-03-01T12:10:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_text', 'run_1', 2, 'nr_1', '`+attemptID+`', 'v1', 'attempt.progress', 1, '{"text":"assistant produced a real response"}', 'runtime', 'king', 'runtime', 'stream_event', 'streamed assistant text', 'corr_stale_meaningful', 'caus_stale_meaningful_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_reasoning', 'run_1', 3, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.reasoning","summary":"reasoning"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider reasoning', 'corr_stale_meaningful', 'caus_stale_meaningful_reasoning', 'prev', 'entry', '2026-03-01T12:01:01Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_tool', 'run_1', 4, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 3, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider tool', 'corr_stale_meaningful', 'caus_stale_meaningful_tool', 'prev', 'entry', '2026-03-01T12:01:02Z')`)
+	mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_meaningful', 'run_1', 'nr_1', '`+attemptID+`', '`+invocationID+`', 'king', 'model', '', 5, 3, 8, 2, 0, 0, '2026-03-01T12:01:03Z')`)
+	mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_stale_base', 'run_1', NULL, 'baseline', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_stale_result', 'run_1', 'snap_stale_base', 'attempt_result', '2026-03-01T12:01:04Z')`)
+	mustExec(t, db, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES ('snap_stale_result', 'changed.txt', 'file', 'blob', 1, 420, 0)`)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	meaningful, err := reconciler.hasMeaningfulStaleAttemptProgress(ctx, attemptID)
+	if err != nil || !meaningful {
+		t.Fatalf("meaningful durable stale evidence=%t err=%v", meaningful, err)
+	}
+	result, err := reconciler.recoverAttempt(ctx, staleAttempt{NodeRunID: "nr_1", RunID: "run_1", NodeID: "decree_intake", Attempt: 1, Wave: 1, RequiredRole: "king", AgentID: "agent_king", CurrentStatus: "running", StartedAt: "2026-03-01T12:00:00Z"}, mustParseRFC3339(t, now))
+	if err != nil || !result.failed || result.reassigned {
+		t.Fatalf("recover meaningful stale attempt result=%+v err=%v", result, err)
+	}
+	if status := queryNodeStatus(t, db, "nr_1"); status != "failed" {
+		t.Fatalf("meaningful stale attempt status=%q, want failed", status)
+	}
+	var successors int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 1`).Scan(&successors); err != nil {
+		t.Fatal(err)
+	}
+	if successors != 0 {
+		t.Fatalf("meaningful stale attempt created %d retry successors", successors)
+	}
+	var decision, dispatch, resolution string
+	var recordedMeaningful int
+	if err := db.QueryRow(`SELECT decision, dispatch_state, resolution, meaningful_progress FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&decision, &dispatch, &resolution, &recordedMeaningful); err != nil {
+		t.Fatal(err)
+	}
+	if decision != string(RetryDecisionFailFast) || dispatch != string(RetryDispatchStateNotApplicable) || resolution != string(RetryDecisionResolutionNotApplicable) || recordedMeaningful != 1 {
+		t.Fatalf("meaningful stale retry decision=%q dispatch=%q resolution=%q progress=%d", decision, dispatch, resolution, recordedMeaningful)
+	}
+	invocation, found, err := store.GetProviderInvocation(ctx, invocationID)
+	if err != nil || !found || invocation.InvocationState != executionstore.ProviderInvocationStateSuperseded {
+		t.Fatalf("stale provider invocation=%#v found=%t err=%v", invocation, found, err)
+	}
+	var cancelStatus string
+	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE attempt_id = ?`, attemptID).Scan(&cancelStatus); err != nil {
+		t.Fatal(err)
+	}
+	if cancelStatus != "pending" {
+		t.Fatalf("stale meaningful attempt cancellation status=%q, want pending", cancelStatus)
+	}
+}
+
+func TestReconcilerRecognizesEachMeaningfulStaleEvidenceSource(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		seed func(*testing.T, *sql.DB)
+	}{
+		{
+			name: "assistant text",
+			seed: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_text_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.progress', 1, '{"text":"assistant response"}', 'runtime', 'king', 'runtime', 'stream_event', 'streamed assistant text', 'corr', 'caus_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+			},
+		},
+		{
+			name: "reasoning activity",
+			seed: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_reasoning_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","summary":"thinking"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider reasoning', 'corr', 'caus_reasoning', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+			},
+		},
+		{
+			name: "tool activity",
+			seed: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_tool_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider tool', 'corr', 'caus_tool', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+			},
+		},
+		{
+			name: "token usage",
+			seed: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_evidence', 'run_1', 'nr_1', 'stale_evidence_attempt', 'king', 'model', '', 1, 0, 1, 0, 0, 0, '2026-03-01T12:01:00Z')`)
+			},
+		},
+		{
+			name: "workspace delta",
+			seed: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_evidence_base', result_snapshot_id = 'snap_evidence_result' WHERE attempt_id = 'stale_evidence_attempt'`)
+				mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_evidence_base', 'run_1', NULL, 'baseline', '2026-03-01T12:00:00Z')`)
+				mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_evidence_result', 'run_1', 'snap_evidence_base', 'attempt_result', '2026-03-01T12:01:00Z')`)
+				mustExec(t, db, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES ('snap_evidence_result', 'changed.txt', 'file', 'blob', 1, 420, 0)`)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('stale_evidence_attempt', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+			tc.seed(t, db)
+
+			meaningful, err := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil).hasMeaningfulStaleAttemptProgress(context.Background(), "stale_evidence_attempt")
+			if err != nil || !meaningful {
+				t.Fatalf("meaningful stale evidence=%t err=%v", meaningful, err)
+			}
+		})
+	}
+}
+
+func TestReconcilerSchedulesSameAgentExecutionRetryOnlyAfterHandoff(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	const now = "2026-03-01T12:13:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder-berserker', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_execution_retry', 'execution retry', 'execution retry', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_execution_retry', 'execution-retry', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_execution_retry', 'wf_execution_retry', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_execution_retry', NULL, 'decree_execution_retry', 'wf_execution_retry', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_execution_retry_1', 'run_execution_retry', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_builder', 1, '2026-03-01T12:00:00Z', NULL)`)
+
+	const attemptID = "run_execution_retry:delegated_execution_berserker:1"
+	store := executionstore.New(db)
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_execution_retry", NodeRunID: "nr_execution_retry_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeReceiptRequired, SessionRef: "session_execution_retry", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue stale execution attempt: %v", err)
+	}
+	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{ProviderInvocationID: "inv_execution_retry", AttemptID: attemptID, RunID: "run_execution_retry", NodeRunID: "nr_execution_retry_1", LogicalSessionID: "session_execution_retry", CompletionMode: executionstore.ProviderCompletionModeReceiptRequired, CompletionCapability: "cap_execution_retry", IssuedAt: "2026-03-01T12:00:01Z", CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+		t.Fatalf("create stale execution invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{ProviderInvocationID: "inv_execution_retry", AttemptID: attemptID, ProviderSessionID: "ses_execution_retry", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		t.Fatalf("open stale execution invocation: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:00Z', updated_at = '2026-03-01T12:00:00Z' WHERE attempt_id = '`+attemptID+`'`)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})
+	if err != nil {
+		t.Fatalf("reconcile same-agent stale execution: %v", err)
+	}
+	if result.AttemptsReassigned != 1 || result.AttemptsFailed != 0 {
+		t.Fatalf("same-agent stale recovery result=%+v", result)
+	}
+
+	const retryNodeRunID = "nr_execution_retry_1_retry_2"
+	if got := queryNodeStatus(t, db, retryNodeRunID); got != "pending" {
+		t.Fatalf("same-agent retry launched before cancellation handoff: %q", got)
+	}
+	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_builder" {
+		t.Fatalf("same-agent retry assigned %q", got)
+	}
+	var decision, dispatchState, resolution, dueAt string
+	if err := db.QueryRow(`SELECT decision, dispatch_state, resolution, due_at FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&decision, &dispatchState, &resolution, &dueAt); err != nil {
+		t.Fatalf("load same-agent retry decision: %v", err)
+	}
+	if decision != string(RetryDecisionRetry) || dispatchState != string(RetryDispatchStatePending) || resolution != string(RetryDecisionResolutionPending) {
+		t.Fatalf("same-agent retry decision=%q dispatch=%q resolution=%q", decision, dispatchState, resolution)
+	}
+	if released, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 0 {
+		t.Fatalf("same-agent retry bypassed cancellation handoff: released=%#v err=%v", released, err)
+	}
+	mustExec(t, db, `UPDATE attempt_cancel_outbox SET status = 'published', handoff_state = 'released', published_at = '`+now+`' WHERE attempt_id = '`+attemptID+`'`)
+	if released, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 1 || released[0].NodeRunID != retryNodeRunID {
+		t.Fatalf("same-agent retry release after handoff: released=%#v err=%v", released, err)
 	}
 }
 
@@ -1087,6 +1431,147 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 	}
 }
 
+func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	ctx := context.Background()
+	store := executionstore.New(db)
+	attemptID := composeAttemptID("run_1", "decree_intake", 1)
+	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_provider_hint_recovery",
+		CreatedAt:      "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("enqueue provider-backed attempt: %v", err)
+	}
+	if _, err := store.CreateProviderInvocation(ctx, executionstore.CreateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_provider_hint_recovery",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_provider_hint_recovery",
+		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
+		CompletionCapability: "capability_provider_hint_recovery",
+		IssuedAt:             "2026-03-01T12:00:01Z",
+		CreatedAt:            "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(ctx, executionstore.MarkProviderInvocationOpenRequest{
+		ProviderInvocationID: "invocation_provider_hint_recovery",
+		AttemptID:            attemptID,
+		ProviderSessionID:    "ses_provider_hint_recovery",
+		OpenedAt:             "2026-03-01T12:00:02Z",
+	}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+	evidence, err := store.EnsureTerminalProviderCompletionEvidence(ctx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{
+		ProviderInvocationID: "invocation_provider_hint_recovery",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		State:                "failed",
+		ReasonCode:           "timeout",
+		FailureText:          "provider asked Kingdom to retry later",
+		EvidenceSource:       "stream",
+		CreatedAt:            "2026-03-01T12:00:03Z",
+	})
+	if err != nil {
+		t.Fatalf("ensure terminal provider evidence: %v", err)
+	}
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{
+		SettlementID:            executionstore.ProviderCompletionSettlementID("invocation_provider_hint_recovery"),
+		ProviderInvocationID:    "invocation_provider_hint_recovery",
+		AttemptID:               attemptID,
+		RunID:                   "run_1",
+		NodeRunID:               "nr_1",
+		Outcome:                 executionstore.ProviderCompletionOutcomeFailed,
+		PrimaryEvidenceID:       evidence.EvidenceID,
+		ProviderDiagnosticsJSON: `{"retry_at":"2026-03-01T12:10:00Z"}`,
+		FailureReasonCode:       "timeout",
+		FailureReasonText:       "provider asked Kingdom to retry later",
+		StructuredPayloadJSON:   `{}`,
+		SettledAt:               "2026-03-01T12:00:04Z",
+	})
+	mustExec(t, db, `UPDATE attempt_executions
+		SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z',
+		    committed_at = '2026-03-01T12:00:04Z', failure_code = 'timeout',
+		    failure_text = 'provider asked Kingdom to retry later', updated_at = '2026-03-01T12:00:04Z'
+		WHERE attempt_id = 'run_1:decree_intake:1'`)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	if _, err := reconciler.Reconcile(ctx, ReconcileRequest{Now: "2026-03-01T12:01:00Z"}); err != nil {
+		t.Fatalf("recover committed provider failure: %v", err)
+	}
+
+	var providerRetryAt, dueAt string
+	if err := db.QueryRow(`SELECT provider_retry_at, due_at FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&providerRetryAt, &dueAt); err != nil {
+		t.Fatalf("load recovered retry decision: %v", err)
+	}
+	if providerRetryAt != "2026-03-01T12:10:00Z" || dueAt != "2026-03-01T12:10:00Z" {
+		t.Fatalf("expected persisted provider hint to set retry deadline, got provider_retry_at=%q due_at=%q", providerRetryAt, dueAt)
+	}
+	restarted := NewTransitionService(db, nil)
+	released, err := restarted.ReleaseDueDecreeRetries(ctx, "run_1", "2026-03-01T12:09:59Z")
+	if err != nil {
+		t.Fatalf("release retries before provider hint: %v", err)
+	}
+	if len(released) != 0 {
+		t.Fatalf("expected restart recovery to retain retry until provider hint, released %#v", released)
+	}
+}
+
+func TestReconcilerMeaningfulProgressDoesNotEscalateExhaustedRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	ctx := context.Background()
+	store := executionstore.New(db)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_prior_retry', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('prior_attempt', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry_prior_attempt', 'decree_attempt', 'run_1', 'decree_intake', 'nr_1', 'prior_attempt', 'nr_prior_retry', 'retry-policy-mvp-v1', 'internal_runtime', 'internal_error', 'retry', 0, 'retry', 1, 1, 0, '2026-03-01T12:00:00Z', 'pending', 'chancellor', 'pending', '2026-03-01T12:00:00Z')`)
+
+	attemptID := composeAttemptID("run_1", "decree_intake", 3)
+	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeReceiptRequired, SessionRef: "session_meaningful_exhaustion", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue provider-backed attempt: %v", err)
+	}
+	if _, err := store.CreateProviderInvocation(ctx, executionstore.CreateProviderInvocationRequest{ProviderInvocationID: "invocation_meaningful_exhaustion", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_meaningful_exhaustion", CompletionMode: executionstore.ProviderCompletionModeReceiptRequired, CompletionCapability: "capability_meaningful_exhaustion", IssuedAt: "2026-03-01T12:00:01Z", CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkProviderInvocationOpen(ctx, executionstore.MarkProviderInvocationOpenRequest{ProviderInvocationID: "invocation_meaningful_exhaustion", AttemptID: attemptID, ProviderSessionID: "ses_meaningful_exhaustion", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		t.Fatalf("mark provider invocation open: %v", err)
+	}
+	evidence, err := store.EnsureTerminalProviderCompletionEvidence(ctx, executionstore.EnsureTerminalProviderCompletionEvidenceRequest{ProviderInvocationID: "invocation_meaningful_exhaustion", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", State: "failed", ReasonCode: "internal_error", FailureText: "provider made progress before failure", EvidenceSource: "stream", CreatedAt: "2026-03-01T12:00:03Z"})
+	if err != nil {
+		t.Fatalf("ensure terminal provider evidence: %v", err)
+	}
+	mustExec(t, db, `UPDATE provider_completion_evidence SET payload_json = '{"observation":{"meaningful_progress":true}}' WHERE evidence_id = 'evidence_terminal_invocation_meaningful_exhaustion'`)
+	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{SettlementID: executionstore.ProviderCompletionSettlementID("invocation_meaningful_exhaustion"), ProviderInvocationID: "invocation_meaningful_exhaustion", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: executionstore.ProviderCompletionOutcomeFailed, PrimaryEvidenceID: evidence.EvidenceID, ProviderDiagnosticsJSON: `{}`, FailureReasonCode: "internal_error", FailureReasonText: "provider made progress before failure", StructuredPayloadJSON: `{}`, SettledAt: "2026-03-01T12:00:04Z"})
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z', committed_at = '2026-03-01T12:00:04Z', failure_code = 'internal_error', failure_text = 'provider made progress before failure', updated_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:decree_intake:3'`)
+
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+	if _, err := reconciler.Reconcile(ctx, ReconcileRequest{Now: "2026-03-01T12:05:00Z"}); err != nil {
+		t.Fatalf("reconcile meaningful exhausted failure: %v", err)
+	}
+	var decision, resolution string
+	if err := db.QueryRow(`SELECT decision, resolution FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&decision, &resolution); err != nil {
+		t.Fatalf("load meaningful exhausted retry decision: %v", err)
+	}
+	if decision != string(RetryDecisionFailFast) || resolution != string(RetryDecisionResolutionNotApplicable) {
+		t.Fatalf("meaningful exhausted retry decision=%q resolution=%q, want fail_fast/not_applicable", decision, resolution)
+	}
+}
+
 func TestReconcilerDoesNotCreateSettlementFromCommittedSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -1182,6 +1667,50 @@ func TestReconcilerDoesNotCreateSettlementFromCommittedSuccess(t *testing.T) {
 	}
 	if found {
 		t.Fatalf("expected committed attempt not to create a provider settlement, got %#v", settlement)
+	}
+}
+
+func TestReconcilerDoesNotClassifyWorkflowReworkAsAutomaticRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		nodeID   string
+		nodeRun  string
+		roleID   string
+		agentID  string
+		nodeType string
+		code     string
+	}{
+		{name: "execution review", nodeID: "execution_review_shieldmaiden", nodeRun: "nr_rework_review", roleID: "reviewer-shieldmaiden", agentID: "agent_rework_review", nodeType: "execution_review", code: "execution_review_rework"},
+		{name: "validation gate", nodeID: "validation_gates_qa_scout", nodeRun: "nr_rework_validation", roleID: "intelligence-qa-scout", agentID: "agent_rework_validation", nodeType: "validation_gates", code: "validation_gate_rework"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES (%q, %q, 0, '2026-03-01T12:00:00Z')`, tc.roleID, tc.roleID))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (%q, %q, 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, tc.agentID, tc.roleID))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (%q, 'wfdef_1', %q, %q, %q, '2026-03-01T12:00:00Z')`, "wn_"+tc.nodeRun, tc.nodeID, tc.roleID, tc.nodeType))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (%q, 'run_1', %q, 1, 1, 'running', %q, %q, 1, '2026-03-01T12:00:00Z', NULL)`, tc.nodeRun, tc.nodeID, tc.roleID, tc.agentID))
+			attemptID := composeAttemptID("run_1", tc.nodeID, 1)
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, terminal_observed_at, committed_at) VALUES (%q, 'run_1', %q, 'committed_failure', 'provider_backed', 'server_response', %q, 'workflow requested rework', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:01Z')`, attemptID, tc.nodeRun, tc.code))
+
+			reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
+			if _, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:05:00Z"}); err != nil {
+				t.Fatalf("reconcile rework attempt: %v", err)
+			}
+			var decisions int
+			if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&decisions); err != nil {
+				t.Fatal(err)
+			}
+			if decisions != 0 {
+				t.Fatalf("workflow rework created %d automatic retry decisions", decisions)
+			}
+			if status := queryNodeStatus(t, db, tc.nodeRun); status != "failed" {
+				t.Fatalf("workflow rework node status=%q, want failed projection", status)
+			}
+		})
 	}
 }
 
@@ -1798,8 +2327,8 @@ func TestReconcilerIncludesDiagnosticsInStaleFailurePayload(t *testing.T) {
 	if payload["node_id"] != "decree_intake" {
 		t.Fatalf("expected node_id=decree_intake, got %#v", payload["node_id"])
 	}
-	if payload["retry_allowed"] != false {
-		t.Fatalf("expected retry_allowed=false for exhausted retry budget, got %#v", payload["retry_allowed"])
+	if payload["retry_allowed"] != false || payload["meaningful_progress"] != true {
+		t.Fatalf("expected meaningful provider text to disable retry, got retry_allowed=%#v meaningful_progress=%#v", payload["retry_allowed"], payload["meaningful_progress"])
 	}
 	if payload["retries_attempted"] == nil || payload["max_retries"] == nil {
 		t.Fatalf("expected retries_attempted/max_retries diagnostics in payload, got %#v", payload)
@@ -1910,8 +2439,8 @@ func TestReconcilerAllowsOneSelfRetryForPlanningNodeWhenNoReplacementAgent(t *te
 		t.Fatalf("expected one reassigned attempt via self-retry, got %d", result.AttemptsReassigned)
 	}
 	retryNodeRunID := "nr_1_retry_2"
-	if got := queryNodeStatus(t, db, retryNodeRunID); got != "ready" {
-		t.Fatalf("expected self-retry node to be ready for orchestrator dispatch, got %q", got)
+	if got := queryNodeStatus(t, db, retryNodeRunID); got != "pending" {
+		t.Fatalf("expected delayed self-retry node to remain pending, got %q", got)
 	}
 	if startedAt := queryNodeStartedAt(t, db, retryNodeRunID); startedAt != "" {
 		t.Fatalf("expected self-retry started_at to remain empty before dispatch, got %q", startedAt)

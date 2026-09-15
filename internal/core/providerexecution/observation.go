@@ -1,8 +1,14 @@
 package providerexecution
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
 	"strings"
+	"time"
+
+	"kingdom/internal/core/errorcatalog"
 )
 
 type TokenUsage struct {
@@ -34,11 +40,67 @@ type InvocationStreamObservation struct {
 	ProcessGuards               []ProcessGuardObservation   `json:"process_guards,omitempty"`
 	TimedOut                    bool                        `json:"timed_out"`
 	Cancelled                   bool                        `json:"cancelled"`
+	ProviderErrorPresent        bool                        `json:"provider_error_present"`
 	ProviderError               string                      `json:"provider_error,omitempty"`
+	ProviderErrorCode           string                      `json:"provider_error_code,omitempty"`
+	ProviderErrorCategory       string                      `json:"provider_error_category,omitempty"`
+	ProviderErrorStatus         int                         `json:"provider_error_status,omitempty"`
 	MalformedProtocolCount      int                         `json:"malformed_protocol_count"`
 	ConflictingTerminalEvidence bool                        `json:"conflicting_terminal_evidence"`
 	LaterEventAfterTerminal     bool                        `json:"later_event_after_terminal"`
 	MeaningfulProgress          bool                        `json:"meaningful_progress"`
+}
+
+// CanonicalProviderErrorCode classifies only provider-supplied structured
+// metadata. Provider prose is not a control channel and therefore remains a
+// fail-fast unknown provider failure.
+func CanonicalProviderErrorCode(code, category string, status int) errorcatalog.Code {
+	code = normalizeProviderErrorField(code)
+	category = normalizeProviderErrorField(category)
+	if status == 429 || providerErrorFieldContains(code, "rate_limit", "too_many_requests") || providerErrorFieldContains(category, "rate_limit", "too_many_requests") {
+		return errorcatalog.CodeLLMRateLimited
+	}
+	if providerErrorFieldContains(code, "model", "deployment") || providerErrorFieldContains(category, "model", "deployment") {
+		return errorcatalog.CodeLLMModelUnavailable
+	}
+	if status == 408 || status >= 500 || providerErrorFieldContains(code, "transport", "network", "connection", "econn", "timeout", "temporarily_unavailable", "service_unavailable", "upstream_unavailable", "overloaded") || providerErrorFieldContains(category, "transport", "network", "connection", "timeout", "unavailable", "overloaded") {
+		return errorcatalog.CodeTransientTransport
+	}
+	return errorcatalog.CodeProviderUnknownFailure
+}
+
+// NormalizeAdapterTerminalFailureCode prevents adapter-local terminal labels
+// from becoming durable retry or projection authority.
+func NormalizeAdapterTerminalFailureCode(reasonCode string) string {
+	switch strings.TrimSpace(reasonCode) {
+	case "provider_process_failed", "provider_malformed_protocol", "provider_terminal_failure":
+		return string(errorcatalog.CodeProviderUnknownFailure)
+	default:
+		return strings.TrimSpace(reasonCode)
+	}
+}
+
+func normalizeProviderErrorField(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var normalized strings.Builder
+	normalized.Grow(len(value))
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			normalized.WriteRune(r)
+		} else {
+			normalized.WriteByte('_')
+		}
+	}
+	return normalized.String()
+}
+
+func providerErrorFieldContains(value string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(value, term) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProcessGuardObservation intentionally excludes the guardian's raw
@@ -61,6 +123,53 @@ type InvocationToolObservation struct {
 	ID     string `json:"id"`
 	Name   string `json:"name,omitempty"`
 	Status string `json:"status,omitempty"`
+}
+
+// RetryAtFromDiagnostics resolves the durable provider retry contract. An
+// absolute retry_at is authoritative when both forms are present.
+func RetryAtFromDiagnostics(raw string, occurredAt time.Time) *time.Time {
+	var diagnostics map[string]any
+	if json.Unmarshal([]byte(raw), &diagnostics) != nil {
+		return nil
+	}
+	if value, ok := diagnostics["retry_at"].(string); ok {
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil {
+			parsed = parsed.UTC()
+			return &parsed
+		}
+	}
+	if value, ok := diagnostics["retry_after_ms"].(float64); ok {
+		delay, valid := RetryAfterDurationFromMilliseconds(value)
+		if !valid {
+			return nil
+		}
+		parsed := occurredAt.UTC().Add(delay)
+		return &parsed
+	}
+	return nil
+}
+
+// RetryAfterDurationFromMilliseconds converts an untrusted provider delay
+// without rounding it down or overflowing time.Duration.
+func RetryAfterDurationFromMilliseconds(value float64) (time.Duration, bool) {
+	if value < 0 || math.IsInf(value, 0) || math.IsNaN(value) {
+		return 0, false
+	}
+
+	// Float multiplication loses precision near MaxInt64. Convert the exact
+	// float representation to nanoseconds and round up, preserving a provider
+	// minimum delay even at the duration boundary.
+	milliseconds := new(big.Rat).SetFloat64(value)
+	nanoseconds := new(big.Rat).Mul(milliseconds, big.NewRat(int64(time.Millisecond), 1))
+	durationNS, remainder := new(big.Int), new(big.Int)
+	durationNS.QuoRem(nanoseconds.Num(), nanoseconds.Denom(), remainder)
+	if remainder.Sign() != 0 {
+		durationNS.Add(durationNS, big.NewInt(1))
+	}
+	if durationNS.Sign() < 0 || !durationNS.IsInt64() {
+		return 0, false
+	}
+	return time.Duration(durationNS.Int64()), true
 }
 
 type InvalidServerResponseObservationError struct {
@@ -86,13 +195,13 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 		return fail("provider_incomplete_turn", fmt.Sprintf("provider final step reason must be stop, got %q", observation.RawFinishReason))
 	}
 	if strings.TrimSpace(observation.FinalTurnID) == "" {
-		return fail("provider_malformed_protocol", "provider terminal response is missing final turn identity")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final turn identity")
 	}
 	if strings.TrimSpace(observation.FinalStepID) == "" {
-		return fail("provider_malformed_protocol", "provider terminal response is missing final step identity")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final step identity")
 	}
 	if observation.FinalSequence <= 0 {
-		return fail("provider_malformed_protocol", "provider terminal step is missing a valid stream sequence")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal step is missing a valid stream sequence")
 	}
 	if strings.TrimSpace(observation.CanonicalTerminalText) == "" {
 		return fail("provider_empty_output", "provider returned an empty terminal response")
@@ -111,22 +220,22 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 		return fail("provider_incomplete_turn", "provider stream remained active after the terminal response")
 	}
 	if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
-		return fail("provider_process_failed", "provider process did not exit successfully")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider process did not exit successfully")
 	}
 	if !observation.StdoutDrained || !observation.StderrDrained {
-		return fail("provider_process_failed", "provider output streams were not fully drained")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider output streams were not fully drained")
 	}
 	if observation.TimedOut {
-		return fail("provider_timeout", "provider execution timed out")
+		return fail("timeout", "provider execution timed out")
 	}
 	if observation.Cancelled {
 		return fail("provider_cancelled", "provider execution was cancelled")
 	}
-	if strings.TrimSpace(observation.ProviderError) != "" {
-		return fail("provider_upstream_error", strings.TrimSpace(observation.ProviderError))
+	if observation.ProviderErrorPresent || strings.TrimSpace(observation.ProviderError) != "" {
+		return fail(string(CanonicalProviderErrorCode(observation.ProviderErrorCode, observation.ProviderErrorCategory, observation.ProviderErrorStatus)), strings.TrimSpace(observation.ProviderError))
 	}
 	if observation.MalformedProtocolCount != 0 {
-		return fail("provider_malformed_protocol", "provider emitted malformed stream data")
+		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider emitted malformed stream data")
 	}
 	if observation.ConflictingTerminalEvidence {
 		return fail("provider_incomplete_turn", "provider emitted conflicting terminal evidence")

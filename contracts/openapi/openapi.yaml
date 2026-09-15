@@ -3031,6 +3031,8 @@ components:
                   llm_context_overflow,
                   llm_invalid_response,
                   provider_incomplete_turn,
+                  provider_empty_output,
+                  provider_unknown_failure,
                   provider_cancelled,
                   agent_unresponsive,
                   session_lease_expired,
@@ -4226,7 +4228,7 @@ components:
     RuntimeRetryStatus:
       type: object
       additionalProperties: false
-      required: [node_id, node_run_id, retry_index, retry_max, delay_seconds]
+      required: [node_id, node_run_id, source_node_run_id, retry_index, retry_max, delay_seconds, phase, status, reason_code, due_at]
       properties:
         node_id:
           type: string
@@ -4236,13 +4238,31 @@ components:
           minLength: 1
         retry_index:
           type: integer
-          minimum: 1
+          minimum: 0
         retry_max:
           type: integer
-          minimum: 1
+          minimum: 0
         delay_seconds:
           type: integer
-          minimum: 1
+          minimum: 0
+        source_node_run_id:
+          type: string
+          minLength: 1
+        target_node_run_id:
+          type: string
+          minLength: 1
+        phase:
+          type: string
+          enum: [scheduled, dispatched, recovered, failed, cancelled, exhausted, fail_fast]
+        status:
+          type: string
+          enum: [pending, dispatched, recovered, failed, cancelled, escalated, not_applicable]
+        reason_code:
+          type: string
+          minLength: 1
+        due_at:
+          type: string
+          format: date-time
 
     RunTabCounts:
       type: object
@@ -4370,9 +4390,15 @@ components:
         runtime_retries:
           - node_id: delegated_execution_berserker
             node_run_id: nr_123
+            source_node_run_id: nr_122
+            target_node_run_id: nr_123
             retry_index: 2
             retry_max: 3
             delay_seconds: 10
+            phase: scheduled
+            status: pending
+            reason_code: timeout
+            due_at: "2026-04-30T12:29:10Z"
 
     RunListResponse:
       type: object

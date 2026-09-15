@@ -1260,7 +1260,8 @@ CREATE TABLE planning_provider_invocations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
-  FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE
+  FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
+  UNIQUE (planning_provider_invocation_id, planning_operation_id)
 );
 
 CREATE INDEX idx_planning_provider_invocations_operation_created
@@ -1268,6 +1269,127 @@ ON planning_provider_invocations (planning_operation_id, created_at DESC, planni
 
 CREATE INDEX idx_planning_provider_invocations_state_updated
 ON planning_provider_invocations (invocation_state, updated_at DESC, planning_provider_invocation_id);
+
+CREATE TABLE retry_decisions (
+  retry_decision_id TEXT PRIMARY KEY CHECK (TRIM(retry_decision_id) <> ''),
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('decree_attempt', 'planning_invocation')),
+  run_id TEXT,
+  node_id TEXT,
+  node_run_id TEXT,
+  planning_operation_id TEXT,
+  source_attempt_id TEXT,
+  source_planning_invocation_id TEXT,
+  target_node_run_id TEXT,
+  policy_id TEXT NOT NULL CHECK (TRIM(policy_id) <> ''),
+  retry_class TEXT NOT NULL CHECK (TRIM(retry_class) <> ''),
+  error_code TEXT NOT NULL CHECK (TRIM(error_code) <> ''),
+  operator_text TEXT NOT NULL,
+  meaningful_progress INTEGER NOT NULL CHECK (meaningful_progress IN (0, 1)),
+  decision TEXT NOT NULL CHECK (decision IN ('retry', 'fail_fast', 'exhausted')),
+  retry_index INTEGER NOT NULL CHECK (retry_index >= 0),
+  max_retries INTEGER NOT NULL CHECK (max_retries >= 0),
+  policy_delay_ns INTEGER NOT NULL CHECK (policy_delay_ns >= 0),
+  provider_retry_at TEXT,
+  due_at TEXT NOT NULL,
+  dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('pending', 'dispatched', 'not_applicable')),
+  dispatched_at TEXT,
+  escalation_target TEXT NOT NULL CHECK (TRIM(escalation_target) <> ''),
+  resolution TEXT NOT NULL CHECK (resolution IN ('pending', 'recovered', 'failed', 'escalated', 'not_applicable', 'cancelled')),
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  CHECK (
+    (subject_kind = 'decree_attempt'
+      AND run_id IS NOT NULL AND TRIM(run_id) <> ''
+      AND node_id IS NOT NULL AND TRIM(node_id) <> ''
+      AND node_run_id IS NOT NULL AND TRIM(node_run_id) <> ''
+      AND source_attempt_id IS NOT NULL AND TRIM(source_attempt_id) <> ''
+      AND planning_operation_id IS NULL AND source_planning_invocation_id IS NULL)
+    OR
+    (subject_kind = 'planning_invocation'
+      AND planning_operation_id IS NOT NULL AND TRIM(planning_operation_id) <> ''
+      AND source_planning_invocation_id IS NOT NULL AND TRIM(source_planning_invocation_id) <> ''
+      AND run_id IS NULL AND node_id IS NULL AND node_run_id IS NULL AND source_attempt_id IS NULL AND target_node_run_id IS NULL)
+  ),
+  CHECK (
+    (decision = 'retry' AND (dispatch_state IN ('pending', 'dispatched') OR (dispatch_state = 'not_applicable' AND resolution = 'cancelled'))
+      AND ((subject_kind = 'decree_attempt' AND target_node_run_id IS NOT NULL AND TRIM(target_node_run_id) <> '')
+        OR subject_kind = 'planning_invocation'))
+    OR
+    (decision IN ('fail_fast', 'exhausted') AND target_node_run_id IS NULL AND dispatch_state = 'not_applicable')
+  ),
+  CHECK (
+    (dispatch_state = 'pending' AND dispatched_at IS NULL AND resolution = 'pending' AND resolved_at IS NULL)
+    OR
+    (dispatch_state = 'dispatched' AND dispatched_at IS NOT NULL AND resolution IN ('pending', 'recovered', 'failed', 'cancelled')
+	  AND ((resolution = 'pending' AND resolved_at IS NULL) OR (resolution IN ('recovered', 'failed', 'cancelled') AND resolved_at IS NOT NULL)))
+    OR
+    (dispatch_state = 'not_applicable' AND dispatched_at IS NULL
+	  AND ((resolution = 'not_applicable' AND decision = 'fail_fast' AND resolved_at IS NULL)
+	    OR (resolution = 'escalated' AND decision = 'exhausted' AND resolved_at IS NOT NULL)
+	    OR (resolution = 'cancelled' AND decision = 'retry' AND resolved_at IS NOT NULL)))
+  ),
+  FOREIGN KEY (source_attempt_id, run_id, node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id),
+  FOREIGN KEY (target_node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
+  FOREIGN KEY (source_planning_invocation_id, planning_operation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id, planning_operation_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_retry_decisions_source_decree_attempt
+ON retry_decisions (source_attempt_id)
+WHERE subject_kind = 'decree_attempt';
+
+CREATE UNIQUE INDEX idx_retry_decisions_source_planning_invocation
+ON retry_decisions (source_planning_invocation_id)
+WHERE subject_kind = 'planning_invocation';
+
+CREATE UNIQUE INDEX idx_retry_decisions_pending_decree_node
+ON retry_decisions (run_id, node_id)
+WHERE subject_kind = 'decree_attempt' AND decision = 'retry' AND dispatch_state = 'pending';
+
+CREATE UNIQUE INDEX idx_retry_decisions_pending_planning_operation
+ON retry_decisions (planning_operation_id)
+WHERE subject_kind = 'planning_invocation' AND decision = 'retry' AND dispatch_state = 'pending';
+
+CREATE UNIQUE INDEX idx_retry_decisions_target_node_run
+ON retry_decisions (target_node_run_id)
+WHERE target_node_run_id IS NOT NULL;
+
+CREATE TRIGGER retry_decisions_validate_decree_lineage_insert
+BEFORE INSERT ON retry_decisions
+FOR EACH ROW
+WHEN NEW.subject_kind = 'decree_attempt'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision source node lineage mismatch') END;
+  SELECT CASE WHEN NEW.decision = 'retry' AND NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.target_node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision target node lineage mismatch') END;
+END;
+
+CREATE TRIGGER retry_decisions_validate_decree_lineage_update
+BEFORE UPDATE OF subject_kind, run_id, node_id, node_run_id, target_node_run_id, decision ON retry_decisions
+FOR EACH ROW
+WHEN NEW.subject_kind = 'decree_attempt'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision source node lineage mismatch') END;
+  SELECT CASE WHEN NEW.decision = 'retry' AND NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.target_node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision target node lineage mismatch') END;
+END;
 
 CREATE TABLE planning_provider_completion_evidence (
   planning_provider_evidence_seq INTEGER PRIMARY KEY AUTOINCREMENT,

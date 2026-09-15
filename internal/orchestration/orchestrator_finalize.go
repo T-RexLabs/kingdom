@@ -42,6 +42,13 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 	attemptID := "run:" + run.RunID + ":status"
 
 	if summary.HasFailed {
+		outstandingRetry, err := o.hasOutstandingAutomaticDecreeRetriesForFailedNodes(ctx, run.RunID, summary.FailedNodeIDs)
+		if err != nil {
+			return err
+		}
+		if outstandingRetry {
+			return nil
+		}
 		queued, err := o.resumeEligibleExecutionLoops(ctx, run, now)
 		if err != nil {
 			return err
@@ -167,8 +174,47 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 	return nil
 }
 
+// hasOutstandingAutomaticDecreeRetriesForFailedNodes is the durable
+// finalization fence. Every failed node needs its own policy-owned successor;
+// a retry on one branch cannot keep a different fail-fast branch alive.
+func (o *orchestrationLoop) hasOutstandingAutomaticDecreeRetriesForFailedNodes(ctx context.Context, runID string, failedNodeIDs []string) (bool, error) {
+	failed := make(map[string]struct{}, len(failedNodeIDs))
+	for _, nodeID := range failedNodeIDs {
+		if nodeID = strings.TrimSpace(nodeID); nodeID != "" {
+			failed[nodeID] = struct{}{}
+		}
+	}
+	if len(failed) == 0 {
+		return false, nil
+	}
+
+	rows, err := o.db.QueryContext(ctx, `SELECT node_id
+		FROM retry_decisions
+		WHERE subject_kind = 'decree_attempt'
+		  AND run_id = ?
+		  AND decision = 'retry'
+		  AND dispatch_state IN ('pending', 'dispatched')
+		  AND resolution = 'pending'`, strings.TrimSpace(runID))
+	if err != nil {
+		return false, fmt.Errorf("list outstanding automatic decree retries: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return false, fmt.Errorf("scan outstanding automatic decree retry: %w", err)
+		}
+		delete(failed, strings.TrimSpace(nodeID))
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate outstanding automatic decree retries: %w", err)
+	}
+	return len(failed) == 0, nil
+}
+
 type runClosureSummary struct {
 	HasFailed     bool
+	FailedNodeIDs []string
 	HasInFlight   bool
 	ReplayNodeIDs []string
 }
@@ -190,6 +236,7 @@ func summarizeRunClosure(run runSnapshot, nodes []nodeDefinition, edges []edgeDe
 		switch effectiveStatus {
 		case "failed":
 			summary.HasFailed = true
+			summary.FailedNodeIDs = append(summary.FailedNodeIDs, node.NodeID)
 		case "cancelled":
 			if _, replay := replayNeeded[node.NodeID]; replay {
 				summary.ReplayNodeIDs = append(summary.ReplayNodeIDs, node.NodeID)
@@ -206,6 +253,7 @@ func summarizeRunClosure(run runSnapshot, nodes []nodeDefinition, edges []edgeDe
 		}
 	}
 	sort.Strings(summary.ReplayNodeIDs)
+	sort.Strings(summary.FailedNodeIDs)
 	return summary
 }
 

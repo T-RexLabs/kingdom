@@ -1,6 +1,10 @@
 package opencode
 
-import "strings"
+import (
+	"strings"
+
+	"kingdom/internal/core/providerexecution"
+)
 
 type attemptCompletionState string
 
@@ -42,6 +46,10 @@ type attemptCompletionEvidence struct {
 	StepFinishSeen              bool
 	LastStepFinish              stepFinishReasonEvidence
 	UpstreamErrorText           string
+	ProviderErrorPresent        bool
+	ProviderErrorCode           string
+	ProviderErrorCategory       string
+	ProviderErrorStatus         int
 	ConflictingTerminalEvidence bool
 	MalformedProtocol           bool
 	CleanEOF                    bool
@@ -86,25 +94,25 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 	}
 	if e.Timeout {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_timeout"
+		result.ReasonCode = "timeout"
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode run timed out")
 		return attemptCompletionDecision{Result: result}
 	}
-	if strings.TrimSpace(e.UpstreamErrorText) != "" {
+	if e.ProviderErrorPresent || strings.TrimSpace(e.UpstreamErrorText) != "" {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_upstream_error"
+		result.ReasonCode = string(providerexecution.CanonicalProviderErrorCode(e.ProviderErrorCode, e.ProviderErrorCategory, e.ProviderErrorStatus))
 		result.FailureText = strings.TrimSpace(e.UpstreamErrorText)
 		return attemptCompletionDecision{Result: result}
 	}
 	if e.ProcessFailed {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_process_failed"
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_process_failed")
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode run failed")
 		return attemptCompletionDecision{Result: result}
 	}
 	if e.MalformedProtocol {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_malformed_protocol"
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_malformed_protocol")
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode emitted malformed stream data")
 		return attemptCompletionDecision{Result: result}
 	}
@@ -122,7 +130,7 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 	}
 	if e.StepFinishSeen && e.LastStepFinish.Class == stepFinishTerminalFailure {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_terminal_failure"
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_terminal_failure")
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
 		return attemptCompletionDecision{Result: result}
 	}

@@ -326,7 +326,7 @@ func readRFC3339Map(values map[string]any, key string) *time.Time {
 	if text == nil {
 		return nil
 	}
-	parsed, err := time.Parse(time.RFC3339, *text)
+	parsed, err := time.Parse(time.RFC3339Nano, *text)
 	if err != nil {
 		return nil
 	}

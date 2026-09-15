@@ -366,6 +366,9 @@ func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected process failure to return an error")
 	}
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected canonical unknown provider outcome, got %#v", res.Outcome)
+	}
 	if strings.TrimSpace(res.ProviderDiagnosticsJSON) == "" {
 		t.Fatal("expected provider diagnostics json on process failure")
 	}
@@ -387,6 +390,33 @@ func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) 
 	}
 	if strings.TrimSpace(diagnostics.ExecutionPathDiagnostics.WaitError) == "" {
 		t.Fatal("expected execution path diagnostics to capture wait_error")
+	}
+}
+
+func TestSessionAdapterRetainsProviderRetryHintInDiagnostics(t *testing.T) {
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_STRUCTURED_RETRY_ERROR_EXIT", "1")
+
+	res, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: "session_retry_hint", AttemptID: "attempt_retry_hint", RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: "provider retry hint", OccurredAt: "2026-03-02T10:00:00Z"})
+	if err == nil {
+		t.Fatal("expected provider retry error")
+	}
+	var diagnostics struct {
+		RetryAfterMS *float64 `json:"retry_after_ms"`
+	}
+	if err := json.Unmarshal([]byte(res.ProviderDiagnosticsJSON), &diagnostics); err != nil {
+		t.Fatalf("decode provider diagnostics: %v", err)
+	}
+	if diagnostics.RetryAfterMS == nil || *diagnostics.RetryAfterMS != 10000 {
+		t.Fatalf("provider retry hint was not retained: %#v", diagnostics)
+	}
+	if res.Outcome.ReasonCode != "llm_rate_limited" {
+		t.Fatalf("structured retry error outcome=%#v, want llm_rate_limited", res.Outcome)
 	}
 }
 
@@ -1624,7 +1654,7 @@ func TestSessionAdapterFailsWhenStepFinishReasonIsError(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_REASON", "error")
 
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+	res, err := adapter.Execute(context.Background(), ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_finish_error",
 		AttemptID:      "attempt_finish_error",
@@ -1636,6 +1666,9 @@ func TestSessionAdapterFailsWhenStepFinishReasonIsError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "terminal failure reason") {
 		t.Fatalf("expected terminal failure reason error, got %v", err)
+	}
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected canonical unknown provider outcome, got %#v", res.Outcome)
 	}
 
 	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_finish_error"), AttemptEventTypeFailed)
@@ -1760,8 +1793,8 @@ func TestSessionAdapterRejectsMalformedStdoutBeforeValidJsonEvents(t *testing.T)
 	if err == nil {
 		t.Fatal("expected malformed provider stdout to reject completion")
 	}
-	if res.Outcome.ReasonCode != "provider_malformed_protocol" {
-		t.Fatalf("expected malformed protocol outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected canonical unknown provider outcome, got %#v", res.Outcome)
 	}
 }
 
@@ -1790,8 +1823,8 @@ func TestSessionAdapterRejectsBannerStdoutLinesDuringContinuation(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected malformed continuation stdout to reject completion")
 	}
-	if res.Outcome.ReasonCode != "provider_malformed_protocol" {
-		t.Fatalf("expected malformed protocol outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected canonical unknown provider outcome, got %#v", res.Outcome)
 	}
 }
 
@@ -2111,8 +2144,8 @@ func TestSessionAdapterPreservesContinuationObservedStateOnUpstreamError(t *test
 	if !strings.Contains(err.Error(), "continuation upstream exploded") {
 		t.Fatalf("expected upstream continuation error text, got %v", err)
 	}
-	if res.Outcome.ReasonCode != "provider_upstream_error" {
-		t.Fatalf("expected provider_upstream_error outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
+		t.Fatalf("expected provider_unknown_failure outcome, got %#v", res.Outcome)
 	}
 	if res.OutputText != "continued before upstream error" {
 		t.Fatalf("expected terminal continuation output on upstream error, got %q", res.OutputText)
@@ -2186,7 +2219,7 @@ func TestSessionAdapterNonZeroExitPrefersStructuredUpstreamError(t *testing.T) {
 			if tt.stderr != "" && strings.Contains(err.Error(), tt.stderr) {
 				t.Fatalf("expected stderr not to replace structured cause, got %v", err)
 			}
-			if res.Outcome.ReasonCode != "provider_upstream_error" || res.Outcome.FailureText != structuredCause {
+			if res.Outcome.ReasonCode != "provider_unknown_failure" || res.Outcome.FailureText != structuredCause {
 				t.Fatalf("expected structured upstream outcome, got %#v", res.Outcome)
 			}
 
@@ -2486,6 +2519,11 @@ if [ "$FAKE_OPENCODE_STRUCTURED_ERROR_EXIT" = "1" ]; then
   if [ -n "$FAKE_OPENCODE_ERROR_STDERR" ]; then
     printf '%s\n' "$FAKE_OPENCODE_ERROR_STDERR" >&2
   fi
+  exit 17
+fi
+
+if [ "$FAKE_OPENCODE_STRUCTURED_RETRY_ERROR_EXIT" = "1" ]; then
+  echo "{\"type\":\"error\"$SESSION_FIELD,\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"rate limited\",\"statusCode\":429,\"retry_after_ms\":10000}}}"
   exit 17
 fi
 

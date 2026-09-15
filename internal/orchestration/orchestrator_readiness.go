@@ -34,6 +34,13 @@ func (o *orchestrationLoop) promoteReadyNodes(ctx context.Context, run runSnapsh
 		if !ok || attempt.NodeStatus != "pending" {
 			continue
 		}
+		blockedByRetry, err := o.pendingAutomaticRetryForNodeRun(ctx, attempt.NodeRunID)
+		if err != nil {
+			return err
+		}
+		if blockedByRetry {
+			continue
+		}
 		ready, readyErr := o.isNodeReady(ctx, run, node, nodeClasses, latest, edges)
 		if readyErr != nil {
 			return readyErr
@@ -77,6 +84,15 @@ func (o *orchestrationLoop) promoteReadyNodes(ctx context.Context, run runSnapsh
 	}
 
 	return nil
+}
+
+func (o *orchestrationLoop) pendingAutomaticRetryForNodeRun(ctx context.Context, nodeRunID string) (bool, error) {
+	var count int
+	err := o.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM retry_decisions WHERE subject_kind = 'decree_attempt' AND target_node_run_id = ? AND decision = 'retry' AND dispatch_state = 'pending'`, nodeRunID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check automatic retry due barrier: %w", err)
+	}
+	return count > 0, nil
 }
 
 func (o *orchestrationLoop) isNodeReady(ctx context.Context, run runSnapshot, node nodeDefinition, nodeClasses map[string]string, latest map[string]nodeAttempt, edges []edgeDefinition) (bool, error) {

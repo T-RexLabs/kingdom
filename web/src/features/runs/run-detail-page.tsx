@@ -683,7 +683,8 @@ export function RunDetailPage() {
 	const reviewAutoSucceededLabel = "Review Auto-Succeeded at Cap";
 	const validationAutoSucceededLabel = "Validation Auto-Succeeded at Cap";
 	const runtimeRetries = run.runtime_retries;
-  const showRuntimeRetries = (run.status === "running" || run.status === "pending") && runtimeRetries.length > 0;
+	const activeRuntimeRetries = runtimeRetries.filter(isActiveRuntimeRetry);
+  const showRuntimeRetries = (run.status === "running" || run.status === "pending") && activeRuntimeRetries.length > 0;
   const mailboxErrorMessage = !mailboxQuery.data && mailboxQuery.isError
     ? queryErrorMessage(mailboxQuery.error, "The messages could not be loaded right now.")
     : null;
@@ -796,7 +797,7 @@ export function RunDetailPage() {
                 <span>Unbounded review/validation mode: run continues until PASS or manual cancel.</span>
               </span>
 	            )}
-	            {showRuntimeRetries && <RuntimeRetryNotice retries={runtimeRetries} />}
+	            {showRuntimeRetries && <RuntimeRetryNotice retries={activeRuntimeRetries} />}
 	            {cancelRun.error && (
 	              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-2.5 py-2 text-xs text-status-failed">
 	                Failed to cancel run: {cancelRun.error.message}
@@ -1050,9 +1051,10 @@ function CycleInfo({ label, message }: { label: string; message: string }) {
 type RuntimeRetryNoticeItem = NonNullable<RunDetailSummary["runtime_retries"]>[number];
 
 function RuntimeRetryNotice({ retries }: { retries: RuntimeRetryNoticeItem[] }) {
+	const dispatched = retries.filter((retry) => retry.status === "dispatched").length;
 	const title = retries.length === 1
-		? "Runtime retrying empty provider output"
-		: `${retries.length} runtime retries in progress`;
+		? dispatched === 1 ? "Runtime Retry In Progress" : "Runtime Retry Scheduled"
+		: `${retries.length} Runtime Retries ${dispatched > 0 ? "In Progress" : "Scheduled"}`;
 
 	return (
 		<div data-testid="runtime-retry-status" className="inline-flex max-w-full items-start gap-2 rounded-md border border-role-loki/40 bg-role-loki/10 px-2.5 py-2 text-xs text-role-loki">
@@ -1067,13 +1069,34 @@ function RuntimeRetryNotice({ retries }: { retries: RuntimeRetryNoticeItem[] }) 
 							className="inline-flex items-center gap-1 rounded-md border border-role-loki/30 bg-role-loki/10 px-2 py-1"
 						>
 							<span className="font-mono">{retry.node_id}</span>
-							<span>({retry.retry_index}/{retry.retry_max}) after {retry.delay_seconds}s</span>
+							<span>{runtimeRetryStatusCopy(retry.status)} after {runtimeRetryReasonCopy(retry.reason_code)} ({retry.retry_index}/{retry.retry_max}). Due <time dateTime={retry.due_at}>{runtimeRetryDueCopy(retry.due_at)}</time></span>
 						</span>
 					))}
 				</div>
 			</div>
 		</div>
 	);
+}
+
+function isActiveRuntimeRetry(retry: RuntimeRetryNoticeItem): boolean {
+	return retry.status === "pending" || retry.status === "dispatched";
+}
+
+function runtimeRetryStatusCopy(status: RuntimeRetryNoticeItem["status"]): string {
+	return status === "dispatched" ? "Retrying" : "Scheduled";
+}
+
+function runtimeRetryReasonCopy(reasonCode: string): string {
+	const words = reasonCode.trim().replaceAll("_", " ");
+	return words === "" ? "a provider issue" : words;
+}
+
+function runtimeRetryDueCopy(dueAt: string): string {
+	const due = new Date(dueAt);
+	if (Number.isNaN(due.getTime())) {
+		return dueAt;
+	}
+	return due.toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "medium" }) + " UTC";
 }
 
 function queryErrorMessage(error: unknown, fallback: string): string {

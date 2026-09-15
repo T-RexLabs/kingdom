@@ -86,6 +86,20 @@
       "escalation_target": "chancellor"
     },
     {
+      "code": "provider_empty_output",
+      "category": "provider",
+      "retry_class": "non_retryable",
+      "retryable": false,
+      "escalation_target": "chancellor"
+    },
+    {
+      "code": "provider_unknown_failure",
+      "category": "provider",
+      "retry_class": "non_retryable",
+      "retryable": false,
+      "escalation_target": "chancellor"
+    },
+    {
       "code": "provider_cancelled",
       "category": "provider",
       "retry_class": "non_retryable",

@@ -19,8 +19,11 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		OperationID:        "po_planning_receipt_2",
 		PlanningSessionID:  operation.PlanningSessionID,
 		Type:               PlanningOperationTypeReply,
-		Status:             PlanningOperationStatusQueued,
+		Status:             PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{"content_markdown":"follow-up"}`,
+		LeaseOwner:         "worker_2",
+		LeaseExpiresAt:     "2026-04-21T16:10:00Z",
+		LeaseVersion:       1,
 		CreatedAt:          "2026-04-21T16:04:59Z",
 	})
 	if err != nil {
@@ -33,6 +36,8 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		PlanningSessionID:            secondOperation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_receipt",
 		CreatedAt:                    "2026-04-21T16:05:00Z",
+		LeaseOwner:                   "worker_2",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("create second planning provider invocation: %v", err)
 	}
@@ -41,6 +46,8 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		PlanningOperationID:          secondOperation.OperationID,
 		ProviderSessionID:            "ses_planning_receipt_2",
 		OpenedAt:                     "2026-04-21T16:05:01Z",
+		LeaseOwner:                   "worker_2",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("mark second planning provider invocation open: %v", err)
 	}
@@ -91,6 +98,8 @@ func TestPlanningStoreMarkPlanningProviderInvocationOpenRejectsProviderSessionLi
 		PlanningOperationID:          operation.OperationID,
 		ProviderSessionID:            "ses_planning_receipt_conflict",
 		OpenedAt:                     "2026-04-21T16:00:04Z",
+		LeaseOwner:                   "worker_1",
+		LeaseVersion:                 1,
 	})
 	if err == nil {
 		t.Fatal("expected planning provider session lineage conflict to fail")
@@ -362,8 +371,11 @@ func TestPlanningStoreActivatePlanningProviderInvocationOpensAndLinksOperation(t
 		OperationID:        "po_activation",
 		PlanningSessionID:  "ps_activation",
 		Type:               PlanningOperationTypeReply,
-		Status:             PlanningOperationStatusQueued,
+		Status:             PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{"content_markdown":"hello"}`,
+		LeaseOwner:         "worker_1",
+		LeaseExpiresAt:     "2026-04-21T16:05:00Z",
+		LeaseVersion:       1,
 		CreatedAt:          "2026-04-21T16:00:01Z",
 	})
 	if err != nil {
@@ -377,6 +389,8 @@ func TestPlanningStoreActivatePlanningProviderInvocationOpensAndLinksOperation(t
 		LogicalSessionID:             "planner-ps_activation",
 		CreatedAt:                    "2026-04-21T16:00:02Z",
 		OpenedAt:                     "2026-04-21T16:00:02Z",
+		LeaseOwner:                   "worker_1",
+		LeaseVersion:                 1,
 	})
 	if err != nil {
 		t.Fatalf("activate planning provider invocation: %v", err)
@@ -410,6 +424,8 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 		LogicalSessionID:             "planner-ps_planning_receipt",
 		CreatedAt:                    "2026-04-21T16:00:04Z",
 		OpenedAt:                     "2026-04-21T16:00:04Z",
+		LeaseOwner:                   "worker_1",
+		LeaseVersion:                 1,
 	})
 	if err == nil {
 		t.Fatal("expected activation conflict to fail")
@@ -430,6 +446,99 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 	if persistedOperation.ActiveProviderInvocationID == nil || *persistedOperation.ActiveProviderInvocationID != "ppinv_test_1" {
 		t.Fatalf("expected original active provider invocation to remain, got %#v", persistedOperation)
 	}
+}
+
+func TestPlanningProviderInvocationCreationAndActivationRequireActiveLease(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		status       PlanningOperationStatus
+		operationOwn string
+		operationVer int
+		requestOwner string
+		requestVer   int
+	}{
+		{name: "missing owner", status: PlanningOperationStatusRunning, operationOwn: "worker_1", operationVer: 1, requestVer: 1},
+		{name: "zero version", status: PlanningOperationStatusRunning, operationOwn: "worker_1", operationVer: 1, requestOwner: "worker_1"},
+		{name: "queued", status: PlanningOperationStatusQueued, operationOwn: "worker_1", operationVer: 1, requestOwner: "worker_1", requestVer: 1},
+		{name: "failed", status: PlanningOperationStatusFailed, operationOwn: "worker_1", operationVer: 1, requestOwner: "worker_1", requestVer: 1},
+		{name: "cancelled", status: PlanningOperationStatusCancelled, operationOwn: "worker_1", operationVer: 1, requestOwner: "worker_1", requestVer: 1},
+		{name: "stale owner", status: PlanningOperationStatusRunning, operationOwn: "worker_1", operationVer: 1, requestOwner: "worker_2", requestVer: 1},
+		{name: "stale version", status: PlanningOperationStatusRunning, operationOwn: "worker_1", operationVer: 2, requestOwner: "worker_1", requestVer: 1},
+	}
+
+	for _, method := range []string{"create", "activate"} {
+		for _, tc := range tests {
+			t.Run(method+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				store, operation := newPlanningProviderSettlementTestStore(t)
+				if _, err := store.db.Exec(`UPDATE planning_operations SET status = ?, lease_owner = ?, lease_version = ?, active_provider_invocation_id = NULL WHERE operation_id = ?`, tc.status, tc.operationOwn, tc.operationVer, operation.OperationID); err != nil {
+					t.Fatalf("prepare operation: %v", err)
+				}
+				invocationID := "ppinv_fence_" + strings.ReplaceAll(method+"_"+tc.name, " ", "_")
+				var err error
+				if method == "create" {
+					_, err = store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:04Z", LeaseOwner: tc.requestOwner, LeaseVersion: tc.requestVer})
+				} else {
+					_, err = store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:04Z", OpenedAt: "2026-04-21T16:00:04Z", LeaseOwner: tc.requestOwner, LeaseVersion: tc.requestVer})
+				}
+				if err == nil {
+					t.Fatal("expected invocation write without the active lease lineage to fail")
+				}
+				if _, found, getErr := store.GetPlanningProviderInvocation(ctx, invocationID); getErr != nil {
+					t.Fatalf("get rejected invocation: %v", getErr)
+				} else if found {
+					t.Fatal("expected rejected invocation write to roll back")
+				}
+			})
+		}
+	}
+}
+
+func TestPlanningOperationLeaseFencesUseTemporalFractionComparisons(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("renew rejects expired fractional lease", func(t *testing.T) {
+		store, operation := newPlanningProviderSettlementTestStore(t)
+		if _, err := store.db.Exec(`UPDATE planning_operations SET lease_expires_at = '2026-04-21T16:00:00.1Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RenewOperationLease(ctx, operation.OperationID, "worker_1", 1, "2026-04-21T16:01:00Z", "2026-04-21T16:00:00.19Z"); err == nil {
+			t.Fatal("expected renewal after the fractional lease expiry to fail")
+		}
+	})
+
+	t.Run("finalize rejects expired fractional lease", func(t *testing.T) {
+		store, operation := newPlanningProviderSettlementTestStore(t)
+		if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id = NULL, lease_expires_at = '2026-04-21T16:00:00.1Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
+			t.Fatal(err)
+		}
+		processing := PlanningSessionConversationStateProcessing
+		if err := store.UpdateSession(ctx, UpdatePlanningSessionRequest{PlanningSessionID: operation.PlanningSessionID, ConversationState: &processing, CurrentOperationID: &operation.OperationID, UpdatedAt: "2026-04-21T16:00:00.19Z"}); err != nil {
+			t.Fatal(err)
+		}
+		err := store.FinalizeOperation(ctx, FinalizeOperationRequest{Kind: FinalizeFail, SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: "worker_1", LeaseVersion: 1, ConversationState: PlanningSessionConversationStateReady, UpdatedAt: "2026-04-21T16:00:00.19Z", FinishedAt: "2026-04-21T16:00:00.19Z", ErrorMessage: "late finalization"})
+		if !errors.Is(err, ErrPlanningLeaseConflict) {
+			t.Fatalf("finalize err=%v, want lease conflict", err)
+		}
+	})
+
+	t.Run("provider linkage rejects expired fractional lease", func(t *testing.T) {
+		store, operation := newPlanningProviderSettlementTestStore(t)
+		if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id = NULL, lease_expires_at = '2026-04-21T16:00:00.1Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
+			t.Fatal(err)
+		}
+		_, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: "ppinv_fractional_expired", PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:00.19Z", LeaseOwner: "worker_1", LeaseVersion: 1})
+		if err == nil {
+			t.Fatal("expected provider invocation link after fractional lease expiry to fail")
+		}
+		if _, found, getErr := store.GetPlanningProviderInvocation(ctx, "ppinv_fractional_expired"); getErr != nil {
+			t.Fatal(getErr)
+		} else if found {
+			t.Fatal("expected expired provider invocation creation to roll back")
+		}
+	})
 }
 
 func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, PlanningOperation) {
@@ -458,8 +567,11 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 		OperationID:        "po_planning_receipt",
 		PlanningSessionID:  "ps_planning_receipt",
 		Type:               PlanningOperationTypeReply,
-		Status:             PlanningOperationStatusQueued,
+		Status:             PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{"content_markdown":"hello"}`,
+		LeaseOwner:         "worker_1",
+		LeaseExpiresAt:     "2026-04-21T16:05:00Z",
+		LeaseVersion:       1,
 		CreatedAt:          "2026-04-21T16:00:01Z",
 	})
 	if err != nil {
@@ -471,6 +583,8 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_receipt",
 		CreatedAt:                    "2026-04-21T16:00:02Z",
+		LeaseOwner:                   "worker_1",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("create planning provider invocation: %v", err)
 	}
@@ -479,6 +593,8 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 		PlanningOperationID:          operation.OperationID,
 		ProviderSessionID:            "ses_planning_receipt",
 		OpenedAt:                     "2026-04-21T16:00:03Z",
+		LeaseOwner:                   "worker_1",
+		LeaseVersion:                 1,
 	}); err != nil {
 		t.Fatalf("mark planning provider invocation open: %v", err)
 	}

@@ -408,11 +408,11 @@ func (a *latencyAccumulator) add(start string, end *string) {
 	if strings.TrimSpace(start) == "" || end == nil || strings.TrimSpace(*end) == "" {
 		return
 	}
-	startAt, err := time.Parse(time.RFC3339, strings.TrimSpace(start))
+	startAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(start))
 	if err != nil {
 		return
 	}
-	endAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*end))
+	endAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*end))
 	if err != nil || endAt.Before(startAt) {
 		return
 	}

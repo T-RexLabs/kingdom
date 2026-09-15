@@ -26,6 +26,8 @@ const (
 	CodeLLMContextOverflow     Code = "llm_context_overflow"
 	CodeLLMInvalidResponse     Code = "llm_invalid_response"
 	CodeProviderIncompleteTurn Code = "provider_incomplete_turn"
+	CodeProviderEmptyOutput    Code = "provider_empty_output"
+	CodeProviderUnknownFailure Code = "provider_unknown_failure"
 	CodeProviderCancelled      Code = "provider_cancelled"
 	CodeAgentUnresponsive      Code = "agent_unresponsive"
 	CodeSessionLeaseExpired    Code = "session_lease_expired"
@@ -58,6 +60,8 @@ var catalog = map[Code]RetryProfile{
 	CodeLLMContextOverflow:     {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeLLMInvalidResponse:     {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeProviderIncompleteTurn: {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
+	CodeProviderEmptyOutput:    {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
+	CodeProviderUnknownFailure: {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeProviderCancelled:      {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeAgentUnresponsive:      {Category: CategoryRuntime, RetryClass: "conditional_limited", Retryable: true, EscalationTarget: "chancellor"},
 	CodeSessionLeaseExpired:    {Category: CategoryRuntime, RetryClass: "transient_transport_provider_session", Retryable: true, EscalationTarget: "chancellor"},

@@ -73,9 +73,14 @@ const mockRun = {
   runtime_retries: [] as Array<{
     node_id: string;
     node_run_id: string;
-    retry_index: number;
-    retry_max: number;
-    delay_seconds: number;
+     retry_index: number;
+     retry_max: number;
+     delay_seconds: number;
+		 phase: "scheduled" | "dispatched" | "recovered" | "failed" | "cancelled" | "exhausted" | "fail_fast";
+		 status: "pending" | "dispatched" | "recovered" | "failed" | "cancelled" | "escalated" | "not_applicable";
+		 reason_code: string;
+		 due_at: string;
+		 source_node_run_id: string;
   }>,
 	 tab_counts: {
 	   dag_nodes: 6,
@@ -1771,17 +1776,24 @@ describe("run detail page", () => {
     mockRun.workflow_id = "royal-decree-v1";
   });
 
-  it("shows runtime retry status with exact delay", () => {
+  it("shows runtime retry status with its persisted deadline", () => {
     mockRun.runtime_retries = [{
       node_id: "delegated_execution_berserker",
       node_run_id: "nr_builder_1",
       retry_index: 2,
       retry_max: 3,
       delay_seconds: 10,
+			phase: "scheduled",
+			status: "pending",
+			reason_code: "timeout",
+			due_at: "2026-03-06T10:02:00.000Z",
+			source_node_run_id: "nr_builder_0",
     }];
     render(<RunDetailPage />);
-		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("Runtime retrying empty provider output");
-    expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("(2/3) after 10s");
+		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("Runtime Retry Scheduled");
+		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("Scheduled after timeout (2/3). Due");
+		expect(screen.getByTestId("runtime-retry-status").querySelector("time")).toHaveAttribute("datetime", "2026-03-06T10:02:00.000Z");
+		expect(screen.getByTestId("runtime-retry-status")).not.toHaveTextContent("10s");
   });
 
   it("hides runtime retry status once retry recovers", () => {
@@ -1797,12 +1809,17 @@ describe("run detail page", () => {
       retry_index: 1,
       retry_max: 3,
       delay_seconds: 5,
+			phase: "scheduled",
+			status: "pending",
+			reason_code: "provider_upstream_error",
+			due_at: "2026-03-06T10:01:05.000Z",
+			source_node_run_id: "nr_builder_0",
     }];
 
     render(<RunDetailPage />);
 
     expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: false });
-    expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("(1/3) after 5s");
+		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("Scheduled after provider upstream error (1/3). Due");
   });
 
 	it("shows every active runtime retry when multiple nodes are retrying", () => {
@@ -1813,6 +1830,11 @@ describe("run detail page", () => {
 				retry_index: 1,
 				retry_max: 3,
 				delay_seconds: 5,
+				phase: "scheduled",
+				status: "pending",
+				reason_code: "timeout",
+				due_at: "2026-03-06T10:01:05.000Z",
+				source_node_run_id: "nr_builder_0",
 			},
 			{
 				node_id: "validation_gates_qa_scout",
@@ -1820,13 +1842,32 @@ describe("run detail page", () => {
 				retry_index: 2,
 				retry_max: 4,
 				delay_seconds: 8,
+				phase: "dispatched",
+				status: "dispatched",
+				reason_code: "provider_upstream_error",
+				due_at: "2026-03-06T10:01:08.000Z",
+				source_node_run_id: "nr_validator_0",
 			},
 		];
 
 		render(<RunDetailPage />);
 
-		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("2 runtime retries in progress");
+		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("2 Runtime Retries In Progress");
 		expect(screen.getByTestId("runtime-retry-status-nr_builder_1")).toHaveTextContent("delegated_execution_berserker");
 		expect(screen.getByTestId("runtime-retry-status-nr_validator_1")).toHaveTextContent("validation_gates_qa_scout");
+	});
+
+	it("hides historical runtime retry decisions from the active notice", () => {
+		mockRun.runtime_retries = [
+			{ node_id: "delegated_execution_berserker", node_run_id: "nr-recovered", retry_index: 1, retry_max: 3, delay_seconds: 5, phase: "recovered", status: "recovered", reason_code: "timeout", due_at: "2026-03-06T10:01:05.000Z", source_node_run_id: "nr-source" },
+			{ node_id: "delegated_execution_berserker", node_run_id: "nr-failed", retry_index: 1, retry_max: 3, delay_seconds: 5, phase: "failed", status: "failed", reason_code: "timeout", due_at: "2026-03-06T10:01:05.000Z", source_node_run_id: "nr-source" },
+			{ node_id: "delegated_execution_berserker", node_run_id: "nr-cancelled", retry_index: 1, retry_max: 3, delay_seconds: 5, phase: "cancelled", status: "cancelled", reason_code: "provider_cancelled", due_at: "2026-03-06T10:01:05.000Z", source_node_run_id: "nr-source" },
+			{ node_id: "delegated_execution_berserker", node_run_id: "nr-exhausted", retry_index: 3, retry_max: 3, delay_seconds: 5, phase: "exhausted", status: "escalated", reason_code: "timeout", due_at: "2026-03-06T10:01:05.000Z", source_node_run_id: "nr-source" },
+			{ node_id: "delegated_execution_berserker", node_run_id: "nr-fail-fast", retry_index: 0, retry_max: 3, delay_seconds: 5, phase: "fail_fast", status: "not_applicable", reason_code: "provider_empty_output", due_at: "2026-03-06T10:01:05.000Z", source_node_run_id: "nr-source" },
+		];
+
+		render(<RunDetailPage />);
+
+		expect(screen.queryByTestId("runtime-retry-status")).not.toBeInTheDocument();
 	});
 });

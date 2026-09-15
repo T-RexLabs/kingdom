@@ -279,6 +279,7 @@ function syntheticExecutionItem(live: LiveExecutionProjectionEntry): RunExecutio
 		queued_at: live.queued_at ?? live.launch_started_at ?? live.started_at ?? live.activity_at,
 		activity_at: live.activity_at,
 		updated_at: live.activity_at,
+		stop_retry_available: false,
 		...(live.launch_started_at ? { launch_started_at: live.launch_started_at } : {}),
 		...(live.started_at ? { started_at: live.started_at } : {}),
 		...(live.terminal_observed_at ? { terminal_observed_at: live.terminal_observed_at } : {}),

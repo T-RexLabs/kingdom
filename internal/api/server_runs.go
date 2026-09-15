@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	gen "kingdom/internal/apigen"
@@ -219,33 +220,11 @@ WHERE e.run_id = ?
 
 func (s *Server) fetchActiveRuntimeRetries(ctx context.Context, q sqlReadQuerier, runID string) ([]gen.RuntimeRetryStatus, error) {
 	rows, err := q.QueryContext(ctx, `
-WITH latest_attempt_events AS (
-	SELECT e.node_run_id,
-	       e.run_event_seq,
-	       e.event_type,
-	       e.reason_code,
-	       e.payload_json,
-	       e.event_id,
-	       ROW_NUMBER() OVER (
-	         PARTITION BY e.node_run_id
-	         ORDER BY e.run_event_seq DESC
-	       ) AS event_rank
-	FROM events e
-	WHERE e.run_id = ?
-	  AND COALESCE(e.node_run_id, '') != ''
-	  AND e.event_type IN ('attempt.started', 'attempt.retrying', 'attempt.retry_recovered', 'attempt.failed', 'attempt.succeeded', 'attempt.cancelled')
-)
-SELECT COALESCE(NULLIF(TRIM(CAST(json_extract(lae.payload_json, '$.node_id') AS TEXT)), ''), nr.node_id),
-	   COALESCE(NULLIF(TRIM(CAST(json_extract(lae.payload_json, '$.node_run_id') AS TEXT)), ''), lae.node_run_id),
-	   CAST(json_extract(lae.payload_json, '$.retry_index') AS INTEGER),
-	   CAST(json_extract(lae.payload_json, '$.retry_max') AS INTEGER),
-	   CAST(json_extract(lae.payload_json, '$.delay_seconds') AS INTEGER)
-FROM latest_attempt_events lae
-LEFT JOIN node_runs nr ON nr.node_run_id = lae.node_run_id
-WHERE lae.event_rank = 1
-	AND lae.event_type = 'attempt.retrying'
-	AND lae.reason_code = 'provider_empty_output_retry'
-ORDER BY lae.run_event_seq DESC, COALESCE(lae.node_run_id, '') ASC`, runID)
+ SELECT node_id, node_run_id, COALESCE(target_node_run_id, ''), retry_index, max_retries,
+        policy_delay_ns, error_code, due_at, decision, dispatch_state, resolution
+ FROM retry_decisions
+ WHERE subject_kind = 'decree_attempt' AND run_id = ?
+ ORDER BY created_at DESC, retry_decision_id DESC`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -255,29 +234,38 @@ ORDER BY lae.run_event_seq DESC, COALESCE(lae.node_run_id, '') ASC`, runID)
 	for rows.Next() {
 		var nodeID sql.NullString
 		var nodeRunID sql.NullString
-		var retryIndex sql.NullInt64
-		var retryMax sql.NullInt64
-		var delaySeconds sql.NullInt64
-		if err := rows.Scan(&nodeID, &nodeRunID, &retryIndex, &retryMax, &delaySeconds); err != nil {
+		var targetNodeRunID, errorCode, dueAt, decision, dispatchState, resolution string
+		var retryIndex, retryMax, policyDelayNS int64
+		if err := rows.Scan(&nodeID, &nodeRunID, &targetNodeRunID, &retryIndex, &retryMax, &policyDelayNS, &errorCode, &dueAt, &decision, &dispatchState, &resolution); err != nil {
 			return nil, err
 		}
-
-		if !nodeID.Valid || !nodeRunID.Valid || !retryIndex.Valid || !retryMax.Valid || !delaySeconds.Valid {
-			continue
-		}
-
 		trimmedNodeID := strings.TrimSpace(nodeID.String)
 		trimmedNodeRunID := strings.TrimSpace(nodeRunID.String)
-		if trimmedNodeID == "" || trimmedNodeRunID == "" || retryIndex.Int64 < 1 || retryMax.Int64 < 1 || delaySeconds.Int64 < 1 {
+		if trimmedNodeID == "" || trimmedNodeRunID == "" || retryIndex < 0 || retryMax < 0 || policyDelayNS < 0 {
 			continue
 		}
+		currentNodeRunID := strings.TrimSpace(targetNodeRunID)
+		if currentNodeRunID == "" {
+			currentNodeRunID = trimmedNodeRunID
+		}
+		parsedDueAt, err := time.Parse(time.RFC3339Nano, dueAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse runtime retry due time: %w", err)
+		}
+		phase, status := runtimeRetryPhaseAndStatus(decision, dispatchState, resolution)
 
 		retries = append(retries, gen.RuntimeRetryStatus{
-			DelaySeconds: int(delaySeconds.Int64),
-			NodeId:       trimmedNodeID,
-			NodeRunId:    trimmedNodeRunID,
-			RetryIndex:   int(retryIndex.Int64),
-			RetryMax:     int(retryMax.Int64),
+			DelaySeconds:    int(time.Duration(policyDelayNS).Round(time.Second) / time.Second),
+			NodeId:          trimmedNodeID,
+			NodeRunId:       currentNodeRunID,
+			RetryIndex:      int(retryIndex),
+			RetryMax:        int(retryMax),
+			Phase:           phase,
+			Status:          status,
+			ReasonCode:      strings.TrimSpace(errorCode),
+			DueAt:           parsedDueAt.UTC(),
+			SourceNodeRunId: trimmedNodeRunID,
+			TargetNodeRunId: optionalRuntimeRetryNodeRunID(strings.TrimSpace(targetNodeRunID)),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -285,6 +273,35 @@ ORDER BY lae.run_event_seq DESC, COALESCE(lae.node_run_id, '') ASC`, runID)
 	}
 
 	return retries, nil
+}
+
+func runtimeRetryPhaseAndStatus(decision, dispatchState, resolution string) (gen.RuntimeRetryStatusPhase, gen.RuntimeRetryStatusStatus) {
+	switch strings.TrimSpace(resolution) {
+	case "recovered":
+		return "recovered", "recovered"
+	case "failed":
+		return "failed", "failed"
+	case "cancelled":
+		return "cancelled", "cancelled"
+	}
+	switch strings.TrimSpace(decision) {
+	case "exhausted":
+		return "exhausted", "escalated"
+	case "fail_fast":
+		return "fail_fast", "not_applicable"
+	case "retry":
+		if strings.TrimSpace(dispatchState) == "dispatched" {
+			return "dispatched", "dispatched"
+		}
+	}
+	return "scheduled", "pending"
+}
+
+func optionalRuntimeRetryNodeRunID(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (s *Server) loadRunTabCounts(ctx context.Context, q sqlReadQuerier, runID string) (*gen.RunTabCounts, error) {
