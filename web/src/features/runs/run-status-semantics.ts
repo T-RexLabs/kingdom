@@ -126,6 +126,11 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null, handoffState?: string | null): string | null {
 	if (normalizedToken(status) === "paused") {
 		switch (normalizedToken(handoffState)) {
+			case "stop_retry_requested":
+				return "Kingdom is sending another stop request before retrying this step.";
+			case "cancellation_dispatched":
+			case "stop_retry_dispatched":
+				return "Kingdom is confirming that the previous stop request completed.";
 			case "workspace_restore_failed":
 				return "Kingdom stopped the previous attempt but could not restore the trusted workspace.";
 			case "awaiting_workspace_quiescence":

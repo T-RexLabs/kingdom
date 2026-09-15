@@ -1050,6 +1050,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/stop-retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry stopping a paused stale execution.
+         * @description Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence.
+         */
+        post: operations["retryExecutionStop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/plan": {
         parameters: {
             query?: never;
@@ -2808,7 +2828,8 @@ export interface components {
             failure_text?: string;
             completion_invalid_reason?: string;
             /** @enum {string} */
-            handoff_state?: "awaiting_quiescence" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            stop_retry_available: boolean;
         };
         RunExecutionDetail: components["schemas"]["RunExecution"] & {
             provider_invocation_id?: string;
@@ -2865,6 +2886,11 @@ export interface components {
             run_id: string;
             node_key: string;
             retry_enqueued: boolean;
+        };
+        RetryExecutionStopResult: {
+            run_id: string;
+            attempt_id: string;
+            stop_retry_requested: boolean;
         };
         RerunFromNodeRequest: {
             reason: string;
@@ -5168,6 +5194,39 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    retryExecutionStop: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stop retry requested. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryExecutionStopResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

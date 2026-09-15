@@ -34,10 +34,6 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 	if len(pending) == 0 {
 		return 0, nil
 	}
-	if o.adapter == nil {
-		return 0, fmt.Errorf("execution adapter is not configured")
-	}
-
 	publishedAt := o.now().UTC().Format(time.RFC3339)
 	cancelTimeout := defaultDuration(o.cancelGrace, 5*time.Second)
 	processed := 0
@@ -50,53 +46,68 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 			}
 		}
 
-		if rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
-			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
+		quiescent, queryErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+		if queryErr != nil {
+			return processed, queryErr
+		}
+		if quiescent || rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
+			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+			if err != nil {
 				return processed, err
 			}
-			processed++
+			if completed {
+				processed++
+			}
 			continue
 		}
-
+		if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
+			if err := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, publishedAt); err != nil {
+				return processed, err
+			}
+			continue
+		}
+		if o.adapter == nil {
+			return processed, fmt.Errorf("execution adapter is not configured")
+		}
+		var claimed bool
+		claimed, err = o.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, rec.CancelOutboxID, publishedAt)
+		if err != nil {
+			return processed, err
+		}
+		if !claimed {
+			continue
+		}
+		quiescent, queryErr = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+		if queryErr != nil {
+			return processed, queryErr
+		}
+		if quiescent {
+			completed, completeErr := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+			if completeErr != nil {
+				return processed, completeErr
+			}
+			if completed {
+				processed++
+			}
+			continue
+		}
 		request := attemptCancelRequest(rec, publishedAt)
 		cancelCtx, cancel := context.WithTimeout(firstNonNilContext(ctx), cancelTimeout)
 		err := o.adapter.Cancel(cancelCtx, request)
 		cancel()
-
-		quiescent, queryErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+		quiescent, queryErr = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
 		if queryErr != nil {
 			return processed, queryErr
 		}
 		var missing *opencode.AttemptNotFoundError
 		if quiescent && (err == nil || errors.As(err, &missing)) {
-			if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
-				slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
-				var blocked workspaceHandoffBlockedError
-				var recordErr error
-				if errors.As(restoreErr, &blocked) {
-					recordErr = o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec.CancelOutboxID, publishedAt)
-				} else {
-					recordErr = o.recordAttemptWorkspaceRestoreFailure(ctx, rec.CancelOutboxID, publishedAt)
-				}
-				if recordErr != nil {
-					return processed, recordErr
-				}
-				continue
+			completed, completeErr := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+			if completeErr != nil {
+				return processed, completeErr
 			}
-			if rec.ReasonCode == "agent_unresponsive" {
-				released, releaseErr := o.transitionService().ReleaseFencedStaleRetryAfterCancellation(ctx, rec.AttemptID, publishedAt)
-				if releaseErr != nil {
-					return processed, releaseErr
-				}
-				if released {
-					processed++
-					continue
-				}
+			if completed {
+				processed++
 			}
-			if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
-				return processed, err
-			}
-			processed++
 			continue
 		}
 		if ctx != nil && ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -113,6 +124,27 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 	}
 
 	return processed, nil
+}
+
+func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
+	if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
+		slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
+		var blocked workspaceHandoffBlockedError
+		if errors.As(restoreErr, &blocked) {
+			return false, o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec.CancelOutboxID, publishedAt)
+		}
+		return false, o.recordAttemptWorkspaceRestoreFailure(ctx, rec.CancelOutboxID, publishedAt)
+	}
+	if rec.ReasonCode == "agent_unresponsive" {
+		released, err := o.transitionService().ReleaseFencedStaleRetryAfterCancellation(ctx, rec.AttemptID, publishedAt)
+		if err != nil || released {
+			return released, err
+		}
+	}
+	if err := o.publishAttemptCancelAfterProjection(ctx, rec, publishedAt); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context.Context, rec executionstore.AttemptCancelRecord, restoredAt string) error {

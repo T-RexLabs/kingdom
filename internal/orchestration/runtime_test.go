@@ -1459,7 +1459,7 @@ func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T)
 	}
 }
 
-func TestDrainAttemptCancelOutboxDispatchesProviderCancels(t *testing.T) {
+func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1494,6 +1494,7 @@ func TestDrainAttemptCancelOutboxDispatchesProviderCancels(t *testing.T) {
 
 	adapter := &timeoutCancelObserverAdapter{}
 	loop := orchestrationLoop{
+		db:             db,
 		adapter:        adapter,
 		executionStore: store,
 		cancelGrace:    time.Second,
@@ -1505,18 +1506,8 @@ func TestDrainAttemptCancelOutboxDispatchesProviderCancels(t *testing.T) {
 		t.Fatalf("drain attempt cancel outbox: %v", err)
 	}
 
-	if got := adapter.cancelCalls(); got != 1 {
-		t.Fatalf("expected one cancel dispatch, got %d", got)
-	}
-	requests := adapter.cancelRequestsSnapshot()
-	if len(requests) != 1 {
-		t.Fatalf("expected one cancel request snapshot, got %d", len(requests))
-	}
-	if requests[0].AttemptID != attemptID {
-		t.Fatalf("expected cancel attempt id %q, got %q", attemptID, requests[0].AttemptID)
-	}
-	if requests[0].SessionID != sessionIDForAttempt(attemptID) {
-		t.Fatalf("expected cancel session id %q, got %q", sessionIDForAttempt(attemptID), requests[0].SessionID)
+	if got := adapter.cancelCalls(); got != 0 {
+		t.Fatalf("expected no provider cancellation for a prelaunch attempt, got %d", got)
 	}
 
 	var status string
@@ -1570,6 +1561,7 @@ func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T)
 
 	adapter := &timeoutCancelObserverAdapter{}
 	loop := orchestrationLoop{
+		db:             db,
 		adapter:        adapter,
 		executionStore: store,
 		cancelGrace:    time.Second,
@@ -1700,6 +1692,26 @@ func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *t
 	}
 	if outboxStatus != "pending" {
 		t.Fatalf("expected unproven launched retry cancel outbox to remain pending, got %q", outboxStatus)
+	}
+	var handoffState string
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&handoffState); err != nil {
+		t.Fatalf("query blocked retry cancellation handoff state: %v", err)
+	}
+	if handoffState != "awaiting_quiescence" {
+		t.Fatalf("expected unproven launched retry to pause, got %q", handoffState)
+	}
+	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+		t.Fatalf("drain paused attempt cancel outbox: %v", err)
+	}
+	if got := adapter.cancelCalls(); got != 1 {
+		t.Fatalf("expected paused handoff to avoid automatic cancellation retry, got %d calls", got)
+	}
+	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_requested', last_error = '', updated_at = '2026-03-01T12:00:07Z' WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`)
+	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+		t.Fatalf("drain explicitly retried attempt cancel outbox: %v", err)
+	}
+	if got := adapter.cancelCalls(); got != 2 {
+		t.Fatalf("expected exactly one further provider cancellation after explicit retry, got %d calls", got)
 	}
 }
 

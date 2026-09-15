@@ -91,6 +91,7 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 		activity_at: "2026-03-01T10:09:00Z",
 		updated_at: "2026-03-01T10:09:00Z",
 		committed_at: "2026-03-01T10:09:00Z",
+		stop_retry_available: false,
 		...overrides,
 	};
 }
@@ -106,6 +107,9 @@ function renderSurface({
 	selectedAttemptSource = "auto" as const,
 	selectedNodeId = executions[0]?.node_id ?? null,
 	detail = null,
+	onRetryStop = () => {},
+	isStopRetryPending = false,
+	stopRetryErrorMessage = null,
 }: {
 	run?: RunDetailSummary;
 	executions?: RunExecution[];
@@ -115,6 +119,9 @@ function renderSurface({
 	selectedAttemptSource?: "auto" | "manual" | null;
 	selectedNodeId?: string | null;
 	detail?: PresentedExecutionDetail | null;
+	onRetryStop?: (attemptID: string) => void;
+	isStopRetryPending?: boolean;
+	stopRetryErrorMessage?: string | null;
 } = {}) {
 	const stepGroups = buildActivityStepGroups(executions);
 	render(
@@ -135,6 +142,9 @@ function renderSurface({
 			isDetailLoading={false}
 			detailErrorMessage={null}
 			onRetryDetail={() => {}}
+			onRetryStop={onRetryStop}
+			isStopRetryPending={isStopRetryPending}
+			stopRetryErrorMessage={stopRetryErrorMessage}
 			events={[]}
 			hasMoreEvents={false}
 			onLoadMoreEvents={() => {}}
@@ -144,6 +154,18 @@ function renderSurface({
 }
 
 describe("run execution surface", () => {
+	it("offers Retry Stop only for a paused attempt awaiting process quiescence", async () => {
+		const user = userEvent.setup();
+		const onRetryStop = vi.fn();
+		renderSurface({
+			executions: [makeExecution({ status: "paused", handoff_state: "awaiting_quiescence", stop_retry_available: true })],
+			onRetryStop,
+		});
+
+		await user.click(screen.getByRole("button", { name: "Retry Stop" }));
+		expect(onRetryStop).toHaveBeenCalledWith("attempt-1");
+	});
+
 	it("shows Latest Completed Step with a single step-status pill for auto-selected terminal work", () => {
 		renderSurface();
 

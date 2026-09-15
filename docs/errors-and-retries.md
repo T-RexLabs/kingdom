@@ -71,3 +71,7 @@ The web UI retains pending and transport-ambiguous requests in memory and expose
 Retry exhaustion escalates to `chancellor` via dead-letter flow.
 
 These limits govern runtime-initiated recovery and workflow rework. Node attempt ordinals have no separate generic cap, and explicit operator Retry and Rerun actions on failed or fully settled cancelled runs are uncapped.
+
+## Paused Stop Recovery
+
+When Kingdom cannot prove that a stale provider process stopped, it pauses the replacement attempt and keeps its cancellation handoff pending. This does not automatically send repeated stop requests. The paused execution exposes **Retry Stop** only while its guardian remains addressable. The action is idempotent and requests one further bounded stop attempt; it never bypasses guardian quiescence, trusted workspace restoration, or the cancellation handoff barrier.

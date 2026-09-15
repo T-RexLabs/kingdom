@@ -42,6 +42,77 @@ func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
 	}
 }
 
+func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+	attemptID := runID + ":delegated_execution_berserker:1"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-stop-retry', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-stop-retry', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-stop-retry', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-stop-retry', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-builder-stop-retry', 'ses-builder-stop-retry', ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, completion_capability_hash, completion_capability_issued_at, created_at, updated_at) VALUES ('inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'session-builder-stop-retry', 'ses-builder-stop-retry', 'superseded', 'receipt_required', 'capability-hash', ?, ?, ?)`, attemptID, runID, now, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-stop-retry' WHERE attempt_id = ?`, attemptID)
+	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'decree_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'ses-builder-stop-retry', 'agent_unresponsive', 'provider stopped responding', ?, 'pending', 'awaiting_quiescence', 1, 'Kingdom could not confirm that the previous provider process stopped.', ?, ?)`, attemptID, runID, now, now, now)
+	projection := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
+	if projection.Code != http.StatusOK {
+		t.Fatalf("expected execution projection 200, got %d (%s)", projection.Code, projection.Body.String())
+	}
+	var executions struct {
+		Items []struct {
+			AttemptID          string `json:"attempt_id"`
+			StopRetryAvailable bool   `json:"stop_retry_available"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(projection.Body.Bytes(), &executions); err != nil {
+		t.Fatalf("decode execution projection: %v", err)
+	}
+	if len(executions.Items) != 1 || executions.Items[0].AttemptID != attemptID || !executions.Items[0].StopRetryAvailable {
+		t.Fatalf("expected eligible stop retry execution projection, got %#v", executions.Items)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry",
+	})
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", res.Code, res.Body.String())
+	}
+	var result gen.RetryExecutionStopResult
+	if err := json.Unmarshal(res.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode stop retry result: %v", err)
+	}
+	if result.RunId != runID || result.AttemptId != attemptID || !result.StopRetryRequested {
+		t.Fatalf("unexpected stop retry result: %#v", result)
+	}
+	var handoffState string
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel-builder-stop-retry'`).Scan(&handoffState); err != nil {
+		t.Fatalf("load stop retry handoff state: %v", err)
+	}
+	if handoffState != "stop_retry_requested" {
+		t.Fatalf("expected stop_retry_requested, got %q", handoffState)
+	}
+	replayed := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry",
+	})
+	if replayed.Code != http.StatusAccepted {
+		t.Fatalf("expected idempotent 202 replay, got %d (%s)", replayed.Code, replayed.Body.String())
+	}
+	conflict := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry-conflict",
+	})
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate stop retry request to conflict, got %d (%s)", conflict.Code, conflict.Body.String())
+	}
+}
+
 func TestServerFinalApprovalConfirmTransitionsRunToSucceeded(t *testing.T) {
 	t.Parallel()
 

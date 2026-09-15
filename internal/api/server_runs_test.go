@@ -3080,6 +3080,7 @@ func TestServerListRunExecutionsUsesPausedStatusOnlyWhileStaleCancellationIsPend
 	}); err != nil {
 		t.Fatalf("queue stale cancellation: %v", err)
 	}
+	mustExecSQL(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'awaiting_quiescence' WHERE cancel_outbox_id = 'cancel-builder-paused'`)
 
 	assertExecutionStatus := func(expectedStatus, expectedHandoffState string) {
 		t.Helper()

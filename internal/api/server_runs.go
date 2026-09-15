@@ -1231,6 +1231,7 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.CancellationHandoffState.Valid {
 		item.HandoffState = &record.CancellationHandoffState.String
 	}
+	item.StopRetryAvailable = record.StopRetryAvailable
 	return item
 }
 

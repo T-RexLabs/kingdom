@@ -11,6 +11,7 @@ import {
   useMailbox,
   useMailboxMessage,
 	useCancelRun,
+	useRetryExecutionStop,
 	type MailboxFilters,
 	type CancelRunRequest,
 } from "@/api/hooks";
@@ -169,10 +170,16 @@ export function RunDetailPage() {
 	const mailboxIsFetching = mailboxQuery.isFetching;
 	const refetchMailbox = mailboxQuery.refetch;
 	const cancelRun = useCancelRun(runId);
+	const retryExecutionStop = useRetryExecutionStop(runId);
 	const recoverableCancel = useRecoverableMutation(
 		"cancel",
 		(body: CancelRunRequest, key) => cancelRun.mutateAsync({ body, key }),
 		runId,
+	);
+	const recoverableStopRetry = useRecoverableMutation(
+		"retry-execution-stop",
+		(attemptId: string, key) => retryExecutionStop.mutateAsync({ value: attemptId, key }),
+		`${runId}:${selectedExecutionId ?? ""}`,
 	);
 	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const planApprovalTargetRef = useRef<HTMLDivElement | null>(null);
@@ -964,9 +971,14 @@ export function RunDetailPage() {
 						isDetailLoading={executionDetailQuery.isFetching && !executionDetailQuery.data}
 						detailErrorMessage={executionDetailQuery.isError ? queryErrorMessage(executionDetailQuery.error, "The execution detail could not be loaded right now.") : null}
 						detailPlaceholderMessage={detailPlaceholderMessage}
-						onRetryDetail={() => {
-							void executionDetailQuery.refetch();
-						}}
+							onRetryDetail={() => {
+								void executionDetailQuery.refetch();
+							}}
+							onRetryStop={(attemptId) => {
+								void recoverableStopRetry.mutateAsync(attemptId);
+							}}
+							isStopRetryPending={retryExecutionStop.isPending || recoverableStopRetry.hasPendingRecovery}
+							stopRetryErrorMessage={retryExecutionStop.error ? queryErrorMessage(retryExecutionStop.error, "Kingdom could not retry the stop request.") : null}
 						events={timelineItems}
 						graph={graph}
 						hasMoreEvents={hasEarlierTimelinePages}
@@ -1312,7 +1324,7 @@ function CancelRunDialog({
 			onConfirm={onConfirm}
 			title={runTitle}
 			caption="Cancel Run"
-			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Run" : "Cancel Run"}
+			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Request" : "Cancel Run"}
 			// The only confirm that overrides the default dismiss verb, because
 			// here "Cancel" is the destructive action's own name.
 			dismissLabel="Keep Run Active"

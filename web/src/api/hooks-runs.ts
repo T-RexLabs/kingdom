@@ -23,6 +23,7 @@ import type {
   ProviderModelsResponse,
   WorkspaceCapabilities,
   RetryNodeResult,
+	RetryExecutionStopResult,
   RerunFromNodeResult,
 	RolesResponse,
 	RunAgentsResponse,
@@ -634,6 +635,20 @@ export function useCancelRun(runId: string) {
 				invalidateDashboardAnalyticsQueries(qc),
 				invalidateRuntimeMetricsQueries(qc),
 			]);
+		},
+	});
+}
+
+export function useRetryExecutionStop(runId: string) {
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: ({ value: attemptId, key }: MutationWithValue<string>) =>
+			apiFetch<RetryExecutionStopResult>(`/runs/${runId}/executions/${attemptId}/stop-retry`, {
+				method: "POST",
+				headers: { "Idempotency-Key": key },
+			}),
+		onSuccess: () => {
+			invalidateRunDetailRecoveryQueries(qc, runId);
 		},
 	});
 }

@@ -990,6 +990,74 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	}
 }
 
+func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	now := "2026-03-01T12:10:00Z"
+	mustExec(t, db, fmt.Sprintf(`UPDATE node_runs SET node_status = 'blocked', finished_at = %q WHERE node_run_id = 'nr_1'`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at)
+		VALUES ('att_1', 'run_1', 'nr_1', 'committed_cancelled', 'provider_backed', 'server_response', 'session_1', 'ses_1', '2026-03-01T12:00:01Z', %q, 'agent_unresponsive', 'provider did not stop', %q, %q)`, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at)
+		VALUES ('inv_1', 'att_1', 'run_1', 'nr_1', 'session_1', 'ses_1', 'superseded', 'server_response', %q, %q)`, now, now))
+	mustExec(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv_1' WHERE attempt_id = 'att_1'`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, created_at, updated_at)
+		VALUES ('guard_1', 'decree_attempt', 'att_1', 'inv_1', 'att_1', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_1', 1, %q, %q, %q, %q)`, now, now, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at)
+		VALUES ('cancel_1', 'att_1', 'run_1', 'nr_1', 'ses_1', 'agent_unresponsive', 'provider did not stop', %q, 'pending', 'awaiting_quiescence', 1, 'Kingdom could not confirm that the previous provider process stopped.', %q, %q)`, now, now, now))
+
+	svc := NewTransitionService(db, nil)
+	if err := svc.RequestAttemptStopRetry(context.Background(), AttemptStopRetryRequest{
+		RunID:      "run_1",
+		AttemptID:  "att_1",
+		ActorID:    "local-operator",
+		RoleID:     "allfather",
+		OccurredAt: "2026-03-01T12:11:00Z",
+		GenerateID: func(prefix string) string { return prefix + "_stop_retry" },
+	}); err != nil {
+		t.Fatalf("request paused attempt stop retry: %v", err)
+	}
+
+	var handoffState, lastError string
+	if err := db.QueryRow(`SELECT handoff_state, last_error FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_1'`).Scan(&handoffState, &lastError); err != nil {
+		t.Fatalf("load cancellation handoff: %v", err)
+	}
+	if handoffState != "stop_retry_requested" || lastError != "" {
+		t.Fatalf("expected pending stop retry with cleared error, got state=%q error=%q", handoffState, lastError)
+	}
+	var events int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = 'att_1' AND event_type = 'attempt.stop_retry_requested'`).Scan(&events); err != nil {
+		t.Fatalf("count stop retry events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("expected one stop retry event, got %d", events)
+	}
+
+	err := svc.RequestAttemptStopRetry(context.Background(), AttemptStopRetryRequest{
+		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:12:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected duplicate stop retry request to conflict")
+	}
+	claimed, err := svc.ClaimAttemptCancelHandoffDispatch(context.Background(), "cancel_1", "2026-03-01T12:13:00Z")
+	if err != nil || !claimed {
+		t.Fatalf("claim stop retry dispatch: claimed=%t err=%v", claimed, err)
+	}
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_1'`).Scan(&handoffState); err != nil {
+		t.Fatalf("load dispatched handoff state: %v", err)
+	}
+	if handoffState != "stop_retry_dispatched" {
+		t.Fatalf("expected durable stop retry dispatch claim, got %q", handoffState)
+	}
+	if err := svc.RequestAttemptStopRetry(context.Background(), AttemptStopRetryRequest{
+		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:14:00Z",
+	}); err != nil {
+		t.Fatalf("request a new stop retry after an interrupted dispatch: %v", err)
+	}
+}
+
 func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterStatusDrift(t *testing.T) {
 	t.Parallel()
 

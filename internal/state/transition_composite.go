@@ -92,6 +92,15 @@ type ScheduleFencedStaleRetryRequest struct {
 	CurrentEventSeq    int
 }
 
+type AttemptStopRetryRequest struct {
+	RunID      string
+	AttemptID  string
+	ActorID    string
+	RoleID     string
+	OccurredAt string
+	GenerateID func(string) string
+}
+
 type RunTerminalizationRequest struct {
 	Transition TransitionRequest
 	GenerateID func(string) string
@@ -1991,8 +2000,8 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 	}
 	occurredAt = firstNonEmptyTrimmed(occurredAt, time.Now().UTC().Format(time.RFC3339))
 	_, err := tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, publish_attempts, last_error, created_at, updated_at, published_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`,
+		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
 		generateID(generate, "cancel_outbox"),
 		attempt.AttemptID,
 		attempt.RunID,
@@ -2008,6 +2017,141 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 		return fmt.Errorf("queue attempt cancel outbox: %w", err)
 	}
 	return nil
+}
+
+// RequestAttemptStopRetry records one operator-authorized retry of a paused
+// stale-attempt stop handoff. The cancellation outbox remains the only gate
+// between the stale attempt and its replacement.
+func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req AttemptStopRetryRequest) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("transition service database is required")
+	}
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.AttemptID = strings.TrimSpace(req.AttemptID)
+	req.ActorID = strings.TrimSpace(req.ActorID)
+	req.RoleID = strings.TrimSpace(req.RoleID)
+	req.OccurredAt = strings.TrimSpace(req.OccurredAt)
+	if req.RunID == "" || req.AttemptID == "" || req.ActorID == "" || req.RoleID == "" {
+		return fmt.Errorf("run id, attempt id, actor id, and role id are required")
+	}
+	if req.OccurredAt == "" {
+		req.OccurredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin attempt stop retry transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var cancelOutboxID, nodeRunID, status, handoffState, nodeStatus, executionState, reasonCode string
+	err = tx.QueryRowContext(ctx, `SELECT aco.cancel_outbox_id, aco.node_run_id, aco.status, aco.handoff_state,
+		nr.node_status, ae.state, aco.reason_code
+		FROM attempt_cancel_outbox aco
+		JOIN node_runs nr ON nr.node_run_id = aco.node_run_id AND nr.run_id = aco.run_id
+		JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id AND ae.run_id = aco.run_id AND ae.node_run_id = aco.node_run_id
+		WHERE aco.run_id = ? AND aco.attempt_id = ?`, req.RunID, req.AttemptID).Scan(
+		&cancelOutboxID,
+		&nodeRunID,
+		&status,
+		&handoffState,
+		&nodeStatus,
+		&executionState,
+		&reasonCode,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "no pending cancellation handoff exists"}
+	}
+	if err != nil {
+		return fmt.Errorf("load attempt stop retry handoff: %w", err)
+	}
+	if status != "pending" || (handoffState != "awaiting_quiescence" && handoffState != "cancellation_dispatched" && handoffState != "stop_retry_dispatched") || nodeStatus != "blocked" || executionState != "committed_cancelled" || reasonCode != "agent_unresponsive" {
+		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "attempt is not paused for stale-process recovery"}
+	}
+
+	var addressableGuards int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1)
+		FROM provider_process_guards
+		WHERE owner_kind = 'decree_attempt' AND attempt_id = ? AND lifecycle = 'acknowledged'`, req.AttemptID).Scan(&addressableGuards); err != nil {
+		return fmt.Errorf("check attempt stop retry guardian: %w", err)
+	}
+	if addressableGuards == 0 {
+		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "the prior provider process is not addressable"}
+	}
+
+	result, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+		SET handoff_state = 'stop_retry_requested', last_error = '', updated_at = ?
+		WHERE cancel_outbox_id = ? AND status = 'pending'
+		  AND handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')`, req.OccurredAt, cancelOutboxID)
+	if err != nil {
+		return fmt.Errorf("request attempt stop retry: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read attempt stop retry rows affected: %w", err)
+	}
+	if rows != 1 {
+		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "the paused handoff changed"}
+	}
+	seq, err := nextAttemptExecutionSeqTx(ctx, tx, req.AttemptID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]string{
+		"cancel_outbox_id": cancelOutboxID,
+		"requested_by":     req.ActorID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal attempt stop retry event: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
+		VALUES (?, ?, ?, ?, ?, 'attempt.stop_retry_requested', 'agent_unresponsive', ?, ?)`,
+		generateID(req.GenerateID, "attempt_event"), req.AttemptID, req.RunID, nodeRunID, seq, string(payload), req.OccurredAt); err != nil {
+		return fmt.Errorf("append attempt stop retry event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit attempt stop retry transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// ClaimAttemptCancelHandoffDispatch records the point after which a cancellation
+// request may perform its external provider stop. A crash after this claim leaves
+// the handoff paused instead of replaying an unbounded external side effect.
+func (s *TransitionService) ClaimAttemptCancelHandoffDispatch(ctx context.Context, cancelOutboxID, occurredAt string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("transition service database is required")
+	}
+	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
+	occurredAt = strings.TrimSpace(occurredAt)
+	if cancelOutboxID == "" {
+		return false, fmt.Errorf("cancel outbox id is required")
+	}
+	if occurredAt == "" {
+		occurredAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+		SET handoff_state = CASE handoff_state
+			WHEN 'cancellation_requested' THEN 'cancellation_dispatched'
+			WHEN 'stop_retry_requested' THEN 'stop_retry_dispatched'
+		END,
+		updated_at = ?
+		WHERE cancel_outbox_id = ? AND status = 'pending'
+		  AND handoff_state IN ('cancellation_requested', 'stop_retry_requested')`, occurredAt, cancelOutboxID)
+	if err != nil {
+		return false, fmt.Errorf("claim attempt cancellation handoff dispatch: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read attempt cancellation dispatch claim rows affected: %w", err)
+	}
+	return rows == 1, nil
 }
 
 func attemptSupersessionDecisionForAttempt(attempt liveNodeAttempt) attemptSupersessionDecision {

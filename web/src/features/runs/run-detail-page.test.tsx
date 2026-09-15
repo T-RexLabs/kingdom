@@ -41,6 +41,7 @@ const useRolesMock = vi.fn();
 const useMailboxMock = vi.fn();
 const useMailboxMessageMock = vi.fn();
 const useCancelRunMock = vi.fn();
+const useRetryExecutionStopMock = vi.fn();
 const agentsRefetchMock = vi.fn();
 const executionsRefetchMock = vi.fn();
 const executionDetailRefetchMock = vi.fn();
@@ -207,6 +208,7 @@ vi.mock("@/api/hooks", () => ({
   useMailbox: (...args: unknown[]) => useMailboxMock(...args),
   useMailboxMessage: (...args: unknown[]) => useMailboxMessageMock(...args),
   useCancelRun: (...args: unknown[]) => useCancelRunMock(...args),
+	useRetryExecutionStop: (...args: unknown[]) => useRetryExecutionStopMock(...args),
   newIdempotencyKey: () => "idem-cancel-test",
 }));
 
@@ -341,6 +343,12 @@ describe("run detail page", () => {
       isPending: mockCancelPending,
       error: mockCancelError,
     }));
+		useRetryExecutionStopMock.mockReset();
+		useRetryExecutionStopMock.mockImplementation(() => ({
+			mutateAsync: vi.fn().mockResolvedValue(undefined),
+			isPending: false,
+			error: null,
+		}));
     mailboxRefetchMock.mockReset();
     cancelMutateAsyncMock.mockClear();
   });

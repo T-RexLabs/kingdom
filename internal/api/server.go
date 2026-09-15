@@ -627,6 +627,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/events/stream", s.handleStreamRunCollectionEvents)
 	mux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("POST /runs/{id}/executions/{attemptId}/stop-retry", s.handleRetryExecutionStop)
 	mux.HandleFunc("GET /runs/{id}/plan", s.handleGetRunPlan)
 	mux.HandleFunc("GET /runs/{id}/plan-reviews", s.handleListRunPlanReviews)
 	mux.HandleFunc("GET /runs/{id}/governance-decisions", s.handleListRunGovernanceDecisions)
@@ -734,6 +735,7 @@ type runExecutionItem struct {
 	FailureText             *string    `json:"failure_text,omitempty"`
 	CompletionInvalidReason *string    `json:"completion_invalid_reason,omitempty"`
 	HandoffState            *string    `json:"handoff_state,omitempty"`
+	StopRetryAvailable      bool       `json:"stop_retry_available"`
 }
 
 type runExecutionSettlementDetailItem struct {

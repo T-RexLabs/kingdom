@@ -108,4 +108,5 @@ export type CreateFinalApprovalResult = components["schemas"]["CreateFinalApprov
 export type CreatePlanApprovalRequest = components["schemas"]["CreatePlanApprovalRequest"];
 export type CreatePlanApprovalResult = components["schemas"]["CreatePlanApprovalResult"];
 export type RetryNodeResult = components["schemas"]["RetryNodeResult"];
+export type RetryExecutionStopResult = components["schemas"]["RetryExecutionStopResult"];
 export type RerunFromNodeResult = components["schemas"]["RerunFromNodeResult"];

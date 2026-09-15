@@ -33,6 +33,9 @@ export function RunExecutionSurface({
 	detailErrorMessage,
 	detailPlaceholderMessage,
 	onRetryDetail,
+	onRetryStop,
+	isStopRetryPending,
+	stopRetryErrorMessage,
 	events,
 	graph,
 	hasMoreEvents,
@@ -56,6 +59,9 @@ export function RunExecutionSurface({
 	detailErrorMessage: string | null;
 	detailPlaceholderMessage?: string | null;
 	onRetryDetail: () => void;
+	onRetryStop: (attemptID: string) => void;
+	isStopRetryPending: boolean;
+	stopRetryErrorMessage: string | null;
 	events: TimelineEvent[];
 	graph?: { nodes: RunGraphNode[]; edges: RunGraphEdge[] };
 	hasMoreEvents: boolean;
@@ -79,6 +85,8 @@ export function RunExecutionSurface({
 	// Prefer honest ACP activity recency; fall back to the coarse execution timestamp
 	// only before any agent activity has been recorded.
 	const summaryActivityAt = nodeActivityAt ?? currentExecution?.activity_at ?? run.last_activity_at;
+	const stopRetryAvailable = currentExecutionDisplayStatus === "paused"
+		&& (detail?.stop_retry_available ?? currentExecution?.stop_retry_available ?? false);
 	const activityHeroLabel = primaryExecutionErrorVisible ? "Execution Steps" : activityHeroLabelText(currentExecutionDisplayStatus, selectedAttemptSource);
 	const stepSelectorId = useId();
 	const attemptSelectorId = useId();
@@ -158,6 +166,19 @@ export function RunExecutionSurface({
 						<div className="mt-3 text-xs text-foreground-subtle">
 							Last activity <RelativeTime iso={summaryActivityAt} />
 						</div>
+						{stopRetryAvailable && currentExecution && (
+							<div className="mt-4 flex flex-wrap items-center gap-3">
+								<button
+									type="button"
+									onClick={() => onRetryStop(currentExecution.attempt_id)}
+									disabled={isStopRetryPending}
+									className="inline-flex min-h-11 items-center justify-center rounded-md border border-status-blocked/40 px-3 py-2 text-sm font-medium text-status-blocked hover:bg-status-blocked/10 disabled:cursor-not-allowed disabled:opacity-60"
+								>
+									{isStopRetryPending ? "Retrying Stop..." : "Retry Stop"}
+								</button>
+								{stopRetryErrorMessage && <p role="alert" className="text-sm text-status-failed">{stopRetryErrorMessage}</p>}
+							</div>
+						)}
 					</div>
 					<div className="flex flex-col items-start gap-2 sm:items-end">
 						{currentExecution && currentExecutionDisplayStatus

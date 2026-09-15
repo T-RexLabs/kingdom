@@ -57,6 +57,16 @@ type ReplayNotQuiescentError struct {
 	Blockers []string
 }
 
+type AttemptStopRetryUnavailableError struct {
+	RunID     string
+	AttemptID string
+	Reason    string
+}
+
+func (e *AttemptStopRetryUnavailableError) Error() string {
+	return fmt.Sprintf("stop retry is unavailable for attempt %q in run %q: %s", e.AttemptID, e.RunID, e.Reason)
+}
+
 func (e *ReplayNotQuiescentError) Error() string {
 	return fmt.Sprintf("cancelled run %q is still settling: %s", e.RunID, strings.Join(e.Blockers, ", "))
 }

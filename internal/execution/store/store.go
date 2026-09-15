@@ -160,6 +160,7 @@ type RunExecutionRecord struct {
 	CompletionInvalidReason  sql.NullString
 	CancellationPending      bool
 	CancellationHandoffState sql.NullString
+	StopRetryAvailable       bool
 }
 
 type RunExecutionDetailRecord struct {
@@ -519,7 +520,14 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 		        NULLIF(TRIM(ae.failure_text), '') AS failure_text,
 		        COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 		        EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_pending,
-		        (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state
+		        (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
+		        CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
+		            SELECT 1 FROM attempt_cancel_outbox aco
+		            JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
+		            WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
+		              AND aco.reason_code = 'agent_unresponsive'
+		              AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+		        ) THEN 1 ELSE 0 END AS stop_retry_available
 		 FROM attempt_executions ae
 		 JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		 LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
@@ -569,6 +577,7 @@ func (s *Store) ListRunExecutions(ctx context.Context, runID string) ([]RunExecu
 			&rec.CompletionInvalidReason,
 			&rec.CancellationPending,
 			&rec.CancellationHandoffState,
+			&rec.StopRetryAvailable,
 		); err != nil {
 			return nil, fmt.Errorf("scan run execution row for %q: %w", runID, err)
 		}
@@ -648,6 +657,13 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 	       EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_pending,
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
+	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
+	           SELECT 1 FROM attempt_cancel_outbox aco
+	           JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
+	           WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
+	             AND aco.reason_code = 'agent_unresponsive'
+	             AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+	       ) THEN 1 ELSE 0 END AS stop_retry_available,
 	       COALESCE(lao.payload_json, '') AS payload_json,
 	       NULLIF(TRIM(ae.active_provider_invocation_id), '') AS active_provider_invocation_id,
 	       NULLIF(TRIM(api.created_at), '') AS active_provider_invocation_at,
@@ -694,6 +710,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.CompletionInvalidReason,
 		&rec.CancellationPending,
 		&rec.CancellationHandoffState,
+		&rec.StopRetryAvailable,
 		&payloadJSON,
 		&activeProviderInvocationID,
 		&activeProviderInvocationAt,
@@ -2015,6 +2032,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 		 LEFT JOIN workflow_runs wr ON wr.run_id = aco.run_id
 		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE status = 'pending'
+		   AND handoff_state IN ('cancellation_requested', 'stop_retry_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')
 		 ORDER BY aco.created_at ASC, aco.cancel_outbox_id ASC
 		 LIMIT ?`,
 		limit,
@@ -2402,8 +2420,8 @@ func (s *Store) QueueAttemptCancel(ctx context.Context, req QueueAttemptCancelRe
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, publish_attempts, last_error, created_at, updated_at, published_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '', ?, ?, NULL)`,
+		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
 		cancelOutboxID,
 		attemptID,
 		runID,

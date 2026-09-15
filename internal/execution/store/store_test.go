@@ -1181,8 +1181,8 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	if pending[0].SessionID != "session_run_1_decree_intake_1" {
 		t.Fatalf("expected logical fallback session id, got %q", pending[0].SessionID)
 	}
-	if pending[0].HandoffState != "awaiting_quiescence" {
-		t.Fatalf("expected new cancellation to await quiescence, got %q", pending[0].HandoffState)
+	if pending[0].HandoffState != "cancellation_requested" {
+		t.Fatalf("expected new cancellation to request cancellation, got %q", pending[0].HandoffState)
 	}
 
 	if err := s.RecordAttemptCancelFailure(ctx, "cancel_outbox_1", "transport timeout", "awaiting_quiescence", "2026-03-01T12:00:03Z"); err != nil {
@@ -1204,6 +1204,15 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	if handoffState != "awaiting_quiescence" {
 		t.Fatalf("expected failed cancellation to await quiescence, got %q", handoffState)
 	}
+	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_dispatched' WHERE cancel_outbox_id = 'cancel_outbox_1'`)
+	pending, err = s.ListPendingAttemptCancels(ctx, 10)
+	if err != nil {
+		t.Fatalf("list dispatched stop retry handoffs: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected dispatched stop retry to wait for an operator action after restart, got %#v", pending)
+	}
+	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'awaiting_quiescence' WHERE cancel_outbox_id = 'cancel_outbox_1'`)
 
 	if err := s.MarkAttemptCancelPublished(ctx, "cancel_outbox_1", "2026-03-01T12:00:04Z"); err != nil {
 		t.Fatalf("mark attempt cancel published: %v", err)
