@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	mergeExecutionItems,
+	import {
+	mergeRunNodeExecutionItems,
 	overlayExecutionDetail,
 	overlayExecutionItem,
 	patchLiveExecutionProjection,
@@ -253,8 +253,8 @@ describe("run-live-execution-projection", () => {
 		});
 	});
 
-	it("materializes live-only execution rows when SSE arrives before the executions refetch", () => {
-		const merged = mergeExecutionItems([], {
+	it("does not synthesize logical nodes from SSE before the executions refetch", () => {
+		const merged = mergeRunNodeExecutionItems([], {
 			"nr-live-only": {
 				node_run_id: "nr-live-only",
 				attempt_id: "attempt-live-only",
@@ -269,38 +269,26 @@ describe("run-live-execution-projection", () => {
 			},
 		});
 
-		expect(merged).toEqual([
-			{
-				attempt_id: "attempt-live-only",
-				node_run_id: "nr-live-only",
-				node_id: "delegated_execution_berserker",
-				attempt: 2,
-				agent_id: "",
-				required_role: "builder-berserker",
-				execution_mode: "provider_backed",
-				status: "running",
-				queued_at: "2026-03-01T10:09:00Z",
-				activity_at: "2026-03-01T10:09:00Z",
-				updated_at: "2026-03-01T10:09:00Z",
-				stop_retry_available: false,
-				started_at: "2026-03-01T10:09:00Z",
-			},
-		]);
+		expect(merged).toEqual([]);
 	});
 
-	it("does not synthesize live-only execution rows without a trustworthy status", () => {
-		expect(mergeExecutionItems([], {
-			"nr-live-telemetry": {
-				node_run_id: "nr-live-telemetry",
-				attempt_id: "attempt-live-telemetry",
-				node_id: "delegated_execution_berserker",
-				attempt: 2,
-				required_role: "builder-berserker",
-				execution_mode: "provider_backed",
-				activity_at: "2026-03-01T10:09:00Z",
-				live_label: "Workspace prepared",
+	it("overlays only a matching canonical current execution", () => {
+		const [merged] = mergeRunNodeExecutionItems([{
+			node_id: "delegated_execution_berserker",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			status: "running",
+			attempt_count: 1,
+			current_execution: {
+				attempt_id: "attempt-1", node_run_id: "nr-1", node_id: "delegated_execution_berserker", attempt: 1,
+				agent_id: "agent-1", required_role: "builder-berserker", execution_mode: "provider_backed", status: "running",
+				queued_at: "2026-03-01T10:08:00Z", activity_at: "2026-03-01T10:08:00Z", updated_at: "2026-03-01T10:08:00Z", stop_retry_available: false,
 			},
-		})).toEqual([]);
+		}], {
+			"nr-other": { node_run_id: "nr-other", attempt_id: "attempt-other", activity_at: "2026-03-01T10:09:00Z", status: "succeeded" },
+		});
+
+		expect(merged?.current_execution?.status).toBe("running");
 	});
 
 	it("preserves earliest observed timestamps across newer live updates", () => {

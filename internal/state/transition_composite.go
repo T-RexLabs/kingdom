@@ -12,6 +12,7 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/nodeattempt"
 	"kingdom/internal/sqlitex"
 )
 
@@ -1004,9 +1005,25 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 		return nil, err
 	}
 	for idx, nodeID := range req.TargetNodeIDs {
+		sourceAttemptID, err := latestPhysicalAttemptIDForRunNodeTx(ctx, tx, req.RunID, nodeID)
+		if err != nil {
+			return nil, err
+		}
 		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, req.RunID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, req.GenerateID)
 		if err != nil {
 			return nil, err
+		}
+		if sourceAttemptID != "" {
+			trigger := "operator_retry"
+			if strings.TrimSpace(req.RunReasonCode) == "manual_rerun_requested" {
+				trigger = "operator_rerun"
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO node_attempt_recoveries
+				(target_node_run_id, run_id, node_id, source_attempt_id, source_node_run_id, trigger, reason_code, scheduled_at)
+				SELECT ?, ?, ?, ?, ae.node_run_id, ?, ?, ? FROM attempt_executions ae
+				WHERE ae.run_id = ? AND ae.attempt_id = ?`, queuedAttempt.NodeRunID, req.RunID, nodeID, sourceAttemptID, trigger, strings.TrimSpace(req.RunReasonCode), occurredAt, req.RunID, sourceAttemptID); err != nil {
+				return nil, fmt.Errorf("persist manual recovery provenance: %w", err)
+			}
 		}
 		queued = append(queued, queuedAttempt)
 		if idx != 0 {
@@ -1049,6 +1066,23 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	}
 	committed = true
 	return queued, nil
+}
+
+func latestPhysicalAttemptIDForRunNodeTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, error) {
+	var attemptID sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT ae.attempt_id
+		FROM attempt_executions ae
+		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		WHERE ae.run_id = ? AND nr.node_id = ?
+		ORDER BY nr.attempt DESC, nr.node_run_id DESC
+		LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeID)).Scan(&attemptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load prior physical attempt for manual recovery: %w", err)
+	}
+	return strings.TrimSpace(attemptID.String), nil
 }
 
 func cancelledRunReplayBlockersTx(ctx context.Context, tx *sql.Tx, runID string) ([]string, error) {
@@ -2041,7 +2075,7 @@ func (s *TransitionService) loadLiveNodeAttemptsTx(ctx context.Context, tx *sql.
 	LEFT JOIN attempt_executions ae ON ae.attempt_id = nr.run_id || ':' || nr.node_id || ':' || nr.attempt
 	WHERE nr.run_id = ?
 	  AND %s
-	ORDER BY nr.node_id ASC, nr.attempt ASC, nr.node_run_id ASC`, LiveNodeAttemptStatusConditionSQL("nr"))
+	ORDER BY nr.node_id ASC, nr.attempt ASC, nr.node_run_id ASC`, nodeattempt.LiveNodeAttemptStatusConditionSQL("nr"))
 	rows, err := tx.QueryContext(ctx, query, runID)
 	if err != nil {
 		return nil, fmt.Errorf("load live node attempts: %w", err)
@@ -2080,7 +2114,7 @@ func liveNodeAttemptExistsTx(ctx context.Context, tx *sql.Tx, runID string, node
 	WHERE run_id = ?
 	  AND node_id IN (%s)
 	  AND %s
-	LIMIT 1`, placeholders, LiveNodeAttemptStatusConditionSQL("node_runs"))
+	LIMIT 1`, placeholders, nodeattempt.LiveNodeAttemptStatusConditionSQL("node_runs"))
 	var marker int
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&marker)
 	if errors.Is(err, sql.ErrNoRows) {

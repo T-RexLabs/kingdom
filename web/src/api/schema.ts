@@ -1179,8 +1179,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List durable execution attempts for a run. */
+        /** List canonical logical-node execution state for a run. */
         get: operations["listRunExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/nodes/{nodeId}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List paginated durable physical execution attempts for one workflow node. */
+        get: operations["listRunNodeAttempts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2446,22 +2463,6 @@ export interface components {
             publish_mode?: components["schemas"]["RunPublishMode"];
             model_selection?: components["schemas"]["RunModelSelection"];
         };
-        RuntimeRetryStatus: {
-            node_id: string;
-            node_run_id: string;
-            retry_index: number;
-            retry_max: number;
-            delay_seconds: number;
-            source_node_run_id: string;
-            target_node_run_id?: string;
-            /** @enum {string} */
-            phase: "scheduled" | "dispatched" | "recovered" | "failed" | "cancelled" | "exhausted" | "fail_fast";
-            /** @enum {string} */
-            status: "pending" | "dispatched" | "recovered" | "failed" | "cancelled" | "escalated" | "not_applicable";
-            reason_code: string;
-            /** Format: date-time */
-            due_at: string;
-        };
         /**
          * @example {
          *       "dag_nodes": 6,
@@ -2522,22 +2523,7 @@ export interface components {
          *       "stream_cursor": {
          *         "event_id": "evt_123",
          *         "run_event_seq": 50
-         *       },
-         *       "runtime_retries": [
-         *         {
-         *           "node_id": "delegated_execution_berserker",
-         *           "node_run_id": "nr_123",
-         *           "source_node_run_id": "nr_122",
-         *           "target_node_run_id": "nr_123",
-         *           "retry_index": 2,
-         *           "retry_max": 3,
-         *           "delay_seconds": 10,
-         *           "phase": "scheduled",
-         *           "status": "pending",
-         *           "reason_code": "timeout",
-         *           "due_at": "2026-04-30T12:29:10Z"
-         *         }
-         *       ]
+         *       }
          *     }
          */
         RunDetailSummary: components["schemas"]["RunSummary"] & {
@@ -2550,7 +2536,6 @@ export interface components {
             validation_auto_succeeded_count: number;
             failed_nodes: components["schemas"]["RunGraphNode"][];
             stream_cursor?: components["schemas"]["RunStreamCursor"];
-            runtime_retries: components["schemas"]["RuntimeRetryStatus"][];
         };
         RunListResponse: {
             items: components["schemas"]["RunSummary"][];
@@ -2868,7 +2853,54 @@ export interface components {
         };
         RunExecutionsResponse: {
             run_id: string;
+            items: components["schemas"]["RunNodeExecution"][];
+        };
+        RunExecutionFailure: {
+            code: string;
+            classification: string;
+            /** @enum {string} */
+            category: "core" | "provider" | "runtime" | "control_plane";
+            retryable: boolean;
+            operator_text: string;
+        };
+        RunRecoveryState: {
+            /** @enum {string} */
+            phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
+            /** @enum {string} */
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            reason_code: string;
+            source_attempt_id: string;
+            source_node_run_id: string;
+            target_attempt_id?: string;
+            target_node_run_id?: string;
+            retry_index: number;
+            retry_max: number;
+            /** Format: date-time */
+            scheduled_at: string;
+            /** Format: date-time */
+            last_updated_at: string;
+        };
+        RunNodeExecution: {
+            node_id: string;
+            required_role: string;
+            /** @enum {string} */
+            execution_ownership: "provider_backed" | "runtime_owned";
+            /** @enum {string} */
+            status: "pending" | "ready" | "starting" | "running" | "blocked" | "succeeded" | "failed" | "cancelled" | "skipped";
+            current_execution?: components["schemas"]["RunExecution"];
+            attempt_count: number;
+            /** Format: date-time */
+            latest_activity_at?: string;
+            failure?: components["schemas"]["RunExecutionFailure"];
+            recovery?: components["schemas"]["RunRecoveryState"];
+        };
+        RunNodeAttemptsResponse: {
+            run_id: string;
+            node_id: string;
+            current_node_run_id?: string;
+            current_attempt_id?: string;
             items: components["schemas"]["RunExecution"][];
+            next_cursor?: string;
         };
         RunAgentsResponse: {
             run_id: string;
@@ -5411,13 +5443,43 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Run execution attempts ordered by most recent execution activity. */
+            /** @description One canonical logical execution projection for every workflow node. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["RunExecutionsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listRunNodeAttempts: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Physical attempt history ordered newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunNodeAttemptsResponse"];
                 };
             };
             400: components["responses"]["BadRequestError"];

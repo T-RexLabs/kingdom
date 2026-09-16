@@ -1571,16 +1571,47 @@ paths:
     get:
       tags: [runs]
       operationId: listRunExecutions
-      summary: List durable execution attempts for a run.
+      summary: List canonical logical-node execution state for a run.
       parameters:
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
-          description: Run execution attempts ordered by most recent execution activity.
+          description: One canonical logical execution projection for every workflow node.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunExecutionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/nodes/{nodeId}/attempts:
+    get:
+      tags: [runs]
+      operationId: listRunNodeAttempts
+      summary: List paginated durable physical execution attempts for one workflow node.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - name: nodeId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Physical attempt history ordered newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunNodeAttemptsResponse"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -4226,45 +4257,6 @@ components:
         pending_approval_key: final:gate_7
         publish_mode: direct
 
-    RuntimeRetryStatus:
-      type: object
-      additionalProperties: false
-      required: [node_id, node_run_id, source_node_run_id, retry_index, retry_max, delay_seconds, phase, status, reason_code, due_at]
-      properties:
-        node_id:
-          type: string
-          minLength: 1
-        node_run_id:
-          type: string
-          minLength: 1
-        retry_index:
-          type: integer
-          minimum: 0
-        retry_max:
-          type: integer
-          minimum: 0
-        delay_seconds:
-          type: integer
-          minimum: 0
-        source_node_run_id:
-          type: string
-          minLength: 1
-        target_node_run_id:
-          type: string
-          minLength: 1
-        phase:
-          type: string
-          enum: [scheduled, dispatched, recovered, failed, cancelled, exhausted, fail_fast]
-        status:
-          type: string
-          enum: [pending, dispatched, recovered, failed, cancelled, escalated, not_applicable]
-        reason_code:
-          type: string
-          minLength: 1
-        due_at:
-          type: string
-          format: date-time
-
     RunTabCounts:
       type: object
       additionalProperties: false
@@ -4318,8 +4310,7 @@ components:
               validation_current_wave,
               review_auto_succeeded_count,
               validation_auto_succeeded_count,
-              failed_nodes,
-              runtime_retries,
+               failed_nodes,
             ]
           properties:
             tab_counts:
@@ -4348,10 +4339,6 @@ components:
                 $ref: "#/components/schemas/RunGraphNode"
             stream_cursor:
               $ref: "#/components/schemas/RunStreamCursor"
-            runtime_retries:
-              type: array
-              items:
-                $ref: "#/components/schemas/RuntimeRetryStatus"
       example:
         run_id: run_123
         workflow_id: royal-decree-v1
@@ -4388,18 +4375,6 @@ components:
         stream_cursor:
           event_id: evt_123
           run_event_seq: 50
-        runtime_retries:
-          - node_id: delegated_execution_berserker
-            node_run_id: nr_123
-            source_node_run_id: nr_122
-            target_node_run_id: nr_123
-            retry_index: 2
-            retry_max: 3
-            delay_seconds: 10
-            phase: scheduled
-            status: pending
-            reason_code: timeout
-            due_at: "2026-04-30T12:29:10Z"
 
     RunListResponse:
       type: object
@@ -5104,7 +5079,121 @@ components:
         items:
           type: array
           items:
+            $ref: "#/components/schemas/RunNodeExecution"
+
+    RunExecutionFailure:
+      type: object
+      additionalProperties: false
+      required: [code, classification, category, retryable, operator_text]
+      properties:
+        code:
+          type: string
+          minLength: 1
+        classification:
+          type: string
+          minLength: 1
+        category:
+          type: string
+          enum: [core, provider, runtime, control_plane]
+        retryable:
+          type: boolean
+        operator_text:
+          type: string
+          minLength: 1
+
+    RunRecoveryState:
+      type: object
+      additionalProperties: false
+      required: [phase, trigger, reason_code, source_attempt_id, source_node_run_id, retry_index, retry_max, scheduled_at, last_updated_at]
+      properties:
+        phase:
+          type: string
+          enum: [scheduled, paused, running, recovered, exhausted]
+        trigger:
+          type: string
+          enum: [automatic_retry, operator_retry, operator_rerun]
+        reason_code:
+          type: string
+          minLength: 1
+        source_attempt_id:
+          type: string
+          minLength: 1
+        source_node_run_id:
+          type: string
+          minLength: 1
+        target_attempt_id:
+          type: string
+          minLength: 1
+        target_node_run_id:
+          type: string
+          minLength: 1
+        retry_index:
+          type: integer
+          minimum: 0
+        retry_max:
+          type: integer
+          minimum: 0
+        scheduled_at:
+          type: string
+          format: date-time
+        last_updated_at:
+          type: string
+          format: date-time
+
+    RunNodeExecution:
+      type: object
+      additionalProperties: false
+      required: [node_id, required_role, execution_ownership, status, attempt_count]
+      properties:
+        node_id:
+          type: string
+          minLength: 1
+        required_role:
+          type: string
+          minLength: 1
+        execution_ownership:
+          type: string
+          enum: [provider_backed, runtime_owned]
+        status:
+          type: string
+          enum: [pending, ready, starting, running, blocked, succeeded, failed, cancelled, skipped]
+        current_execution:
+          $ref: "#/components/schemas/RunExecution"
+        attempt_count:
+          type: integer
+          minimum: 0
+        latest_activity_at:
+          type: string
+          format: date-time
+        failure:
+          $ref: "#/components/schemas/RunExecutionFailure"
+        recovery:
+          $ref: "#/components/schemas/RunRecoveryState"
+
+    RunNodeAttemptsResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, node_id, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        node_id:
+          type: string
+          minLength: 1
+        current_node_run_id:
+          type: string
+          minLength: 1
+        current_attempt_id:
+          type: string
+          minLength: 1
+        items:
+          type: array
+          items:
             $ref: "#/components/schemas/RunExecution"
+        next_cursor:
+          type: string
+          minLength: 1
 
     RunAgentsResponse:
       type: object

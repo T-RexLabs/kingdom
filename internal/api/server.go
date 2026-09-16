@@ -639,6 +639,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetRunExecutionActivity)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}", s.handleGetRunExecution)
 	mux.HandleFunc("GET /runs/{id}/executions", s.handleListRunExecutions)
+	mux.HandleFunc("GET /runs/{id}/nodes/{nodeId}/attempts", s.handleListRunNodeAttempts)
 	mux.HandleFunc("GET /runs/{id}/agents", s.handleListRunAgents)
 	mux.HandleFunc("GET /runs/{id}/timeline", s.handleGetRunTimeline)
 	mux.HandleFunc("GET /runs/{id}/mailbox/messages", s.handleListRunMailboxMessages)
@@ -681,11 +682,6 @@ type roleItem struct {
 type runAgentsResponse struct {
 	RunID string               `json:"run_id"`
 	Items []runParticipantItem `json:"items"`
-}
-
-type runExecutionsResponse struct {
-	RunID string             `json:"run_id"`
-	Items []runExecutionItem `json:"items"`
 }
 
 type agentsResponse struct {

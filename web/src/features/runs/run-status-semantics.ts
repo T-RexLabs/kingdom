@@ -108,12 +108,8 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 			return "This step is queued to retry.";
 		case "Rerun queued":
 			return "This step is queued to rerun.";
-		case "Retrying provider":
-			return "This step is retrying after a provider issue.";
 		case "Recovered for retry":
 			return "This step recovered and is continuing through retry handling.";
-		case "Provider recovered":
-			return "This step recovered and is continuing.";
 		case "Retry exhausted":
 			return "Kingdom exhausted provider retries for this step.";
 		default: {
@@ -199,10 +195,6 @@ export function liveExecutionLabel(
 			return "Completion observed";
 		case "runtime_observation":
 			return "Runtime observation";
-		case "provider_empty_output_retry":
-			return "Retrying provider";
-		case "provider_output_recovered":
-			return "Provider recovered";
 	}
 		switch ((eventType ?? "").trim()) {
 			case "attempt.started":

@@ -1300,7 +1300,7 @@ describe("useRunEventStream", () => {
 		expect(projection?.["nr-workspace-prepared"]?.live_label).toBe("Workspace prepared");
 	});
 
-	it("projects provider retry activity as running instead of queued", async () => {
+	it("keeps retry telemetry as a transient running overlay without retry copy", async () => {
 		const invocations: Array<{
 			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
 		}> = [];
@@ -1322,7 +1322,7 @@ describe("useRunEventStream", () => {
 				data: JSON.stringify({
 					event_id: "evt-attempt-retrying",
 					event_type: "attempt.retrying",
-					reason_code: "provider_empty_output_retry",
+					reason_code: "provider_upstream_error",
 					run_event_seq: 1,
 					attempt_seq: 4,
 					node_run_id: "nr-attempt-retrying",
@@ -1344,7 +1344,6 @@ describe("useRunEventStream", () => {
 				node_run_id: "nr-attempt-retrying",
 				activity_at: "2026-03-01T10:11:00Z",
 				status: "running",
-				live_label: "Retrying provider",
 			},
 		});
 	});

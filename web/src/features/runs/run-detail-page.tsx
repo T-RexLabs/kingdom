@@ -4,6 +4,7 @@ import {
 	useRun,
 	useRunExecution,
 	useRunExecutions,
+	useInfiniteRunNodeAttempts,
 	useRunGraph,
   useTimeline,
   useRunAgents,
@@ -16,7 +17,6 @@ import {
 	type CancelRunRequest,
 } from "@/api/hooks";
 import { invalidateRunDetailRecoveryQueries, invalidateRunQuerySurfaces, type RunQuerySurface } from "@/api/hooks-runs";
-import type { RunDetailSummary } from "@/api/hooks-types";
 import { useRunEventStream } from "./use-run-event-stream";
 import { isDegradedRunStreamState, isTerminalRunStatus, RUN_SURFACE_DEGRADED_REFRESH_MS } from "./run-freshness";
 import { ApiError } from "@/api/client";
@@ -39,7 +39,6 @@ import {
   AlertTriangle,
   XCircle,
   CheckCircle2,
-  RotateCw,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
@@ -67,15 +66,14 @@ import { PageHeader } from "@/components/page-layout";
 import type { RunDetailTab } from "./run-detail-tabs";
 import { readRunStreamBootstrapState } from "./run-cache-updates";
 import { clearRunQuerySurfacesDirty, markRunQuerySurfacesDirty, useRunSurfaceFreshness } from "./run-surface-freshness";
-import { mergeExecutionItems, overlayExecutionDetail, useLiveExecutionProjection } from "./run-live-execution-projection";
-import { buildActivityStepGroups, type ActivityStepGroup } from "./run-activity-selection";
+import { mergeRunNodeExecutionItems, overlayExecutionDetail, useLiveExecutionProjection } from "./run-live-execution-projection";
 
 const RUN_DETAIL_TIMELINE_PAGE_SIZE = 50;
 
 type SelectedExecutionState = {
 	runId: string;
 	nodeId: string;
-	attemptId: string;
+	attemptId: string | null;
 	source: "auto" | "manual";
 };
 
@@ -110,7 +108,7 @@ export function RunDetailPage() {
 	const graphIsFetching = graphQuery.isFetching;
 	const refetchGraph = graphQuery.refetch;
 	const executionsQuery = useRunExecutions(runId, { enabled: runReady && executionsQueryActive });
-	const executions = useMemo(() => executionsQuery.data?.items ?? [], [executionsQuery.data?.items]);
+	const nodes = useMemo(() => executionsQuery.data?.items ?? [], [executionsQuery.data?.items]);
 	const executionsAreFetching = executionsQuery.isFetching;
 	const refetchExecutions = executionsQuery.refetch;
 	const liveExecutionProjectionQuery = useLiveExecutionProjection(runId);
@@ -118,13 +116,9 @@ export function RunDetailPage() {
 		() => liveExecutionProjectionQuery.data ?? {},
 		[liveExecutionProjectionQuery.data],
 	);
-	const presentedExecutions = useMemo(
-		() => mergeExecutionItems(executions, liveExecutionProjection),
-		[executions, liveExecutionProjection],
-	);
-	const activityStepGroups = useMemo(
-		() => buildActivityStepGroups(presentedExecutions),
-		[presentedExecutions],
+	const presentedNodes = useMemo(
+		() => mergeRunNodeExecutionItems(nodes, liveExecutionProjection),
+		[liveExecutionProjection, nodes],
 	);
 	const timelineQuery = useTimeline(runId, RUN_DETAIL_TIMELINE_PAGE_SIZE, { enabled: runReady && timelineVisible });
 	const timelineIsPending = timelineQuery.isPending;
@@ -138,30 +132,58 @@ export function RunDetailPage() {
 	const agentsAreFetching = agentsQuery.isFetching;
 	const refetchAgents = agentsQuery.refetch;
 	const [selectedExecution, setSelectedExecution] = useState<SelectedExecutionState | null>(null);
-	const selectedExecutionState = selectedExecution?.runId === runId ? selectedExecution : null;
-	const reconciledSelectedExecution = reconcileSelectedExecution(
+	const storedSelectedExecution = selectedExecution?.runId === runId ? selectedExecution : null;
+	const storedSelectedNode = presentedNodes.find((node) => node.node_id === storedSelectedExecution?.nodeId) ?? null;
+	const selectedNodeBeforeValidation = storedSelectedNode ?? presentedNodes[0] ?? null;
+	const nodeAttemptsQuery = useInfiniteRunNodeAttempts(runId, selectedNodeBeforeValidation?.node_id, { enabled: runReady && executionVisible && !!selectedNodeBeforeValidation });
+	const nodeAttempts = useMemo(
+		() => nodeAttemptsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+		[nodeAttemptsQuery.data?.pages],
+	);
+	const manualSelectionNeedsValidation = !!storedSelectedExecution
+		&& storedSelectedExecution.source === "manual"
+		&& !!storedSelectedExecution.attemptId
+		&& nodeAttemptsQuery.isSuccess
+		&& !!storedSelectedNode
+		&& storedSelectedNode.current_execution?.attempt_id !== storedSelectedExecution.attemptId
+		&& !nodeAttempts.some((item) => item.attempt_id === storedSelectedExecution.attemptId);
+	const manualSelectionValidationQuery = useRunExecution(
 		runId,
-		activityStepGroups,
-		selectedExecutionState,
+		manualSelectionNeedsValidation ? storedSelectedExecution?.attemptId : null,
+		{ enabled: runReady && executionVisible && manualSelectionNeedsValidation },
 	);
-	if (!sameSelectedExecution(selectedExecutionState, reconciledSelectedExecution)) {
-		setSelectedExecution(reconciledSelectedExecution);
-	}
-	const selectedExecutionId = selectedExecutionState?.attemptId ?? null;
-	const selectedExecutionNodeId = selectedExecutionState?.nodeId ?? null;
-	const selectedExecutionIsCanonical = !!selectedExecutionId && executions.some((item) => item.attempt_id === selectedExecutionId);
-	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, { enabled: runReady && executionVisible && !!selectedExecutionId && selectedExecutionIsCanonical });
-	const executionDetailIsFetching = executionDetailQuery.isFetching;
-	const refetchExecutionDetail = executionDetailQuery.refetch;
+	const manualSelectionIsUnsupported = manualSelectionNeedsValidation && (
+		manualSelectionValidationQuery.isError
+		|| (manualSelectionValidationQuery.isSuccess && manualSelectionValidationQuery.data?.attempt_id !== storedSelectedExecution?.attemptId)
+	);
+	const selectedExecutionState = storedSelectedNode && !manualSelectionIsUnsupported ? storedSelectedExecution : null;
+	const selectedExecutionNodeId = selectedExecutionState?.nodeId ?? presentedNodes[0]?.node_id ?? null;
+	const selectedNode = presentedNodes.find((node) => node.node_id === selectedExecutionNodeId) ?? null;
+	const selectedExecutionId = selectedExecutionState?.attemptId ?? selectedNode?.current_execution?.attempt_id ?? null;
+	const selectedExecutionIsLoaded = !!selectedExecutionId && (
+		selectedNode?.current_execution?.attempt_id === selectedExecutionId
+		|| nodeAttempts.some((item) => item.attempt_id === selectedExecutionId)
+		|| manualSelectionValidationQuery.data?.attempt_id === selectedExecutionId
+	);
+	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, {
+		enabled: runReady
+			&& executionVisible
+			&& selectedExecutionIsLoaded
+			&& selectedExecutionId !== manualSelectionValidationQuery.data?.attempt_id,
+	});
+	const selectedExecutionDetailQuery = manualSelectionValidationQuery.data?.attempt_id === selectedExecutionId
+		? manualSelectionValidationQuery
+		: executionDetailQuery;
+	const executionDetailIsFetching = selectedExecutionDetailQuery.isFetching;
+	const refetchExecutionDetail = selectedExecutionDetailQuery.refetch;
 	const presentedExecutionDetail = useMemo(
-		() => overlayExecutionDetail(executionDetailQuery.data ?? null, executionDetailQuery.data ? liveExecutionProjection[executionDetailQuery.data.node_run_id] : undefined),
-		[executionDetailQuery.data, liveExecutionProjection],
+		() => selectedExecutionDetailQuery.data?.attempt_id === selectedExecutionId
+			? overlayExecutionDetail(selectedExecutionDetailQuery.data, liveExecutionProjection[selectedExecutionDetailQuery.data.node_run_id])
+			: null,
+		[liveExecutionProjection, selectedExecutionDetailQuery.data, selectedExecutionId],
 	);
-	const liveOnlySelectedExecution = selectedExecutionId && !selectedExecutionIsCanonical
-		? presentedExecutions.find((item) => item.attempt_id === selectedExecutionId) ?? null
-		: null;
-	const detailPlaceholderMessage = liveOnlySelectedExecution
-		? "Live execution details are arriving. Kingdom will show the canonical outcome as soon as it is persisted."
+	const detailPlaceholderMessage = selectedExecutionId && !selectedExecutionIsLoaded && !executionDetailIsFetching
+		? "The selected attempt is no longer in loaded history."
 		: null;
 	const { data: roles } = useRoles();
 	const [mailboxFilters, setMailboxFilters] = useState<MailboxFilters>({});
@@ -552,24 +574,23 @@ export function RunDetailPage() {
 	  	}, [agentsVisible, executionsQueryActive, graphVisible, mailboxVisible, queryClient, run, runId, runReady, runStreamState, timelineVisible]);
 
 	const handleSelectExecutionStep = useCallback((nodeId: string) => {
-		const group = activityStepGroups.find((item) => item.nodeId === nodeId);
-		if (!group) {
+		const node = presentedNodes.find((item) => item.node_id === nodeId);
+		if (!node) {
 			return;
 		}
-		setSelectedExecution({ runId, nodeId: group.nodeId, attemptId: group.preferredAttemptId, source: "manual" });
-	}, [activityStepGroups, runId]);
+		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: node.current_execution?.attempt_id ?? null, source: "manual" });
+	}, [presentedNodes, runId]);
 
 	const handleSelectExecutionAttempt = useCallback((attemptId: string) => {
-		const nodeId = selectedExecutionState?.nodeId;
+		const nodeId = selectedExecutionNodeId;
 		if (!nodeId) {
 			return;
 		}
-		const group = activityStepGroups.find((item) => item.nodeId === nodeId);
-		if (!group || !group.attempts.some((item) => item.attempt_id === attemptId)) {
+		if (!nodeAttempts.some((item) => item.attempt_id === attemptId) && selectedNode?.current_execution?.attempt_id !== attemptId) {
 			return;
 		}
 		setSelectedExecution({ runId, nodeId, attemptId, source: "manual" });
-	}, [activityStepGroups, runId, selectedExecutionState?.nodeId]);
+	}, [nodeAttempts, runId, selectedExecutionNodeId, selectedNode?.current_execution?.attempt_id]);
 
   const handleSelectMessage = useCallback((messageId: string | null) => {
     if (!messageId) {
@@ -682,16 +703,12 @@ export function RunDetailPage() {
 	const validationAutoSucceededCount = run.validation_auto_succeeded_count;
 	const reviewAutoSucceededLabel = "Review Auto-Succeeded at Cap";
 	const validationAutoSucceededLabel = "Validation Auto-Succeeded at Cap";
-	const runtimeRetries = run.runtime_retries;
-	const activeRuntimeRetries = runtimeRetries.filter(isActiveRuntimeRetry);
-  const showRuntimeRetries = (run.status === "running" || run.status === "pending") && activeRuntimeRetries.length > 0;
   const mailboxErrorMessage = !mailboxQuery.data && mailboxQuery.isError
     ? queryErrorMessage(mailboxQuery.error, "The messages could not be loaded right now.")
     : null;
 	const showHeaderNotices =
 		untilAllApprove ||
 		governanceState.noticeTitle !== null ||
-		showRuntimeRetries ||
 		!!cancelRun.error;
 
 	const activeTabId = `run-tab-${activeTab}`;
@@ -759,7 +776,7 @@ export function RunDetailPage() {
         </div>
       </PageHeader>
 
-      <RunLiveStatus runId={runId} executions={presentedExecutions} />
+		<RunLiveStatus runId={runId} nodes={presentedNodes} />
 
       {showHeaderNotices && (
         <div data-testid="run-header-notices" className="border-b border-border bg-surface-raised/20 px-page py-2">
@@ -797,7 +814,6 @@ export function RunDetailPage() {
                 <span>Unbounded review/validation mode: run continues until PASS or manual cancel.</span>
               </span>
 	            )}
-	            {showRuntimeRetries && <RuntimeRetryNotice retries={activeRuntimeRetries} />}
 	            {cancelRun.error && (
 	              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-2.5 py-2 text-xs text-status-failed">
 	                Failed to cancel run: {cancelRun.error.message}
@@ -955,8 +971,8 @@ export function RunDetailPage() {
 	              {(activeTab === "execution" && (activitySurfaceState === "ready" || activitySurfaceState === "ready_with_execution_error")) && (
 					<RunExecutionSurface
 						run={run}
-						executions={presentedExecutions}
-						stepGroups={activityStepGroups}
+						nodes={presentedNodes}
+						attempts={nodeAttempts}
 						executionsErrorMessage={executionsErrorMessage}
 					showPrimaryExecutionError={activitySurfaceState === "ready_with_execution_error"}
 					isSummaryLoading={executionSummaryLoading}
@@ -965,12 +981,17 @@ export function RunDetailPage() {
 						}}
 						selectedNodeId={selectedExecutionNodeId}
 						selectedAttemptId={selectedExecutionId}
-						selectedAttemptSource={selectedExecutionState?.source ?? null}
+						selectedAttemptSource={selectedExecutionState?.source ?? (selectedExecutionNodeId ? "auto" : null)}
 						onSelectStep={handleSelectExecutionStep}
 						onSelectAttempt={handleSelectExecutionAttempt}
+						hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
+						onLoadMoreAttempts={() => {
+							void nodeAttemptsQuery.fetchNextPage();
+						}}
+						isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
 						detail={presentedExecutionDetail}
-						isDetailLoading={executionDetailQuery.isFetching && !executionDetailQuery.data}
-						detailErrorMessage={executionDetailQuery.isError ? queryErrorMessage(executionDetailQuery.error, "The execution detail could not be loaded right now.") : null}
+						isDetailLoading={executionDetailIsFetching && !selectedExecutionDetailQuery.data}
+						detailErrorMessage={selectedExecutionDetailQuery.isError ? queryErrorMessage(selectedExecutionDetailQuery.error, "The execution detail could not be loaded right now.") : null}
 						detailPlaceholderMessage={detailPlaceholderMessage}
 							onRetryDetail={() => {
 								void executionDetailQuery.refetch();
@@ -1048,57 +1069,6 @@ function CycleInfo({ label, message }: { label: string; message: string }) {
   );
 }
 
-type RuntimeRetryNoticeItem = NonNullable<RunDetailSummary["runtime_retries"]>[number];
-
-function RuntimeRetryNotice({ retries }: { retries: RuntimeRetryNoticeItem[] }) {
-	const dispatched = retries.filter((retry) => retry.status === "dispatched").length;
-	const title = retries.length === 1
-		? dispatched === 1 ? "Runtime Retry In Progress" : "Runtime Retry Scheduled"
-		: `${retries.length} Runtime Retries ${dispatched > 0 ? "In Progress" : "Scheduled"}`;
-
-	return (
-		<div data-testid="runtime-retry-status" className="inline-flex max-w-full items-start gap-2 rounded-md border border-role-loki/40 bg-role-loki/10 px-2.5 py-2 text-xs text-role-loki">
-			<RotateCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-			<div className="space-y-1">
-				<p className="font-medium leading-none">{title}</p>
-				<div className="flex flex-wrap gap-1.5">
-					{retries.map((retry) => (
-						<span
-							key={retry.node_run_id}
-							data-testid={`runtime-retry-status-${retry.node_run_id}`}
-							className="inline-flex items-center gap-1 rounded-md border border-role-loki/30 bg-role-loki/10 px-2 py-1"
-						>
-							<span className="font-mono">{retry.node_id}</span>
-							<span>{runtimeRetryStatusCopy(retry.status)} after {runtimeRetryReasonCopy(retry.reason_code)} ({retry.retry_index}/{retry.retry_max}). Due <time dateTime={retry.due_at}>{runtimeRetryDueCopy(retry.due_at)}</time></span>
-						</span>
-					))}
-				</div>
-			</div>
-		</div>
-	);
-}
-
-function isActiveRuntimeRetry(retry: RuntimeRetryNoticeItem): boolean {
-	return retry.status === "pending" || retry.status === "dispatched";
-}
-
-function runtimeRetryStatusCopy(status: RuntimeRetryNoticeItem["status"]): string {
-	return status === "dispatched" ? "Retrying" : "Scheduled";
-}
-
-function runtimeRetryReasonCopy(reasonCode: string): string {
-	const words = reasonCode.trim().replaceAll("_", " ");
-	return words === "" ? "a provider issue" : words;
-}
-
-function runtimeRetryDueCopy(dueAt: string): string {
-	const due = new Date(dueAt);
-	if (Number.isNaN(due.getTime())) {
-		return dueAt;
-	}
-	return due.toLocaleString("en-US", { timeZone: "UTC", dateStyle: "medium", timeStyle: "medium" }) + " UTC";
-}
-
 function queryErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim() !== "") {
     return error.message;
@@ -1150,67 +1120,6 @@ function resolveActivitySurfaceState({
 		return "ready_with_execution_error";
 	}
 	return "ready";
-}
-
-function reconcileSelectedExecution(
-	runId: string,
-	stepGroups: ActivityStepGroup[],
-	current: SelectedExecutionState | null,
-): SelectedExecutionState | null {
-	if (!current || current.runId !== runId) {
-		if (stepGroups.length === 0) {
-			return null;
-		}
-		return autoSelectedExecution(runId, stepGroups);
-	}
-	if (stepGroups.length === 0) {
-		return current.source === "manual" ? current : null;
-	}
-	if (current.source === "auto") {
-		return autoSelectedExecution(runId, stepGroups);
-	}
-	const currentGroup = stepGroups.find((item) => item.nodeId === current.nodeId);
-	if (!currentGroup) {
-		return current;
-	}
-	if (currentGroup.attempts.some((item) => item.attempt_id === current.attemptId)) {
-		return current;
-	}
-	if (currentGroup.preferredAttemptId.trim() === "") {
-		return current;
-	}
-	return {
-		runId,
-		nodeId: currentGroup.nodeId,
-		attemptId: currentGroup.preferredAttemptId,
-		source: "manual",
-	};
-}
-
-function autoSelectedExecution(runId: string, stepGroups: ActivityStepGroup[]): SelectedExecutionState | null {
-	const [preferredGroup] = stepGroups;
-	if (!preferredGroup || preferredGroup.preferredAttemptId.trim() === "") {
-		return null;
-	}
-	return {
-		runId,
-		nodeId: preferredGroup.nodeId,
-		attemptId: preferredGroup.preferredAttemptId,
-		source: "auto",
-	};
-}
-
-function sameSelectedExecution(left: SelectedExecutionState | null, right: SelectedExecutionState | null): boolean {
-	if (left === right) {
-		return true;
-	}
-	if (!left || !right) {
-		return false;
-	}
-	return left.runId === right.runId
-		&& left.nodeId === right.nodeId
-		&& left.attemptId === right.attemptId
-		&& left.source === right.source;
 }
 
 function degradedRunRefreshSurfaces({

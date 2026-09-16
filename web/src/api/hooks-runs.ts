@@ -29,6 +29,7 @@ import type {
 	RunAgentsResponse,
 	RunExecutionDetail,
 	RunExecutionsResponse,
+	RunNodeAttemptsResponse,
 	RunGraphResponse,
 	RunDetailSummary,
 	RunListResponse,
@@ -67,6 +68,8 @@ export const runQueryKeys = {
 	governanceHistory: (runId: string) => ["runs", runId, "governance-decisions", "history"] as const,
 	graph: (runId: string) => ["runs", runId, "graph"] as const,
 	executions: (runId: string) => ["runs", runId, "executions"] as const,
+	nodeAttemptsRoot: (runId: string) => ["runs", runId, "nodes"] as const,
+	nodeAttempts: (runId: string, nodeId: string) => ["runs", runId, "nodes", nodeId, "attempts"] as const,
 	executionDetail: (runId: string, attemptId: string) => ["runs", runId, "executions", "detail", attemptId] as const,
 	executionActivity: (runId: string, attemptId: string) => ["runs", runId, "executions", "activity", attemptId] as const,
 	timelineRoot: (runId: string) => ["runs", runId, "timeline"] as const,
@@ -150,6 +153,9 @@ export function invalidateRunQuerySurfaces(
 ): void {
 	for (const invalidation of runQuerySurfaceInvalidations(runId, surfaces)) {
 		void qc.invalidateQueries({ ...invalidation, refetchType });
+	}
+	if (surfaces.includes("executions")) {
+		void qc.invalidateQueries({ queryKey: runQueryKeys.nodeAttemptsRoot(runId), exact: false, refetchType });
 	}
 }
 
@@ -338,6 +344,26 @@ export function useRunExecutions(runId: string, options?: RunDetailQueryOptions)
 		queryKey: runQueryKeys.executions(runId),
 		queryFn: () => apiFetch<RunExecutionsResponse>(`/runs/${runId}/executions`),
 		enabled: !!runId && (options?.enabled ?? true),
+		retry: retryRunDetailQuery,
+		...manualRefetchQueryOptions,
+	});
+}
+
+export function useInfiniteRunNodeAttempts(runId: string, nodeId?: string | null, options?: RunDetailQueryOptions) {
+	const trimmedNodeId = nodeId?.trim() ?? "";
+	return useInfiniteQuery({
+		queryKey: runQueryKeys.nodeAttempts(runId, trimmedNodeId),
+		queryFn: ({ pageParam, signal }: { pageParam?: string; signal: AbortSignal }) =>
+			apiFetch<RunNodeAttemptsResponse>(`/runs/${runId}/nodes/${trimmedNodeId}/attempts`, {
+				params: {
+					limit: 50,
+					cursor: typeof pageParam === "string" && pageParam.trim() ? pageParam : undefined,
+				},
+				signal,
+			}),
+		enabled: !!runId && trimmedNodeId !== "" && (options?.enabled ?? true),
+		initialPageParam: undefined as string | undefined,
+		getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
 		retry: retryRunDetailQuery,
 		...manualRefetchQueryOptions,
 	});

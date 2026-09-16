@@ -60,16 +60,18 @@ func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
 	if projection.Code != http.StatusOK {
 		t.Fatalf("expected execution projection 200, got %d (%s)", projection.Code, projection.Body.String())
 	}
-	var executions struct {
-		Items []struct {
-			AttemptID          string `json:"attempt_id"`
-			StopRetryAvailable bool   `json:"stop_retry_available"`
-		} `json:"items"`
-	}
+	var executions gen.RunExecutionsResponse
 	if err := json.Unmarshal(projection.Body.Bytes(), &executions); err != nil {
 		t.Fatalf("decode execution projection: %v", err)
 	}
-	if len(executions.Items) != 1 || executions.Items[0].AttemptID != attemptID || !executions.Items[0].StopRetryAvailable {
+	var current *gen.RunExecution
+	for _, node := range executions.Items {
+		if node.NodeId == "delegated_execution_berserker" {
+			current = node.CurrentExecution
+			break
+		}
+	}
+	if current == nil || current.AttemptId != attemptID || !current.StopRetryAvailable {
 		t.Fatalf("expected eligible stop retry execution projection, got %#v", executions.Items)
 	}
 

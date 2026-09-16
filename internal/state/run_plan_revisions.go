@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/nodeattempt"
 )
 
 type RunPlanRevision struct {
@@ -432,7 +433,7 @@ func latestNodeRunForPlanRevisionTx(ctx context.Context, tx *sql.Tx, runID, node
 		 FROM node_runs
 		 WHERE run_id = ? AND node_id = ?
 		 ORDER BY %s
-		 LIMIT 1`, CanonicalNodeAttemptOrderSQL("node_runs"))
+		 LIMIT 1`, nodeattempt.CanonicalNodeAttemptOrderSQL("node_runs"))
 	err := tx.QueryRowContext(ctx, query, runID, nodeID).Scan(&nodeRunID, &status)
 	if err == sql.ErrNoRows {
 		return "", "", nil

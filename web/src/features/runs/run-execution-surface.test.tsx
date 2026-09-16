@@ -1,10 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { RunDetailSummary, RunExecution, RunExecutionDetail } from "@/api/hooks";
+import type { RunDetailSummary, RunExecution, RunExecutionDetail, RunNodeExecution } from "@/api/hooks";
 import type { ReactNode } from "react";
 import { RunExecutionSurface } from "./run-execution-surface";
-import { buildActivityStepGroups } from "./run-activity-selection";
 
 vi.mock("@/components/ui/popover-listbox", () => ({
 	PopoverListbox: ({
@@ -98,9 +97,31 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 
 type PresentedExecutionDetail = RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } };
 
+function nodeForExecution(execution: RunExecution): RunNodeExecution {
+	return {
+		node_id: execution.node_id,
+		required_role: execution.required_role,
+		execution_ownership: execution.execution_mode,
+		status: execution.status === "queued" ? "ready" : execution.status === "paused" ? "blocked" : execution.status === "verifying" ? "running" : execution.status as RunNodeExecution["status"],
+		attempt_count: 1,
+		current_execution: execution,
+	};
+}
+
+function nodesForExecutions(executions: RunExecution[]): RunNodeExecution[] {
+	const nodes = new Map<string, RunNodeExecution>();
+	for (const execution of executions) {
+		if (!nodes.has(execution.node_id)) {
+			nodes.set(execution.node_id, nodeForExecution(execution));
+		}
+	}
+	return [...nodes.values()];
+}
+
 function renderSurface({
 	run = makeRun(),
 	executions = [makeExecution()],
+	nodes = nodesForExecutions(executions),
 	executionsErrorMessage = null,
 	showPrimaryExecutionError = false,
 	selectedAttemptId = executions[0]?.attempt_id ?? null,
@@ -113,6 +134,7 @@ function renderSurface({
 }: {
 	run?: RunDetailSummary;
 	executions?: RunExecution[];
+	nodes?: RunNodeExecution[];
 	executionsErrorMessage?: string | null;
 	showPrimaryExecutionError?: boolean;
 	selectedAttemptId?: string | null;
@@ -123,12 +145,11 @@ function renderSurface({
 	isStopRetryPending?: boolean;
 	stopRetryErrorMessage?: string | null;
 } = {}) {
-	const stepGroups = buildActivityStepGroups(executions);
 	render(
 		<RunExecutionSurface
 			run={run}
-			executions={executions}
-			stepGroups={stepGroups}
+			nodes={nodes}
+			attempts={executions}
 			executionsErrorMessage={executionsErrorMessage}
 			showPrimaryExecutionError={showPrimaryExecutionError}
 			isSummaryLoading={false}
@@ -138,6 +159,9 @@ function renderSurface({
 			selectedAttemptSource={selectedAttemptSource}
 			onSelectStep={() => {}}
 			onSelectAttempt={() => {}}
+			hasMoreAttempts={false}
+			onLoadMoreAttempts={() => {}}
+			isLoadingMoreAttempts={false}
 			detail={detail}
 			isDetailLoading={false}
 			detailErrorMessage={null}
@@ -272,42 +296,46 @@ describe("run execution surface", () => {
 		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
 	});
 
-	it("keeps a blocked lineage selected over a newer queued retry for the same step", () => {
+	it("renders the server-selected blocked predecessor instead of a queued recovery target", () => {
 		renderSurface({
-			executions: [
-				makeExecution({
-					attempt_id: "attempt-blocked",
-					node_run_id: "nr-blocked",
-					node_id: "delegated_execution_berserker",
-					attempt: 1,
-					required_role: "builder-berserker",
-					status: "blocked",
-					activity_at: "2026-03-01T10:08:00Z",
-					updated_at: "2026-03-01T10:08:00Z",
-					started_at: "2026-03-01T10:07:00Z",
-					committed_at: undefined,
-				}),
-				makeExecution({
-					attempt_id: "attempt-queued",
-					node_run_id: "nr-queued",
-					node_id: "delegated_execution_berserker",
-					attempt: 2,
-					required_role: "builder-berserker",
-					status: "queued",
-					activity_at: "2026-03-01T10:09:00Z",
-					updated_at: "2026-03-01T10:09:00Z",
-					started_at: undefined,
-					committed_at: undefined,
-				}),
-			],
+			executions: [makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked" })],
+			nodes: [{
+				node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "blocked", attempt_count: 2,
+				current_execution: makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked" }),
+				recovery: { phase: "scheduled", trigger: "automatic_retry", reason_code: "timeout", source_attempt_id: "attempt-blocked", source_node_run_id: "nr-blocked", target_attempt_id: "attempt-queued", target_node_run_id: "nr-queued", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:09:00Z", last_updated_at: "2026-03-01T10:09:00Z" },
+			}],
+		});
+
+		expect(screen.getByText("Recovery is scheduled after timeout.")).toBeInTheDocument();
+		expect(screen.queryByText("Queued")).not.toBeInTheDocument();
+	});
+
+	it("uses the server-selected running replacement as the current execution", () => {
+		const blocked = makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked", activity_at: "2026-03-01T10:10:00Z" });
+		const running = makeExecution({ attempt_id: "attempt-running", node_run_id: "nr-running", node_id: "delegated_execution_berserker", attempt: 2, status: "running", activity_at: "2026-03-01T10:09:00Z" });
+		renderSurface({
+			executions: [blocked, running],
+			nodes: [{ node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "running", attempt_count: 2, current_execution: running }],
 			selectedAttemptId: null,
-			selectedNodeId: null,
 		});
 
 		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Blocked")).toBeInTheDocument();
-		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
-		expect(screen.queryByText("Queued")).not.toBeInTheDocument();
+		expect(screen.getByText("This step is still running.")).toBeInTheDocument();
+		expect(screen.getAllByText("Attempt 2")).toHaveLength(2);
+	});
+
+	it("uses typed logical failure text instead of event-derived failure copy", () => {
+		const failed = makeExecution({ node_id: "delegated_execution_berserker", status: "failed", failure_code: "provider_unknown_failure" });
+		renderSurface({
+			executions: [failed],
+			nodes: [{
+				node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "failed", attempt_count: 1,
+				current_execution: failed,
+				failure: { code: "provider_unknown_failure", classification: "non_retryable", category: "provider", retryable: false, operator_text: "The provider ended without a recoverable result." },
+			}],
+		});
+
+		expect(screen.getByText("The provider ended without a recoverable result.")).toBeInTheDocument();
 	});
 
 	it("keeps rework summary copy aligned with the rework pill when detail is unavailable", () => {
@@ -362,7 +390,7 @@ describe("run execution surface", () => {
 		expect(screen.queryByText("Current Activity")).not.toBeInTheDocument();
 	});
 
-	it("orders selector options by most recent activity time", () => {
+	it("keeps logical-node selector order supplied by the server", () => {
 		renderSurface({
 			executions: [
 				makeExecution({ attempt_id: "attempt-1", node_id: "plan_drafting", activity_at: "2026-03-01T10:08:00Z" }),
@@ -372,7 +400,7 @@ describe("run execution surface", () => {
 			selectedAttemptId: "attempt-2",
 		});
 
-		expect(screen.getByTestId("current-step-options")).toHaveTextContent("Advisor Consultation NobleExecution KickoffPlan Drafting");
+		expect(screen.getByTestId("current-step-options")).toHaveTextContent("Plan DraftingAdvisor Consultation NobleExecution Kickoff");
 	});
 
 	it("shows a dedicated attempt selector only when the selected step has multiple attempts", () => {
@@ -388,7 +416,7 @@ describe("run execution surface", () => {
 		expect(screen.queryByText(/^Attempt$/)).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: /selected attempt/i })).toHaveClass("px-2.5", "py-1.5", "text-xs");
 		expect(screen.getByTestId("current-step-options")).toHaveTextContent("Execution Review Shieldmaiden");
-		expect(screen.getByTestId("selected-attempt-options")).toHaveTextContent("Attempt 2Attempt 1");
+		expect(screen.getByTestId("selected-attempt-options")).toHaveTextContent("Attempt 1Attempt 2");
 	});
 
 	it("keeps the timeline collapsed by default until the operator opens it", async () => {
@@ -422,8 +450,8 @@ describe("run execution surface", () => {
 		render(
 			<RunExecutionSurface
 				run={makeRun()}
-				executions={[]}
-				stepGroups={[]}
+				nodes={[]}
+				attempts={[]}
 				executionsErrorMessage={null}
 				showPrimaryExecutionError={false}
 				isSummaryLoading
@@ -433,6 +461,9 @@ describe("run execution surface", () => {
 				selectedAttemptSource={null}
 				onSelectStep={() => {}}
 				onSelectAttempt={() => {}}
+				hasMoreAttempts={false}
+				onLoadMoreAttempts={() => {}}
+				isLoadingMoreAttempts={false}
 				detail={null}
 				isDetailLoading={false}
 				detailErrorMessage={null}

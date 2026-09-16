@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
-import type { RunExecution } from "@/api/hooks";
+import type { RunExecution, RunNodeExecution } from "@/api/hooks";
 import { RunLiveStatus } from "./run-live-status";
 
 function execution(args: {
@@ -31,7 +31,15 @@ function renderStatus(executions: RunExecution[]) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={qc}>{children}</QueryClientProvider>
   );
-  return render(<RunLiveStatus runId="run-1" executions={executions} />, { wrapper });
+  const nodes: RunNodeExecution[] = executions.map((current_execution) => ({
+    node_id: current_execution.node_id,
+    required_role: current_execution.required_role,
+    execution_ownership: current_execution.execution_mode,
+    status: "running",
+    attempt_count: 1,
+    current_execution,
+  }));
+  return render(<RunLiveStatus runId="run-1" nodes={nodes} />, { wrapper });
 }
 
 describe("RunLiveStatus", () => {

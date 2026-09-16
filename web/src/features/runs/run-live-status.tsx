@@ -1,5 +1,5 @@
 import { Feather } from "lucide-react";
-import type { RunExecution } from "@/api/hooks";
+import type { RunNodeExecution } from "@/api/hooks";
 import { agentLabelForExecution } from "@/lib/utils";
 import { buildCurrentEvent } from "@/features/activity/activity-view";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
@@ -16,16 +16,19 @@ const MAX_NAMED_AGENTS = 2;
 // into "+N more" — reassuring the operator that work is happening without opening the
 // Activity tab, and staying single-line however many agents run. Renders nothing when no
 // node is actively running.
-export function RunLiveStatus({ runId, executions }: { runId: string; executions: RunExecution[] }) {
+export function RunLiveStatus({ runId, nodes }: { runId: string; nodes: RunNodeExecution[] }) {
   const liveBuffer = useLiveRunActivity(runId);
-  const active = executions
-    .filter((execution) => isActiveProviderBackedExecution(execution))
-    .map((execution) => {
+  const active = nodes
+    .flatMap((node) => {
+      const execution = node.current_execution;
+      return execution && isActiveProviderBackedExecution(execution) ? [{ node, execution }] : [];
+    })
+    .map(({ node, execution }) => {
       const items = selectLiveRunActivity(liveBuffer, execution.attempt_id);
       const current = items.length > 0 ? buildCurrentEvent(items, "") : null;
       return {
         id: execution.attempt_id,
-        label: agentLabelForExecution(execution.required_role, execution.node_id),
+        label: agentLabelForExecution(node.required_role, node.node_id),
         verb: current?.label?.toLowerCase(),
         activityAt: execution.activity_at ?? "",
       };

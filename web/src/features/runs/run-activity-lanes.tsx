@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { RunExecution } from "@/api/hooks";
+import type { RunNodeExecution } from "@/api/hooks";
 import { agentLabelForExecution, cn, getRoleColor } from "@/lib/utils";
 import { buildActivityState } from "@/features/activity/activity-view";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
@@ -11,31 +11,33 @@ import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 // activity in the detail surface below. It renders nothing once no node is running.
 export function RunActivityLanes({
   runId,
-  executions,
+  nodes,
   selectedNodeId,
   onSelectStep,
 }: {
   runId: string;
-  executions: RunExecution[];
+  nodes: RunNodeExecution[];
   selectedNodeId: string | null;
   onSelectStep: (nodeId: string) => void;
 }) {
   const liveBuffer = useLiveRunActivity(runId);
 
   const lanes = useMemo(() => {
-    return executions
-      .filter((execution) => isActiveProviderBackedExecution(execution))
-      .map((execution) => {
+    return nodes
+      .flatMap((node) => {
+        const execution = node.current_execution;
+        return execution && isActiveProviderBackedExecution(execution) ? [{ node, execution }] : [];
+      })
+      .map(({ node, execution }) => {
         const state = buildActivityState({ liveItems: selectLiveRunActivity(liveBuffer, execution.attempt_id) });
         return {
-          nodeId: execution.node_id,
-          label: agentLabelForExecution(execution.required_role, execution.node_id),
-          requiredRole: execution.required_role,
+          nodeId: node.node_id,
+          label: agentLabelForExecution(node.required_role, node.node_id),
+          requiredRole: node.required_role,
           action: state.currentEvent?.label ?? "Working…",
         };
-      })
-      .sort((left, right) => left.label.localeCompare(right.label));
-  }, [executions, liveBuffer]);
+      });
+  }, [liveBuffer, nodes]);
 
   if (lanes.length === 0) {
     return null;

@@ -1,4 +1,4 @@
-import type { RunExecutionDetail } from "@/api/hooks";
+import type { RunExecutionDetail, RunExecutionFailure } from "@/api/hooks";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
@@ -17,12 +17,14 @@ export function RunExecutionsPanel({
 	detailErrorMessage,
 	detailPlaceholderMessage,
 	onRetryDetail,
+	failure,
 }: {
 	detail: PresentedExecutionDetail | null;
 	isDetailLoading: boolean;
 	detailErrorMessage: string | null;
 	detailPlaceholderMessage?: string | null;
 	onRetryDetail: () => void;
+	failure?: RunExecutionFailure;
 }) {
 	if (isDetailLoading) {
 		return <SectionPlaceholder label="Outcome" message="Loading the selected step..." />;
@@ -48,16 +50,16 @@ export function RunExecutionsPanel({
 		return <SectionPlaceholder label="Outcome" message={detailPlaceholderMessage ?? "Select a step to inspect the outcome."} />;
 	}
 
-	return <RunExecutionsPanelContent key={detail.attempt_id} detail={detail} />;
+	return <RunExecutionsPanelContent key={detail.attempt_id} detail={detail} failure={failure} />;
 }
 
-function RunExecutionsPanelContent({ detail }: { detail: PresentedExecutionDetail }) {
+function RunExecutionsPanelContent({ detail, failure }: { detail: PresentedExecutionDetail; failure?: RunExecutionFailure }) {
 	const [outcomeOpen, setOutcomeOpen] = useState(false);
 	const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
-	const outcomeBody = outcomeText(detail);
+	const outcomeBody = outcomeText(detail, failure);
 	const outcomeTone = outcomeToneForDetail(detail);
-	const diagnosticsFields = diagnosticsFieldsForDetail(detail);
+	const diagnosticsFields = diagnosticsFieldsForDetail(detail, failure);
 
 	return (
 		<div className="space-y-3">
@@ -155,7 +157,7 @@ function DetailField({ label, tooltip, children }: { label: string; tooltip?: st
 	);
 }
 
-function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ label: string; tooltip?: string; value: ReactNode }> {
+function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail, failure?: RunExecutionFailure): Array<{ label: string; tooltip?: string; value: ReactNode }> {
 	const fields: Array<{ label: string; tooltip?: string; value: ReactNode }> = [];
 	const queuedDuration = queuedDurationForDetail(detail);
 	if (queuedDuration) {
@@ -165,11 +167,11 @@ function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ l
 			value: queuedDuration,
 		});
 	}
-	if (detail.failure_code) {
+	if (failure?.code ?? detail.failure_code) {
 		fields.push({
 			label: "Failure code",
 			tooltip: "The system reason Kingdom recorded for this failed step.",
-			value: detail.failure_code,
+			value: failure?.code ?? detail.failure_code,
 		});
 	}
 	if (detail.launch_started_at) {
@@ -198,7 +200,7 @@ function queuedDurationForDetail(detail: PresentedExecutionDetail): string | nul
 	return formatElapsedDuration(queuedAt, queueEndedAt);
 }
 
-function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: string } {
+function outcomeText(detail: PresentedExecutionDetail, failure?: RunExecutionFailure): { body?: string; note?: string } {
 	const progressLabel = executionProgressLabel(
 		detail.status,
 		detail.progress_reason_code,
@@ -235,7 +237,7 @@ function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: 
 			note: detail.output_text ? undefined : missingOutputNote(detail),
 		};
 	}
-	const failureText = operatorFacingFailureText(detail);
+	const failureText = failure?.operator_text ?? operatorFacingFailureText(detail);
 	if (failureText) {
 		return {
 			body: failureText,

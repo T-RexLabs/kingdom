@@ -17,6 +17,7 @@ import {
   useRefreshProviderModels,
   useRunExecution,
   useRunExecutions,
+	useInfiniteRunNodeAttempts,
   useRealmAnalyticsExecutionDetailSnapshot,
   useRealmAnalyticsSnapshot,
   useRerunFromNode,
@@ -369,6 +370,35 @@ describe("mailbox query keys", () => {
 
 		expect(executionQueries).toContainEqual(["runs", "run-1", "executions"]);
 		expect(executionQueries).toContainEqual(["runs", "run-1", "executions", "detail", "attempt-1"]);
+	});
+
+	it("loads selected node attempt history lazily and follows its scoped cursor", async () => {
+		apiFetchMock
+			.mockResolvedValueOnce({ run_id: "run-1", node_id: "node-1", items: [{ attempt_id: "attempt-2" }], next_cursor: "cursor-2" })
+			.mockResolvedValueOnce({ run_id: "run-1", node_id: "node-1", items: [{ attempt_id: "attempt-1" }] });
+
+		const { result, rerender } = renderHook(
+			({ enabled }) => useInfiniteRunNodeAttempts("run-1", "node-1", { enabled }),
+			{ initialProps: { enabled: false }, wrapper: makeWrapper(qc) },
+		);
+
+		expect(apiFetchMock).not.toHaveBeenCalled();
+		rerender({ enabled: true });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(apiFetchMock).toHaveBeenLastCalledWith("/runs/run-1/nodes/node-1/attempts", {
+			params: { limit: 50, cursor: undefined },
+			signal: expect.any(AbortSignal),
+		});
+
+		await act(async () => {
+			await result.current.fetchNextPage();
+		});
+		expect(apiFetchMock).toHaveBeenLastCalledWith("/runs/run-1/nodes/node-1/attempts", {
+			params: { limit: 50, cursor: "cursor-2" },
+			signal: expect.any(AbortSignal),
+		});
+		expect(qc.getQueryCache().find({ queryKey: runQueryKeys.nodeAttempts("run-1", "node-1") })?.queryKey)
+			.toEqual(["runs", "run-1", "nodes", "node-1", "attempts"]);
 	});
 
 	it("invalidates active analytics queries after creating a run", async () => {

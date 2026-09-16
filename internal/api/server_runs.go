@@ -9,13 +9,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
 	coreverdict "kingdom/internal/core/verdict"
-	coreworkflow "kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/mailboxview"
 	"kingdom/internal/state"
@@ -114,13 +112,6 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	summary.ReviewAutoSucceededCount = reviewAutoSucceededCount
 	summary.ValidationAutoSucceededCount = validationAutoSucceededCount
 
-	runtimeRetries, retryErr := s.fetchActiveRuntimeRetries(r.Context(), tx, runID)
-	if retryErr != nil {
-		s.writeInternalError(w, "fetch run failed")
-		return
-	}
-	summary.RuntimeRetries = runtimeRetries
-
 	streamCursor, streamCursorErr := s.loadRunStreamCursor(r.Context(), tx, runID)
 	if streamCursorErr != nil {
 		s.writeInternalError(w, "fetch run failed")
@@ -135,12 +126,12 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	}
 	summary.TabCounts = *tabCounts
 
-	failedNodes, failedNodesErr := s.loadFailedRunNodes(r.Context(), tx, runID)
+	logicalNodes, failedNodesErr := executionstore.ListRunNodeExecutions(r.Context(), tx, runID)
 	if failedNodesErr != nil {
 		s.writeInternalError(w, "fetch run failed")
 		return
 	}
-	summary.FailedNodes = failedNodes
+	summary.FailedNodes = failedRunGraphNodes(logicalNodes)
 
 	if err := tx.Commit(); err != nil {
 		s.writeInternalError(w, "fetch run failed")
@@ -218,92 +209,6 @@ WHERE e.run_id = ?
 	return reviewCurrentWave, validationCurrentWave, reviewFailedCycles, validationFailedWaves, reviewAutoSucceededCount, validationAutoSucceededCount, nil
 }
 
-func (s *Server) fetchActiveRuntimeRetries(ctx context.Context, q sqlReadQuerier, runID string) ([]gen.RuntimeRetryStatus, error) {
-	rows, err := q.QueryContext(ctx, `
- SELECT node_id, node_run_id, COALESCE(target_node_run_id, ''), retry_index, max_retries,
-        policy_delay_ns, error_code, due_at, decision, dispatch_state, resolution
- FROM retry_decisions
- WHERE subject_kind = 'decree_attempt' AND run_id = ?
- ORDER BY created_at DESC, retry_decision_id DESC`, runID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	retries := make([]gen.RuntimeRetryStatus, 0)
-	for rows.Next() {
-		var nodeID sql.NullString
-		var nodeRunID sql.NullString
-		var targetNodeRunID, errorCode, dueAt, decision, dispatchState, resolution string
-		var retryIndex, retryMax, policyDelayNS int64
-		if err := rows.Scan(&nodeID, &nodeRunID, &targetNodeRunID, &retryIndex, &retryMax, &policyDelayNS, &errorCode, &dueAt, &decision, &dispatchState, &resolution); err != nil {
-			return nil, err
-		}
-		trimmedNodeID := strings.TrimSpace(nodeID.String)
-		trimmedNodeRunID := strings.TrimSpace(nodeRunID.String)
-		if trimmedNodeID == "" || trimmedNodeRunID == "" || retryIndex < 0 || retryMax < 0 || policyDelayNS < 0 {
-			continue
-		}
-		currentNodeRunID := strings.TrimSpace(targetNodeRunID)
-		if currentNodeRunID == "" {
-			currentNodeRunID = trimmedNodeRunID
-		}
-		parsedDueAt, err := time.Parse(time.RFC3339Nano, dueAt)
-		if err != nil {
-			return nil, fmt.Errorf("parse runtime retry due time: %w", err)
-		}
-		phase, status := runtimeRetryPhaseAndStatus(decision, dispatchState, resolution)
-
-		retries = append(retries, gen.RuntimeRetryStatus{
-			DelaySeconds:    int(time.Duration(policyDelayNS).Round(time.Second) / time.Second),
-			NodeId:          trimmedNodeID,
-			NodeRunId:       currentNodeRunID,
-			RetryIndex:      int(retryIndex),
-			RetryMax:        int(retryMax),
-			Phase:           phase,
-			Status:          status,
-			ReasonCode:      strings.TrimSpace(errorCode),
-			DueAt:           parsedDueAt.UTC(),
-			SourceNodeRunId: trimmedNodeRunID,
-			TargetNodeRunId: optionalRuntimeRetryNodeRunID(strings.TrimSpace(targetNodeRunID)),
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return retries, nil
-}
-
-func runtimeRetryPhaseAndStatus(decision, dispatchState, resolution string) (gen.RuntimeRetryStatusPhase, gen.RuntimeRetryStatusStatus) {
-	switch strings.TrimSpace(resolution) {
-	case "recovered":
-		return "recovered", "recovered"
-	case "failed":
-		return "failed", "failed"
-	case "cancelled":
-		return "cancelled", "cancelled"
-	}
-	switch strings.TrimSpace(decision) {
-	case "exhausted":
-		return "exhausted", "escalated"
-	case "fail_fast":
-		return "fail_fast", "not_applicable"
-	case "retry":
-		if strings.TrimSpace(dispatchState) == "dispatched" {
-			return "dispatched", "dispatched"
-		}
-	}
-	return "scheduled", "pending"
-}
-
-func optionalRuntimeRetryNodeRunID(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
 func (s *Server) loadRunTabCounts(ctx context.Context, q sqlReadQuerier, runID string) (*gen.RunTabCounts, error) {
 	dagNodes, err := scalarInt(ctx, q, `
 SELECT COUNT(1)
@@ -367,94 +272,14 @@ LIMIT 1`, runID).Scan(&eventID, &runEventSeq)
 	return &gen.RunStreamCursor{EventId: eventID, RunEventSeq: runEventSeq}, nil
 }
 
-func (s *Server) loadFailedRunNodes(ctx context.Context, q sqlReadQuerier, runID string) ([]gen.RunGraphNode, error) {
-	rows, err := q.QueryContext(ctx, `WITH latest_node_runs AS (
-	  SELECT nr.node_id,
-	         nr.node_run_id,
-	         nr.node_status,
-	         ROW_NUMBER() OVER (
-	           PARTITION BY nr.node_id
-	           ORDER BY CASE
-	             WHEN COALESCE(TRIM(nr.superseded_at), '') = '' THEN 0
-	             ELSE 1
-	           END ASC,
-	           nr.attempt DESC,
-	           nr.node_run_id DESC
-	         ) AS node_rank
-	  FROM node_runs nr
-	  WHERE nr.run_id = ?
-	), latest_failure_events AS (
-	  SELECT e.node_run_id,
-	         NULLIF(TRIM(CAST(json_extract(e.payload_json, '$.error') AS TEXT)), '') AS failure_reason,
-	         NULLIF(TRIM(e.reason_text), '') AS failure_reason_text,
-	         NULLIF(TRIM(e.reason_code), '') AS failure_reason_code,
-	         ROW_NUMBER() OVER (
-	           PARTITION BY e.node_run_id
-	           ORDER BY e.seq DESC, e.event_id DESC
-	         ) AS failure_rank
-	  FROM events e
-	  WHERE e.run_id = ?
-	    AND e.event_type = 'attempt.failed'
-	)
-	SELECT wn.node_id,
-	       wn.required_role,
-	       COALESCE(wn.node_class, ''),
-	       NULLIF(TRIM(ae.failure_text), '') AS durable_failure_reason,
-	       NULLIF(TRIM(ae.failure_code), '') AS durable_failure_code,
-	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
-	       lfe.failure_reason,
-	       lfe.failure_reason_text,
-	       lfe.failure_reason_code
-	FROM workflow_runs wr
-	JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id
-	JOIN latest_node_runs lnr
-	  ON lnr.node_id = wn.node_id
-	 AND lnr.node_rank = 1
-	 AND lnr.node_status = 'failed'
-	LEFT JOIN attempt_executions ae
-	  ON ae.run_id = wr.run_id
-	 AND ae.node_run_id = lnr.node_run_id
-	LEFT JOIN provider_completion_settlements pcs
-	  ON pcs.settlement_id = ae.canonical_settlement_id
-	LEFT JOIN provider_invocations api
-	  ON api.provider_invocation_id = ae.active_provider_invocation_id
-	LEFT JOIN provider_invocations cpi
-	  ON cpi.provider_invocation_id = pcs.provider_invocation_id
-	LEFT JOIN latest_failure_events lfe
-	  ON lfe.node_run_id = lnr.node_run_id
-	 AND lfe.failure_rank = 1
-	WHERE wr.run_id = ?
-	ORDER BY wn.node_id ASC`, runID, runID, runID)
-	if err != nil {
-		return nil, fmt.Errorf("list failed run nodes for %q: %w", runID, err)
-	}
-	defer rows.Close()
-
+func failedRunGraphNodes(records []executionstore.RunNodeExecutionRecord) []gen.RunGraphNode {
 	items := make([]gen.RunGraphNode, 0)
-	for rows.Next() {
-		var item gen.RunGraphNode
-		var nodeClass string
-		var durableFailureReason sql.NullString
-		var durableFailureCode sql.NullString
-		var completionInvalidReason sql.NullString
-		var failureReason sql.NullString
-		var failureReasonText sql.NullString
-		var failureReasonCode sql.NullString
-		if err := rows.Scan(&item.NodeId, &item.RequiredRole, &nodeClass, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
-			return nil, fmt.Errorf("scan failed run node for %q: %w", runID, err)
+	for _, record := range records {
+		if record.NodeStatus == string(gen.RunGraphNodeStateFailed) {
+			items = append(items, buildRunGraphNode(record))
 		}
-		// The query already filters to node_status = 'failed'.
-		item.State = runGraphNodeState(string(gen.RunGraphNodeStateFailed), durableFailureCode, failureReasonCode)
-		item.ExecutionOwnership = runGraphNodeExecutionOwnership(item.NodeId, nodeClass)
-		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode); ok {
-			item.FailureReason = &trimmed
-		}
-		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate failed run nodes for %q: %w", runID, err)
-	}
-	return items, nil
+	return items
 }
 
 // runGraphNodeState projects a durable node status onto the state the graph
@@ -478,32 +303,21 @@ func runGraphNodeState(nodeStatus string, failureCodes ...sql.NullString) gen.Ru
 	return state
 }
 
-func canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode sql.NullString) (string, bool) {
-	for _, candidate := range []sql.NullString{durableFailureCode, failureReasonCode} {
-		if !candidate.Valid {
-			continue
-		}
-		if trimmed := operatorFailureReasonForCode(candidate.String, completionInvalidReason); trimmed != "" {
+func canonicalFailedNodeReason(failureText, failureCode, completionInvalidReason sql.NullString) (string, bool) {
+	if failureCode.Valid {
+		if trimmed := operatorFailureReasonForCode(failureCode.String, completionInvalidReason); trimmed != "" {
 			return trimmed, true
 		}
 	}
-	for _, candidate := range []sql.NullString{durableFailureReason, failureReason, failureReasonText} {
-		if candidate.Valid {
-			trimmed := strings.TrimSpace(candidate.String)
-			if trimmed != "" {
-				return trimmed, true
-			}
+	if failureText.Valid {
+		if trimmed := strings.TrimSpace(failureText.String); trimmed != "" {
+			return trimmed, true
 		}
 	}
-	for _, candidate := range []sql.NullString{durableFailureCode, failureReasonCode} {
-		if !candidate.Valid {
-			continue
+	if failureCode.Valid {
+		if trimmed := strings.TrimSpace(failureCode.String); trimmed != "" {
+			return humanizeFailureCode(trimmed), true
 		}
-		trimmed := strings.TrimSpace(candidate.String)
-		if trimmed == "" {
-			continue
-		}
-		return humanizeFailureCode(trimmed), true
 	}
 	return "", false
 }
@@ -969,10 +783,14 @@ func (s *Server) handleGetRunGraph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, err := s.fetchRunGraphNodes(r.Context(), runID, workflowDefinitionID)
+	records, err := executionstore.New(s.db).ListRunNodeExecutions(r.Context(), runID)
 	if err != nil {
 		s.writeInternalError(w, "fetch run graph nodes failed")
 		return
+	}
+	nodes := make([]gen.RunGraphNode, 0, len(records))
+	for _, record := range records {
+		nodes = append(nodes, buildRunGraphNode(record))
 	}
 
 	edges, err := s.fetchRunGraphEdges(r.Context(), workflowDefinitionID)
@@ -1032,19 +850,76 @@ func (s *Server) handleListRunExecutions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	store := executionstore.New(s.db)
-	records, err := store.ListRunExecutions(r.Context(), runID)
+	records, err := executionstore.New(s.db).ListRunNodeExecutions(r.Context(), runID)
 	if err != nil {
 		s.writeInternalError(w, "list run executions failed")
 		return
 	}
 
-	items := make([]runExecutionItem, 0, len(records))
+	items := make([]gen.RunNodeExecution, 0, len(records))
 	for _, record := range records {
-		items = append(items, buildRunExecutionItem(record))
+		items = append(items, buildRunNodeExecution(record))
 	}
 
-	writeJSON(w, http.StatusOK, runExecutionsResponse{RunID: runID, Items: items})
+	writeJSON(w, http.StatusOK, gen.RunExecutionsResponse{RunId: runID, Items: items})
+}
+
+func (s *Server) handleListRunNodeAttempts(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_run_node_attempts"); !ok {
+		return
+	}
+	runID := strings.TrimSpace(r.PathValue("id"))
+	nodeID := strings.TrimSpace(r.PathValue("nodeId"))
+	if !s.runExists(r.Context(), runID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.list_run_node_attempts", map[string]any{"run_id": runID})
+		return
+	}
+	if !s.nodeExistsForRun(r.Context(), runID, nodeID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "node not found for run", "api.list_run_node_attempts", map[string]any{"run_id": runID, "node_id": nodeID})
+		return
+	}
+	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 50)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	beforeAttempt, beforeNodeRunID := 0, ""
+	if rawCursor := strings.TrimSpace(r.URL.Query().Get("cursor")); rawCursor != "" {
+		cursor, err := s.decodeRunNodeAttemptsCursor(runID, nodeID, rawCursor)
+		if err != nil {
+			s.writeBadRequest(w, "invalid cursor")
+			return
+		}
+		beforeAttempt, beforeNodeRunID = cursor.Attempt, cursor.NodeRunID
+	}
+	store := executionstore.New(s.db)
+	page, err := store.ListRunNodeAttemptsPage(r.Context(), runID, nodeID, beforeAttempt, beforeNodeRunID, limit+1)
+	if err != nil {
+		s.writeInternalError(w, "list run node attempts failed")
+		return
+	}
+	response := gen.RunNodeAttemptsResponse{RunId: runID, NodeId: nodeID, Items: make([]gen.RunExecution, 0, min(limit, len(page.Items)))}
+	currentNodeRunID, currentAttemptID, err := store.CurrentRunNodeExecution(r.Context(), runID, nodeID)
+	if err != nil {
+		s.writeInternalError(w, "fetch current run node attempt failed")
+		return
+	}
+	if currentNodeRunID.Valid {
+		response.CurrentNodeRunId = &currentNodeRunID.String
+	}
+	if currentAttemptID.Valid {
+		response.CurrentAttemptId = &currentAttemptID.String
+	}
+	if len(page.Items) > limit {
+		last := page.Items[limit-1]
+		next := s.encodeRunNodeAttemptsCursor(runID, nodeID, runNodeAttemptsCursor{Attempt: last.Attempt, NodeRunID: last.NodeRunID})
+		response.NextCursor = &next
+		page.Items = page.Items[:limit]
+	}
+	for _, record := range page.Items {
+		response.Items = append(response.Items, buildGeneratedRunExecution(record))
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
@@ -1249,6 +1124,140 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 		item.HandoffState = &record.CancellationHandoffState.String
 	}
 	item.StopRetryAvailable = record.StopRetryAvailable
+	return item
+}
+
+func buildGeneratedRunExecution(record executionstore.RunExecutionRecord) gen.RunExecution {
+	item := gen.RunExecution{
+		AttemptId:          record.AttemptID,
+		NodeRunId:          record.NodeRunID,
+		NodeId:             record.NodeID,
+		Attempt:            record.Attempt,
+		AgentId:            record.AgentID,
+		RequiredRole:       record.RequiredRole,
+		ExecutionMode:      gen.RunExecutionExecutionMode(record.ExecutionMode),
+		Status:             gen.RunExecutionStatus(runExecutionStatus(record)),
+		QueuedAt:           mustParseRFC3339(record.QueuedAt),
+		ActivityAt:         mustParseRFC3339(record.ActivityAt),
+		UpdatedAt:          mustParseRFC3339(record.UpdatedAt),
+		StopRetryAvailable: record.StopRetryAvailable,
+	}
+	if value := nullableString(record.LogicalSessionID); value != nil {
+		item.LogicalSessionId = value
+	}
+	if value := nullableString(record.ProviderSessionID); value != nil {
+		item.ProviderSessionId = value
+	}
+	if value := nullableString(record.ProgressEventType); value != nil {
+		item.ProgressEventType = value
+	}
+	if value := nullableString(record.ProgressReasonCode); value != nil {
+		item.ProgressReasonCode = value
+	}
+	if record.ProgressAt.Valid {
+		value := mustParseRFC3339(record.ProgressAt.String)
+		item.ProgressAt = &value
+	}
+	if record.LaunchStartedAt.Valid {
+		value := mustParseRFC3339(record.LaunchStartedAt.String)
+		item.LaunchStartedAt = &value
+	}
+	if record.StartedAt.Valid {
+		value := mustParseRFC3339(record.StartedAt.String)
+		item.StartedAt = &value
+	}
+	if record.TerminalObservedAt.Valid {
+		value := mustParseRFC3339(record.TerminalObservedAt.String)
+		item.TerminalObservedAt = &value
+	}
+	if record.CommittedAt.Valid {
+		value := mustParseRFC3339(record.CommittedAt.String)
+		item.CommittedAt = &value
+	}
+	if value := nullableString(record.FailureCode); value != nil {
+		item.FailureCode = value
+	}
+	if value := nullableString(record.FailureText); value != nil {
+		item.FailureText = value
+	}
+	if value := nullableString(record.CompletionInvalidReason); value != nil {
+		item.CompletionInvalidReason = value
+	}
+	if value := nullableString(record.CancellationHandoffState); value != nil {
+		handoff := gen.RunExecutionHandoffState(*value)
+		item.HandoffState = &handoff
+	}
+	return item
+}
+
+func buildRunNodeExecution(record executionstore.RunNodeExecutionRecord) gen.RunNodeExecution {
+	item := gen.RunNodeExecution{
+		NodeId:             record.NodeID,
+		RequiredRole:       record.RequiredRole,
+		ExecutionOwnership: gen.RunNodeExecutionExecutionOwnership(record.ExecutionOwnership),
+		Status:             gen.RunNodeExecutionStatus(record.NodeStatus),
+		AttemptCount:       record.AttemptCount,
+	}
+	if record.Current != nil {
+		current := buildGeneratedRunExecution(*record.Current)
+		item.CurrentExecution = &current
+	}
+	if record.LatestActivityAt.Valid {
+		value := mustParseRFC3339(record.LatestActivityAt.String)
+		item.LatestActivityAt = &value
+	}
+	if record.Recovery != nil {
+		item.Recovery = buildRunRecoveryState(*record.Recovery)
+	}
+	if failure := buildRunExecutionFailure(record); failure != nil {
+		item.Failure = failure
+	}
+	return item
+}
+
+func buildRunExecutionFailure(record executionstore.RunNodeExecutionRecord) *gen.RunExecutionFailure {
+	var code, text string
+	if record.Current != nil {
+		code = strings.TrimSpace(record.Current.FailureCode.String)
+		text = strings.TrimSpace(record.Current.FailureText.String)
+	}
+	if code == "" && record.Recovery != nil {
+		code = strings.TrimSpace(record.Recovery.ReasonCode)
+	}
+	if text == "" && record.Recovery != nil {
+		text = strings.TrimSpace(record.Recovery.OperatorText.String)
+	}
+	if code == "" || text == "" {
+		return nil
+	}
+	profile, known := errorcatalog.Lookup(errorcatalog.Code(code))
+	if !known {
+		return &gen.RunExecutionFailure{Code: code, Classification: "non_retryable", Category: gen.RunExecutionFailureCategory("runtime"), Retryable: false, OperatorText: text}
+	}
+	return &gen.RunExecutionFailure{Code: code, Classification: profile.RetryClass, Category: gen.RunExecutionFailureCategory(profile.Category), Retryable: profile.Retryable, OperatorText: text}
+}
+
+func buildRunRecoveryState(record executionstore.RunRecoveryRecord) *gen.RunRecoveryState {
+	if strings.TrimSpace(record.Phase) == "" || strings.TrimSpace(record.Trigger) == "" || strings.TrimSpace(record.ReasonCode) == "" || strings.TrimSpace(record.SourceAttemptID) == "" || strings.TrimSpace(record.SourceNodeRunID) == "" || strings.TrimSpace(record.ScheduledAt) == "" || strings.TrimSpace(record.LastUpdatedAt) == "" {
+		return nil
+	}
+	item := &gen.RunRecoveryState{
+		Phase:           gen.RunRecoveryStatePhase(record.Phase),
+		Trigger:         gen.RunRecoveryStateTrigger(record.Trigger),
+		ReasonCode:      record.ReasonCode,
+		SourceAttemptId: record.SourceAttemptID,
+		SourceNodeRunId: record.SourceNodeRunID,
+		RetryIndex:      record.RetryIndex,
+		RetryMax:        record.RetryMax,
+		ScheduledAt:     mustParseRFC3339(record.ScheduledAt),
+		LastUpdatedAt:   mustParseRFC3339(record.LastUpdatedAt),
+	}
+	if value := nullableString(record.TargetAttemptID); value != nil {
+		item.TargetAttemptId = value
+	}
+	if value := nullableString(record.TargetNodeRunID); value != nil {
+		item.TargetNodeRunId = value
+	}
 	return item
 }
 
@@ -1541,132 +1550,33 @@ func (s *Server) handleGetRunTimeline(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func (s *Server) fetchRunGraphNodes(ctx context.Context, runID string, workflowDefinitionID string) ([]gen.RunGraphNode, error) {
-	query := fmt.Sprintf(`WITH latest_node_runs AS (
-		  SELECT nr.node_id,
-		         nr.node_run_id,
-		         nr.attempt,
-		         nr.node_status,
-		         ROW_NUMBER() OVER (
-		           PARTITION BY nr.node_id
-		           ORDER BY %s
-		         ) AS node_rank
-		  FROM node_runs nr
-		  WHERE nr.run_id = ?
-		), latest_failure_events AS (
-		  SELECT e.node_run_id,
-		         NULLIF(TRIM(CAST(json_extract(e.payload_json, '$.error') AS TEXT)), '') AS failure_reason,
-		         NULLIF(TRIM(e.reason_text), '') AS failure_reason_text,
-		         NULLIF(TRIM(e.reason_code), '') AS failure_reason_code,
-		         ROW_NUMBER() OVER (
-		           PARTITION BY e.node_run_id
-		           ORDER BY e.seq DESC, e.event_id DESC
-		         ) AS failure_rank
-		  FROM events e
-		  WHERE e.run_id = ?
-		    AND e.event_type = 'attempt.failed'
-		)
-		SELECT wn.node_id,
-		       wn.required_role,
-		       COALESCE(wn.node_class, ''),
-		       NULLIF(TRIM(lnr.node_run_id), '') AS node_run_id,
-		       lnr.attempt,
-		       COALESCE(lnr.node_status, 'pending') AS node_state,
-		       CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN NULLIF(TRIM(ae.failure_text), '')
-		         ELSE NULL
-		       END AS failure_reason
-		     , CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN NULLIF(TRIM(ae.failure_code), '')
-		         ELSE NULL
-		       END AS failure_code
-		     , CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), ''))
-		         ELSE NULL
-		       END AS completion_invalid_reason
-		     , CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN lfe.failure_reason
-		         ELSE NULL
-		       END AS event_failure_reason
-		     , CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN lfe.failure_reason_text
-		         ELSE NULL
-		       END AS event_failure_reason_text
-		     , CASE
-		         WHEN COALESCE(lnr.node_status, 'pending') = 'failed' THEN lfe.failure_reason_code
-		         ELSE NULL
-		       END AS event_failure_reason_code
-		FROM workflow_nodes wn
-		LEFT JOIN latest_node_runs lnr
-		  ON lnr.node_id = wn.node_id
-		 AND lnr.node_rank = 1
-		LEFT JOIN attempt_executions ae
-		  ON ae.run_id = ?
-		 AND ae.node_run_id = lnr.node_run_id
-		LEFT JOIN provider_completion_settlements pcs
-		  ON pcs.settlement_id = ae.canonical_settlement_id
-		LEFT JOIN provider_invocations api
-		  ON api.provider_invocation_id = ae.active_provider_invocation_id
-		LEFT JOIN provider_invocations cpi
-		  ON cpi.provider_invocation_id = pcs.provider_invocation_id
-		LEFT JOIN latest_failure_events lfe
-		  ON lfe.node_run_id = lnr.node_run_id
-		 AND lfe.failure_rank = 1
-		WHERE wn.workflow_definition_id = ?
-		ORDER BY wn.node_id ASC`, state.VisibleNodeAttemptOrderSQL("nr"))
-
-	rows, err := s.db.QueryContext(
-		ctx,
-		query,
-		runID,
-		runID,
-		runID,
-		workflowDefinitionID,
-	)
-	if err != nil {
-		return nil, err
+func buildRunGraphNode(record executionstore.RunNodeExecutionRecord) gen.RunGraphNode {
+	node := gen.RunGraphNode{
+		NodeId:             record.NodeID,
+		RequiredRole:       record.RequiredRole,
+		ExecutionOwnership: gen.RunGraphNodeExecutionOwnership(record.ExecutionOwnership),
+		State:              runGraphNodeState(record.NodeStatus, currentFailureCode(record)),
 	}
-	defer rows.Close()
-
-	nodes := make([]gen.RunGraphNode, 0)
-	for rows.Next() {
-		var node gen.RunGraphNode
-		var nodeClass string
-		var nodeRunID sql.NullString
-		var attempt sql.NullInt64
-		var durableFailureReason sql.NullString
-		var durableFailureCode sql.NullString
-		var completionInvalidReason sql.NullString
-		var failureReason sql.NullString
-		var failureReasonText sql.NullString
-		var failureReasonCode sql.NullString
-		var nodeStatus string
-		if err := rows.Scan(&node.NodeId, &node.RequiredRole, &nodeClass, &nodeRunID, &attempt, &nodeStatus, &durableFailureReason, &durableFailureCode, &completionInvalidReason, &failureReason, &failureReasonText, &failureReasonCode); err != nil {
-			return nil, err
-		}
-		node.State = runGraphNodeState(nodeStatus, durableFailureCode, failureReasonCode)
-		node.ExecutionOwnership = runGraphNodeExecutionOwnership(node.NodeId, nodeClass)
-		if nodeRunID.Valid {
-			node.NodeRunId = &nodeRunID.String
-		}
-		if attempt.Valid {
-			parsedAttempt := int(attempt.Int64)
-			node.Attempt = &parsedAttempt
-		}
-		if trimmed, ok := canonicalFailedNodeReason(durableFailureReason, durableFailureCode, completionInvalidReason, failureReason, failureReasonText, failureReasonCode); ok {
-			node.FailureReason = &trimmed
-		}
-		nodes = append(nodes, node)
+	if record.VisibleNodeRunID.Valid {
+		node.NodeRunId = &record.VisibleNodeRunID.String
 	}
-
-	return nodes, nil
+	if record.VisibleAttempt.Valid {
+		attempt := int(record.VisibleAttempt.Int64)
+		node.Attempt = &attempt
+	}
+	if record.NodeStatus == string(gen.RunGraphNodeStateFailed) && record.Current != nil {
+		if reason, ok := canonicalFailedNodeReason(record.Current.FailureText, record.Current.FailureCode, record.Current.CompletionInvalidReason); ok {
+			node.FailureReason = &reason
+		}
+	}
+	return node
 }
 
-func runGraphNodeExecutionOwnership(nodeID, nodeClass string) gen.RunGraphNodeExecutionOwnership {
-	if coreworkflow.BehaviorForNode(nodeID, nodeClass).ExecutionOwnership == coreworkflow.NodeExecutionOwnershipRuntimeOwned {
-		return gen.RunGraphNodeExecutionOwnership(coreworkflow.NodeExecutionOwnershipRuntimeOwned)
+func currentFailureCode(record executionstore.RunNodeExecutionRecord) sql.NullString {
+	if record.Current == nil {
+		return sql.NullString{}
 	}
-	return gen.RunGraphNodeExecutionOwnership(coreworkflow.NodeExecutionOwnershipProviderBacked)
+	return record.Current.FailureCode
 }
 
 func (s *Server) fetchRunGraphEdges(ctx context.Context, workflowDefinitionID string) ([]gen.RunGraphEdge, error) {
@@ -1709,4 +1619,26 @@ func (s *Server) decodeTimelineCursor(runID, cursor string) (int, error) {
 		return 0, fmt.Errorf("invalid cursor sequence")
 	}
 	return seq, nil
+}
+
+type runNodeAttemptsCursor struct {
+	Attempt   int    `json:"attempt"`
+	NodeRunID string `json:"node_run_id"`
+}
+
+func (s *Server) encodeRunNodeAttemptsCursor(runID, nodeID string, cursor runNodeAttemptsCursor) string {
+	payload, _ := json.Marshal(cursor)
+	return s.cursors.Encode("node-attempts", runID+"|"+nodeID, string(payload))
+}
+
+func (s *Server) decodeRunNodeAttemptsCursor(runID, nodeID, token string) (runNodeAttemptsCursor, error) {
+	payload, err := s.cursors.Decode("node-attempts", runID+"|"+nodeID, token)
+	if err != nil {
+		return runNodeAttemptsCursor{}, err
+	}
+	var cursor runNodeAttemptsCursor
+	if err := json.Unmarshal([]byte(payload), &cursor); err != nil || cursor.Attempt < 1 || strings.TrimSpace(cursor.NodeRunID) == "" {
+		return runNodeAttemptsCursor{}, fmt.Errorf("invalid node attempts cursor")
+	}
+	return cursor, nil
 }

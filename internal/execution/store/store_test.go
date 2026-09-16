@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -173,252 +174,6 @@ func TestStoreUpdateProviderSessionIDRoundTripsOnAttempt(t *testing.T) {
 	}
 	if updatedAt != "2026-03-01T12:00:01Z" {
 		t.Fatalf("expected metadata write to preserve execution updated_at, got %q", updatedAt)
-	}
-}
-
-func TestStoreUpdateProviderSessionIDDoesNotReorderRunExecutions(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:01:10Z', NULL)`)
-
-	s := New(db)
-	ctx := context.Background()
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:      "run_1:decree_intake:1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionRef:     "session_decree_1",
-		CreatedAt:      "2026-03-01T12:00:00Z",
-		CompletionMode: ProviderCompletionModeReceiptRequired,
-	}); err != nil {
-		t.Fatalf("enqueue first attempt: %v", err)
-	}
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:      "run_1:decree_intake:2",
-		RunID:          "run_1",
-		NodeRunID:      "nr_2",
-		SessionRef:     "session_decree_2",
-		CreatedAt:      "2026-03-01T12:01:00Z",
-		CompletionMode: ProviderCompletionModeReceiptRequired,
-	}); err != nil {
-		t.Fatalf("enqueue second attempt: %v", err)
-	}
-	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
-		AttemptID:    "run_1:decree_intake:1",
-		LeaseOwner:   "worker-1",
-		LeaseUntil:   "2026-03-01T12:20:00Z",
-		AcquiredAt:   "2026-03-01T12:00:10Z",
-		StateOnLease: "running",
-	}); err != nil || !acquired {
-		t.Fatalf("acquire first lease: acquired=%t err=%v", acquired, err)
-	}
-	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
-		AttemptID:    "run_1:decree_intake:2",
-		LeaseOwner:   "worker-2",
-		LeaseUntil:   "2026-03-01T12:20:00Z",
-		AcquiredAt:   "2026-03-01T12:01:10Z",
-		StateOnLease: "running",
-	}); err != nil || !acquired {
-		t.Fatalf("acquire second lease: acquired=%t err=%v", acquired, err)
-	}
-	if err := s.UpdateProviderSessionID(ctx, UpdateProviderSessionIDRequest{
-		AttemptID:         "run_1:decree_intake:1",
-		ProviderSessionID: "ses_decree_1_real",
-		UpdatedAt:         "2026-03-01T12:02:00Z",
-	}); err != nil {
-		t.Fatalf("late provider session update: %v", err)
-	}
-
-	records, err := s.ListRunExecutions(ctx, "run_1")
-	if err != nil {
-		t.Fatalf("list run executions: %v", err)
-	}
-	if len(records) < 2 {
-		t.Fatalf("expected at least 2 executions, got %#v", records)
-	}
-	if records[0].AttemptID != "run_1:decree_intake:2" {
-		t.Fatalf("expected newer execution activity to remain first, got %#v", records)
-	}
-	if records[0].ActivityAt != "2026-03-01T12:01:10Z" {
-		t.Fatalf("expected newer execution activity_at to remain unchanged, got %q", records[0].ActivityAt)
-	}
-}
-
-func TestStoreListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder Berserker', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder-berserker', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder', 'run_1', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_builder', 1, NULL, NULL)`)
-
-	s := New(db)
-	ctx := context.Background()
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:      "run_1:decree_intake:1",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		ExecutionMode:  ExecutionModeRuntimeOwned,
-		CompletionMode: ProviderCompletionModeNotApplicable,
-		CreatedAt:      "2026-03-01T12:00:01Z",
-	}); err != nil {
-		t.Fatalf("enqueue runtime-owned attempt: %v", err)
-	}
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:         "run_1:delegated_execution_berserker:1",
-		RunID:             "run_1",
-		NodeRunID:         "nr_builder",
-		ExecutionMode:     ExecutionModeProviderBacked,
-		CompletionMode:    ProviderCompletionModeReceiptRequired,
-		SessionRef:        "session_builder_run_1",
-		ProviderSessionID: "ses_builder_run_1",
-		CreatedAt:         "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("enqueue provider-backed attempt: %v", err)
-	}
-	acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
-		AttemptID:    "run_1:delegated_execution_berserker:1",
-		LeaseOwner:   "worker-builder",
-		LeaseUntil:   "2026-03-01T12:20:00Z",
-		AcquiredAt:   "2026-03-01T12:00:03Z",
-		StateOnLease: "running",
-	})
-	if err != nil {
-		t.Fatalf("acquire provider-backed lease: %v", err)
-	}
-	if !acquired {
-		t.Fatal("expected provider-backed lease acquire to succeed")
-	}
-
-	records, err := s.ListRunExecutions(ctx, "run_1")
-	if err != nil {
-		t.Fatalf("list run executions: %v", err)
-	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 run executions, got %d", len(records))
-	}
-
-	providerBacked := records[0]
-	if providerBacked.AttemptID != "run_1:delegated_execution_berserker:1" {
-		t.Fatalf("expected provider-backed attempt first, got %#v", providerBacked)
-	}
-	if providerBacked.NodeID != "delegated_execution_berserker" || providerBacked.Attempt != 1 {
-		t.Fatalf("unexpected provider-backed node lineage: %#v", providerBacked)
-	}
-	if providerBacked.ExecutionMode != ExecutionModeProviderBacked {
-		t.Fatalf("expected provider_backed execution mode, got %q", providerBacked.ExecutionMode)
-	}
-	if !providerBacked.LogicalSessionID.Valid || providerBacked.LogicalSessionID.String != "session_builder_run_1" {
-		t.Fatalf("expected logical session id, got %#v", providerBacked.LogicalSessionID)
-	}
-	if !providerBacked.ProviderSessionID.Valid || providerBacked.ProviderSessionID.String != "ses_builder_run_1" {
-		t.Fatalf("expected provider session id, got %#v", providerBacked.ProviderSessionID)
-	}
-	if providerBacked.ActivityAt != "2026-03-01T12:00:03Z" {
-		t.Fatalf("expected provider-backed activity_at from latest execution activity, got %q", providerBacked.ActivityAt)
-	}
-	if providerBacked.QueuedAt != "2026-03-01T12:00:02Z" {
-		t.Fatalf("expected provider-backed queued_at from attempt creation, got %q", providerBacked.QueuedAt)
-	}
-
-	runtimeOwned := records[1]
-	if runtimeOwned.AttemptID != "run_1:decree_intake:1" {
-		t.Fatalf("expected runtime-owned attempt second, got %#v", runtimeOwned)
-	}
-	if runtimeOwned.ExecutionMode != ExecutionModeRuntimeOwned {
-		t.Fatalf("expected runtime_owned execution mode, got %q", runtimeOwned.ExecutionMode)
-	}
-	if runtimeOwned.LogicalSessionID.Valid {
-		t.Fatalf("expected runtime-owned attempt to omit logical session id, got %#v", runtimeOwned.LogicalSessionID)
-	}
-	if runtimeOwned.ProviderSessionID.Valid {
-		t.Fatalf("expected runtime-owned attempt to omit provider session id, got %#v", runtimeOwned.ProviderSessionID)
-	}
-	if runtimeOwned.ActivityAt != "2026-03-01T12:00:01Z" {
-		t.Fatalf("expected runtime-owned activity_at from created execution row, got %q", runtimeOwned.ActivityAt)
-	}
-	if runtimeOwned.QueuedAt != "2026-03-01T12:00:01Z" {
-		t.Fatalf("expected runtime-owned queued_at from attempt creation, got %q", runtimeOwned.QueuedAt)
-	}
-}
-
-func TestStoreListRunExecutionsOrdersByActivityAt(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:01:10Z', NULL)`)
-
-	s := New(db)
-	ctx := context.Background()
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:         "run_1:decree_intake:1",
-		RunID:             "run_1",
-		NodeRunID:         "nr_1",
-		ExecutionMode:     ExecutionModeProviderBacked,
-		CompletionMode:    ProviderCompletionModeReceiptRequired,
-		SessionRef:        "session_decree_1",
-		ProviderSessionID: "ses_decree_1",
-		CreatedAt:         "2026-03-01T12:00:00Z",
-	}); err != nil {
-		t.Fatalf("enqueue first attempt: %v", err)
-	}
-	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
-		AttemptID:         "run_1:decree_intake:2",
-		RunID:             "run_1",
-		NodeRunID:         "nr_2",
-		ExecutionMode:     ExecutionModeProviderBacked,
-		CompletionMode:    ProviderCompletionModeReceiptRequired,
-		SessionRef:        "session_decree_2",
-		ProviderSessionID: "ses_decree_2",
-		CreatedAt:         "2026-03-01T12:01:00Z",
-	}); err != nil {
-		t.Fatalf("enqueue second attempt: %v", err)
-	}
-	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
-		AttemptID:    "run_1:decree_intake:1",
-		LeaseOwner:   "worker-1",
-		LeaseUntil:   "2026-03-01T12:20:00Z",
-		AcquiredAt:   "2026-03-01T12:00:10Z",
-		StateOnLease: "running",
-	}); err != nil || !acquired {
-		t.Fatalf("acquire first lease: acquired=%t err=%v", acquired, err)
-	}
-	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
-		AttemptID:    "run_1:decree_intake:2",
-		LeaseOwner:   "worker-2",
-		LeaseUntil:   "2026-03-01T12:20:00Z",
-		AcquiredAt:   "2026-03-01T12:01:10Z",
-		StateOnLease: "running",
-	}); err != nil || !acquired {
-		t.Fatalf("acquire second lease: acquired=%t err=%v", acquired, err)
-	}
-	mustExec(t, db, `UPDATE attempt_executions
-		SET state = 'committed_success',
-		    terminal_observed_at = '2026-03-01T12:05:00Z',
-		    committed_at = '2026-03-01T12:05:00Z',
-		    updated_at = '2026-03-01T12:05:00Z'
-		WHERE attempt_id = 'run_1:decree_intake:1'`)
-
-	records, err := s.ListRunExecutions(ctx, "run_1")
-	if err != nil {
-		t.Fatalf("list run executions: %v", err)
-	}
-	if len(records) < 2 {
-		t.Fatalf("expected at least 2 run executions, got %d", len(records))
-	}
-	if records[0].AttemptID != "run_1:decree_intake:1" {
-		t.Fatalf("expected attempt with latest activity first, got %#v", records[0])
-	}
-	if records[0].ActivityAt != "2026-03-01T12:05:00Z" {
-		t.Fatalf("expected first activity_at to reflect commit time, got %q", records[0].ActivityAt)
 	}
 }
 
@@ -1754,6 +1509,54 @@ func seedMinimumGraph(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_1', 'wfdef_1', 'decree_intake', 'royal_closure', 'always', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'decree_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_1', 'run_1', 'decree_intake', 1,1, 'running', 'king', 'agent_king', 1, NULL, NULL)`)
+}
+
+func TestStoreListRunNodeExecutionsIncludesNodesWithoutPhysicalAttempts(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("list logical node executions: %v", err)
+	}
+	if len(records) != 2 || records[0].NodeID != "decree_intake" || records[1].NodeID != "royal_closure" {
+		t.Fatalf("unexpected logical execution rows: %#v", records)
+	}
+	if records[1].Current != nil || records[1].AttemptCount != 0 {
+		t.Fatalf("expected node without physical attempt to remain nullable: %#v", records[1])
+	}
+}
+
+func TestStoreListRunNodeExecutionsOrdersLogicalNodesByCurrentActivity(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	for _, nodeID := range []string{"active_running", "active_starting", "blocked_node", "ready_node", "pending_node"} {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_%s', 'wfdef_1', '%s', 'king', 'advisory_consultation', '2026-03-01T12:00:00Z')`, nodeID, nodeID))
+	}
+	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_active_running', 'run_1', 'active_running', 1, 1, 'running', 'king', 'agent_king', 1, '2026-03-01T12:06:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_active_starting', 'run_1', 'active_starting', 1, 1, 'starting', 'king', 'agent_king', 1, '2026-03-01T12:06:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_blocked', 'run_1', 'blocked_node', 1, 1, 'blocked', 'king', 'agent_king', 1, '2026-03-01T12:30:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_ready', 'run_1', 'ready_node', 1, 1, 'ready', 'king', 'agent_king', 1)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('attempt_ready', 'run_1', 'nr_ready', 'queued', 'provider_backed', 'server_response', '2026-03-01T12:20:00Z', '2026-03-01T12:20:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES ('nr_closure', 'run_1', 'royal_closure', 1, 1, 'succeeded', 'king', 'agent_king', 1, '2026-03-01T12:50:00Z')`)
+
+	records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("list logical node executions: %v", err)
+	}
+	got := make([]string, 0, len(records))
+	for _, record := range records {
+		got = append(got, record.NodeID)
+	}
+	want := []string{"decree_intake", "active_running", "active_starting", "blocked_node", "ready_node", "pending_node", "royal_closure"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected current-activity order %v, got %v", want, got)
+	}
 }
 
 func mustExec(t *testing.T, db *sql.DB, statement string) {

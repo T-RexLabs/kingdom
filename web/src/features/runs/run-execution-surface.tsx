@@ -1,4 +1,4 @@
-import type { RunDetailSummary, RunExecution, RunExecutionDetail, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/api/hooks";
+import type { RunDetailSummary, RunExecution, RunExecutionDetail, RunGraphEdge, RunGraphNode, RunNodeExecution, TimelineEvent } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { PopoverListbox } from "@/components/ui/popover-listbox";
 import { RelativeTime } from "@/components/ui/relative-time";
@@ -7,7 +7,6 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { statusLabel } from "@/lib/status-system";
 import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
-import type { ActivityStepGroup } from "./run-activity-selection";
 import { useNodeActivityRecency } from "./use-node-activity-recency";
 import { RunActivityLanes } from "./run-activity-lanes";
 import { RunExecutionActivity } from "./run-execution-activity";
@@ -17,8 +16,8 @@ import { TimelinePanel } from "./timeline-panel";
 
 export function RunExecutionSurface({
 	run,
-	executions,
-	stepGroups,
+	nodes,
+	attempts,
 	executionsErrorMessage,
 	showPrimaryExecutionError,
 	isSummaryLoading,
@@ -28,6 +27,9 @@ export function RunExecutionSurface({
 	selectedAttemptSource,
 	onSelectStep,
 	onSelectAttempt,
+	hasMoreAttempts,
+	onLoadMoreAttempts,
+	isLoadingMoreAttempts,
 	detail,
 	isDetailLoading,
 	detailErrorMessage,
@@ -43,8 +45,8 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents,
 }: {
 	run: RunDetailSummary;
-	executions: RunExecution[];
-	stepGroups: ActivityStepGroup[];
+	nodes: RunNodeExecution[];
+	attempts: RunExecution[];
 	executionsErrorMessage: string | null;
 	showPrimaryExecutionError: boolean;
 	isSummaryLoading: boolean;
@@ -54,6 +56,9 @@ export function RunExecutionSurface({
 	selectedAttemptSource: "auto" | "manual" | null;
 	onSelectStep: (nodeId: string) => void;
 	onSelectAttempt: (attemptId: string) => void;
+	hasMoreAttempts: boolean;
+	onLoadMoreAttempts: () => void;
+	isLoadingMoreAttempts: boolean;
 	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null;
 	isDetailLoading: boolean;
 	detailErrorMessage: string | null;
@@ -69,35 +74,31 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents: boolean;
 }) {
 	const [timelineOpen, setTimelineOpen] = useState(false);
-	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId)
-		?? (selectedAttemptSource === "manual" ? null : stepGroups[0] ?? null);
-	const currentExecution = currentStepGroup
-		? currentStepGroup.attempts.find((item) => item.attempt_id === selectedAttemptId)
-			?? currentStepGroup.attempts.find((item) => item.attempt_id === currentStepGroup.preferredAttemptId)
-			?? currentStepGroup.attempts[0]
-			?? null
-		: null;
+	const currentNode = nodes.find((item) => item.node_id === selectedNodeId)
+		?? (selectedAttemptSource === "manual" ? null : nodes[0] ?? null);
+	const currentExecution = currentNode?.current_execution ?? null;
+	const selectedExecution = findSelectedExecution(currentExecution, attempts, detail, selectedAttemptId);
 	const primaryExecutionErrorVisible = showPrimaryExecutionError && typeof executionsErrorMessage === "string" && executionsErrorMessage.trim() !== "";
-	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(currentExecution, detail);
-	const summary = executionSummary(run, currentExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);
-	const isExecutionRunning = isActiveExecutionStatus(currentExecution?.status);
-	const nodeActivityAt = useNodeActivityRecency(run.run_id, currentExecution?.attempt_id ?? selectedAttemptId, isExecutionRunning);
+	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(selectedExecution, detail);
+	const summary = executionSummary(run, currentNode, selectedExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);
+	const isExecutionRunning = isActiveExecutionStatus(selectedExecution?.status);
+	const nodeActivityAt = useNodeActivityRecency(run.run_id, selectedExecution?.attempt_id ?? selectedAttemptId, isExecutionRunning);
 	// Prefer honest ACP activity recency; fall back to the coarse execution timestamp
 	// only before any agent activity has been recorded.
-	const summaryActivityAt = nodeActivityAt ?? currentExecution?.activity_at ?? run.last_activity_at;
+	const summaryActivityAt = nodeActivityAt ?? selectedExecution?.activity_at ?? currentNode?.latest_activity_at ?? run.last_activity_at;
 	const stopRetryAvailable = currentExecutionDisplayStatus === "paused"
-		&& (detail?.stop_retry_available ?? currentExecution?.stop_retry_available ?? false);
+		&& (detail?.stop_retry_available ?? selectedExecution?.stop_retry_available ?? false);
 	const activityHeroLabel = primaryExecutionErrorVisible ? "Execution Steps" : activityHeroLabelText(currentExecutionDisplayStatus, selectedAttemptSource);
 	const stepSelectorId = useId();
 	const attemptSelectorId = useId();
 	const timelinePanelId = useId();
 	const stepOptions = useMemo(() => {
-		return stepGroups.map((item) => ({
-			id: item.nodeId,
-			label: nodeLabel(item.nodeId),
+		return nodes.map((item) => ({
+			id: item.node_id,
+			label: nodeLabel(item.node_id),
 		}));
-	}, [stepGroups]);
-	const attemptOptions = (currentStepGroup?.attempts ?? []).map((item) => ({
+	}, [nodes]);
+	const attemptOptions = uniqueAttempts(currentExecution, attempts, detail).map((item) => ({
 		id: item.attempt_id,
 		label: `Attempt ${item.attempt}`,
 	}));
@@ -118,7 +119,7 @@ export function RunExecutionSurface({
 		<div className="space-y-3">
 			<RunActivityLanes
 				runId={run.run_id}
-				executions={executions}
+				nodes={nodes}
 				selectedNodeId={selectedNodeId}
 				onSelectStep={onSelectStep}
 			/>
@@ -156,7 +157,7 @@ export function RunExecutionSurface({
 								</>
 							)}
 							items={stepOptions}
-							selectedId={currentStepGroup?.nodeId ?? null}
+							selectedId={currentNode?.node_id ?? null}
 							onSelect={onSelectStep}
 							footer={stepSelectorFooter}
 							minWidth={220}
@@ -166,11 +167,11 @@ export function RunExecutionSurface({
 						<div className="mt-3 text-xs text-foreground-subtle">
 							Last activity <RelativeTime iso={summaryActivityAt} />
 						</div>
-						{stopRetryAvailable && currentExecution && (
+						{stopRetryAvailable && selectedExecution && (
 							<div className="mt-4 flex flex-wrap items-center gap-3">
 								<button
 									type="button"
-									onClick={() => onRetryStop(currentExecution.attempt_id)}
+								onClick={() => onRetryStop(selectedExecution.attempt_id)}
 									disabled={isStopRetryPending}
 									className="inline-flex min-h-11 items-center justify-center rounded-md border border-status-blocked/40 px-3 py-2 text-sm font-medium text-status-blocked hover:bg-status-blocked/10 disabled:cursor-not-allowed disabled:opacity-60"
 								>
@@ -181,10 +182,10 @@ export function RunExecutionSurface({
 						)}
 					</div>
 					<div className="flex flex-col items-start gap-2 sm:items-end">
-						{currentExecution && currentExecutionDisplayStatus
+						{selectedExecution && currentExecutionDisplayStatus
 							? <Badge variant="status" status={currentExecutionDisplayStatus}>{statusLabel(currentExecutionDisplayStatus)}</Badge>
 							: null}
-						{currentStepGroup && currentStepGroup.attempts.length > 1 ? (
+						{attemptOptions.length > 1 ? (
 							<div className="min-w-[6.75rem] sm:min-w-[7rem]">
 								<PopoverListbox
 									triggerId={attemptSelectorId}
@@ -193,7 +194,7 @@ export function RunExecutionSurface({
 									triggerClassName="flex w-full items-center justify-between gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:border-gold/40 hover:text-gold"
 									triggerContent={(
 										<>
-											<span className="truncate">{`Attempt ${currentExecution?.attempt ?? currentStepGroup.attempts[0]?.attempt ?? 1}`}</span>
+											<span className="truncate">{`Attempt ${selectedExecution?.attempt ?? 1}`}</span>
 											<ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
 										</>
 									)}
@@ -203,6 +204,11 @@ export function RunExecutionSurface({
 									minWidth={112}
 									panelClassName="flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
 								/>
+								{hasMoreAttempts ? (
+									<button type="button" onClick={onLoadMoreAttempts} disabled={isLoadingMoreAttempts} className="mt-2 w-full text-xs text-gold hover:text-gold-bright disabled:opacity-60">
+										{isLoadingMoreAttempts ? "Loading Attempts..." : "Load Older Attempts"}
+									</button>
+								) : null}
 							</div>
 						) : null}
 					</div>
@@ -211,8 +217,8 @@ export function RunExecutionSurface({
 
 			<RunExecutionActivity
 				runId={run.run_id}
-				attemptId={currentExecution?.attempt_id ?? selectedAttemptId}
-				isRunning={isActiveExecutionStatus(currentExecution?.status)}
+				attemptId={selectedExecution?.attempt_id ?? selectedAttemptId}
+				isRunning={isActiveExecutionStatus(selectedExecution?.status)}
 			/>
 
 			<RunExecutionsPanel
@@ -221,6 +227,7 @@ export function RunExecutionSurface({
 				detailErrorMessage={detailErrorMessage}
 				detailPlaceholderMessage={detailPlaceholderMessage}
 				onRetryDetail={onRetryDetail}
+				failure={selectedExecution?.attempt_id === currentExecution?.attempt_id ? currentNode?.failure : undefined}
 			/>
 
 			<section className="rounded-xl border border-border bg-surface-raised/20">
@@ -245,7 +252,7 @@ export function RunExecutionSurface({
 							<TimelinePanel
 								events={events}
 								graph={graph}
-								executions={executions}
+								executions={nodes.flatMap((node) => node.current_execution ? [node.current_execution] : [])}
 								hasMore={hasMoreEvents}
 								onLoadMore={onLoadMoreEvents}
 								isLoadingMore={isLoadingMoreEvents}
@@ -276,6 +283,7 @@ function activityHeroLabelText(
 
 function executionSummary(
 	run: RunDetailSummary,
+	node: RunNodeExecution | null,
 	execution: RunExecution | null,
 	displayStatus: string | null,
 	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null,
@@ -284,6 +292,14 @@ function executionSummary(
 	isSummaryLoading: boolean,
 ): { title: string; body: string } {
 	if (!execution) {
+		const title = node ? nodeLabel(node.node_id) : "Waiting to start";
+		const recovery = recoverySummary(node?.recovery);
+		if (recovery) {
+			return { title, body: recovery };
+		}
+		if (node?.failure?.operator_text) {
+			return { title, body: node.failure.operator_text };
+		}
 		if (showPrimaryExecutionError && executionsErrorMessage) {
 			return {
 				title: "Execution steps unavailable",
@@ -304,8 +320,12 @@ function executionSummary(
 		};
 	}
 
-	const title = nodeLabel(execution.node_id);
+	const title = nodeLabel(node?.node_id ?? execution.node_id);
 	const state = execution.status;
+	const recovery = recoverySummary(node?.recovery);
+	if (recovery) {
+		return { title, body: recovery };
+	}
 	const progressLabel = executionProgressLabel(
 		state,
 		detail?.progress_reason_code,
@@ -344,7 +364,7 @@ function executionSummary(
 		const matchingDetail = detail?.attempt_id === execution.attempt_id ? detail : null;
 		return {
 			title,
-			body: operatorFacingExecutionFailureText(
+			body: node?.failure?.operator_text ?? operatorFacingExecutionFailureText(
 				matchingDetail?.failure_code ?? execution.failure_code,
 				matchingDetail?.completion_invalid_reason ?? execution.completion_invalid_reason,
 				matchingDetail?.failure_text,
@@ -359,6 +379,48 @@ function executionSummary(
 		};
 	}
 	return { title, body: "This step completed." };
+}
+
+function findSelectedExecution(
+	current: RunExecution | null,
+	attempts: RunExecution[],
+	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null,
+	selectedAttemptId: string | null,
+): RunExecution | null {
+	if (!selectedAttemptId) {
+		return current;
+	}
+	if (current?.attempt_id === selectedAttemptId) {
+		return current;
+	}
+	return attempts.find((item) => item.attempt_id === selectedAttemptId)
+		?? (detail?.attempt_id === selectedAttemptId ? detail : null)
+		?? null;
+}
+
+function uniqueAttempts(
+	current: RunExecution | null,
+	attempts: RunExecution[],
+	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null,
+): RunExecution[] {
+	const seen = new Set<string>();
+	return [current, ...attempts, detail]
+		.filter((item): item is RunExecution => !!item && !seen.has(item.attempt_id) && !!seen.add(item.attempt_id));
+}
+
+function recoverySummary(recovery: RunNodeExecution["recovery"]): string | null {
+	if (!recovery || recovery.phase === "recovered" || recovery.phase === "exhausted") {
+		return null;
+	}
+	const reason = recovery.reason_code.replaceAll("_", " ");
+	switch (recovery.phase) {
+		case "paused":
+			return `Recovery is paused after ${reason}.`;
+		case "running":
+			return `Recovery is running after ${reason}.`;
+		default:
+			return `Recovery is scheduled after ${reason}.`;
+	}
 }
 
 function selectedExecutionDisplayStatus(

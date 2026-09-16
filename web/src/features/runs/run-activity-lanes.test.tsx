@@ -3,7 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { RunExecution } from "@/api/hooks";
+import type { RunExecution, RunNodeExecution } from "@/api/hooks";
 import { RunActivityLanes } from "./run-activity-lanes";
 import { liveRunActivityQueryKey, type LiveRunActivityBuffer } from "./run-live-activity";
 
@@ -17,6 +17,17 @@ function execution(overrides: Partial<RunExecution> & Pick<RunExecution, "node_i
     status: "running",
     ...overrides,
   } as RunExecution;
+}
+
+function node(execution: RunExecution): RunNodeExecution {
+  return {
+    node_id: execution.node_id,
+    required_role: execution.required_role,
+    execution_ownership: execution.execution_mode,
+    status: "running",
+    attempt_count: 1,
+    current_execution: execution,
+  };
 }
 
 function renderLanes(args: {
@@ -35,7 +46,7 @@ function renderLanes(args: {
   return render(
     <RunActivityLanes
       runId="run-1"
-      executions={args.executions}
+      nodes={args.executions.map(node)}
       selectedNodeId={args.selectedNodeId ?? null}
       onSelectStep={args.onSelectStep ?? (() => {})}
     />,
@@ -47,8 +58,8 @@ describe("RunActivityLanes", () => {
   it("renders one lane per active provider-backed node with its current action", () => {
     renderLanes({
       executions: [
-        execution({ node_id: "advisor_consultation_clergy", attempt_id: "att-clergy", required_role: "clergy-delegate" }),
         execution({ node_id: "advisor_consultation_noble", attempt_id: "att-noble", required_role: "noble-delegate" }),
+        execution({ node_id: "advisor_consultation_clergy", attempt_id: "att-clergy", required_role: "clergy-delegate" }),
       ],
       buffer: {
         "att-clergy": [{ id: "c1", kind: "tool", label: "Reading guidelines.md" }],
@@ -59,6 +70,10 @@ describe("RunActivityLanes", () => {
     expect(screen.getByText("Reading guidelines.md")).toBeInTheDocument();
     expect(screen.getByText("Working…")).toBeInTheDocument();
     expect(screen.getByText("Live now · 2 running")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Noble DelegateWorking…",
+      "Clergy DelegateReading guidelines.md",
+    ]);
   });
 
   it("renders for a single active provider-backed node (always-on card)", () => {

@@ -175,6 +175,25 @@ CREATE TABLE node_runs (
 CREATE INDEX idx_node_runs_run_node_wave
 ON node_runs(run_id, node_id, wave, attempt);
 
+CREATE INDEX idx_node_runs_run_node_visible
+ON node_runs(run_id, node_id, node_status, superseded_at, attempt DESC, node_run_id DESC);
+
+CREATE TABLE node_attempt_recoveries (
+  target_node_run_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  source_attempt_id TEXT NOT NULL,
+  source_node_run_id TEXT NOT NULL,
+  trigger TEXT NOT NULL CHECK (trigger IN ('operator_retry', 'operator_rerun')),
+  reason_code TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  FOREIGN KEY (target_node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
+  FOREIGN KEY (source_attempt_id, run_id, source_node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id)
+);
+
+CREATE INDEX idx_node_attempt_recoveries_run_node_scheduled
+ON node_attempt_recoveries(run_id, node_id, scheduled_at DESC, target_node_run_id DESC);
+
 CREATE INDEX idx_workflow_runs_active_created
 ON workflow_runs(created_at, run_id)
 WHERE run_status IN ('pending', 'running');

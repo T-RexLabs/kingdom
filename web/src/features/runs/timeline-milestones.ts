@@ -8,8 +8,6 @@ import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline
 const SPECIAL_REASON_LABELS: Record<string, string> = {
   execution_review_cap_auto_succeeded: "Review Cap Auto-Succeeded",
   validation_gate_cap_auto_succeeded: "Validation Cap Auto-Succeeded",
-  provider_empty_output_retry: "Provider Empty Output Retry",
-  provider_output_recovered: "Provider Output Recovered",
   royal_summary_fallback: "Royal Summary Fallback",
   run_cancelled_by_user: "Run Cancelled by User",
 };
