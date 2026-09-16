@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
 )
@@ -207,6 +208,73 @@ WHERE run_id = ?`, strings.TrimSpace(state), strings.TrimSpace(trustedSnapshotID
 	return nil
 }
 
+// RecoverQuarantinedExecutionTarget securely discards an unsafe provider-owned
+// direct target, then recreates it from trusted runtime-owned bytes. Terminal
+// attempt and target records are the durable quarantine evidence; provider
+// filesystem content is never retained.
+func (s *Store) RecoverQuarantinedExecutionTarget(ctx context.Context, runID, restoredAt string) (RunExecutionTarget, error) {
+	record, err := s.GetExecutionTarget(ctx, runID)
+	if err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("load quarantined execution target: %w", err)
+	}
+	if strings.TrimSpace(record.State) != "unknown" {
+		return record, nil
+	}
+	if strings.TrimSpace(record.TargetMode) != "direct" || filepath.Clean(record.ExecutionRoot) != filepath.Clean(s.RunTargetRoot(record.RunID)) {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target is not a runtime-owned direct target")
+	}
+	if strings.TrimSpace(record.TrustedSnapshotID) == "" {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target has no trusted snapshot")
+	}
+	quiescent, err := s.runProviderProcessGuardsQuiescent(ctx, record.RunID)
+	if err != nil {
+		return RunExecutionTarget{}, err
+	}
+	if !quiescent {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target recovery is waiting for provider process quiescence")
+	}
+	if err := s.RecoverMissingSnapshotBlobs(ctx, record.TrustedSnapshotID, record.PublishRoot, record.SourceRoot); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("recover trusted snapshot blobs: %w", err)
+	}
+
+	runRoot, err := securefs.OpenRoot(filepath.Dir(s.RunTargetRoot(record.RunID)))
+	if err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("open runtime target root: %w", err)
+	}
+	defer runRoot.Close()
+	if err := runRoot.RemoveTree("target"); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("discard unsafe execution target: %w", err)
+	}
+	if err := runRoot.EnsureDir("target", 0o755); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("create fresh execution target: %w", err)
+	}
+	if err := runRoot.SyncDir("."); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("sync fresh execution target root: %w", err)
+	}
+	if err := s.RestoreSnapshot(ctx, record.TrustedSnapshotID, record.ExecutionRoot); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("restore fresh execution target: %w", err)
+	}
+	if err := s.UpdateExecutionTargetState(ctx, record.RunID, "trusted", record.TrustedSnapshotID, "", restoredAt); err != nil {
+		return RunExecutionTarget{}, err
+	}
+	record.State = "trusted"
+	record.UpdatedAt = strings.TrimSpace(restoredAt)
+	return record, nil
+}
+
+func (s *Store) runProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
+	var pending int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM provider_process_guards ppg
+		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
+		WHERE ae.run_id = ? AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle <> 'quiescent'
+	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("load direct target provider process guard quiescence: %w", err)
+	}
+	return pending == 0, nil
+}
+
 func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest) (SnapshotRecord, error) {
 	if s == nil || s.db == nil {
 		return SnapshotRecord{}, fmt.Errorf("runtime fs store is required")
@@ -224,6 +292,9 @@ func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest)
 	}
 	baseManifest, err := s.ResolveSnapshotManifest(ctx, record.ParentSnapshotID)
 	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	if err := validateSnapshotManifestLimits(baseManifest); err != nil {
 		return SnapshotRecord{}, err
 	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
@@ -443,6 +514,9 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 	if err != nil {
 		return err
 	}
+	if err := validateSnapshotManifestLimits(manifest); err != nil {
+		return err
+	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
 	if err != nil {
 		return fmt.Errorf("open restore root: %w", err)
@@ -467,7 +541,7 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 	sort.Strings(manifestPaths)
 	for _, path := range manifestPaths {
 		entry := manifest[path]
-		raw, err := s.ReadBlob(entry.BlobID)
+		raw, err := s.readSnapshotBlob(entry)
 		if err != nil {
 			return err
 		}
@@ -516,6 +590,9 @@ func (s *Store) RecoverMissingSnapshotBlobs(ctx context.Context, snapshotID stri
 	if err != nil {
 		return err
 	}
+	if err := validateSnapshotManifestLimits(manifest); err != nil {
+		return err
+	}
 	for path, entry := range manifest {
 		hasBlob, err := s.hasBlob(entry.BlobID)
 		if err != nil {
@@ -529,12 +606,22 @@ func (s *Store) RecoverMissingSnapshotBlobs(ctx context.Context, snapshotID stri
 			if strings.TrimSpace(sourceRoot) == "" {
 				continue
 			}
-			resolved, resolveErr := trackedfs.ResolveWithinRoot(sourceRoot, path)
-			if resolveErr != nil {
+			root, openErr := securefs.OpenRoot(sourceRoot)
+			if openErr != nil {
 				continue
 			}
-			raw, readErr := os.ReadFile(resolved)
+			raw, readErr := root.ReadRegular(path, providerlimits.TrackedWorkspaceFileBytes)
+			closeErr := root.Close()
 			if readErr != nil {
+				if errors.Is(readErr, securefs.ErrLimitExceeded) {
+					return &providerlimits.LimitExceededError{Resource: "snapshot recovery source", Limit: providerlimits.TrackedWorkspaceFileBytes}
+				}
+				continue
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close snapshot recovery source: %w", closeErr)
+			}
+			if int64(len(raw)) != entry.SizeBytes {
 				continue
 			}
 			sum := sha256.Sum256(raw)
@@ -577,12 +664,21 @@ func (s *Store) ReadBlob(blobID string) ([]byte, error) {
 	if trimmedBlobID == "" {
 		return nil, fmt.Errorf("blob id is required")
 	}
-	blobPath, err := s.blobPath(trimmedBlobID)
+	_, err := s.blobPath(trimmedBlobID)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := os.ReadFile(blobPath)
+	root, err := securefs.OpenRoot(s.blobRoot)
 	if err != nil {
+		return nil, fmt.Errorf("open blob root: %w", err)
+	}
+	defer root.Close()
+	relativePath := filepath.Join(trimmedBlobID[:2], trimmedBlobID[2:4], trimmedBlobID)
+	raw, err := root.ReadRegular(relativePath, providerlimits.TrackedWorkspaceFileBytes)
+	if err != nil {
+		if errors.Is(err, securefs.ErrLimitExceeded) {
+			return nil, &providerlimits.LimitExceededError{Resource: "snapshot blob", Limit: providerlimits.TrackedWorkspaceFileBytes}
+		}
 		return nil, fmt.Errorf("read blob %q: %w", trimmedBlobID, err)
 	}
 	sum := sha256.Sum256(raw)
@@ -668,7 +764,7 @@ func (s *Store) writeBlobFromTrackedFile(root *securefs.Root, path string) (stri
 		}
 	}()
 	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tempFile, hasher), file)
+	written, err := providerlimits.CopyBounded(io.MultiWriter(tempFile, hasher), file, providerlimits.TrackedWorkspaceFileBytes, "tracked workspace file")
 	if err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("read tracked file %q: %w", path, err)
 	}
@@ -720,7 +816,7 @@ func digestTrackedFile(root *securefs.Root, path string) (string, trackedfs.Meta
 		return "", trackedfs.Metadata{}, fmt.Errorf("stat tracked file %q: %w", path, err)
 	}
 	hasher := sha256.New()
-	read, err := io.Copy(hasher, file)
+	read, err := providerlimits.CopyBounded(hasher, file, providerlimits.TrackedWorkspaceFileBytes, "tracked workspace file")
 	if err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("hash tracked file %q: %w", path, err)
 	}
@@ -737,6 +833,30 @@ func digestTrackedFile(root *securefs.Root, path string) (string, trackedfs.Meta
 
 func sameTrackedFileState(left, right fs.FileInfo) bool {
 	return left.Size() == right.Size() && left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
+}
+
+func validateSnapshotManifestLimits(manifest map[string]SnapshotEntry) error {
+	var budget providerlimits.WorkspaceBudget
+	for _, entry := range manifest {
+		if entry.EntryType != "file" {
+			continue
+		}
+		if err := budget.AddFile(entry.SizeBytes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) readSnapshotBlob(entry SnapshotEntry) ([]byte, error) {
+	raw, err := s.ReadBlob(entry.BlobID)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) != entry.SizeBytes {
+		return nil, fmt.Errorf("read blob %q: size mismatch", entry.BlobID)
+	}
+	return raw, nil
 }
 
 func pathEntry(entry SnapshotEntry) SnapshotDiffEntry {

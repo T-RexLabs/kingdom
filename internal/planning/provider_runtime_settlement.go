@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -228,6 +229,9 @@ func providerMetadataFromError(err error) ProviderExecutionMetadata {
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
+	if providerlimits.IsResourceLimitError(cause) {
+		return "resource_limit_exceeded"
+	}
 	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" {
 		return "provider_empty_output"
 	}

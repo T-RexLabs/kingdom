@@ -3025,6 +3025,7 @@ components:
                   policy_violation,
                   dependency_blocked,
                   budget_exceeded,
+                  resource_limit_exceeded,
                   internal_error,
                   llm_rate_limited,
                   llm_model_unavailable,

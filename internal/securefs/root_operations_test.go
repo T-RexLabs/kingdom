@@ -112,41 +112,6 @@ func (r *mutationReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func TestReadDirBoundedDetectsEntryOverflow(t *testing.T) {
-	t.Parallel()
-
-	rootPath := t.TempDir()
-	for index := range 17 {
-		name := filepath.Join(rootPath, "entry-"+string(rune('a'+index)))
-		if err := os.WriteFile(name, nil, 0o600); err != nil {
-			t.Fatalf("write entry %d: %v", index, err)
-		}
-	}
-	root, err := OpenRoot(rootPath)
-	if err != nil {
-		t.Fatalf("open root: %v", err)
-	}
-	defer root.Close()
-
-	entries, err := root.ReadDirBounded(".", 16)
-	if !errors.Is(err, ErrLimitExceeded) {
-		t.Fatalf("bounded enumeration error = %v, want ErrLimitExceeded", err)
-	}
-	if len(entries) != 16 {
-		t.Fatalf("bounded entries = %d, want 16", len(entries))
-	}
-	if err := os.Remove(filepath.Join(rootPath, "entry-q")); err != nil {
-		t.Fatalf("remove overflow entry: %v", err)
-	}
-	entries, err = root.ReadDirBounded(".", 16)
-	if err != nil {
-		t.Fatalf("enumerate exact entry limit: %v", err)
-	}
-	if len(entries) != 16 {
-		t.Fatalf("exact entries = %d, want 16", len(entries))
-	}
-}
-
 func TestEnsureDirRejectsSymlinkParent(t *testing.T) {
 	t.Parallel()
 

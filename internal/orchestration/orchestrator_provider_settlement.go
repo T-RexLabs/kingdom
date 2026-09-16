@@ -14,10 +14,8 @@ import (
 	"kingdom/internal/core/providerexecution"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
-	"kingdom/internal/state"
+	"kingdom/internal/sqlitex"
 )
-
-var sqliteBusyWriteRetrySchedule = []time.Duration{0, 50 * time.Millisecond, 150 * time.Millisecond, 400 * time.Millisecond}
 
 var providerInvocationIDCounter atomic.Uint64
 
@@ -109,26 +107,10 @@ func completionReceiptDirForMode(mode executionstore.ProviderCompletionMode, rec
 }
 
 func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func(context.Context) error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var lastErr error
-	for attempt, backoff := range sqliteBusyWriteRetrySchedule {
-		if attempt > 0 {
-			if err := sleepWithContext(ctx, o.sleep, backoff); err != nil {
-				return err
-			}
-		}
-		if err := write(ctx); err != nil {
-			lastErr = err
-			if !state.IsSQLiteBusy(err) {
-				return err
-			}
-			continue
-		}
-		return nil
-	}
-	return lastErr
+	_, err := sqlitex.Retry(ctx, func() error { return write(ctx) }, sqlitex.Options{
+		Sleep: func(ctx context.Context, delay time.Duration) error { return sleepWithContext(ctx, o.sleep, delay) },
+	})
+	return err
 }
 
 func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, structuredPayloadJSON string) (string, error) {
@@ -257,29 +239,24 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	}
 	settleCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
 	defer cancel()
-	canonicalSettledAt := ""
-	if err := o.retrySQLiteBusyWrite(settleCtx, func(writeCtx context.Context) error {
-		committed, err := o.transitionService().SettleProviderExecution(writeCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
-			Settlement:               settlement,
-			StreamObservation:        &result.providerStreamObservation,
-			ExpectedLeaseOwner:       result.expectedLeaseOwner,
-			ExpectedLeaseVersion:     result.expectedLeaseVersion,
-			TerminalHandoffID:        strings.TrimSpace(result.terminalHandoffID),
-			RecoveredGuardQuiescence: recoveredGuardQuiescence,
-			TokenUsage: &executionstore.ProviderInvocationTokenUsage{
-				RequiredRole: result.node.RequiredRole,
-				Model:        result.model,
-				Variant:      result.variant,
-			},
-			Terminal: terminal,
-		})
-		if err == nil {
-			canonicalSettledAt = committed.SettledAt
-		}
-		return err
-	}); err != nil {
+	committed, err := o.transitionService().SettleProviderExecution(settleCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
+		Settlement:               settlement,
+		StreamObservation:        &result.providerStreamObservation,
+		ExpectedLeaseOwner:       result.expectedLeaseOwner,
+		ExpectedLeaseVersion:     result.expectedLeaseVersion,
+		TerminalHandoffID:        strings.TrimSpace(result.terminalHandoffID),
+		RecoveredGuardQuiescence: recoveredGuardQuiescence,
+		TokenUsage: &executionstore.ProviderInvocationTokenUsage{
+			RequiredRole: result.node.RequiredRole,
+			Model:        result.model,
+			Variant:      result.variant,
+		},
+		Terminal: terminal,
+	})
+	if err != nil {
 		return err
 	}
+	canonicalSettledAt := committed.SettledAt
 	if strings.TrimSpace(result.sessionID) != "" {
 		if err := o.closeSessionLease(settleCtx, result.sessionID, canonicalSettledAt); err != nil {
 			return err

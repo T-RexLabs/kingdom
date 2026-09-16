@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/verdict"
+	"kingdom/internal/sqlitex"
 )
 
 type Store struct {
@@ -1129,17 +1130,10 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 		return AttemptExecution{}, false, fmt.Errorf("lease_until must be after claimed_at")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return AttemptExecution{}, false, fmt.Errorf("begin queued provider attempt claim transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+	var claim AttemptExecution
+	claimed := false
+	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_owner = ?,
 		    lease_expires_at = ?,
 		    lease_version = lease_version + 1,
@@ -1152,44 +1146,41 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 		    lease_expires_at IS NULL OR
 		    julianday(lease_expires_at) <= julianday(?)
 		  )`, owner, leaseUntil, claimedAt, attemptID, claimedAt)
-	if err != nil {
-		return AttemptExecution{}, false, fmt.Errorf("claim queued provider attempt %q: %w", attemptID, err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return AttemptExecution{}, false, fmt.Errorf("read queued provider attempt claim rows affected: %w", err)
-	}
-	if rows == 0 {
-		if err := tx.Commit(); err != nil {
-			return AttemptExecution{}, false, fmt.Errorf("commit lost queued provider attempt claim: %w", err)
+		if err != nil {
+			return fmt.Errorf("claim queued provider attempt %q: %w", attemptID, err)
 		}
-		committed = true
-		return AttemptExecution{}, false, nil
-	}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read queued provider attempt claim rows affected: %w", err)
+		}
+		if rows == 0 {
+			return nil
+		}
 
-	var claim AttemptExecution
-	var executionMode, completionMode string
-	err = tx.QueryRowContext(ctx, `SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode,
+		var executionMode, completionMode string
+		err = tx.QueryRowContext(ctx, `SELECT attempt_id, run_id, node_run_id, state, execution_mode, completion_mode,
 		provider_timeout_ms, lease_owner, COALESCE(lease_expires_at, ''), lease_version,
 		session_ref, provider_session_id, COALESCE(launch_started_at, ''), COALESCE(started_at, '')
 		FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(
-		&claim.AttemptID, &claim.RunID, &claim.NodeRunID, &claim.State, &executionMode, &completionMode,
-		&claim.ProviderTimeoutMillis, &claim.LeaseOwner, &claim.LeaseExpiresAt, &claim.LeaseVersion,
-		&claim.SessionRef, &claim.ProviderSessionID, &claim.LaunchStartedAt, &claim.StartedAt,
-	)
+			&claim.AttemptID, &claim.RunID, &claim.NodeRunID, &claim.State, &executionMode, &completionMode,
+			&claim.ProviderTimeoutMillis, &claim.LeaseOwner, &claim.LeaseExpiresAt, &claim.LeaseVersion,
+			&claim.SessionRef, &claim.ProviderSessionID, &claim.LaunchStartedAt, &claim.StartedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("load queued provider attempt claim %q: %w", attemptID, err)
+		}
+		claim.ExecutionMode = NormalizeExecutionMode(executionMode)
+		claim.CompletionMode = ProviderCompletionMode(completionMode)
+		if claim.LeaseOwner == "" || claim.LeaseVersion <= 0 {
+			return fmt.Errorf("queued provider attempt %q returned invalid lease lineage", attemptID)
+		}
+		claimed = true
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
-		return AttemptExecution{}, false, fmt.Errorf("load queued provider attempt claim %q: %w", attemptID, err)
+		return AttemptExecution{}, false, fmt.Errorf("queued provider attempt claim transaction: %w", err)
 	}
-	claim.ExecutionMode = NormalizeExecutionMode(executionMode)
-	claim.CompletionMode = ProviderCompletionMode(completionMode)
-	if claim.LeaseOwner == "" || claim.LeaseVersion <= 0 {
-		return AttemptExecution{}, false, fmt.Errorf("queued provider attempt %q returned invalid lease lineage", attemptID)
-	}
-	if err := tx.Commit(); err != nil {
-		return AttemptExecution{}, false, fmt.Errorf("commit queued provider attempt claim: %w", err)
-	}
-	committed = true
-	return claim, true, nil
+	return claim, claimed, nil
 }
 
 // RenewProviderAttemptLease extends an active provider execution lease without
@@ -1224,7 +1215,9 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 		return false, fmt.Errorf("lease_until must be after renewed_at")
 	}
 
-	result, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+	renewed := false
+	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_expires_at = ?
 		WHERE attempt_id = ?
 		  AND execution_mode = 'provider_backed'
@@ -1234,21 +1227,27 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 		  AND lease_expires_at IS NOT NULL
 		  AND julianday(lease_expires_at) > julianday(?)
 		  AND julianday(?) > julianday(lease_expires_at)`,
-		leaseUntil,
-		attemptID,
-		owner,
-		req.LeaseVersion,
-		renewedAt,
-		leaseUntil,
-	)
+			leaseUntil,
+			attemptID,
+			owner,
+			req.LeaseVersion,
+			renewedAt,
+			leaseUntil,
+		)
+		if err != nil {
+			return fmt.Errorf("renew provider attempt lease %q: %w", attemptID, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read provider attempt lease renewal rows affected: %w", err)
+		}
+		renewed = rows == 1
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
-		return false, fmt.Errorf("renew provider attempt lease %q: %w", attemptID, err)
+		return false, err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("read provider attempt lease renewal rows affected: %w", err)
-	}
-	return rows == 1, nil
+	return renewed, nil
 }
 
 func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool, error) {
@@ -1270,8 +1269,10 @@ func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool
 		stateOnLease = "running"
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE attempt_executions
+	acquired := false
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE attempt_executions
 		 SET lease_owner = ?,
 		     lease_expires_at = ?,
 		     lease_version = lease_version + 1,
@@ -1287,26 +1288,37 @@ func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool
 		     lease_expires_at <= ? OR
 		     lease_owner = ?
 		   )`,
-		owner,
-		leaseUntil,
-		stateOnLease,
-		acquiredAt,
-		acquiredAt,
-		attemptID,
-		acquiredAt,
-		owner,
-	)
+			owner,
+			leaseUntil,
+			stateOnLease,
+			acquiredAt,
+			acquiredAt,
+			attemptID,
+			acquiredAt,
+			owner,
+		)
+		if err != nil {
+			return fmt.Errorf("acquire lease for attempt %q: %w", attemptID, err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read acquire lease rows affected: %w", err)
+		}
+		acquired = rows == 1
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
-		return false, fmt.Errorf("acquire lease for attempt %q: %w", attemptID, err)
+		return false, err
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("read acquire lease rows affected: %w", err)
-	}
-	return rows == 1, nil
+	return acquired, nil
 }
 
 func (s *Store) ObserveTerminal(ctx context.Context, req ObserveTerminalRequest) error {
+	_, err := sqlitex.Retry(ctx, func() error { return s.observeTerminalOnce(ctx, req) }, sqlitex.Options{})
+	return err
+}
+
+func (s *Store) observeTerminalOnce(ctx context.Context, req ObserveTerminalRequest) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store database is required")
 	}
@@ -1576,6 +1588,16 @@ func commitTerminalTx(ctx context.Context, tx *sql.Tx, req CommitTerminalRequest
 }
 
 func (s *Store) CommitRecoveredTerminal(ctx context.Context, req CommitRecoveredTerminalRequest) (FinalizeTerminalResult, error) {
+	var result FinalizeTerminalResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.commitRecoveredTerminalOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) commitRecoveredTerminalOnce(ctx context.Context, req CommitRecoveredTerminalRequest) (FinalizeTerminalResult, error) {
 	result := FinalizeTerminalResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
@@ -1753,6 +1775,16 @@ func ensureRecoveredTerminalProviderAuthorityTx(ctx context.Context, tx *sql.Tx,
 }
 
 func (s *Store) FinalizeTerminal(ctx context.Context, req FinalizeTerminalRequest) (FinalizeTerminalResult, error) {
+	var result FinalizeTerminalResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.finalizeTerminalOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) finalizeTerminalOnce(ctx context.Context, req FinalizeTerminalRequest) (FinalizeTerminalResult, error) {
 	result := FinalizeTerminalResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")

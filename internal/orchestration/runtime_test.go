@@ -19,15 +19,18 @@ import (
 	"time"
 
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/retryengine"
 	coreschemas "kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
+	"kingdom/internal/testutil/guardianfixture"
 
 	_ "modernc.org/sqlite"
 )
@@ -55,6 +58,46 @@ func TestNewRuntimeLoadsPoliciesAndCoreServices(t *testing.T) {
 	}
 	if rt.ProviderEngine() != "opencode" {
 		t.Fatalf("expected default provider engine opencode, got %q", rt.ProviderEngine())
+	}
+}
+
+func TestReplayStartupWorkHonorsExactAndOverflowBudgets(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		items    int
+		deferred bool
+	}{
+		{name: "exact budget", items: providerlimits.StartupReplayMaxItems, deferred: false},
+		{name: "one item overflow", items: providerlimits.StartupReplayMaxItems + 1, deferred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remaining := tc.items
+			passes := 0
+			visited := 0
+			deferred, err := replayStartupWork(context.Background(), func(_ context.Context, limit int) (int, error) {
+				passes++
+				if limit != providerlimits.StartupReplayBatchItems {
+					t.Fatalf("replay pass limit=%d, want %d", limit, providerlimits.StartupReplayBatchItems)
+				}
+				count := min(limit, remaining)
+				remaining -= count
+				visited += count
+				return count, nil
+			}, func(context.Context) (bool, error) {
+				return remaining > 0, nil
+			})
+			if err != nil {
+				t.Fatalf("run startup replay: %v", err)
+			}
+			if passes != providerlimits.StartupReplayMaxPasses || visited != providerlimits.StartupReplayMaxItems {
+				t.Fatalf("startup replay work: passes=%d visited=%d", passes, visited)
+			}
+			if deferred != tc.deferred {
+				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
+			}
+		})
 	}
 }
 
@@ -677,6 +720,27 @@ exit 2
 	}
 }
 
+func TestRunGuardedValidationCommandReadBoundary(t *testing.T) {
+	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes))), []byte(strings.Repeat("y", int(providerlimits.GuardedCommandStreamBytes))))
+	output, err := runGuardedValidationCommand(context.Background(), runner, processguardian.Command{Path: "fixture"})
+	if err != nil {
+		t.Fatalf("exact guarded validation command boundary rejected: %v", err)
+	}
+	if len(output) != int(2*providerlimits.GuardedCommandStreamBytes) {
+		t.Fatalf("exact guarded validation output bytes=%d, want %d", len(output), 2*providerlimits.GuardedCommandStreamBytes)
+	}
+
+	overflowRunner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes+1))), nil)
+	_, err = runGuardedValidationCommand(context.Background(), overflowRunner, processguardian.Command{Path: "fixture"})
+	var limitErr *providerlimits.LimitExceededError
+	if !errors.As(err, &limitErr) || !limitErr.NonRetryable() {
+		t.Fatalf("one-byte guarded validation overflow error=%v, want non-retryable limit error", err)
+	}
+	if overflowRunner.Cancels() != 1 {
+		t.Fatalf("guarded validation overflow cancellations=%d, want 1", overflowRunner.Cancels())
+	}
+}
+
 func readIntegerFile(t *testing.T, path string) int {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -1213,6 +1277,333 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 	}
 	if outboxStatus != "published" {
 		t.Fatalf("expected startup recovery to publish pending outbox row, got %q", outboxStatus)
+	}
+}
+
+func TestRuntimeStartDefersStaleRecoveryUntilReceiptAndHandoffReplayCatchesUp(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
+		invocation, capability, inbox := h.addInvocation(t, index)
+		h.persistHandoffJob(t, invocation, index)
+		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+			t.Fatalf("write startup receipt %d: %v", index, err)
+		}
+	}
+
+	rt, err := newMemoryRuntime(t, Config{
+		DB:            h.db,
+		Paths:         DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:       opencode.NewMemoryAdapter(),
+		WorkspaceRoot: h.runtimeDir,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.completionEvery = time.Millisecond
+	firstFinishAttempt := make(chan struct{})
+	allowFirstFinishFailure := make(chan struct{})
+	var finishMu sync.Mutex
+	finishCalls := 0
+	rt.preDispatchRecovery = func(context.Context) error {
+		finishMu.Lock()
+		finishCalls++
+		call := finishCalls
+		finishMu.Unlock()
+		if call == 1 {
+			close(firstFinishAttempt)
+			<-allowFirstFinishFailure
+			return errors.New("injected startup finish failure")
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := rt.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		cancel()
+		_ = rt.ForceClose()
+	}()
+	defer func() {
+		select {
+		case <-allowFirstFinishFailure:
+		default:
+			close(allowFirstFinishFailure)
+		}
+	}()
+
+	<-firstFinishAttempt
+	if !rt.startupRecoveryPending() || rt.startupRecoveryIsOpen() {
+		t.Fatalf("failed startup finish released deferred recovery: pending=%t open=%t", rt.startupRecoveryPending(), rt.startupRecoveryIsOpen())
+	}
+	close(allowFirstFinishFailure)
+	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
+		finishMu.Lock()
+		calls := finishCalls
+		finishMu.Unlock()
+		if calls < 2 || !rt.startupRecoveryIsOpen() {
+			return fmt.Errorf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
+		}
+		return nil
+	})
+
+	deferredAttemptID := fmt.Sprintf("run_receipt_ingestion:delegated_execution_berserker:%d", providerlimits.StartupReplayMaxItems+1)
+	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
+		attempt, found, err := h.store.GetAttempt(context.Background(), deferredAttemptID)
+		if err != nil {
+			return err
+		}
+		if !found || attempt.State != "committed_success" {
+			return fmt.Errorf("deferred attempt state=%q found=%t", attempt.State, found)
+		}
+		if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), fmt.Sprintf("pinv_receipt_ingestion_%03d", providerlimits.StartupReplayMaxItems+1)); err != nil || !found {
+			return fmt.Errorf("deferred receipt and handoff not settled: found=%t err=%v", found, err)
+		}
+		return nil
+	})
+
+	var staleCancelCount int
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = ? AND reason_code = 'agent_unresponsive'`, deferredAttemptID).Scan(&staleCancelCount); err != nil {
+		t.Fatalf("count stale cancellation releases: %v", err)
+	}
+	if staleCancelCount != 0 {
+		t.Fatalf("deferred receipt attempt was stale-fenced before settlement: cancel rows=%d", staleCancelCount)
+	}
+}
+
+func TestDeferredStartupRecoveryDoesNotIngestReceiptsBeforeGuardStageCompletes(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
+		h.addPendingGuardEvidence(t, index)
+	}
+	const (
+		invocationID = "pinv_receipt_ingestion_001"
+		attemptID    = "run_receipt_ingestion:delegated_execution_berserker:1"
+		capability   = "capability-001"
+	)
+	inbox, err := h.fsStore.EnsureProviderCompletionInbox(invocationID)
+	if err != nil {
+		t.Fatalf("ensure receipt inbox: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, attemptID, invocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write ready receipt: %v", err)
+	}
+
+	rt, err := NewRuntime(Config{
+		DB:            h.db,
+		Paths:         DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:       opencode.NewMemoryAdapter(),
+		WorkspaceRoot: h.runtimeDir,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.beginStartupRecovery()
+	if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
+		t.Fatalf("recover durable execution state: %v", err)
+	}
+	if stage := rt.pendingStartupRecoveryStage(); stage != startupRecoveryStageGuards {
+		t.Fatalf("startup recovery stage=%d, want guards", stage)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
+		t.Fatalf("guard-deferred startup ingested receipt: found=%t err=%v", found, err)
+	}
+
+	caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("finish deferred guard stage: %v", err)
+	}
+	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageReceipts {
+		t.Fatalf("guard end-of-page did not advance only to receipts: caught_up=%t stage=%d", caughtUp, rt.pendingStartupRecoveryStage())
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
+		t.Fatalf("receipt ingested before guard end-of-page returned: found=%t err=%v", found, err)
+	}
+
+	if _, err := rt.replayPendingStartupRecovery(context.Background()); err != nil {
+		t.Fatalf("replay receipt stage: %v", err)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || !found {
+		t.Fatalf("receipt was not ingested after guard stage completed: found=%t err=%v", found, err)
+	}
+}
+
+func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksGateAndReceiptIngestion(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
+		h.addPendingGuardEvidence(t, index)
+	}
+
+	const blockedGuardID = "guard_startup_replay_002"
+	blockedSum := sha256.Sum256([]byte(blockedGuardID))
+	blockedEvidence := filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence", fmt.Sprintf("%x.json", blockedSum[:]))
+	if err := os.Remove(blockedEvidence); err != nil {
+		t.Fatalf("remove blocked guard evidence: %v", err)
+	}
+
+	const (
+		invocationID = "pinv_receipt_ingestion_001"
+		attemptID    = "run_receipt_ingestion:delegated_execution_berserker:1"
+		capability   = "capability-001"
+	)
+	inbox, err := h.fsStore.EnsureProviderCompletionInbox(invocationID)
+	if err != nil {
+		t.Fatalf("ensure receipt inbox: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, attemptID, invocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+		t.Fatalf("write ready receipt: %v", err)
+	}
+
+	rt, err := NewRuntime(Config{
+		DB:            h.db,
+		Paths:         DefaultBootstrapPaths(repoRoot(t)),
+		Adapter:       opencode.NewMemoryAdapter(),
+		WorkspaceRoot: h.runtimeDir,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	rt.orchestrator.processGuardAbsent = func(guard executionstore.ProviderProcessGuard) bool {
+		return guard.GuardID != blockedGuardID
+	}
+	rt.beginStartupRecovery()
+	if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
+		t.Fatalf("recover durable execution state: %v", err)
+	}
+
+	if stage := rt.pendingStartupRecoveryStage(); stage != startupRecoveryStageGuards {
+		t.Fatalf("startup recovery stage=%d, want guards", stage)
+	}
+	if rt.startupRecoveryIsOpen() {
+		t.Fatal("live unproven guard opened the startup gate")
+	}
+	if rt.startupGuardCursor != "guard_startup_replay_001" {
+		t.Fatalf("startup guard cursor=%q, want preceding guard", rt.startupGuardCursor)
+	}
+	if got := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`); got != 1 {
+		t.Fatalf("startup guard replay passed blocked guard: quiescent=%d, want 1", got)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
+		t.Fatalf("blocked guard allowed receipt ingestion: found=%t err=%v", found, err)
+	}
+
+	caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("replay blocked guard stage: %v", err)
+	}
+	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageGuards || rt.startupRecoveryIsOpen() || rt.startupGuardCursor != "guard_startup_replay_001" {
+		t.Fatalf("blocked guard advanced startup recovery: caught_up=%t stage=%d open=%t cursor=%q", caughtUp, rt.pendingStartupRecoveryStage(), rt.startupRecoveryIsOpen(), rt.startupGuardCursor)
+	}
+	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
+		t.Fatalf("repeated blocked guard replay allowed receipt ingestion: found=%t err=%v", found, err)
+	}
+}
+
+func TestDeferredStartupRecoveryUsesBoundedPassesBeforeOpeningGate(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		seed                func(*testing.T, receiptIngestionHarness, int)
+		count               func(*testing.T, receiptIngestionHarness) int
+		wantAfterInitial    int
+		wantAfterFirstCycle int
+	}{
+		{
+			name: "provider process guards",
+			seed: func(t *testing.T, h receiptIngestionHarness, items int) {
+				for index := 1; index <= items; index++ {
+					h.addPendingGuardEvidence(t, index)
+				}
+			},
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				var count int
+				if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&count); err != nil {
+					t.Fatalf("count quiescent process guards: %v", err)
+				}
+				return count
+			},
+			wantAfterInitial:    providerlimits.StartupReplayMaxItems,
+			wantAfterFirstCycle: providerlimits.StartupReplayMaxItems + providerlimits.StartupReplayBatchItems,
+		},
+		{
+			name: "lost provider terminal handoffs",
+			seed: func(t *testing.T, h receiptIngestionHarness, items int) {
+				for index := 1; index <= items; index++ {
+					invocation, _, _ := h.addInvocation(t, index)
+					h.runningHandoffJob(t, invocation, "", "", index)
+				}
+			},
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				var count int
+				if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`).Scan(&count); err != nil {
+					t.Fatalf("count settled lost handoffs: %v", err)
+				}
+				return count
+			},
+			wantAfterInitial:    0,
+			wantAfterFirstCycle: 0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const extraBatches = 1
+			items := providerlimits.StartupReplayMaxItems + extraBatches*providerlimits.StartupReplayBatchItems + 1
+			h := newReceiptIngestionHarness(t)
+			tc.seed(t, h, items)
+
+			rt, err := NewRuntime(Config{
+				DB:            h.db,
+				Paths:         DefaultBootstrapPaths(repoRoot(t)),
+				Adapter:       opencode.NewMemoryAdapter(),
+				WorkspaceRoot: h.runtimeDir,
+			})
+			if err != nil {
+				t.Fatalf("new runtime: %v", err)
+			}
+			rt.beginStartupRecovery()
+			if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
+				t.Fatalf("recover durable execution state: %v", err)
+			}
+			if !rt.startupRecoveryPending() || rt.startupRecoveryIsOpen() {
+				t.Fatalf("overflow replay released startup gate: pending=%t open=%t", rt.startupRecoveryPending(), rt.startupRecoveryIsOpen())
+			}
+			if got := tc.count(t, h); got != tc.wantAfterInitial {
+				t.Fatalf("initial replay processed %d items, want %d", got, tc.wantAfterInitial)
+			}
+
+			caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
+			if err != nil {
+				t.Fatalf("run first deferred startup recovery pass: %v", err)
+			}
+			if caughtUp || rt.startupRecoveryIsOpen() {
+				t.Fatalf("one bounded deferred pass released startup gate: caught_up=%t open=%t", caughtUp, rt.startupRecoveryIsOpen())
+			}
+			if got := tc.count(t, h); got != tc.wantAfterFirstCycle {
+				t.Fatalf("first deferred pass processed %d items, want bounded %d", got, tc.wantAfterFirstCycle)
+			}
+
+			for pass := 0; pass < providerlimits.StartupReplayMaxPasses*6; pass++ {
+				caughtUp, err = rt.replayPendingStartupRecovery(context.Background())
+				if err != nil {
+					t.Fatalf("run deferred startup recovery pass %d: %v", pass+2, err)
+				}
+				if caughtUp {
+					break
+				}
+			}
+			if !caughtUp {
+				t.Fatal("bounded deferred passes did not catch up")
+			}
+			if got := tc.count(t, h); got != items {
+				t.Fatalf("bounded deferred passes processed %d items, want %d", got, items)
+			}
+			if err := rt.finishStartupRecovery(context.Background(), true); err != nil {
+				t.Fatalf("finish deferred startup recovery: %v", err)
+			}
+			if !rt.startupRecoveryIsOpen() {
+				t.Fatal("startup gate did not open after all bounded passes caught up")
+			}
+		})
 	}
 }
 
@@ -2462,6 +2853,293 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 	}
 	if responseReasonCode != "provider_upstream_error" {
 		t.Fatalf("expected mailbox reason code provider_upstream_error, got %q", responseReasonCode)
+	}
+}
+
+func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db)
+
+	const now = "2026-03-01T12:00:00Z"
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_workspace_limit_builder', 'builder-berserker', 'Builder', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_workspace_limit_council', 'council-member', 'Council', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_workspace_limit', 'Workspace limit', 'text', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_workspace_limit', 'workspace-limit', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_workspace_limit', NULL, 'decree_workspace_limit', 'wfdef_workspace_limit', 'running', 'approved', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_workspace_limit', 'wfdef_workspace_limit', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_workspace_limit_1', 'run_workspace_limit', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_workspace_limit_builder', 1, '`+now+`', NULL)`)
+
+	runtimeRoot := t.TempDir()
+	fsStore, err := runtimefs.NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "baseline.txt"), []byte("baseline"), 0o600); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+	baseSnapshot, err := fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{SnapshotID: "snap_workspace_limit_base", RunID: "run_workspace_limit", SnapshotKind: "baseline", RootPath: workspaceRoot, CreatedAt: now})
+	if err != nil {
+		t.Fatalf("capture baseline snapshot: %v", err)
+	}
+	if _, err := fsStore.EnsureExecutionTarget(context.Background(), runtimefs.EnsureExecutionTargetRequest{RunID: "run_workspace_limit", TargetMode: "direct", SourceRoot: workspaceRoot, ExecutionRoot: workspaceRoot, PublishRoot: workspaceRoot, SourceSnapshotID: baseSnapshot.SnapshotID, TrustedSnapshotID: baseSnapshot.SnapshotID, PublishedSnapshotID: baseSnapshot.SnapshotID, State: "attempt_dirty", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("create dirty execution target: %v", err)
+	}
+	for index := 0; index <= providerlimits.TrackedWorkspaceEntries; index++ {
+		if err := os.Mkdir(filepath.Join(workspaceRoot, fmt.Sprintf("generated-%05d", index)), 0o700); err != nil {
+			t.Fatalf("create excessive workspace directory %d: %v", index, err)
+		}
+	}
+
+	execStore := executionstore.New(db)
+	attemptID := "run_workspace_limit:delegated_execution_berserker:1"
+	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionIDForAttempt(attemptID), CreatedAt: now}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	claim, acquired, err := execStore.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "workspace_limit_worker", LeaseUntil: "2099-12-31T23:59:59Z", ClaimedAt: now})
+	if err != nil || !acquired {
+		t.Fatalf("claim attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, now, attemptID); err != nil {
+		t.Fatalf("mark attempt running: %v", err)
+	}
+	providerInvocationID := "pinv_workspace_limit"
+	providerSessionID := "ses_workspace_limit"
+	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", LogicalSessionID: sessionIDForAttempt(attemptID), ProviderSessionID: providerSessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: now, CreatedAt: now, OpenedAt: now}); err != nil {
+		t.Fatalf("activate provider invocation: %v", err)
+	}
+	attachQuiescentProviderProcessGuard(t, execStore, providerInvocationID, attemptID, "run_workspace_limit", "nr_workspace_limit_1", claim.LeaseOwner, claim.LeaseVersion, now)
+
+	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
+	if err != nil {
+		t.Fatalf("load retry policy: %v", err)
+	}
+	retryEngine, err := retryengine.NewEngine(policy)
+	if err != nil {
+		t.Fatalf("create retry engine: %v", err)
+	}
+	loop := orchestrationLoop{
+		db:             db,
+		transition:     state.NewTransitionService(db, nil),
+		mailbox:        state.NewMailboxStore(db, nil),
+		executionStore: execStore,
+		fsStore:        fsStore,
+		retryEngine:    retryEngine,
+		now: func() time.Time {
+			return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC)
+		},
+	}
+	zero := 0
+	result := asyncExecutionResult{
+		run:                       runSnapshot{RunID: "run_workspace_limit", RunStatus: "running", PlanState: "approved"},
+		node:                      nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
+		attempt:                   nodeAttempt{NodeRunID: "nr_workspace_limit_1", NodeID: "delegated_execution_berserker", Attempt: 1, AgentID: "agent_workspace_limit_builder", RequiredRole: "builder-berserker", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:                 attemptID,
+		sessionID:                 sessionIDForAttempt(attemptID),
+		providerSessionID:         providerSessionID,
+		providerInvocationID:      providerInvocationID,
+		expectedLeaseOwner:        claim.LeaseOwner,
+		expectedLeaseVersion:      claim.LeaseVersion,
+		completionMode:            executionstore.ProviderCompletionModeServerResponse,
+		baseSnapshotID:            baseSnapshot.SnapshotID,
+		workspacePath:             workspaceRoot,
+		delegator:                 "agent_workspace_limit_council",
+		occurredAt:                now,
+		outputText:                "Provider transport failed after modifying the workspace.",
+		outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: "transient_transport", FailureText: "provider transport failed", EvidenceSource: "stream"},
+		err:                       errors.New("provider transport failed"),
+		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, FinalTurnID: "turn_workspace_limit", FinalStepID: "step_workspace_limit", FinalSequence: 1, RawFinishReason: "error", NormalizedFinishReason: "error", CanonicalTerminalText: "Provider transport failed after modifying the workspace.", ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true, ProcessGuards: []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_workspace_limit", GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}}},
+	}
+	if err := loop.commitExecutionCompletion(context.Background(), result); err != nil {
+		t.Fatalf("commit execution completion: %v", err)
+	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("drain completion outbox: %v", err)
+	}
+
+	var attemptState, failureCode, failureText, outboxStatus, nodeStatus, retryDecision string
+	if err := db.QueryRow(`SELECT state, failure_code, failure_text FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &failureCode, &failureText); err != nil {
+		t.Fatalf("query terminal attempt: %v", err)
+	}
+	if attemptState != "committed_failure" || failureCode != "resource_limit_exceeded" || !strings.Contains(failureText, "resource limit") {
+		t.Fatalf("terminal attempt = state=%q code=%q text=%q, want resource-limit failure", attemptState, failureCode, failureText)
+	}
+	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+		t.Fatalf("query outbox: %v", err)
+	}
+	if outboxStatus != "published" {
+		t.Fatalf("outbox status=%q, want published", outboxStatus)
+	}
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_workspace_limit_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query node status: %v", err)
+	}
+	if nodeStatus != "failed" {
+		t.Fatalf("node status=%q, want failed", nodeStatus)
+	}
+	if err := db.QueryRow(`SELECT decision FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&retryDecision); err != nil {
+		t.Fatalf("query retry decision: %v", err)
+	}
+	if retryDecision != string(state.RetryDecisionFailFast) {
+		t.Fatalf("retry decision=%q, want fail_fast", retryDecision)
+	}
+	var attempts int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_workspace_limit' AND node_id = 'delegated_execution_berserker'`).Scan(&attempts); err != nil {
+		t.Fatalf("count automatic retry attempts: %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("automatic retry created %d attempts for quarantined target, want 1", attempts)
+	}
+	target, err := fsStore.GetExecutionTarget(context.Background(), "run_workspace_limit")
+	if err != nil {
+		t.Fatalf("load quarantined execution target: %v", err)
+	}
+	if target.State != "unknown" {
+		t.Fatalf("execution target state=%q, want unknown quarantine", target.State)
+	}
+	if _, err := loop.resolveExecutionWorkspaceContextForMode(context.Background(), "run_workspace_limit", PublishModeDirect); err == nil || !strings.Contains(err.Error(), "quarantined") {
+		t.Fatalf("quarantined execution target was reusable: %v", err)
+	}
+	var response string
+	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = 'run_workspace_limit' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&response); err != nil {
+		t.Fatalf("query safe terminal response: %v", err)
+	}
+	if !strings.Contains(response, "resource limit") {
+		t.Fatalf("safe terminal response=%q, want resource limit explanation", response)
+	}
+}
+
+func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing.T) {
+	for _, replay := range []struct {
+		name          string
+		runEventType  string
+		runReasonCode string
+		nodeEventType string
+		eventPrefix   string
+	}{
+		{name: "retry", runEventType: "run.retry_reopened", runReasonCode: "manual_retry_requested", nodeEventType: "attempt.retry_queued", eventPrefix: "retry"},
+		{name: "rerun", runEventType: "run.rerun_reopened", runReasonCode: "manual_rerun_requested", nodeEventType: "attempt.rerun_queued", eventPrefix: "rerun"},
+	} {
+		t.Run(replay.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db)
+			const runID = "run_manual_quarantine_recovery"
+			const nodeID = "delegated_execution_berserker"
+			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+				RunID: runID, DecreeID: "decree_manual_quarantine_recovery", WorkflowID: "wfdef_manual_quarantine_recovery",
+				NodeRunID: "nr_manual_quarantine_recovery_1", NodeID: nodeID, NodeClass: workflow.NodeClassDelegatedExecution,
+				RequiredRole: "builder-berserker", AgentID: "agent_manual_quarantine_recovery", RoleIDs: []string{"builder-berserker", "council-member"},
+				ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_council_manual_quarantine_recovery", RoleID: "council-member"}},
+			})
+			projectRoot := t.TempDir()
+			if err := os.WriteFile(filepath.Join(projectRoot, "baseline.txt"), []byte("trusted baseline"), 0o644); err != nil {
+				t.Fatalf("write baseline: %v", err)
+			}
+			adapter := &sequenceExecutionAdapter{outputs: []string{"manual recovery completed"}}
+			rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), WorkspaceRoot: t.TempDir(), YoloOutputRoot: projectRoot})
+			if err != nil {
+				t.Fatalf("new runtime: %v", err)
+			}
+			quarantinedAt := time.Now().UTC().Add(-time.Minute)
+			rt.orchestrator.now = func() time.Time { return quarantinedAt.Add(time.Minute) }
+			snapshot, err := rt.fsStore.CaptureSnapshot(context.Background(), runtimefs.CaptureSnapshotRequest{
+				SnapshotID: "snap_manual_quarantine_recovery", RunID: runID, SnapshotKind: "baseline", RootPath: projectRoot, CreatedAt: quarantinedAt.Format(time.RFC3339Nano),
+			})
+			if err != nil {
+				t.Fatalf("capture trusted baseline: %v", err)
+			}
+			targetRoot := rt.fsStore.RunTargetRoot(runID)
+			if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+				t.Fatalf("create dirty runtime target: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(targetRoot, "dirty.txt"), []byte("untrusted provider content"), 0o600); err != nil {
+				t.Fatalf("write dirty target content: %v", err)
+			}
+			oldTarget, err := os.Stat(targetRoot)
+			if err != nil {
+				t.Fatalf("stat dirty target: %v", err)
+			}
+			if _, err := rt.fsStore.EnsureExecutionTarget(context.Background(), runtimefs.EnsureExecutionTargetRequest{
+				RunID: runID, TargetMode: PublishModeDirect, SourceRoot: projectRoot, ExecutionRoot: targetRoot, PublishRoot: projectRoot,
+				SourceSnapshotID: snapshot.SnapshotID, TrustedSnapshotID: snapshot.SnapshotID, PublishedSnapshotID: snapshot.SnapshotID,
+				State: "unknown", CreatedAt: quarantinedAt.Format(time.RFC3339Nano), UpdatedAt: quarantinedAt.Format(time.RFC3339Nano),
+			}); err != nil {
+				t.Fatalf("persist quarantined target: %v", err)
+			}
+			if _, err := db.Exec(`UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = ?`, runID); err != nil {
+				t.Fatalf("mark run failed: %v", err)
+			}
+			if _, err := db.Exec(`UPDATE node_runs SET node_status = 'failed', finished_at = ? WHERE node_run_id = 'nr_manual_quarantine_recovery_1'`, quarantinedAt.Format(time.RFC3339Nano)); err != nil {
+				t.Fatalf("mark original node failed: %v", err)
+			}
+			automaticAttempt := nodeAttempt{NodeRunID: "nr_automatic_quarantine_recovery", NodeID: nodeID, Attempt: 2, Wave: 2, NodeStatus: "ready", RequiredRole: "builder-berserker", AgentID: "agent_manual_quarantine_recovery"}
+			if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: runID, RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}, nodeDefinition{NodeID: nodeID, RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, automaticAttempt, quarantinedAt.Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
+				t.Fatalf("automatic dispatch against quarantined target err=%v, want explicit-replay rejection", err)
+			}
+			if adapter.callsCount() != 0 {
+				t.Fatalf("automatic dispatch launched provider %d times", adapter.callsCount())
+			}
+
+			idCounter := 0
+			queued, err := rt.orchestrator.transition.ReplayTerminalRun(context.Background(), state.ReplayTerminalRunRequest{
+				RunID: runID, AnchorNodeID: nodeID, TargetNodeIDs: []string{nodeID}, Reason: "operator confirmed recovery",
+				ActorID: "local-operator", RoleID: "allfather", AuthoritySource: "api." + replay.name,
+				RunEventType: replay.runEventType, RunReasonCode: replay.runReasonCode, NodeEventType: replay.nodeEventType,
+				NodeReasonCode: "internal_error", EventPrefix: replay.eventPrefix, OccurredAt: quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano),
+				GenerateID: func(prefix string) string {
+					idCounter++
+					return fmt.Sprintf("%s_manual_%s_%d", prefix, replay.name, idCounter)
+				},
+			})
+			if err != nil || len(queued) != 1 {
+				t.Fatalf("queue manual %s replay: queued=%#v err=%v", replay.name, queued, err)
+			}
+
+			attempt := nodeAttempt{NodeRunID: queued[0].NodeRunID, NodeID: queued[0].NodeID, Attempt: queued[0].Attempt, Wave: queued[0].Wave, NodeStatus: "ready", RequiredRole: queued[0].RequiredRole, AgentID: queued[0].AgentID}
+			attempt.TransitionAuthority = "api." + replay.name
+			if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: runID, RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}, nodeDefinition{NodeID: nodeID, RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, attempt, quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
+				t.Fatalf("dispatch manually recovered target: %v", err)
+			}
+			testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+				if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+					return fmt.Errorf("drain manual recovery completion: %w", err)
+				}
+				if len(adapter.requestsSnapshot()) != 1 {
+					return fmt.Errorf("provider calls=%d", len(adapter.requestsSnapshot()))
+				}
+				return nil
+			})
+			requests := adapter.requestsSnapshot()
+			if requests[0].WorkspacePath != targetRoot {
+				t.Fatalf("provider workspace=%q, want fresh runtime target %q", requests[0].WorkspacePath, targetRoot)
+			}
+			assertRuntimeTestFile(t, targetRoot, "baseline.txt", "trusted baseline")
+			if _, err := os.Lstat(filepath.Join(targetRoot, "dirty.txt")); !os.IsNotExist(err) {
+				t.Fatalf("provider launched in dirty target: %v", err)
+			}
+			newTarget, err := os.Stat(targetRoot)
+			if err != nil {
+				t.Fatalf("stat fresh target: %v", err)
+			}
+			if os.SameFile(oldTarget, newTarget) {
+				t.Fatal("manual replay reused the quarantined target")
+			}
+			if _, err := os.Lstat(filepath.Join(filepath.Dir(targetRoot), "quarantine")); !os.IsNotExist(err) {
+				t.Fatalf("manual replay retained provider-owned quarantine content: %v", err)
+			}
+		})
+	}
+}
+
+func assertRuntimeTestFile(t *testing.T, root, relativePath, want string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relativePath)))
+	if err != nil {
+		t.Fatalf("read %s: %v", relativePath, err)
+	}
+	if string(raw) != want {
+		t.Fatalf("%s=%q, want %q", relativePath, string(raw), want)
 	}
 }
 
@@ -4520,8 +5198,8 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 	if outboxStatus != "published" {
 		t.Fatalf("expected strict drain to wait for published outbox, got %q", outboxStatus)
 	}
-	if publishAttempts < 2 {
-		t.Fatalf("expected strict drain to retry projection before publish, got %d attempts", publishAttempts)
+	if publishAttempts < 1 {
+		t.Fatalf("expected a persisted retryable projection failure before publish, got %d", publishAttempts)
 	}
 }
 
@@ -9488,6 +10166,87 @@ func TestDispatchNodeAttemptSetupFailureAfterProviderClaimClearsLeaseWithoutLaun
 	}
 	if invocationCount != 0 {
 		t.Fatalf("setup failure created %d provider invocations", invocationCount)
+	}
+}
+
+func TestDispatchNodeAttemptInitialWorkspaceLimitFailsWithoutTargetOrRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_initial_workspace_limit",
+		DecreeID:     "decree_dispatch_initial_workspace_limit",
+		WorkflowID:   "wfdef_dispatch_initial_workspace_limit",
+		NodeRunID:    "nr_dispatch_initial_workspace_limit_1",
+		NodeID:       "delegated_execution_berserker",
+		NodeClass:    workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder-berserker",
+		AgentID:      "agent_dispatch_initial_workspace_limit",
+		RoleIDs:      []string{"builder-berserker", "council-member"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_council_dispatch_initial_workspace_limit",
+			RoleID:  "council-member",
+		}},
+	})
+
+	projectRoot := t.TempDir()
+	oversizeFile := filepath.Join(projectRoot, "oversize.bin")
+	if err := os.WriteFile(oversizeFile, nil, 0o600); err != nil {
+		t.Fatalf("create oversized source file: %v", err)
+	}
+	if err := os.Truncate(oversizeFile, providerlimits.TrackedWorkspaceFileBytes+1); err != nil {
+		t.Fatalf("grow oversized source file: %v", err)
+	}
+	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
+	rt, err := newMemoryRuntime(t, Config{
+		DB:             db,
+		Adapter:        adapter,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		YoloOutputRoot: projectRoot,
+	})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	now := time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC)
+	rt.orchestrator.now = func() time.Time { return now }
+	const attemptID = "run_dispatch_initial_workspace_limit:delegated_execution_berserker:1"
+	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_initial_workspace_limit", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_initial_workspace_limit_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "builder-berserker", AgentID: "agent_dispatch_initial_workspace_limit"}, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("dispatch oversized source workspace: %v", err)
+	}
+	if adapter.callsCount() != 0 {
+		t.Fatalf("initial workspace limit invoked provider %d times", adapter.callsCount())
+	}
+
+	var attemptState, failureCode string
+	if err := db.QueryRow(`SELECT state, failure_code FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &failureCode); err != nil {
+		t.Fatalf("query resource-limited attempt: %v", err)
+	}
+	if attemptState != "committed_failure" || failureCode != "resource_limit_exceeded" {
+		t.Fatalf("initial workspace limit terminal state=%q failure_code=%q", attemptState, failureCode)
+	}
+	var retryDecision, retryCode string
+	if err := db.QueryRow(`SELECT decision, error_code FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&retryDecision, &retryCode); err != nil {
+		t.Fatalf("query resource-limit retry disposition: %v", err)
+	}
+	if retryDecision != string(state.RetryDecisionFailFast) || retryCode != "resource_limit_exceeded" {
+		t.Fatalf("resource-limit retry disposition decision=%q code=%q", retryDecision, retryCode)
+	}
+	var targets, snapshots, invocations, attempts int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch_initial_workspace_limit").Scan(&targets); err != nil {
+		t.Fatalf("count execution targets: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = ?`, "run_dispatch_initial_workspace_limit").Scan(&snapshots); err != nil {
+		t.Fatalf("count source snapshots: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM provider_invocations WHERE attempt_id = ?`, attemptID).Scan(&invocations); err != nil {
+		t.Fatalf("count provider invocations: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = ? AND node_id = ?`, "run_dispatch_initial_workspace_limit", "delegated_execution_berserker").Scan(&attempts); err != nil {
+		t.Fatalf("count node attempts: %v", err)
+	}
+	if targets != 0 || snapshots != 0 || invocations != 0 || attempts != 1 {
+		t.Fatalf("unsafe source capture created target=%d snapshots=%d invocations=%d attempts=%d", targets, snapshots, invocations, attempts)
 	}
 }
 

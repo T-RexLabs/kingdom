@@ -20,6 +20,7 @@ const (
 	CodePolicyViolation        Code = "policy_violation"
 	CodeDependencyBlocked      Code = "dependency_blocked"
 	CodeBudgetExceeded         Code = "budget_exceeded"
+	CodeResourceLimitExceeded  Code = "resource_limit_exceeded"
 	CodeInternalError          Code = "internal_error"
 	CodeLLMRateLimited         Code = "llm_rate_limited"
 	CodeLLMModelUnavailable    Code = "llm_model_unavailable"
@@ -54,6 +55,7 @@ var catalog = map[Code]RetryProfile{
 	CodePolicyViolation:        {Category: CategoryCore, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeDependencyBlocked:      {Category: CategoryCore, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeBudgetExceeded:         {Category: CategoryCore, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
+	CodeResourceLimitExceeded:  {Category: CategoryCore, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeInternalError:          {Category: CategoryCore, RetryClass: "internal_runtime", Retryable: true, EscalationTarget: "chancellor"},
 	CodeLLMRateLimited:         {Category: CategoryProvider, RetryClass: "transient_transport_provider_session", Retryable: true, EscalationTarget: "chancellor"},
 	CodeLLMModelUnavailable:    {Category: CategoryProvider, RetryClass: "transient_transport_provider_session", Retryable: true, EscalationTarget: "chancellor"},

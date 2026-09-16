@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,7 +31,11 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
 	}
-	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	planner := newLifecyclePlannerAgent()
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{
+		ProjectRoot:  projectRoot,
+		PlannerAgent: planner,
+	})
 
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -68,6 +73,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode acp run: %v", err)
 	}
+	awaitLifecyclePlannerCompletion(t, planner.completed)
 	completed := awaitAcpRun(t, handler, run.RunId.String(), 2*time.Second)
 	if completed.Status != gen.AcpRunStatus(acp.PlannerRunStatusCompleted) {
 		t.Fatalf("expected completed acp run, got %+v", completed)
@@ -597,11 +603,16 @@ func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	var nowMu sync.RWMutex
 	now := time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC)
 	agent := &retryOutputPlannerAgent{observed: make(chan struct{}, 2)}
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
-		ProjectRoot:  projectRoot,
-		Now:          func() time.Time { return now },
+		ProjectRoot: projectRoot,
+		Now: func() time.Time {
+			nowMu.RLock()
+			defer nowMu.RUnlock()
+			return now
+		},
 		PlannerAgent: agent,
 		RetryEngine:  retries,
 	})
@@ -632,10 +643,13 @@ func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing
 	if err := db.QueryRow(`SELECT due_at FROM retry_decisions WHERE planning_operation_id = ?`, op.Operation.OperationID).Scan(&dueAt); err != nil {
 		t.Fatal(err)
 	}
-	now, err = time.Parse(time.RFC3339Nano, dueAt)
+	nextNow, err := time.Parse(time.RFC3339Nano, dueAt)
 	if err != nil {
 		t.Fatal(err)
 	}
+	nowMu.Lock()
+	now = nextNow
+	nowMu.Unlock()
 	if err := server.planningService.RecoverOperations(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -801,4 +815,28 @@ func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.
 		return fmt.Errorf("acp run %s still %s", runID, status)
 	})
 	return run
+}
+
+type lifecyclePlannerAgent struct {
+	testPlannerAgent
+	completed     chan struct{}
+	completedOnce sync.Once
+}
+
+func newLifecyclePlannerAgent() *lifecyclePlannerAgent {
+	return &lifecyclePlannerAgent{completed: make(chan struct{})}
+}
+
+func (a *lifecyclePlannerAgent) ContinueTurnStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (turn planning.AgentTurn, err error) {
+	defer a.completedOnce.Do(func() { close(a.completed) })
+	return a.testPlannerAgent.ContinueTurnStream(ctx, input, onChunk)
+}
+
+func awaitLifecyclePlannerCompletion(t *testing.T, completed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle planner did not complete its provider turn")
+	}
 }

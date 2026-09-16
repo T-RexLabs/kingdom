@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/sqlitex"
 )
 
 func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningOperationRequest) (PlanningOperation, error) {
@@ -1167,6 +1168,27 @@ func (s *PlanningStore) ListOperationsByStatusPage(ctx context.Context, afterCre
 }
 
 func (s *PlanningStore) ClaimOperation(ctx context.Context, operationID string, leaseOwner string, leaseExpiresAt string, heartbeatAt string) (PlanningOperation, bool, error) {
+	return s.claimOperation(ctx, operationID, leaseOwner, leaseExpiresAt, heartbeatAt, nil)
+}
+
+// ClaimOperationWithObserver reports bounded SQLite contention for callers
+// that expose claim-retry telemetry.
+func (s *PlanningStore) ClaimOperationWithObserver(ctx context.Context, operationID string, leaseOwner string, leaseExpiresAt string, heartbeatAt string, observe func(sqlitex.Stats)) (PlanningOperation, bool, error) {
+	return s.claimOperation(ctx, operationID, leaseOwner, leaseExpiresAt, heartbeatAt, observe)
+}
+
+func (s *PlanningStore) claimOperation(ctx context.Context, operationID string, leaseOwner string, leaseExpiresAt string, heartbeatAt string, observe func(sqlitex.Stats)) (PlanningOperation, bool, error) {
+	var claimed PlanningOperation
+	var claimedOK bool
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		claimed, claimedOK, retryErr = s.claimOperationOnce(ctx, operationID, leaseOwner, leaseExpiresAt, heartbeatAt)
+		return retryErr
+	}, sqlitex.Options{Observe: observe})
+	return claimed, claimedOK, err
+}
+
+func (s *PlanningStore) claimOperationOnce(ctx context.Context, operationID string, leaseOwner string, leaseExpiresAt string, heartbeatAt string) (PlanningOperation, bool, error) {
 	trimmedOperationID := strings.TrimSpace(operationID)
 	trimmedLeaseOwner := strings.TrimSpace(leaseOwner)
 	trimmedLeaseExpiresAt := strings.TrimSpace(leaseExpiresAt)

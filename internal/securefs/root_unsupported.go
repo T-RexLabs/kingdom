@@ -37,4 +37,5 @@ func removeRootEntryIfIdentity(*Root, string, EntryType, FileIdentity) error {
 	return unsupportedRoot()
 }
 func removeRootEmptyDir(*Root, string) error { return unsupportedRoot() }
+func removeRootTree(*Root, string) error     { return unsupportedRoot() }
 func syncRootDir(*Root, string) error        { return unsupportedRoot() }

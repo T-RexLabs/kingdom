@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,9 +11,8 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/providerlimits"
 )
-
-const maxOpencodeRunEventLineBytes = 8 * 1024 * 1024
 
 // opencodeRunEventWire mirrors one line of `opencode run --format json`. The
 // runner formatter nests the whole payload under `part`: the part's kind,
@@ -76,11 +76,20 @@ func parseOpencodeRunEvent(line string) (opencodeRunEvent, error) {
 	return event, nil
 }
 
-func decodeOpencodeRunEventStream(stream io.Reader, onEvent func(opencodeRunEvent) error, onMalformed func(string, error)) error {
+func decodeOpencodeRunEventStream(stream io.Reader, onLine func(int) error, onEvent func(opencodeRunEvent) error, onMalformed func(string, error)) error {
 	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxOpencodeRunEventLineBytes)
+	// Let the split function classify every oversize line before Scanner can
+	// replace it with an untyped token-too-long error.
+	scanner.Buffer(make([]byte, 0, 64*1024), providerlimits.OpenCodeEventLineBytes+1)
+	scanner.Split(splitBoundedOpencodeRunEventLine)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		raw := scanner.Text()
+		if onLine != nil {
+			if err := onLine(len(raw)); err != nil {
+				return err
+			}
+		}
+		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
@@ -99,6 +108,22 @@ func decodeOpencodeRunEventStream(stream io.Reader, onEvent func(opencodeRunEven
 		return err
 	}
 	return nil
+}
+
+func splitBoundedOpencodeRunEventLine(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if newline := bytes.IndexByte(data, '\n'); newline >= 0 {
+		if newline > providerlimits.OpenCodeEventLineBytes {
+			return 0, nil, &providerlimits.LimitExceededError{Resource: "event line", Limit: int64(providerlimits.OpenCodeEventLineBytes)}
+		}
+		return newline + 1, data[:newline], nil
+	}
+	if len(data) > providerlimits.OpenCodeEventLineBytes {
+		return 0, nil, &providerlimits.LimitExceededError{Resource: "event line", Limit: int64(providerlimits.OpenCodeEventLineBytes)}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func decodeNextOpencodeRunEvent(decoder *json.Decoder) (opencodeRunEvent, error) {

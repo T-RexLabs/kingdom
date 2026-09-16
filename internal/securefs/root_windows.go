@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -103,8 +104,16 @@ func readRootDir(root *Root, path string) ([]os.DirEntry, error) {
 	return file.ReadDir(-1)
 }
 func readRootDirBounded(root *Root, path string, max int) ([]Entry, error) {
-	entries, err := readRootDir(root, path)
+	if max < 0 || max == math.MaxInt {
+		return nil, fmt.Errorf("maximum directory entries must be between 0 and %d", math.MaxInt-1)
+	}
+	file, err := root.platformRoot.Open(path)
 	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(max + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	overflow := len(entries) > max
@@ -113,11 +122,27 @@ func readRootDirBounded(root *Root, path string, max int) ([]Entry, error) {
 	}
 	result := make([]Entry, 0, len(entries))
 	for _, item := range entries {
-		info, err := item.Info()
+		entryPath := filepath.Join(path, item.Name())
+		info, err := root.platformRoot.Lstat(entryPath)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, Entry{Name: item.Name(), Type: windowsEntryType(info.Mode()), SizeBytes: info.Size()})
+		entry := Entry{Name: item.Name(), Type: windowsEntryType(info.Mode()), SizeBytes: info.Size()}
+		if entry.Type == EntryTypeRegular {
+			opened, err := openRootRegular(root, entryPath)
+			if err != nil {
+				return nil, err
+			}
+			entry.Identity, err = windowsFileIdentity(opened)
+			closeErr := opened.Close()
+			if err != nil {
+				return nil, err
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+		}
+		result = append(result, entry)
 	}
 	if overflow {
 		return result, ErrLimitExceeded
@@ -210,7 +235,7 @@ func removeRootEntryIfIdentity(root *Root, path string, expectedType EntryType, 
 		return err
 	}
 	raw, actual, err := readRootRegular(root, claim, identity.SizeBytes)
-	if err != nil || actual.Device != identity.Device || actual.Inode != identity.Inode || actual.SizeBytes != identity.SizeBytes || actual.ContentSHA256 != identity.ContentSHA256 {
+	if err != nil || actual.Device != identity.Device || actual.Inode != identity.Inode || actual.SizeBytes != identity.SizeBytes || (identity.ContentSHA256 != "" && actual.ContentSHA256 != identity.ContentSHA256) {
 		_ = root.platformRoot.Rename(claim, path)
 		return ErrIdentityMismatch
 	}
@@ -218,6 +243,22 @@ func removeRootEntryIfIdentity(root *Root, path string, expectedType EntryType, 
 	return root.platformRoot.Remove(claim)
 }
 func removeRootEmptyDir(root *Root, path string) error { return root.platformRoot.Remove(path) }
+func removeRootTree(root *Root, path string) error {
+	if _, err := splitRelativePath(path); err != nil {
+		return err
+	}
+	info, err := root.platformRoot.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return root.platformRoot.Remove(path)
+	}
+	return root.platformRoot.RemoveAll(path)
+}
 func syncRootDir(root *Root, path string) error {
 	absolute := filepath.Join(root.name, path)
 	name, err := windows.UTF16PtrFromString(absolute)

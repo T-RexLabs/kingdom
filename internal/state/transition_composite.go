@@ -12,6 +12,7 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/sqlitex"
 )
 
 type QueuedNodeAttempt struct {
@@ -261,7 +262,7 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 	}
 	var queued QueuedNodeAttempt
 	var scheduled bool
-	err := retrySQLiteBusy(ctx, func() error {
+	_, err := sqlitex.Retry(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin automatic decree retry transaction: %w", err)
@@ -338,7 +339,7 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 		}
 		committed = true
 		return nil
-	})
+	}, sqlitex.Options{})
 	return queued, scheduled, err
 }
 
@@ -446,7 +447,7 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 		return nil, fmt.Errorf("parse due decree retry timestamp: %w", err)
 	}
 	var released []QueuedNodeAttempt
-	err = retrySQLiteBusy(ctx, func() error {
+	_, err = sqlitex.Retry(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin due decree retry release transaction: %w", err)
@@ -545,7 +546,7 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 		}
 		committed = true
 		return nil
-	})
+	}, sqlitex.Options{})
 	return released, err
 }
 
@@ -1446,7 +1447,7 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 	if transition.ToState != "failed" || (req.Decision.Decision != RetryDecisionFailFast && req.Decision.Decision != RetryDecisionExhausted) || req.Decision.SubjectKind != RetrySubjectKindDecreeAttempt || strings.TrimSpace(req.Decision.SourceAttemptID) != strings.TrimSpace(transition.AttemptID) {
 		return fmt.Errorf("direct execution retry disposition requires a matching failed decree attempt")
 	}
-	err := retrySQLiteBusy(ctx, func() error {
+	_, err := sqlitex.Retry(ctx, func() error {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin direct execution retry disposition transaction: %w", err)
@@ -1519,7 +1520,7 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 		}
 		committed = true
 		return nil
-	})
+	}, sqlitex.Options{})
 	return err
 }
 
@@ -1630,13 +1631,13 @@ func (s *TransitionService) RecoverLoopCapAutoSuccessConflict(ctx context.Contex
 
 func (s *TransitionService) ProjectNodeTerminalFromDurableAttempt(ctx context.Context, req DurableAttemptNodeProjectionRequest) (bool, error) {
 	var projected bool
-	err := retrySQLiteBusy(ctx, func() error {
+	_, err := sqlitex.Retry(ctx, func() error {
 		current, err := s.projectNodeTerminalFromDurableAttemptOnce(ctx, req)
 		if err == nil {
 			projected = current
 		}
 		return err
-	})
+	}, sqlitex.Options{})
 	return projected, err
 }
 

@@ -1,10 +1,14 @@
 package opencode
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
+
+	"kingdom/internal/providerlimits"
 )
 
 func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
@@ -32,6 +36,29 @@ func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
 	}
 	if event.Part.State.Title != "package.json" {
 		t.Fatalf("expected nested part state title, got %q", event.Part.State.Title)
+	}
+}
+
+func TestDecodeOpencodeRunEventStreamEventLineBoundary(t *testing.T) {
+	prefix := `{"type":"text","part":{"text":"`
+	suffix := `"}}`
+	line := prefix + strings.Repeat("x", providerlimits.OpenCodeEventLineBytes-len(prefix)-len(suffix)) + suffix
+	events := 0
+	err := decodeOpencodeRunEventStream(strings.NewReader(line+"\n"), nil, func(opencodeRunEvent) error {
+		events++
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("exact event-line boundary rejected: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("exact event-line boundary events=%d, want 1", events)
+	}
+
+	var limitErr *providerlimits.LimitExceededError
+	err = decodeOpencodeRunEventStream(strings.NewReader(line+"x\n"), nil, func(opencodeRunEvent) error { return nil }, nil)
+	if !errors.As(err, &limitErr) || limitErr.Resource != "event line" {
+		t.Fatalf("one-byte event-line overflow error=%v, want event line limit", err)
 	}
 }
 

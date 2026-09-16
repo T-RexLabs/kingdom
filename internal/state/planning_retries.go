@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kingdom/internal/sqlitex"
 )
 
 // NextPendingPlanningRetryDue returns the next persisted retry deadline. The
@@ -53,6 +55,16 @@ type FinalizePlanningFailureWithRetryRequest struct {
 }
 
 func (s *PlanningStore) FinalizePlanningFailureWithRetry(ctx context.Context, req FinalizePlanningFailureWithRetryRequest) (bool, error) {
+	var retry bool
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		retry, retryErr = s.finalizePlanningFailureWithRetryOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return retry, err
+}
+
+func (s *PlanningStore) finalizePlanningFailureWithRetryOnce(ctx context.Context, req FinalizePlanningFailureWithRetryRequest) (bool, error) {
 	if err := validateFinalizePlanningFailureWithRetryRequest(req); err != nil {
 		return false, err
 	}
@@ -306,6 +318,16 @@ func (s *PlanningStore) PlanningOperationRetryDue(ctx context.Context, operation
 // claim commits but before a provider invocation exists. Invocation creation is
 // lease-fenced, so clearing this lease prevents an old worker from launching.
 func (s *PlanningStore) RequeueUnlaunchedPlanningOperation(ctx context.Context, operation PlanningOperation) (bool, error) {
+	var requeued bool
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		requeued, retryErr = s.requeueUnlaunchedPlanningOperationOnce(ctx, operation)
+		return retryErr
+	}, sqlitex.Options{})
+	return requeued, err
+}
+
+func (s *PlanningStore) requeueUnlaunchedPlanningOperationOnce(ctx context.Context, operation PlanningOperation) (bool, error) {
 	if strings.TrimSpace(operation.OperationID) == "" || strings.TrimSpace(operation.LeaseOwner) == "" || operation.LeaseVersion < 1 || operation.ActiveProviderInvocationID != nil {
 		return false, fmt.Errorf("unlaunched planning operation lease lineage is required")
 	}

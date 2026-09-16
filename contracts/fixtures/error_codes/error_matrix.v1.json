@@ -44,6 +44,13 @@
       "escalation_target": "chancellor"
     },
     {
+      "code": "resource_limit_exceeded",
+      "category": "core",
+      "retry_class": "non_retryable",
+      "retryable": false,
+      "escalation_target": "chancellor"
+    },
+    {
       "code": "internal_error",
       "category": "core",
       "retry_class": "internal_runtime",

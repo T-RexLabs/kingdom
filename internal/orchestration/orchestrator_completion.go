@@ -16,7 +16,9 @@ import (
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/sqlitex"
 	"kingdom/internal/state"
 )
 
@@ -58,17 +60,24 @@ type completionProjectionDecision struct {
 	AllowCanonicalMailbox   bool
 }
 
+const executionOutboxPassLimit = 64
+
 func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, error) {
+	_, processed, err := o.drainExecutionOutboxPass(ctx, executionOutboxPassLimit)
+	return processed, err
+}
+
+func (o *orchestrationLoop) drainExecutionOutboxPass(ctx context.Context, limit int) (int, int, error) {
 	if o == nil || o.executionStore == nil {
-		return 0, nil
+		return 0, 0, nil
 	}
 
-	pending, err := o.executionStore.ListPendingOutbox(ctx, 64)
+	pending, err := o.executionStore.ListPendingOutbox(ctx, limit)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if len(pending) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	publishedAt := o.now().UTC().Format(time.RFC3339Nano)
@@ -77,7 +86,7 @@ func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, erro
 		result, hasResultPayload, decodeErr := decodeExecutionOutboxPayload(rec)
 		if decodeErr != nil {
 			if err := o.executionStore.MarkOutboxFailed(ctx, rec.OutboxID, decodeErr.Error(), publishedAt); err != nil {
-				return processed, err
+				return len(pending), processed, err
 			}
 			o.emitCompletionLifecycleObservation(ctx, executionOutboxObservationResult(rec), "exec_outbox_dead_lettered", publishedAt, map[string]any{"outbox_id": rec.OutboxID, "error": decodeErr.Error()})
 			continue
@@ -85,7 +94,7 @@ func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, erro
 		if !hasResultPayload {
 			err := fmt.Errorf("pending execution outbox %q is missing replay payload", rec.OutboxID)
 			if markErr := o.executionStore.MarkOutboxFailed(ctx, rec.OutboxID, err.Error(), publishedAt); markErr != nil {
-				return processed, markErr
+				return len(pending), processed, markErr
 			}
 			o.emitCompletionLifecycleObservation(ctx, executionOutboxObservationResult(rec), "exec_outbox_dead_lettered", publishedAt, map[string]any{"outbox_id": rec.OutboxID, "error": err.Error()})
 			continue
@@ -94,18 +103,18 @@ func (o *orchestrationLoop) drainExecutionOutbox(ctx context.Context) (int, erro
 		o.emitCompletionLifecycleObservation(ctx, result, "exec_outbox_dequeued", publishedAt, map[string]any{"outbox_id": rec.OutboxID})
 		if err := o.completeExecution(ctx, result); err != nil {
 			if recordErr := o.executionStore.RecordOutboxFailure(ctx, rec.OutboxID, err.Error(), publishedAt); recordErr != nil {
-				return processed, recordErr
+				return len(pending), processed, recordErr
 			}
 			o.emitCompletionLifecycleObservation(ctx, result, "exec_outbox_retryable_error", publishedAt, map[string]any{"outbox_id": rec.OutboxID, "error": err.Error()})
 			continue
 		}
 		if err := o.executionStore.MarkOutboxPublished(ctx, rec.OutboxID, publishedAt); err != nil {
-			return processed, err
+			return len(pending), processed, err
 		}
 		processed++
 	}
 
-	return processed, nil
+	return len(pending), processed, nil
 }
 
 func executionOutboxObservationResult(rec executionstore.OutboxRecord) asyncExecutionResult {
@@ -167,6 +176,36 @@ func (o *orchestrationLoop) commitExecutionCompletion(ctx context.Context, job a
 	}
 	job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
 	if job.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked {
+		if strings.TrimSpace(job.workspacePath) != "" && strings.TrimSpace(job.baseSnapshotID) != "" {
+			_, existingResultSnapshotID, snapshotLookupErr := o.loadAttemptSnapshotIDs(ctx, job.attemptID)
+			if snapshotLookupErr != nil && !errors.Is(snapshotLookupErr, sql.ErrNoRows) {
+				return snapshotLookupErr
+			}
+			if strings.TrimSpace(existingResultSnapshotID) != "" {
+				job.resultSnapshotID = existingResultSnapshotID
+			} else {
+				unlockWorkspace := o.lockRunWorkspace(job.run.RunID)
+				snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, job, o.now().UTC().Format(time.RFC3339Nano))
+				unlockWorkspace()
+				if snapshotErr != nil {
+					if !providerlimits.IsResourceLimitError(snapshotErr) {
+						return snapshotErr
+					}
+					if err := o.fsStore.UpdateExecutionTargetState(ctx, job.run.RunID, "unknown", "", "", o.now().UTC().Format(time.RFC3339Nano)); err != nil {
+						return fmt.Errorf("quarantine execution target after workspace resource limit: %w", err)
+					}
+					job.outcome = opencode.ExecutionOutcome{
+						State:          "failed",
+						ReasonCode:     string(errorcatalog.CodeResourceLimitExceeded),
+						FailureText:    "The workspace exceeded a Kingdom resource limit and could not be safely captured.",
+						EvidenceSource: "workspace",
+					}
+					job.err = errorFromExecutionOutcome(job.outcome)
+				} else {
+					job.resultSnapshotID = snapshot.SnapshotID
+				}
+			}
+		}
 		return o.commitProviderExecutionCompletion(ctx, job)
 	}
 	raw, err := marshalExecutionOutboxPayload(job)
@@ -243,8 +282,6 @@ func (o *orchestrationLoop) commitExecutionCompletionDetached(ctx context.Contex
 	return o.commitExecutionCompletion(queueCtx, job)
 }
 
-var completionHandoffRetrySchedule = []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond}
-
 func (o *orchestrationLoop) commitExecutionCompletionWithRetryDetached(ctx context.Context, job asyncExecutionResult) error {
 	return o.retryDetachedCompletionHandoff(job, func() error {
 		return o.commitExecutionCompletionDetached(ctx, job)
@@ -252,27 +289,19 @@ func (o *orchestrationLoop) commitExecutionCompletionWithRetryDetached(ctx conte
 }
 
 func (o *orchestrationLoop) retryDetachedCompletionHandoff(job asyncExecutionResult, commit func() error) error {
-	var lastErr error
-	for attempt, backoff := range completionHandoffRetrySchedule {
+	_, lastErr := sqlitex.Retry(context.Background(), func() error {
 		if o.forceCloseActive() {
 			return nil
 		}
-		if attempt > 0 && backoff > 0 {
-			if o.sleep != nil {
-				o.sleep(backoff)
-			} else {
-				time.Sleep(backoff)
-			}
+		return commit()
+	}, sqlitex.Options{Sleep: func(_ context.Context, delay time.Duration) error {
+		if o.sleep != nil {
+			o.sleep(delay)
+			return nil
 		}
-		if err := commit(); err != nil {
-			lastErr = err
-			if !state.IsSQLiteBusy(err) {
-				break
-			}
-			continue
-		}
+		time.Sleep(delay)
 		return nil
-	}
+	}})
 	if lastErr != nil && o.asyncDrain != nil {
 		o.asyncDrain.RecordError(fmt.Errorf("durable completion handoff failed for attempt %q: %w", strings.TrimSpace(job.attemptID), lastErr))
 	}
@@ -733,6 +762,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	if terminalReasonCode != "" {
 		result.outcome.ReasonCode = terminalReasonCode
 	}
+	resourceLimitFailure := terminalReasonCode == string(errorcatalog.CodeResourceLimitExceeded)
 	canonicalSettlementHydrated := false
 	if hasPersistedAttemptExecution {
 		var err error
@@ -749,6 +779,10 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	responseText := rawResponseText
 	if strings.TrimSpace(result.outputText) != "" {
 		responseText = strings.TrimSpace(result.outputText)
+	}
+	if resourceLimitFailure {
+		rawResponseText = currentOutcome.FailureText
+		responseText = currentOutcome.FailureText
 	}
 	if execErr != nil && shouldUseErrorAsResponseFallback(result.node.NodeID, execErr, currentExecutionReasonCode(currentOutcome, execErr)) {
 		responseText = firstNonEmptyString(responseText, execErr.Error())
@@ -930,7 +964,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		unlockWorkspace = o.lockRunWorkspace(result.run.RunID)
 		defer unlockWorkspace()
 	}
-	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+	if !resourceLimitFailure && strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" && strings.TrimSpace(result.resultSnapshotID) == "" {
 		snapshot, snapshotErr := o.captureAttemptResultSnapshot(ctx, result, now)
 		if snapshotErr != nil {
 			o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_snapshot_capture_error", now, map[string]any{"error": snapshotErr.Error()})
@@ -938,7 +972,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		}
 		result.resultSnapshotID = snapshot.SnapshotID
 	}
-	canonicalArtifactProjectionAllowed := projectionAllowed && decision.AllowCanonicalArtifacts
+	canonicalArtifactProjectionAllowed := projectionAllowed && decision.AllowCanonicalArtifacts && !resourceLimitFailure
 	canonicalMailboxProjectionAllowed := projectionAllowed && decision.AllowCanonicalMailbox
 	if projectionAllowed && !decision.LatestAttempt {
 		o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_projection_suppressed_superseded", now, map[string]any{"attempt": result.attempt.Attempt})
@@ -1000,7 +1034,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			slog.Warn("failed to persist token usage", "run_id", result.run.RunID, "attempt_id", result.attemptID, "error", insertErr)
 		}
 	}
-	if strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
+	if !resourceLimitFailure && strings.TrimSpace(result.workspacePath) != "" && strings.TrimSpace(result.baseSnapshotID) != "" {
 		if projectionErr == nil && execErr == nil && canonicalArtifactProjectionAllowed && isImplementationRole(result.node.RequiredRole) {
 			if promoteErr := o.promoteExecutionTargetSnapshot(ctx, result.run.RunID, result.resultSnapshotID, now); promoteErr != nil {
 				return promoteErr
@@ -1322,6 +1356,9 @@ func classifyExecutionReasonCode(err error) string {
 	var neverStartedErr *executionNotStartedError
 	if errors.As(err, &neverStartedErr) {
 		return "execution_not_started"
+	}
+	if providerlimits.IsResourceLimitError(err) {
+		return string(errorcatalog.CodeResourceLimitExceeded)
 	}
 	var validationErr *validationGateReworkError
 	if errors.As(err, &validationErr) {

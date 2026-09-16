@@ -1717,7 +1717,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */

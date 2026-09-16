@@ -13,6 +13,7 @@ import (
 
 	"kingdom/internal/core/executionoutput"
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/sqlitex"
 )
 
 const maxProviderTerminalHandoffPayloadBytes = 32 * 1024 * 1024
@@ -422,24 +423,15 @@ func (s *Store) CreateProviderInvocation(ctx context.Context, req CreateProvider
 	if err != nil {
 		return ProviderInvocation{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	var invocation ProviderInvocation
+	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var bodyErr error
+		invocation, bodyErr = createProviderInvocationTx(ctx, tx, normalized, capabilityHash)
+		return bodyErr
+	}, sqlitex.Options{})
 	if err != nil {
-		return ProviderInvocation{}, fmt.Errorf("begin create provider invocation transaction: %w", err)
+		return ProviderInvocation{}, fmt.Errorf("create provider invocation transaction: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	invocation, err := createProviderInvocationTx(ctx, tx, normalized, capabilityHash)
-	if err != nil {
-		return ProviderInvocation{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ProviderInvocation{}, fmt.Errorf("commit create provider invocation transaction: %w", err)
-	}
-	committed = true
 	return invocation, nil
 }
 
@@ -460,6 +452,16 @@ func (s *Store) GetProviderInvocation(ctx context.Context, providerInvocationID 
 }
 
 func (s *Store) PersistProviderTerminalHandoff(ctx context.Context, req PersistProviderTerminalHandoffRequest) (PersistProviderTerminalHandoffResult, error) {
+	var result PersistProviderTerminalHandoffResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.persistProviderTerminalHandoffOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) persistProviderTerminalHandoffOnce(ctx context.Context, req PersistProviderTerminalHandoffRequest) (PersistProviderTerminalHandoffResult, error) {
 	result := PersistProviderTerminalHandoffResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
@@ -700,6 +702,16 @@ func (s *Store) ListProviderReceiptIngestionCandidates(ctx context.Context, afte
 }
 
 func (s *Store) MarkProviderReceiptInboxCleaned(ctx context.Context, req MarkProviderReceiptInboxCleanedRequest) (ProviderInvocation, error) {
+	var invocation ProviderInvocation
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		invocation, retryErr = s.markProviderReceiptInboxCleanedOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return invocation, err
+}
+
+func (s *Store) markProviderReceiptInboxCleanedOnce(ctx context.Context, req MarkProviderReceiptInboxCleanedRequest) (ProviderInvocation, error) {
 	if s == nil || s.db == nil {
 		return ProviderInvocation{}, fmt.Errorf("store database is required")
 	}
@@ -763,39 +775,43 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 	if err != nil {
 		return ProviderInvocation{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return ProviderInvocation{}, fmt.Errorf("begin activate provider invocation transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
+	var invocation ProviderInvocation
+	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var bodyErr error
+		invocation, bodyErr = createProviderInvocationTx(ctx, tx, createReq, capabilityHash)
+		if bodyErr != nil {
+			return bodyErr
 		}
-	}()
-
-	invocation, err := createProviderInvocationTx(ctx, tx, createReq, capabilityHash)
+		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, replacementID); bodyErr != nil {
+			return bodyErr
+		}
+		var found bool
+		invocation, found, bodyErr = loadProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID)
+		if bodyErr != nil {
+			return bodyErr
+		}
+		if !found {
+			return providerSettlementError("activate_provider_invocation", "invocation_not_found", createReq.ProviderInvocationID, createReq.AttemptID, "")
+		}
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
-		return ProviderInvocation{}, err
+		return ProviderInvocation{}, fmt.Errorf("activate provider invocation transaction: %w", err)
 	}
-	if err := activateProviderInvocationTx(ctx, tx, invocation, openReq, replacementID); err != nil {
-		return ProviderInvocation{}, err
-	}
-	invocation, found, err := loadProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID)
-	if err != nil {
-		return ProviderInvocation{}, err
-	}
-	if !found {
-		return ProviderInvocation{}, providerSettlementError("activate_provider_invocation", "invocation_not_found", createReq.ProviderInvocationID, createReq.AttemptID, "")
-	}
-	if err := tx.Commit(); err != nil {
-		return ProviderInvocation{}, fmt.Errorf("commit activate provider invocation transaction: %w", err)
-	}
-	committed = true
 	return invocation, nil
 }
 
 func (s *Store) MarkProviderInvocationOpen(ctx context.Context, req MarkProviderInvocationOpenRequest) (ProviderInvocation, error) {
+	var invocation ProviderInvocation
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		invocation, retryErr = s.markProviderInvocationOpenOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return invocation, err
+}
+
+func (s *Store) markProviderInvocationOpenOnce(ctx context.Context, req MarkProviderInvocationOpenRequest) (ProviderInvocation, error) {
 	if s == nil || s.db == nil {
 		return ProviderInvocation{}, fmt.Errorf("store database is required")
 	}
@@ -970,6 +986,16 @@ func (s *Store) ListProviderCompletionEvidence(ctx context.Context, providerInvo
 // accepted receipt evidence. Domain rejection is returned as a disposition;
 // an error means the transaction did not commit.
 func (s *Store) IngestProviderCompletionReceipt(ctx context.Context, req IngestProviderCompletionReceiptRequest) (IngestProviderCompletionReceiptResult, error) {
+	var result IngestProviderCompletionReceiptResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.ingestProviderCompletionReceiptOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) ingestProviderCompletionReceiptOnce(ctx context.Context, req IngestProviderCompletionReceiptRequest) (IngestProviderCompletionReceiptResult, error) {
 	result := IngestProviderCompletionReceiptResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
@@ -1226,6 +1252,16 @@ func (s *Store) IngestProviderCompletionReceipt(ctx context.Context, req IngestP
 // state in one SQLite transaction. A projection can therefore never observe a
 // terminal attempt without its canonical provider settlement.
 func (s *Store) SettleProviderCompletionAndTerminal(ctx context.Context, req SettleProviderCompletionAndTerminalRequest) (ProviderCompletionSettlement, error) {
+	var settlement ProviderCompletionSettlement
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		settlement, retryErr = s.settleProviderCompletionAndTerminalOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return settlement, err
+}
+
+func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req SettleProviderCompletionAndTerminalRequest) (ProviderCompletionSettlement, error) {
 	if s == nil || s.db == nil {
 		return ProviderCompletionSettlement{}, fmt.Errorf("store database is required")
 	}
@@ -1998,6 +2034,11 @@ func (s *Store) GetProviderCompletionReceiptEvidence(ctx context.Context, provid
 }
 
 func (s *Store) SupersedeProviderInvocation(ctx context.Context, req SupersedeProviderInvocationRequest) error {
+	_, err := sqlitex.Retry(ctx, func() error { return s.supersedeProviderInvocationOnce(ctx, req) }, sqlitex.Options{})
+	return err
+}
+
+func (s *Store) supersedeProviderInvocationOnce(ctx context.Context, req SupersedeProviderInvocationRequest) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store database is required")
 	}
@@ -2079,6 +2120,11 @@ func (s *Store) SupersedeProviderInvocation(ctx context.Context, req SupersedePr
 }
 
 func (s *Store) InvalidateProviderInvocation(ctx context.Context, req InvalidateProviderInvocationRequest) error {
+	_, err := sqlitex.Retry(ctx, func() error { return s.invalidateProviderInvocationOnce(ctx, req) }, sqlitex.Options{})
+	return err
+}
+
+func (s *Store) invalidateProviderInvocationOnce(ctx context.Context, req InvalidateProviderInvocationRequest) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store database is required")
 	}

@@ -10,6 +10,7 @@ import (
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/sqlitex"
 )
 
 const (
@@ -106,11 +107,11 @@ func (i *AttemptEventIngestor) WithRoleCommunicationPolicy(policy rolecomm.Polic
 
 func (i *AttemptEventIngestor) Ingest(ctx context.Context, req AttemptEventIngestionRequest) (AttemptEventIngestionResult, error) {
 	result := AttemptEventIngestionResult{}
-	err := retrySQLiteBusy(ctx, func() error {
+	_, err := sqlitex.Retry(ctx, func() error {
 		current, err := i.ingestOnce(ctx, req)
 		result = current
 		return err
-	})
+	}, sqlitex.Options{})
 	return result, err
 }
 

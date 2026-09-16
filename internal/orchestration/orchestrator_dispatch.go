@@ -12,6 +12,7 @@ import (
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -67,6 +68,14 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		return nil
 	}
 	executionSpec := executionSpecForNode(node.NodeID, node.NodeClass)
+	if executionSpec.RequiresWorkspace {
+		unlockWorkspace := o.lockRunWorkspace(run.RunID)
+		workspaceErr := o.recoverQuarantinedExecutionTargetBeforeDispatch(ctx, run.RunID, attempt.NodeRunID)
+		unlockWorkspace()
+		if workspaceErr != nil {
+			return workspaceErr
+		}
+	}
 	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
 	sessionID := ""
 	providerTimeout := int64(0)
@@ -652,11 +661,23 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 	if cause == nil {
 		cause = fmt.Errorf("unknown setup failure")
 	}
-	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "execution_setup_failed", map[string]any{
-		"error": fmt.Sprintf("%s: %v", strings.TrimSpace(step), cause),
+	reasonCode := "execution_setup_failed"
+	reasonText := "node execution setup failed before start"
+	failureText := fmt.Sprintf("%s: %v", strings.TrimSpace(step), cause)
+	resourceLimitFailure := providerlimits.IsResourceLimitError(cause)
+	if resourceLimitFailure {
+		reasonCode = "resource_limit_exceeded"
+		reasonText = "node execution setup exceeded a Kingdom resource limit"
+		failureText = "The execution workspace exceeded a Kingdom resource limit and could not be safely prepared."
+	}
+	payload := map[string]any{
+		"error": failureText,
 		"step":  strings.TrimSpace(step),
-		"cause": cause.Error(),
-	})
+	}
+	if !resourceLimitFailure {
+		payload["cause"] = cause.Error()
+	}
+	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, reasonCode, payload)
 	if err != nil {
 		return fmt.Errorf("marshal setup failure payload: %w", err)
 	}
@@ -669,7 +690,7 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 	if fromState == "" {
 		fromState = "ready"
 	}
-	return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: state.TransitionRequest{
+	transition := state.TransitionRequest{
 		TransitionID:    fmt.Sprintf("tr_orch_%s_%s_%d_setup_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_setup_failed", run.RunID, attempt.NodeID, attempt.Attempt),
 		RunID:           run.RunID,
@@ -680,8 +701,8 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 		ActorID:         "runtime_orchestrator",
 		RoleID:          node.RequiredRole,
 		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "execution_setup_failed",
-		ReasonText:      "node execution setup failed before start",
+		ReasonCode:      reasonCode,
+		ReasonText:      reasonText,
 		CorrelationID:   "corr_orch_" + run.RunID,
 		CausationID:     fmt.Sprintf("caus_orch_%s_%s_setup_failed", run.RunID, attempt.NodeRunID),
 		OccurredAt:      now,
@@ -690,7 +711,27 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 		EventType:       "attempt.failed",
 		EventSeq:        o.nextEventSeq(ctx, attemptID),
 		PayloadJSON:     string(payloadRaw),
-	}})
+	}
+	if !resourceLimitFailure {
+		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition})
+	}
+	retry, planned, err := o.planAutomaticDecreeRetry(ctx, asyncExecutionResult{
+		run:       run,
+		node:      node,
+		attempt:   attempt,
+		attemptID: attemptID,
+	}, reasonCode, now)
+	if err != nil {
+		return fmt.Errorf("plan resource-limit setup retry disposition: %w", err)
+	}
+	if !planned {
+		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition})
+	}
+	return o.transition.RecordDirectExecutionTerminalWithRetry(ctx, state.DirectExecutionTerminalWithRetryRequest{
+		Transition:            transition,
+		Decision:              retry,
+		EscalationFromAgentID: attempt.AgentID,
+	})
 }
 
 func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncExecutionResult) {

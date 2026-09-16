@@ -14,6 +14,8 @@ import (
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/providerlimits"
+	"kingdom/internal/securefs"
 )
 
 type WorkerOutputValidationRequest struct {
@@ -129,10 +131,14 @@ func (v *WorkerOutputValidator) ValidateAndPersist(ctx context.Context, req Work
 		return WorkerOutputValidationResult{}, fmt.Errorf("ensure artifact content table: %w", err)
 	}
 
+	var artifactBudget providerlimits.WorkspaceBudget
 	for i, artifact := range output.Artifacts {
 		record, content, recErr := v.buildArtifactRecord(req, artifact, i)
 		if recErr != nil {
 			return WorkerOutputValidationResult{}, recErr
+		}
+		if err := artifactBudget.AddFile(record.SizeBytes); err != nil {
+			return WorkerOutputValidationResult{}, workerOutputLimitError(err)
 		}
 
 		if err := insertArtifactRecord(ctx, tx, record); err != nil {
@@ -236,26 +242,28 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 				Reason: fmt.Sprintf("artifact content is unavailable for %q without a workspace path or inline content", artifactPath),
 			}
 		}
-		resolvedPath, err := resolveArtifactPath(req.WorkspacePath, artifactPath)
-		if err != nil {
-			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
-				Code:   string(errorcatalog.CodeInvalidOutputSchema),
-				Reason: err.Error(),
-				err:    err,
+		loaded, readErr := readWorkspaceArtifact(req.WorkspacePath, artifactPath)
+		if readErr != nil {
+			if errors.Is(readErr, securefs.ErrLimitExceeded) {
+				return ArtifactRecord{}, nil, workerOutputLimitError(&providerlimits.LimitExceededError{Resource: "worker output artifact", Limit: providerlimits.TrackedWorkspaceFileBytes})
 			}
-		}
-
-		raw, err = os.ReadFile(resolvedPath)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(readErr, os.ErrNotExist) {
 				return ArtifactRecord{}, nil, &WorkerOutputValidationError{
 					Code:   string(errorcatalog.CodeInvalidOutputSchema),
 					Reason: fmt.Sprintf("artifact path does not exist: %q", artifactPath),
-					err:    err,
+					err:    readErr,
 				}
 			}
-			return ArtifactRecord{}, nil, fmt.Errorf("read artifact file %q: %w", resolvedPath, err)
+			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
+				Code:   string(errorcatalog.CodeInvalidOutputSchema),
+				Reason: "artifact path could not be read safely",
+				err:    readErr,
+			}
 		}
+		raw = loaded
+	}
+	if int64(len(raw)) > providerlimits.TrackedWorkspaceFileBytes {
+		return ArtifactRecord{}, nil, workerOutputLimitError(&providerlimits.LimitExceededError{Resource: "worker output artifact", Limit: providerlimits.TrackedWorkspaceFileBytes})
 	}
 
 	sum := sha256.Sum256(raw)
@@ -337,6 +345,19 @@ func hasWindowsDrivePrefix(value string) bool {
 	return len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':'
 }
 
+func readWorkspaceArtifact(workspacePath, artifactPath string) ([]byte, error) {
+	root, err := securefs.OpenRoot(workspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("open artifact workspace: %w", err)
+	}
+	defer root.Close()
+	raw, err := root.ReadRegular(artifactPath, providerlimits.TrackedWorkspaceFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {
 	normalized := strings.TrimSpace(artifactPath)
 	if normalized == "" {
@@ -350,7 +371,6 @@ func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace path: %w", err)
 	}
-
 	resolved := filepath.Clean(filepath.Join(workspaceAbs, normalized))
 	if resolved != workspaceAbs {
 		prefix := workspaceAbs + string(filepath.Separator)
@@ -358,8 +378,15 @@ func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {
 			return "", fmt.Errorf("artifact path escapes workspace: %q", artifactPath)
 		}
 	}
-
 	return resolved, nil
+}
+
+func workerOutputLimitError(err error) *WorkerOutputValidationError {
+	return &WorkerOutputValidationError{
+		Code:   string(errorcatalog.CodeResourceLimitExceeded),
+		Reason: "worker output exceeds a configured resource limit",
+		err:    err,
+	}
 }
 
 func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord) error {

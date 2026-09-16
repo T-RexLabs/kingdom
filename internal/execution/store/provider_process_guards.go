@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kingdom/internal/sqlitex"
 )
 
 const maxProviderProcessGuardEvidenceBytes = 64 << 10
@@ -114,6 +116,16 @@ type IngestProviderProcessGuardQuiescenceResult struct {
 }
 
 func (s *Store) AcknowledgeProviderProcessGuard(ctx context.Context, req AcknowledgeProviderProcessGuardRequest) (AcknowledgeProviderProcessGuardResult, error) {
+	var result AcknowledgeProviderProcessGuardResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.acknowledgeProviderProcessGuardOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req AcknowledgeProviderProcessGuardRequest) (AcknowledgeProviderProcessGuardResult, error) {
 	result := AcknowledgeProviderProcessGuardResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
@@ -252,6 +264,25 @@ func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID str
 	return total > 0 && pending == 0, nil
 }
 
+// RunProviderProcessGuardsQuiescent requires every durable provider process
+// guard belonging to the run to have reached quiescence before its shared
+// workspace can be discarded or replaced.
+func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("store database is required")
+	}
+	var pending int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM provider_process_guards ppg
+		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
+		WHERE ae.run_id = ? AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle <> 'quiescent'
+	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("load run provider process guard quiescence: %w", err)
+	}
+	return pending == 0, nil
+}
+
 func (s *Store) RecoverProviderProcessGuardAbsent(ctx context.Context, guardID, observedAt string) error {
 	payload := `{"source":"runtime_process_absence"}`
 	result, err := s.db.ExecContext(ctx, `UPDATE provider_process_guards SET lifecycle = 'quiescent', quiescent_at = ?, exit_code = -1, exit_signal = 0, termination_forced = 1, failure_code = 'guardian_evidence_lost', failure_text = 'The managed provider process group is absent, but guardian evidence was lost.', quiescence_evidence_sha256 = ?, quiescence_evidence_json = ?, evidence_cleaned_at = ?, updated_at = ? WHERE guard_id = ? AND lifecycle = 'acknowledged'`, observedAt, sha256Hex(payload), payload, observedAt, observedAt, strings.TrimSpace(guardID))
@@ -269,6 +300,16 @@ func (s *Store) RecoverProviderProcessGuardAbsent(ctx context.Context, guardID, 
 }
 
 func (s *Store) IngestProviderProcessGuardQuiescence(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
+	var result IngestProviderProcessGuardQuiescenceResult
+	_, err := sqlitex.Retry(ctx, func() error {
+		var retryErr error
+		result, retryErr = s.ingestProviderProcessGuardQuiescenceOnce(ctx, req)
+		return retryErr
+	}, sqlitex.Options{})
+	return result, err
+}
+
+func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
 	result := IngestProviderProcessGuardQuiescenceResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")

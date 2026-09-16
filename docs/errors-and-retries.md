@@ -22,6 +22,7 @@ Current runtime note:
 - `policy_violation`
 - `dependency_blocked`
 - `budget_exceeded`
+- `resource_limit_exceeded`
 - `internal_error`
 
 ### Provider
@@ -63,7 +64,7 @@ Provider completion note:
 - `transient_transport_provider_session` (retryable): `transient_transport`, `timeout`, `llm_rate_limited`, `llm_model_unavailable`, `session_lease_expired`, `container_start_failed`
 - `conditional_limited` (retryable, capped): `agent_unresponsive`, `container_oom_killed`, `tool_execution_failed`, `idempotency_pending`
 - `internal_runtime` (retryable, minimal): `internal_error`
-- `non_retryable` (fail-fast): `invalid_output_schema`, `policy_violation`, `idempotency_conflict`, `idempotency_key_expired`, `dependency_blocked`, `llm_invalid_response`, `llm_context_overflow`, `provider_incomplete_turn`, `provider_empty_output`, `provider_unknown_failure`, `provider_cancelled`, `budget_exceeded`, `event_sequence_gap`
+- `non_retryable` (fail-fast): `invalid_output_schema`, `policy_violation`, `idempotency_conflict`, `idempotency_key_expired`, `dependency_blocked`, `llm_invalid_response`, `llm_context_overflow`, `provider_incomplete_turn`, `provider_empty_output`, `provider_unknown_failure`, `provider_cancelled`, `budget_exceeded`, `resource_limit_exceeded`, `event_sequence_gap`
 
 An `idempotency_key_expired` response is definitive: the server did not admit the mutation. Create a new key only after receiving this response. For transport failures without a response, retain the original key so a retry can recover the original result without duplicating the mutation.
 
@@ -78,6 +79,8 @@ Automatic retries stop when the provider made meaningful progress. A failed disp
 The run attempt budget is a run-wide count, not a node attempt ordinal. The automatic successor reservation checks the prospective count in the same transaction that would create the target: 60 existing attempts remain valid, but a 61st automatic successor is not created. The retry decision becomes a `budget_exceeded` fail-fast disposition and the existing run terminalization path fails the run while retaining the source failure evidence.
 
 These limits govern runtime-initiated recovery and workflow rework. Node attempt ordinals have no separate generic cap, and explicit operator Retry and Rerun actions on failed or fully settled cancelled runs are uncapped.
+
+`resource_limit_exceeded` is terminal and requires operator action. Kingdom bounds provider prompts, event and output accumulation, diagnostics, receipt transport, workspace traversal, and startup replay. If a provider-created workspace exceeds its safe capture boundary, Kingdom records the failure and quarantines that run's execution target instead of attempting an unbounded cleanup or dispatching another attempt into untrusted files.
 
 ## Paused Stop Recovery
 

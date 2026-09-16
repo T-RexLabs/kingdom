@@ -11,7 +11,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -27,6 +26,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
@@ -90,6 +90,16 @@ const (
 	StartupPhaseReady                   StartupPhase = "ready"
 )
 
+type startupRecoveryStage uint8
+
+const (
+	startupRecoveryStageComplete startupRecoveryStage = iota
+	startupRecoveryStageGuards
+	startupRecoveryStageReceipts
+	startupRecoveryStageHandoffs
+	startupRecoveryStageLostHandoffs
+)
+
 type StartupEventStatus string
 
 const (
@@ -144,16 +154,25 @@ type Runtime struct {
 	fsStore         *runtimefs.Store
 	closeMode       *runtimeCloseMode
 
-	mu                  sync.Mutex
-	periodicDone        chan error
-	cancelPeriodic      context.CancelFunc
-	dispatchDone        chan error
-	cancelDispatch      context.CancelFunc
-	completionDone      chan error
-	cancelCompletion    context.CancelFunc
-	completionWake      chan struct{}
-	started             bool
-	preDispatchRecovery func(context.Context) error
+	mu                       sync.Mutex
+	periodicDone             chan error
+	cancelPeriodic           context.CancelFunc
+	dispatchDone             chan error
+	cancelDispatch           context.CancelFunc
+	completionDone           chan error
+	cancelCompletion         context.CancelFunc
+	completionWake           chan struct{}
+	startupRecoveryGate      chan struct{}
+	startupRecoveryOpen      bool
+	startupRecoveryWait      bool
+	startupGuardWait         bool
+	startupReceiptWait       bool
+	startupHandoffWait       bool
+	startupLostHandoffWait   bool
+	startupGuardCursor       string
+	startupLostHandoffCursor string
+	started                  bool
+	preDispatchRecovery      func(context.Context) error
 }
 
 func (r *Runtime) SetPreDispatchRecovery(recover func(context.Context) error) {
@@ -513,29 +532,52 @@ func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRu
 	if err != nil {
 		return nil, err
 	}
-	stdoutDone := make(chan []byte, 1)
-	stderrDone := make(chan []byte, 1)
+	type commandReadResult struct {
+		raw []byte
+		err error
+	}
+	stdoutDone := make(chan commandReadResult, 1)
+	stderrDone := make(chan commandReadResult, 1)
 	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
-	go func() { defer stdoutStream.Close(); raw, _ := io.ReadAll(stdoutStream); stdoutDone <- raw }()
-	go func() { defer stderrStream.Close(); raw, _ := io.ReadAll(stderrStream); stderrDone <- raw }()
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) })
+	}
+	go func() {
+		defer stdoutStream.Close()
+		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
+		stdoutDone <- commandReadResult{raw: raw, err: readErr}
+	}()
+	go func() {
+		defer stderrStream.Close()
+		raw, readErr := providerlimits.ReadBoundedOnLimit(stderrStream, providerlimits.GuardedCommandStreamBytes, "command stderr", cancel)
+		stderrDone <- commandReadResult{raw: raw, err: readErr}
+	}()
 	cancelDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = handle.Cancel(context.Background())
+			cancel()
 		case <-cancelDone:
 		}
 	}()
 	result, waitErr := handle.Wait(context.Background())
 	close(cancelDone)
 	stdout, stderr := <-stdoutDone, <-stderrDone
+	output := append(stdout.raw, stderr.raw...)
+	if stdout.err != nil {
+		return output, stdout.err
+	}
+	if stderr.err != nil {
+		return output, stderr.err
+	}
 	if waitErr != nil {
-		return append(stdout, stderr...), waitErr
+		return output, waitErr
 	}
 	if !result.Quiescent || result.ExitCode != 0 || result.ExitSignal != 0 || result.FailureCode != "" {
-		return append(stdout, stderr...), fmt.Errorf("guarded command failed: %s", result.FailureText)
+		return output, fmt.Errorf("guarded command failed: %s", result.FailureText)
 	}
-	return append(stdout, stderr...), nil
+	return output, nil
 }
 
 func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
@@ -567,25 +609,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("runtime already started")
 	}
 	r.mu.Unlock()
+	r.beginStartupRecovery()
 
-	if err := r.orchestrator.ingestPendingProviderProcessGuards(ctx); err != nil {
-		return fmt.Errorf("startup provider process guard recovery: %w", err)
-	}
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
 	}
-	if _, err := r.reconciler.RunStartup(ctx); err != nil {
-		return fmt.Errorf("startup reconcile: %w", err)
-	}
-	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
-		slog.Warn("startup stale cancellation replay will retry during runtime", "error", err)
-	}
-	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("startup run repair: %w", err)
-	}
-	if r.preDispatchRecovery != nil {
-		if err := r.preDispatchRecovery(ctx); err != nil {
-			return fmt.Errorf("startup pre-dispatch recovery: %w", err)
+	if !r.startupRecoveryPending() {
+		if err := r.finishStartupRecovery(ctx, false); err != nil {
+			return err
 		}
 	}
 
@@ -642,6 +673,9 @@ func (r *Runtime) signalCompletionReady() {
 }
 
 func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) error {
+	if err := r.awaitStartupRecovery(ctx); err != nil {
+		return nil
+	}
 	if interval <= 0 {
 		interval = state.DefaultReconcileInterval
 	}
@@ -665,6 +699,9 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 }
 
 func (r *Runtime) runDispatchLoop(ctx context.Context, interval time.Duration) error {
+	if err := r.awaitStartupRecovery(ctx); err != nil {
+		return nil
+	}
 	if interval <= 0 {
 		interval = DefaultDispatchInterval
 	}
@@ -701,35 +738,58 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 	defer ticker.Stop()
 
 	for {
-		if err := r.orchestrator.ingestPendingProviderProcessGuards(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
+		startupRecoveryPending := r.startupRecoveryPending()
+		if startupRecoveryPending {
+			caughtUp, err := r.replayPendingStartupRecovery(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("deferred startup recovery failed", "error", err)
+			} else if caughtUp {
+				if err := r.finishStartupRecovery(ctx, true); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return nil
+					}
+					slog.Warn("deferred startup recovery failed", "error", err)
+				}
 			}
-			slog.Warn("provider process guard ingestion loop failed", "error", err)
+		} else {
+			guardErr := r.orchestrator.ingestPendingProviderProcessGuards(ctx)
+			if guardErr != nil {
+				if errors.Is(guardErr, context.Canceled) {
+					return nil
+				}
+				slog.Warn("provider process guard ingestion loop failed", "error", guardErr)
+			}
+			if _, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("completion receipt ingestion loop failed", "error", err)
+			}
+			if _, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("provider terminal handoff convergence loop failed", "error", err)
+			}
 		}
-		if err := r.orchestrator.ingestProviderCompletionReceipts(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
+		if r.startupRecoveryIsOpen() {
+			if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, true); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("lost provider terminal handoff recovery loop failed", "error", err)
 			}
-			slog.Warn("completion receipt ingestion loop failed", "error", err)
 		}
-		if _, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
+		if r.startupRecoveryIsOpen() {
+			if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("completion projection loop failed", "error", err)
 			}
-			slog.Warn("provider terminal handoff convergence loop failed", "error", err)
-		}
-		if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, true); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			slog.Warn("lost provider terminal handoff recovery loop failed", "error", err)
-		}
-		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
-			}
-			slog.Warn("completion projection loop failed", "error", err)
 		}
 
 		select {
@@ -739,6 +799,52 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 		case <-r.completionWake:
 		}
 	}
+}
+
+// replayPendingStartupRecovery advances exactly one bounded prerequisite stage.
+// Stages stay ordered across completion-loop iterations so process guard
+// evidence is authoritative before receipt or terminal recovery proceeds.
+func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error) {
+	switch r.pendingStartupRecoveryStage() {
+	case startupRecoveryStageGuards:
+		result, err := r.replayPendingProviderProcessGuards(ctx)
+		if err != nil {
+			return false, fmt.Errorf("replay provider process guards: %w", err)
+		}
+		if result.Blocked {
+			return false, nil
+		}
+		if result.Visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageGuards), nil
+		}
+	case startupRecoveryStageReceipts:
+		visited, err := r.orchestrator.ingestProviderCompletionReceiptPassWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+		if err != nil {
+			return false, fmt.Errorf("replay provider completion receipts: %w", err)
+		}
+		if visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageReceipts), nil
+		}
+	case startupRecoveryStageHandoffs:
+		visited, err := r.orchestrator.convergeProviderTerminalHandoffsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+		if err != nil {
+			return false, fmt.Errorf("converge provider terminal handoffs: %w", err)
+		}
+		if visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageHandoffs), nil
+		}
+	case startupRecoveryStageLostHandoffs:
+		visited, err := r.replayPendingLostProviderTerminalHandoffs(ctx)
+		if err != nil {
+			return false, fmt.Errorf("settle lost provider terminal handoffs: %w", err)
+		}
+		if visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageLostHandoffs), nil
+		}
+	case startupRecoveryStageComplete:
+		return true, nil
+	}
+	return false, nil
 }
 
 func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
@@ -756,12 +862,133 @@ func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
 	}
 }
 
+// replayStartupWork bounds one startup recovery category. Deferred durable work
+// is left untouched for the normal completion loop.
+func replayStartupWork(ctx context.Context, replay func(context.Context, int) (int, error), pending func(context.Context) (bool, error)) (bool, error) {
+	visitedItems := 0
+	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
+		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
+		visited, err := replay(ctx, limit)
+		if err != nil {
+			return false, err
+		}
+		visitedItems += visited
+		if visited < limit {
+			return false, nil
+		}
+	}
+	return pending(ctx)
+}
+
+func (r *Runtime) replayStartupProviderCompletionReceipts(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || r.orchestrator.fsStore == nil || r.orchestrator.schemas == nil {
+		return false, nil
+	}
+	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
+		return r.orchestrator.ingestProviderCompletionReceiptPassWithLimit(ctx, limit)
+	}, func(ctx context.Context) (bool, error) {
+		candidates, err := r.orchestrator.executionStore.ListProviderReceiptIngestionCandidates(ctx, r.orchestrator.receiptIngestionCursor, 1)
+		return len(candidates) > 0, err
+	})
+}
+
+func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.processGuardRuntimeRoot) == "" {
+		return false, nil
+	}
+	visitedItems := 0
+	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
+		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
+		result, err := r.replayPendingProviderProcessGuardsWithLimit(ctx, limit)
+		if err != nil {
+			return false, err
+		}
+		if result.Blocked {
+			return true, nil
+		}
+		visitedItems += result.Visited
+		if result.Visited < limit {
+			return false, nil
+		}
+	}
+	guards, err := r.orchestrator.executionStore.ListPendingProviderProcessGuards(ctx, "", 1)
+	if err != nil {
+		return false, err
+	}
+	return len(guards) > 0, nil
+}
+
+func (r *Runtime) replayStartupProviderTerminalHandoffs(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
+		return false, nil
+	}
+	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
+		return r.orchestrator.convergeProviderTerminalHandoffsWithLimit(ctx, limit)
+	}, func(ctx context.Context) (bool, error) {
+		handoffs, err := r.orchestrator.executionStore.ListPendingProviderTerminalHandoffs(ctx, r.orchestrator.terminalHandoffCursor, 1)
+		return len(handoffs) > 0, err
+	})
+}
+
+func (r *Runtime) replayStartupLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.db == nil {
+		return false, nil
+	}
+	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
+		return r.replayPendingLostProviderTerminalHandoffsWithLimit(ctx, limit)
+	}, r.orchestrator.hasLostProviderTerminalHandoffs)
+}
+
+func (r *Runtime) replayPendingProviderProcessGuards(ctx context.Context) (providerProcessGuardPassResult, error) {
+	return r.replayPendingProviderProcessGuardsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+}
+
+func (r *Runtime) replayPendingProviderProcessGuardsWithLimit(ctx context.Context, limit int) (providerProcessGuardPassResult, error) {
+	r.mu.Lock()
+	cursor := r.startupGuardCursor
+	r.mu.Unlock()
+	result, err := r.orchestrator.ingestPendingProviderProcessGuardsPass(ctx, cursor, limit, true)
+	r.mu.Lock()
+	r.startupGuardCursor = result.NextCursor
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *Runtime) replayPendingLostProviderTerminalHandoffs(ctx context.Context) (int, error) {
+	return r.replayPendingLostProviderTerminalHandoffsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+}
+
+func (r *Runtime) replayPendingLostProviderTerminalHandoffsWithLimit(ctx context.Context, limit int) (int, error) {
+	r.mu.Lock()
+	cursor := r.startupLostHandoffCursor
+	r.mu.Unlock()
+	nextCursor, visited, err := r.orchestrator.settleLostProviderTerminalHandoffsPass(ctx, false, cursor, limit)
+	r.mu.Lock()
+	r.startupLostHandoffCursor = nextCursor
+	r.mu.Unlock()
+	return visited, err
+}
+
+func (r *Runtime) replayStartupExecutionOutbox(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil {
+		return false, nil
+	}
+	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
+		visited, _, err := r.orchestrator.drainExecutionOutboxPass(ctx, limit)
+		return visited, err
+	}, r.hasPendingExecutionOutbox)
+}
+
+func logDeferredStartupReplay(resource string) {
+	slog.Warn("startup replay budget exhausted; normal completion loop will continue", "resource", resource, "max_passes", providerlimits.StartupReplayMaxPasses, "max_items", providerlimits.StartupReplayMaxItems)
+}
+
 func (r *Runtime) drainProviderCompletionReceipts(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || r.orchestrator.fsStore == nil || r.orchestrator.schemas == nil {
 		return nil
 	}
 	for {
-		visited, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx, true)
+		visited, err := r.orchestrator.ingestProviderCompletionReceiptPass(ctx)
 		if err != nil {
 			return err
 		}
@@ -776,7 +1003,7 @@ func (r *Runtime) drainProviderTerminalHandoffs(ctx context.Context) error {
 		return nil
 	}
 	for {
-		visited, err := r.orchestrator.convergeProviderTerminalHandoffsStrict(ctx)
+		visited, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx)
 		if err != nil {
 			return err
 		}
@@ -907,21 +1134,171 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	if err := r.drainProviderCompletionReceipts(ctx); err != nil {
+	guardsDeferred, err := r.replayStartupProviderProcessGuards(ctx)
+	if err != nil {
+		return fmt.Errorf("replay provider process guards: %w", err)
+	}
+	if guardsDeferred {
+		logDeferredStartupReplay("provider_process_guards")
+		// Guard evidence must settle before receipts and handoffs can authorize
+		// terminal recovery, so defer each later stage to the completion loop.
+		r.setStartupRecoveryPending(true, true, true, true)
+		return nil
+	}
+	receiptsDeferred, err := r.replayStartupProviderCompletionReceipts(ctx)
+	if err != nil {
 		return fmt.Errorf("replay provider completion receipts: %w", err)
 	}
-	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
+	if receiptsDeferred {
+		logDeferredStartupReplay("provider_completion_receipts")
+		r.setStartupRecoveryPending(false, true, true, true)
+		return nil
+	}
+	handoffsDeferred, err := r.replayStartupProviderTerminalHandoffs(ctx)
+	if err != nil {
 		return fmt.Errorf("converge provider terminal handoffs: %w", err)
 	}
-	if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+	if handoffsDeferred {
+		logDeferredStartupReplay("provider_terminal_handoffs")
+		r.setStartupRecoveryPending(false, false, true, true)
+		return nil
+	}
+	lostHandoffsDeferred, err := r.replayStartupLostProviderTerminalHandoffs(ctx)
+	if err != nil {
 		return fmt.Errorf("settle lost provider terminal handoffs: %w", err)
 	}
+	if lostHandoffsDeferred {
+		logDeferredStartupReplay("lost_provider_terminal_handoffs")
+		r.setStartupRecoveryPending(false, false, false, true)
+		return nil
+	}
+	r.setStartupRecoveryPending(false, false, false, false)
 	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
 		return err
 	}
-	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
-		slog.Warn("startup attempt-cancel replay will retry during runtime", "error", err)
+	return nil
+}
+
+func (r *Runtime) beginStartupRecovery() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.startupRecoveryGate = make(chan struct{})
+	r.startupRecoveryOpen = false
+	r.startupRecoveryWait = false
+	r.startupGuardWait = false
+	r.startupReceiptWait = false
+	r.startupHandoffWait = false
+	r.startupLostHandoffWait = false
+	r.startupGuardCursor = ""
+	r.startupLostHandoffCursor = ""
+}
+
+func (r *Runtime) setStartupRecoveryPending(guardsPending, receiptsPending, handoffsPending, lostHandoffsPending bool) {
+	r.mu.Lock()
+	r.startupGuardWait = guardsPending
+	r.startupReceiptWait = receiptsPending
+	r.startupHandoffWait = handoffsPending
+	r.startupLostHandoffWait = lostHandoffsPending
+	r.startupRecoveryWait = guardsPending || receiptsPending || handoffsPending || lostHandoffsPending
+	r.mu.Unlock()
+}
+
+func (r *Runtime) startupRecoveryPending() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startupRecoveryWait
+}
+
+func (r *Runtime) startupRecoveryIsOpen() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startupRecoveryOpen
+}
+
+func (r *Runtime) awaitStartupRecovery(ctx context.Context) error {
+	r.mu.Lock()
+	gate := r.startupRecoveryGate
+	open := r.startupRecoveryOpen
+	r.mu.Unlock()
+	if gate == nil || open {
+		return nil
 	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gate:
+		return nil
+	}
+}
+
+func (r *Runtime) pendingStartupRecoveryStage() startupRecoveryStage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.startupGuardWait:
+		return startupRecoveryStageGuards
+	case r.startupReceiptWait:
+		return startupRecoveryStageReceipts
+	case r.startupHandoffWait:
+		return startupRecoveryStageHandoffs
+	case r.startupLostHandoffWait:
+		return startupRecoveryStageLostHandoffs
+	default:
+		return startupRecoveryStageComplete
+	}
+}
+
+func (r *Runtime) completeStartupRecoveryStage(stage startupRecoveryStage) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch stage {
+	case startupRecoveryStageGuards:
+		r.startupGuardWait = false
+	case startupRecoveryStageReceipts:
+		r.startupReceiptWait = false
+	case startupRecoveryStageHandoffs:
+		r.startupHandoffWait = false
+	case startupRecoveryStageLostHandoffs:
+		r.startupLostHandoffWait = false
+	}
+	// Keep the gate pending until finishStartupRecovery succeeds, so a
+	// retryable finalization failure cannot bypass the startup barriers.
+	return !r.startupGuardWait && !r.startupReceiptWait && !r.startupHandoffWait && !r.startupLostHandoffWait
+}
+
+// finishStartupRecovery preserves startup ordering after bounded provider
+// replay: only completion processing may release reconciliation and dispatch.
+func (r *Runtime) finishStartupRecovery(ctx context.Context, replayDeferred bool) error {
+	if replayDeferred {
+		if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
+			return err
+		}
+	}
+	if _, err := r.reconciler.RunStartup(ctx); err != nil {
+		return fmt.Errorf("startup reconcile: %w", err)
+	}
+	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
+		return fmt.Errorf("startup stale cancellation replay: %w", err)
+	}
+	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("startup run repair: %w", err)
+	}
+	if r.preDispatchRecovery != nil {
+		if err := r.preDispatchRecovery(ctx); err != nil {
+			return fmt.Errorf("startup pre-dispatch recovery: %w", err)
+		}
+	}
+	r.mu.Lock()
+	if !r.startupRecoveryOpen {
+		r.startupGuardWait = false
+		r.startupReceiptWait = false
+		r.startupHandoffWait = false
+		r.startupLostHandoffWait = false
+		r.startupRecoveryWait = false
+		r.startupRecoveryOpen = true
+		close(r.startupRecoveryGate)
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -929,15 +1306,12 @@ func (r *Runtime) recoverExecutionOutboxStartup(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
-		return err
-	}
-	pending, err := r.hasPendingExecutionOutbox(ctx)
+	deferred, err := r.replayStartupExecutionOutbox(ctx)
 	if err != nil {
 		return err
 	}
-	if pending {
-		slog.Warn("startup execution outbox recovery left retryable rows pending; completion loop will retry")
+	if deferred {
+		logDeferredStartupReplay("execution_outbox")
 	}
 	return nil
 }

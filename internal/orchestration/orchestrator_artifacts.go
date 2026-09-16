@@ -16,7 +16,9 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/runtimefs"
+	"kingdom/internal/securefs"
 	"kingdom/internal/state"
 	"kingdom/internal/trackedfs"
 	"kingdom/internal/workspace"
@@ -516,14 +518,21 @@ func publishDestinationRelativePath(runArtifactRoot string, artifact artifactOut
 
 func artifactBytesForProjection(workspacePath string, artifactContentByPath map[string][]byte, relativePath string) ([]byte, error) {
 	if raw, ok := artifactContentByPath[relativePath]; ok {
+		if int64(len(raw)) > providerlimits.TrackedWorkspaceFileBytes {
+			return nil, &providerlimits.LimitExceededError{Resource: "artifact projection", Limit: providerlimits.TrackedWorkspaceFileBytes}
+		}
 		return raw, nil
 	}
-	sourcePath, err := resolvePathWithinRoot(workspacePath, relativePath)
+	root, err := securefs.OpenRoot(workspacePath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve publish source path: %w", err)
+		return nil, fmt.Errorf("open publish source root: %w", err)
 	}
-	raw, err := os.ReadFile(sourcePath)
+	defer root.Close()
+	raw, err := root.ReadRegular(relativePath, providerlimits.TrackedWorkspaceFileBytes)
 	if err != nil {
+		if errors.Is(err, securefs.ErrLimitExceeded) {
+			return nil, &providerlimits.LimitExceededError{Resource: "artifact projection", Limit: providerlimits.TrackedWorkspaceFileBytes}
+		}
 		return nil, fmt.Errorf("read publish source artifact: %w", err)
 	}
 	return raw, nil

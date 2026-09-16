@@ -189,6 +189,36 @@ func TestRemoveEntryUnlinksFinalSymlinkWithoutFollowingIt(t *testing.T) {
 	assertFileContents(t, outsidePath, "outside")
 }
 
+func TestRemoveTreeUnlinksNestedSymlinksWithoutFollowingThem(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	targetPath := filepath.Join(rootPath, "target")
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.MkdirAll(filepath.Join(targetPath, "nested"), 0o755); err != nil {
+		t.Fatalf("create target tree: %v", err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside guard: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(targetPath, "nested", "outside-link")); err != nil {
+		t.Fatalf("create nested symlink: %v", err)
+	}
+
+	root, err := OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open secure root: %v", err)
+	}
+	defer root.Close()
+	if err := root.RemoveTree("target"); err != nil {
+		t.Fatalf("remove target tree: %v", err)
+	}
+	if _, err := os.Lstat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("target tree remains: %v", err)
+	}
+	assertFileContents(t, outsidePath, "outside")
+}
+
 func assertFileContents(t *testing.T, path, want string) {
 	t.Helper()
 	raw, err := os.ReadFile(path)

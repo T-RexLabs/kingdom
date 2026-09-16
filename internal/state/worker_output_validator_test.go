@@ -12,6 +12,7 @@ import (
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/providerlimits"
 )
 
 func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
@@ -232,6 +233,67 @@ func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 
 	if got := countArtifactsForAttempt(t, db, req.AttemptID); got != 0 {
 		t.Fatalf("expected no artifacts persisted on checksum mismatch, got %d", got)
+	}
+}
+
+func TestWorkerOutputValidatorRejectsOneByteArtifactOverflowWithoutPersistence(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
+	workspace := t.TempDir()
+	artifactPath := filepath.Join(workspace, "report.bin")
+	if err := os.WriteFile(artifactPath, nil, 0o600); err != nil {
+		t.Fatalf("create oversized artifact: %v", err)
+	}
+	if err := os.Truncate(artifactPath, providerlimits.TrackedWorkspaceFileBytes+1); err != nil {
+		t.Fatalf("truncate oversized artifact: %v", err)
+	}
+	req := WorkerOutputValidationRequest{
+		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_oversized_artifact", ProducerRole: "king", WorkspacePath: workspace,
+		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.bin","mime":"application/octet-stream","path":"report.bin"}],"error_reason":null}`),
+		CreatedAt:  "2026-03-01T13:10:00Z",
+	}
+	_, err := validator.ValidateAndPersist(context.Background(), req)
+	var limitErr *providerlimits.LimitExceededError
+	if !errors.As(err, &limitErr) {
+		t.Fatalf("one-byte artifact overflow error=%v, want LimitExceededError", err)
+	}
+	var validationErr *WorkerOutputValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("one-byte artifact overflow error=%v, want WorkerOutputValidationError", err)
+	}
+	if validationErr.Code != string(errorcatalog.CodeResourceLimitExceeded) {
+		t.Fatalf("one-byte artifact overflow code=%q, want %q", validationErr.Code, errorcatalog.CodeResourceLimitExceeded)
+	}
+	if got := countArtifactsForAttempt(t, db, req.AttemptID); got != 0 {
+		t.Fatalf("limit failure persisted %d artifacts", got)
+	}
+}
+
+func TestWorkerOutputValidatorDoesNotFollowArtifactSymlinks(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
+	workspace := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write external artifact: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(workspace, "report.md")); err != nil {
+		t.Fatalf("create artifact symlink: %v", err)
+	}
+	req := WorkerOutputValidationRequest{
+		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_symlink_artifact", ProducerRole: "king", WorkspacePath: workspace,
+		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.md","mime":"text/markdown","path":"report.md"}],"error_reason":null}`),
+		CreatedAt:  "2026-03-01T13:10:00Z",
+	}
+	if _, err := validator.ValidateAndPersist(context.Background(), req); err == nil {
+		t.Fatal("expected symlink artifact read to fail")
+	}
+	if got := countArtifactsForAttempt(t, db, req.AttemptID); got != 0 {
+		t.Fatalf("symlink failure persisted %d artifacts", got)
 	}
 }
 

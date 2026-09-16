@@ -89,6 +89,7 @@ type orchestrationLoop struct {
 	notifyCompletionReady          func()
 	closeMode                      *runtimeCloseMode
 	processGuardRuntimeRoot        string
+	processGuardAbsent             func(executionstore.ProviderProcessGuard) bool
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/sqlitex"
+
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
@@ -257,45 +259,21 @@ func (s *TransitionService) applyWithEffects(ctx context.Context, req Transition
 }
 
 func (s *TransitionService) applyWithEffectsWithOptions(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
-	return retrySQLiteBusy(ctx, func() error {
-		return s.applyWithEffectsWithOptionsOnce(ctx, req, effects, opts)
-	})
-}
-
-func (s *TransitionService) applyWithEffectsWithOptionsOnce(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
 	if !bypassesTransitionValidation(req) {
 		if err := validateTransition(req.Entity, req.FromState, req.ToState); err != nil {
 			return err
 		}
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transition transaction: %w", err)
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := s.applyTxWithOptions(ctx, tx, req, opts); err != nil {
-		return err
-	}
-
-	if effects != nil {
-		if err := effects(ctx, tx); err != nil {
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		if err := s.applyTxWithOptions(ctx, tx, req, opts); err != nil {
 			return err
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transition transaction: %w", err)
-	}
-	committed = true
-	return nil
+		if effects != nil {
+			return effects(ctx, tx)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
 }
 
 func (s *TransitionService) applyTx(ctx context.Context, tx *sql.Tx, req TransitionRequest) error {

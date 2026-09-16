@@ -29,19 +29,18 @@ type providerCompletionReceiptWire struct {
 	StructuredPayload    json.RawMessage `json:"structured_payload"`
 }
 
-func (o *orchestrationLoop) ingestProviderCompletionReceipts(ctx context.Context) error {
-	_, err := o.ingestProviderCompletionReceiptPass(ctx, false)
-	return err
+func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Context) (int, error) {
+	return o.ingestProviderCompletionReceiptPassWithLimit(ctx, providerReceiptInvocationPassLimit)
 }
 
-func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Context, strict bool) (int, error) {
+func (o *orchestrationLoop) ingestProviderCompletionReceiptPassWithLimit(ctx context.Context, limit int) (int, error) {
 	if o == nil || o.executionStore == nil || o.fsStore == nil || o.schemas == nil {
 		return 0, fmt.Errorf("provider completion receipt ingestion is not configured")
 	}
 	o.receiptIngestionMu.Lock()
 	defer o.receiptIngestionMu.Unlock()
 
-	candidates, err := o.executionStore.ListProviderReceiptIngestionCandidates(ctx, o.receiptIngestionCursor, providerReceiptInvocationPassLimit)
+	candidates, err := o.executionStore.ListProviderReceiptIngestionCandidates(ctx, o.receiptIngestionCursor, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -49,17 +48,21 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptPass(ctx context.Cont
 		o.receiptIngestionCursor = ""
 		return 0, nil
 	}
-	var ingestionErr error
+	visited := 0
 	for _, candidate := range candidates {
 		if err := o.ingestProviderCompletionReceiptCandidate(ctx, candidate); err != nil {
 			var infrastructureErr *providerReceiptInfrastructureError
-			if strict || !errors.As(err, &infrastructureErr) {
-				ingestionErr = errors.Join(ingestionErr, fmt.Errorf("ingest provider completion receipt invocation %q: %w", candidate.ProviderInvocationID, err))
+			if errors.As(err, &infrastructureErr) && infrastructureErr.durablyDispositioned {
+				o.receiptIngestionCursor = candidate.ProviderInvocationID
+				visited++
+				continue
 			}
+			return visited, fmt.Errorf("ingest provider completion receipt invocation %q: %w", candidate.ProviderInvocationID, err)
 		}
 		o.receiptIngestionCursor = candidate.ProviderInvocationID
+		visited++
 	}
-	return len(candidates), ingestionErr
+	return visited, nil
 }
 
 func (o *orchestrationLoop) ingestProviderCompletionReceiptInvocation(ctx context.Context, providerInvocationID string) error {
@@ -97,13 +100,13 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptCandidate(ctx context
 		if err := o.persistProviderReceiptInfrastructureDisposition(ctx, candidate.ProviderInvocationID, "receipt_inbox_unavailable", "completion receipt inbox is unavailable"); err != nil {
 			return err
 		}
-		return &providerReceiptInfrastructureError{cause: listErr}
+		return &providerReceiptInfrastructureError{cause: listErr, durablyDispositioned: true}
 	}
 	if listErr != nil && !errors.Is(listErr, securefs.ErrLimitExceeded) {
 		if err := o.persistProviderReceiptInfrastructureDisposition(ctx, candidate.ProviderInvocationID, "receipt_inbox_traversal_failed", "completion receipt inbox could not be traversed safely"); err != nil {
 			return err
 		}
-		return &providerReceiptInfrastructureError{cause: listErr}
+		return &providerReceiptInfrastructureError{cause: listErr, durablyDispositioned: true}
 	}
 	if errors.Is(listErr, securefs.ErrLimitExceeded) {
 		if _, err := o.ingestProviderCompletionReceiptRequest(ctx, executionstore.IngestProviderCompletionReceiptRequest{
@@ -181,7 +184,7 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 		if _, err := o.ingestProviderCompletionReceiptRequest(ctx, req); err != nil {
 			return err
 		}
-		return &providerReceiptInfrastructureError{cause: readErr}
+		return &providerReceiptInfrastructureError{cause: readErr, durablyDispositioned: true}
 	}
 	req.WireByteCount = int64(len(receipt.Wire))
 	wireHash := sha256.Sum256(receipt.Wire)
@@ -222,7 +225,8 @@ func (o *orchestrationLoop) ingestProviderCompletionReceiptEntry(ctx context.Con
 }
 
 type providerReceiptInfrastructureError struct {
-	cause error
+	cause                error
+	durablyDispositioned bool
 }
 
 func (e *providerReceiptInfrastructureError) Error() string {

@@ -39,65 +39,114 @@ func (o *orchestrationLoop) acknowledgeProviderProcessGuard(ctx context.Context,
 	return err
 }
 
+const providerProcessGuardPassLimit = 128
+
+// providerProcessGuardPassResult distinguishes a live guard blocking startup
+// recovery from a page that was simply exhausted.
+type providerProcessGuardPassResult struct {
+	NextCursor string
+	Visited    int
+	Blocked    bool
+}
+
 func (o *orchestrationLoop) ingestPendingProviderProcessGuards(ctx context.Context) error {
 	if o == nil || o.executionStore == nil || strings.TrimSpace(o.processGuardRuntimeRoot) == "" {
 		return nil
 	}
 	for cursor := ""; ; {
-		guards, err := o.executionStore.ListPendingProviderProcessGuards(ctx, cursor, 128)
+		result, err := o.ingestPendingProviderProcessGuardsPass(ctx, cursor, providerProcessGuardPassLimit, false)
 		if err != nil {
 			return err
 		}
-		if len(guards) == 0 {
-			break
+		if result.Visited < providerProcessGuardPassLimit {
+			return nil
 		}
-		for _, guard := range guards {
-			cursor = guard.GuardID
-			result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
-			if err != nil {
-				if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged && processguardian.ManagedProcessAbsent(int(guard.ChildPID), parseTreeID(guard.TreeID), guard.ChildIdentityToken, guard.TreeIdentityToken) {
+		cursor = result.NextCursor
+	}
+}
+
+func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.Context, cursor string, limit int, blockOnLiveGuard bool) (providerProcessGuardPassResult, error) {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(o.processGuardRuntimeRoot) == "" {
+		return providerProcessGuardPassResult{NextCursor: cursor}, nil
+	}
+	guards, err := o.executionStore.ListPendingProviderProcessGuards(ctx, cursor, limit)
+	if err != nil {
+		return providerProcessGuardPassResult{NextCursor: cursor}, err
+	}
+	pass := providerProcessGuardPassResult{NextCursor: cursor}
+	for _, guard := range guards {
+		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
+		if err != nil {
+			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged {
+				if o.pendingProviderProcessGuardAbsent(guard) {
 					if recoverErr := o.executionStore.RecoverProviderProcessGuardAbsent(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); recoverErr != nil {
-						return recoverErr
+						return pass, recoverErr
 					}
+				} else if blockOnLiveGuard {
+					return providerProcessGuardPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
 				}
-				continue
 			}
-			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
-				if digest == guard.QuiescenceEvidenceSHA256 {
-					if processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
-						_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano))
-					}
-				}
-				continue
-			}
-			_, err = o.executionStore.IngestProviderProcessGuardQuiescence(ctx, executionstore.IngestProviderProcessGuardQuiescenceRequest{
-				GuardID: result.GuardID, ProviderInvocationID: guard.ProviderInvocationID, AttemptID: guard.AttemptID, RunID: guard.RunID, NodeRunID: guard.NodeRunID,
-				Platform: result.Platform, GuardianPID: int64(result.GuardianPID), GuardianIdentityToken: result.GuardianIdentityToken, ChildPID: int64(result.ChildPID), ChildIdentityToken: result.ChildIdentityToken,
-				TreeID: strconv.Itoa(result.TreeID), TreeIdentityToken: result.TreeIdentityToken, QuiescenceCapability: result.QuiescenceCapability,
-				QuiescentAt: o.now().UTC().Format(time.RFC3339Nano), ExitCode: int64(result.ExitCode), ExitSignal: int64(result.ExitSignal), TerminationForced: result.Forced, FailureCode: result.FailureCode, FailureText: result.FailureText,
-				EvidenceSHA256: digest, EvidenceJSON: evidence,
-			})
-			if err != nil {
-				return err
-			}
-			// Cleanup is deliberately after the authoritative SQLite commit. A
-			// cleanup failure is replayable evidence debt, not lost quiescence.
-			if processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
+			// An acknowledged live process has no terminal evidence to ingest yet.
+			// Normal completion processing skips it without treating it as settled.
+			pass.NextCursor = guard.GuardID
+			pass.Visited++
+			continue
+		}
+		if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
+			if digest == guard.QuiescenceEvidenceSHA256 && processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
 				_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano))
 			}
+			pass.NextCursor = guard.GuardID
+			pass.Visited++
+			continue
 		}
-		if len(guards) < 128 {
-			break
+		if _, err := o.executionStore.IngestProviderProcessGuardQuiescence(ctx, executionstore.IngestProviderProcessGuardQuiescenceRequest{
+			GuardID: evidenceResult.GuardID, ProviderInvocationID: guard.ProviderInvocationID, AttemptID: guard.AttemptID, RunID: guard.RunID, NodeRunID: guard.NodeRunID,
+			Platform: evidenceResult.Platform, GuardianPID: int64(evidenceResult.GuardianPID), GuardianIdentityToken: evidenceResult.GuardianIdentityToken, ChildPID: int64(evidenceResult.ChildPID), ChildIdentityToken: evidenceResult.ChildIdentityToken,
+			TreeID: strconv.Itoa(evidenceResult.TreeID), TreeIdentityToken: evidenceResult.TreeIdentityToken, QuiescenceCapability: evidenceResult.QuiescenceCapability,
+			QuiescentAt: o.now().UTC().Format(time.RFC3339Nano), ExitCode: int64(evidenceResult.ExitCode), ExitSignal: int64(evidenceResult.ExitSignal), TerminationForced: evidenceResult.Forced, FailureCode: evidenceResult.FailureCode, FailureText: evidenceResult.FailureText,
+			EvidenceSHA256: digest, EvidenceJSON: evidence,
+		}); err != nil {
+			return pass, err
 		}
+		// Cleanup is deliberately after the authoritative SQLite commit. A
+		// cleanup failure is replayable evidence debt, not lost quiescence.
+		if processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
+			_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano))
+		}
+		pass.NextCursor = guard.GuardID
+		pass.Visited++
 	}
-	return nil
+	return pass, nil
+}
+
+func (o *orchestrationLoop) pendingProviderProcessGuardAbsent(guard executionstore.ProviderProcessGuard) bool {
+	if o != nil && o.processGuardAbsent != nil {
+		return o.processGuardAbsent(guard)
+	}
+	return processguardian.ManagedProcessAbsent(int(guard.ChildPID), parseTreeID(guard.TreeID), guard.ChildIdentityToken, guard.TreeIdentityToken)
 }
 
 func parseTreeID(value string) int { parsed, _ := strconv.Atoi(value); return parsed }
 
 func (o *orchestrationLoop) settleLostProviderTerminalHandoffs(ctx context.Context, onlyMarked bool) error {
 	for cursor := ""; ; {
-		rows, err := o.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, ae.completion_mode, ae.session_ref,
+		nextCursor, visited, err := o.settleLostProviderTerminalHandoffsPass(ctx, onlyMarked, cursor, providerTerminalHandoffPassLimit)
+		if err != nil {
+			return err
+		}
+		if visited < providerTerminalHandoffPassLimit {
+			return nil
+		}
+		cursor = nextCursor
+	}
+}
+
+func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.Context, onlyMarked bool, cursor string, limit int) (string, int, error) {
+	if o == nil || o.db == nil {
+		return cursor, 0, nil
+	}
+	rows, err := o.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, ae.completion_mode, ae.session_ref,
 		pi.provider_invocation_id, ppg.lease_owner, ppg.lease_version, nr.node_id, nr.required_role
 		FROM attempt_executions ae
 		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
@@ -107,40 +156,58 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffs(ctx context.Conte
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
 		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
 		AND (? = 0 OR EXISTS (SELECT 1 FROM provider_process_guards marked WHERE marked.provider_invocation_id = pi.provider_invocation_id AND marked.terminal_recovery_required_at IS NOT NULL))
-		GROUP BY pi.provider_invocation_id ORDER BY pi.provider_invocation_id LIMIT 128`, cursor, boolToQueryInt(onlyMarked))
-		if err != nil {
-			return err
-		}
-		var candidates []asyncExecutionResult
-		for rows.Next() {
-			var result asyncExecutionResult
-			if err := rows.Scan(&result.attemptID, &result.run.RunID, &result.attempt.NodeRunID, &result.completionMode, &result.sessionID, &result.providerInvocationID, &result.expectedLeaseOwner, &result.expectedLeaseVersion, &result.node.NodeID, &result.node.RequiredRole); err != nil {
-				return err
-			}
-			result.node.NodeClass = result.node.NodeID
-			result.attempt.ExecutionMode = executionstore.ExecutionModeProviderBacked
-			result.attempt.CompletionMode = result.completionMode
-			result.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation was lost before durable handoff.", EvidenceSource: "process_guard"}
-			result.providerDiagnosticsJSON = `{}`
-			result.completionStructuredPayloadJSON = `{}`
-			result.providerStreamObservation = opencode.InvocationStreamObservation{ProcessExited: true, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}
-			candidates = append(candidates, result)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return err
-		}
-		rows.Close()
-		for _, result := range candidates {
-			cursor = result.providerInvocationID
-			if err := o.commitRecoveredGuardFailure(ctx, result); err != nil {
-				return err
-			}
-		}
-		if len(candidates) < 128 {
-			return nil
-		}
+		GROUP BY pi.provider_invocation_id ORDER BY pi.provider_invocation_id LIMIT ?`, cursor, boolToQueryInt(onlyMarked), limit)
+	if err != nil {
+		return cursor, 0, err
 	}
+	defer rows.Close()
+	var candidates []asyncExecutionResult
+	for rows.Next() {
+		var result asyncExecutionResult
+		if err := rows.Scan(&result.attemptID, &result.run.RunID, &result.attempt.NodeRunID, &result.completionMode, &result.sessionID, &result.providerInvocationID, &result.expectedLeaseOwner, &result.expectedLeaseVersion, &result.node.NodeID, &result.node.RequiredRole); err != nil {
+			return cursor, 0, err
+		}
+		result.node.NodeClass = result.node.NodeID
+		result.attempt.ExecutionMode = executionstore.ExecutionModeProviderBacked
+		result.attempt.CompletionMode = result.completionMode
+		result.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation was lost before durable handoff.", EvidenceSource: "process_guard"}
+		result.providerDiagnosticsJSON = `{}`
+		result.completionStructuredPayloadJSON = `{}`
+		result.providerStreamObservation = opencode.InvocationStreamObservation{ProcessExited: true, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}
+		candidates = append(candidates, result)
+	}
+	if err := rows.Err(); err != nil {
+		return cursor, 0, err
+	}
+	visited := 0
+	for _, result := range candidates {
+		if err := o.commitRecoveredGuardFailure(ctx, result); err != nil {
+			return cursor, visited, err
+		}
+		cursor = result.providerInvocationID
+		visited++
+	}
+	return cursor, visited, nil
+}
+
+func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {
+	if o == nil || o.db == nil {
+		return false, nil
+	}
+	var found int
+	err := o.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM attempt_executions ae
+		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
+		JOIN provider_process_guards ppg ON ppg.provider_invocation_id = pi.provider_invocation_id AND ppg.owner_kind = 'decree_attempt'
+		WHERE ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL
+		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
+		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
+	)`).Scan(&found)
+	if err != nil {
+		return false, err
+	}
+	return found != 0, nil
 }
 
 func boolToQueryInt(value bool) int {

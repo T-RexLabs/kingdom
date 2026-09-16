@@ -250,21 +250,17 @@ func providerTerminalHandoffStoreRequest(wire providerTerminalHandoffWire) execu
 }
 
 func (o *orchestrationLoop) convergeProviderTerminalHandoffs(ctx context.Context) (int, error) {
-	return o.convergeProviderTerminalHandoffsMode(ctx, false)
+	return o.convergeProviderTerminalHandoffsWithLimit(ctx, providerTerminalHandoffPassLimit)
 }
 
-func (o *orchestrationLoop) convergeProviderTerminalHandoffsStrict(ctx context.Context) (int, error) {
-	return o.convergeProviderTerminalHandoffsMode(ctx, true)
-}
-
-func (o *orchestrationLoop) convergeProviderTerminalHandoffsMode(ctx context.Context, strict bool) (int, error) {
+func (o *orchestrationLoop) convergeProviderTerminalHandoffsWithLimit(ctx context.Context, limit int) (int, error) {
 	if o == nil || o.executionStore == nil {
 		return 0, fmt.Errorf("provider terminal handoff convergence is not configured")
 	}
 	o.terminalHandoffMu.Lock()
 	defer o.terminalHandoffMu.Unlock()
 
-	handoffs, err := o.executionStore.ListPendingProviderTerminalHandoffs(ctx, o.terminalHandoffCursor, providerTerminalHandoffPassLimit)
+	handoffs, err := o.executionStore.ListPendingProviderTerminalHandoffs(ctx, o.terminalHandoffCursor, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -272,20 +268,21 @@ func (o *orchestrationLoop) convergeProviderTerminalHandoffsMode(ctx context.Con
 		o.terminalHandoffCursor = ""
 		return 0, nil
 	}
-	var convergenceErr error
+	visited := 0
 	for _, handoff := range handoffs {
 		if err := o.convergeProviderTerminalHandoff(ctx, handoff); err != nil {
 			var infrastructureErr *providerReceiptInfrastructureError
-			if errors.As(err, &infrastructureErr) {
-				slog.Warn("provider terminal handoff receipt infrastructure will retry", "handoff_id", handoff.HandoffID, "error", err)
+			if errors.As(err, &infrastructureErr) && infrastructureErr.durablyDispositioned {
+				o.terminalHandoffCursor = handoff.ProviderInvocationID
+				visited++
+				continue
 			}
-			if strict || !errors.As(err, &infrastructureErr) {
-				convergenceErr = errors.Join(convergenceErr, fmt.Errorf("converge provider terminal handoff %q: %w", handoff.HandoffID, err))
-			}
+			return visited, fmt.Errorf("converge provider terminal handoff %q: %w", handoff.HandoffID, err)
 		}
 		o.terminalHandoffCursor = handoff.ProviderInvocationID
+		visited++
 	}
-	return len(handoffs), convergenceErr
+	return visited, nil
 }
 
 func (o *orchestrationLoop) convergeProviderTerminalHandoff(ctx context.Context, handoff executionstore.ProviderTerminalHandoff) error {

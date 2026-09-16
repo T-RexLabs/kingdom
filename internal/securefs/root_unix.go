@@ -503,6 +503,87 @@ func removeRootEmptyDir(root *Root, path string) error {
 	return nil
 }
 
+func removeRootTree(root *Root, path string) error {
+	parentFD, leaf, err := openParent(root, path, false, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+	if err := removeTreeEntryAt(parentFD, leaf, path); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return err
+	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return fmt.Errorf("sync secure parent after removing tree %q: %w", path, err)
+	}
+	return nil
+}
+
+func removeTreeEntryAt(parentFD int, name, path string) error {
+	for attempt := 0; attempt < 16; attempt++ {
+		var info unix.Stat_t
+		err := unix.Fstatat(parentFD, name, &info, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil {
+			return err
+		}
+		if info.Mode&unix.S_IFMT != unix.S_IFDIR {
+			if err := unix.Unlinkat(parentFD, name, 0); err == nil || errors.Is(err, unix.ENOENT) {
+				return nil
+			} else if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.ENOTDIR) {
+				continue
+			} else {
+				return fmt.Errorf("remove secure entry %q: %w", path, err)
+			}
+		}
+
+		childFD, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+				continue
+			}
+			return fmt.Errorf("open secure directory %q for removal: %w", path, err)
+		}
+		err = removeTreeDirectoryAt(childFD, path)
+		_ = unix.Close(childFD)
+		if err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR); err == nil || errors.Is(err, unix.ENOENT) {
+			return nil
+		} else if errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ENOTDIR) {
+			continue
+		} else {
+			return fmt.Errorf("remove secure directory %q: %w", path, err)
+		}
+	}
+	return fmt.Errorf("secure tree %q kept changing during removal", path)
+}
+
+func removeTreeDirectoryAt(directoryFD int, path string) error {
+	readFD, err := unix.Dup(directoryFD)
+	if err != nil {
+		return fmt.Errorf("duplicate secure directory %q for removal: %w", path, err)
+	}
+	directory := os.NewFile(uintptr(readFD), path)
+	if directory == nil {
+		_ = unix.Close(readFD)
+		return fmt.Errorf("open secure directory %q for removal: invalid descriptor", path)
+	}
+	defer directory.Close()
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("read secure directory %q for removal: %w", path, err)
+	}
+	for _, entry := range entries {
+		if err := removeTreeEntryAt(directoryFD, entry.Name(), path+"/"+entry.Name()); err != nil && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+	}
+	return nil
+}
+
 func openRootDir(root *Root, path string) (int, error) {
 	if root == nil || root.fd < 0 {
 		return -1, fmt.Errorf("secure root is closed")

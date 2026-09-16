@@ -1,7 +1,7 @@
 package opencode
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 )
 
 type SessionAdapterConfig struct {
@@ -165,6 +166,37 @@ type stderrCapture struct {
 type providerTimeoutError struct {
 	TimeoutType string
 	Timeout     time.Duration
+}
+
+type providerStreamBudget struct {
+	eventCount  int
+	eventBytes  int
+	outputBytes int
+}
+
+func (b *providerStreamBudget) consumeEvent(bytes int) error {
+	if bytes > providerlimits.OpenCodeEventBytes-b.eventBytes {
+		return &providerlimits.LimitExceededError{Resource: "event stream", Limit: int64(providerlimits.OpenCodeEventBytes)}
+	}
+	if b.eventCount == providerlimits.OpenCodeEventCount {
+		return &providerlimits.CountExceededError{Resource: "event stream", Limit: providerlimits.OpenCodeEventCount}
+	}
+	b.eventBytes += bytes
+	b.eventCount++
+	return nil
+}
+
+func (b *providerStreamBudget) consumeOutput(text string) error {
+	bytes := len(text)
+	if b.outputBytes > 0 {
+		// Provisional and terminal assembly joins adjacent text parts with a newline.
+		bytes++
+	}
+	if bytes > providerlimits.CanonicalOutputBytes-b.outputBytes {
+		return &providerlimits.LimitExceededError{Resource: "canonical output", Limit: int64(providerlimits.CanonicalOutputBytes)}
+	}
+	b.outputBytes += bytes
+	return nil
 }
 
 const (
@@ -339,6 +371,16 @@ func executionResultForCancellation(err error, providerSessionID, failureText st
 	}).Result
 }
 
+func executionResultForResourceLimit(err error, providerSessionID string) attemptCompletionResult {
+	return attemptCompletionResult{
+		State:             attemptCompletionStateFailed,
+		ReasonCode:        "resource_limit_exceeded",
+		FailureText:       err.Error(),
+		ProviderSessionID: strings.TrimSpace(providerSessionID),
+		EvidenceSource:    completionEvidenceSourceStream,
+	}
+}
+
 func canonicalSettledOutputText(terminalText, latestContinuationText string, usedContinuation bool) string {
 	trimmedTerminal := strings.TrimSpace(terminalText)
 	if !usedContinuation {
@@ -426,6 +468,9 @@ func (a *SessionAdapter) WarmRuntime(ctx context.Context) error {
 }
 
 func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteRequest, sessionID, prompt string, commandOrdinal int) (startedOpencodeRun, error) {
+	if err := validatePromptBytes(prompt); err != nil {
+		return startedOpencodeRun{}, err
+	}
 	// `--thinking` makes `opencode run --format json` emit `reasoning` parts on
 	// the event stream. Without it the stream carries only text/tool/step parts
 	// and reasoning is reachable only via a post-hoc `opencode export`, so the
@@ -497,14 +542,19 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 
 func readStderrCapture(stream io.Reader) stderrCapture {
 	capture := stderrCapture{}
-	reader := bufio.NewReader(stream)
-	lines := make([]string, 0)
+	buffer := make([]byte, 32*1024)
+	lineOpen := false
 	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			lines = append(lines, strings.TrimRight(line, "\r\n"))
-			capture.lineCount++
-			capture.lastLineAt = time.Now().UTC().Format(time.RFC3339)
+		count, err := stream.Read(buffer)
+		if count > 0 {
+			chunk := buffer[:count]
+			capture.raw = appendStderrTail(capture.raw, chunk)
+			newlineCount := bytes.Count(chunk, []byte{'\n'})
+			if newlineCount > 0 {
+				capture.lineCount += newlineCount
+				capture.lastLineAt = time.Now().UTC().Format(time.RFC3339)
+			}
+			lineOpen = chunk[len(chunk)-1] != '\n'
 		}
 		if err != nil {
 			if err != io.EOF {
@@ -513,9 +563,25 @@ func readStderrCapture(stream io.Reader) stderrCapture {
 			break
 		}
 	}
+	if lineOpen {
+		capture.lineCount++
+		capture.lastLineAt = time.Now().UTC().Format(time.RFC3339)
+	}
 	capture.eofSeen = true
-	capture.raw = []byte(strings.Join(lines, "\n"))
 	return capture
+}
+
+func appendStderrTail(existing, next []byte) []byte {
+	limit := providerlimits.StderrTailBytes
+	if len(next) >= limit {
+		return append(existing[:0], next[len(next)-limit:]...)
+	}
+	if len(existing)+len(next) <= limit {
+		return append(existing, next...)
+	}
+	keep := limit - len(next)
+	copy(existing, existing[len(existing)-keep:])
+	return append(existing[:keep], next...)
 }
 
 func startStderrCapture(stream io.Reader) <-chan stderrCapture {
@@ -538,16 +604,32 @@ func runGuardedCommand(ctx context.Context, runner GuardianRunner, command proce
 	if err != nil {
 		return nil, nil, processguardian.Result{}, err
 	}
-	stdoutDone := make(chan []byte, 1)
-	stderrDone := make(chan []byte, 1)
+	type commandReadResult struct {
+		raw []byte
+		err error
+	}
+	stdoutDone := make(chan commandReadResult, 1)
+	stderrDone := make(chan commandReadResult, 1)
 	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
-	go func() { defer stdoutStream.Close(); raw, _ := io.ReadAll(stdoutStream); stdoutDone <- raw }()
-	go func() { defer stderrStream.Close(); raw, _ := io.ReadAll(stderrStream); stderrDone <- raw }()
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) })
+	}
+	go func() {
+		defer stdoutStream.Close()
+		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
+		stdoutDone <- commandReadResult{raw: raw, err: readErr}
+	}()
+	go func() {
+		defer stderrStream.Close()
+		raw, readErr := providerlimits.ReadBoundedOnLimit(stderrStream, providerlimits.GuardedCommandStreamBytes, "command stderr", cancel)
+		stderrDone <- commandReadResult{raw: raw, err: readErr}
+	}()
 	cancelDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = handle.Cancel(context.Background())
+			cancel()
 		case <-cancelDone:
 		}
 	}()
@@ -555,7 +637,7 @@ func runGuardedCommand(ctx context.Context, runner GuardianRunner, command proce
 	close(cancelDone)
 	stdout := <-stdoutDone
 	stderr := <-stderrDone
-	return stdout, stderr, result, firstNonNilError(waitErr, guardianResultError(result))
+	return stdout.raw, stderr.raw, result, firstNonNilError(stdout.err, stderr.err, waitErr, guardianResultError(result))
 }
 
 // awaitGuardedRun deliberately waits without the request context: cancellation
@@ -775,6 +857,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	invocationID := resolveProviderInvocationID(req)
+	launchPrompt := promptWithProviderInvocationMetadata(req.Prompt, req.AttemptID, invocationID)
+	if err := validatePromptBytes(launchPrompt); err != nil {
+		return ExecuteResponse{}, err
+	}
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
 	attemptDone := a.beginAttemptOperation(req.AttemptID)
@@ -789,7 +876,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		OccurredAt:  req.OccurredAt,
 	})
 
-	invocationID := resolveProviderInvocationID(req)
 	startAt := time.Time{}
 	lastEventAt := time.Time{}
 	diagnostics := streamDiagnostics{}
@@ -803,7 +889,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		AttemptID: strings.TrimSpace(req.AttemptID),
 		SessionID: strings.TrimSpace(req.SessionID),
 	}
-	startedRun, err := a.startOpencodeRun(attemptCtx, req, actualSessionID, promptWithProviderInvocationMetadata(req.Prompt, req.AttemptID, invocationID), 1)
+	startedRun, err := a.startOpencodeRun(attemptCtx, req, actualSessionID, launchPrompt, 1)
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
@@ -834,6 +920,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	stderrDone := startStderrCapture(stderr)
 
 	textChunks := make([]string, 0)
+	streamBudget := providerStreamBudget{}
 	stepText := stepOutputAssembler{}
 	var accumulatedTokens TokenUsage
 	stderrSnapshot := stderrCapture{}
@@ -903,7 +990,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		resp = withInvocationStreamObservation(resp, observation)
 		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, providerRetryAt, providerRetryAfterMS))
 	}
-	if err := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+	if err := decodeOpencodeRunEventStream(stdout, streamBudget.consumeEvent, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		now := time.Now().UTC()
 		diagnostics.EventCount++
@@ -993,6 +1080,9 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		if event.Type != "text" || strings.TrimSpace(event.Part.Text) == "" {
 			return nil
 		}
+		if err := streamBudget.consumeOutput(event.Part.Text); err != nil {
+			return err
+		}
 		execDiag.LastProgressTextLen = len(event.Part.Text)
 		sum := sha256.Sum256([]byte(event.Part.Text))
 		execDiag.LastProgressTextSHA = fmt.Sprintf("%x", sum[:])
@@ -1061,6 +1151,21 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
 			})
 			return finish(executeResponseForCompletionResult(result)), executeErrorForCompletionResult(result)
+		}
+		if providerlimits.IsResourceLimitError(err) {
+			result := executionResultForResourceLimit(err, actualSessionID)
+			payload, _ := json.Marshal(map[string]any{
+				"error":                      result.FailureText,
+				"stream_diagnostics":         diagnostics.toMap(),
+				"execution_path_diagnostics": execDiag.toMap(),
+			})
+			execDiag.FailedEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
+				AttemptID:   req.AttemptID,
+				EventType:   AttemptEventTypeFailed,
+				PayloadJSON: string(payload),
+				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
+			})
+			return finish(executeResponseForCompletionResult(result)), err
 		}
 		outputText := strings.TrimSpace(strings.Join(textChunks, "\n"))
 		result := attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
@@ -1249,7 +1354,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				PayloadJSON: string(continuationPayload),
 				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
 			})
-			continuationResult, continuationErr := a.executeContinuationTurn(attemptCtx, req, actualSessionID, invocationID, execDiag.ContinuationTurnsElapsed+1)
+			continuationResult, continuationErr := a.executeContinuationTurn(attemptCtx, req, actualSessionID, invocationID, execDiag.ContinuationTurnsElapsed+1, &streamBudget)
 			processGuards = append(processGuards, processGuardObservation(execDiag.ContinuationTurnsElapsed+1, continuationResult.GuardResult))
 			continuationUsed = true
 			priorEventCount := diagnostics.EventCount
@@ -1341,6 +1446,21 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 				return finish(executeResponseForCompletionResult(timeoutResult)), executeErrorForCompletionResult(timeoutResult)
 			}
 			if continuationErr != nil {
+				if providerlimits.IsResourceLimitError(continuationErr) {
+					failureResult := executionResultForResourceLimit(continuationErr, actualSessionID)
+					payload, _ := json.Marshal(map[string]any{
+						"error":                      failureResult.FailureText,
+						"stream_diagnostics":         diagnostics.toMap(),
+						"execution_path_diagnostics": execDiag.toMap(),
+					})
+					execDiag.FailedEventAppended = a.appendTerminalEventOnce(req.AttemptID, AttemptStreamEvent{
+						AttemptID:   req.AttemptID,
+						EventType:   AttemptEventTypeFailed,
+						PayloadJSON: string(payload),
+						OccurredAt:  time.Now().UTC().Format(time.RFC3339),
+					})
+					return finish(executeResponseForCompletionResult(failureResult)), continuationErr
+				}
 				failureEvidence := attemptCompletionEvidence{
 					ProviderSessionID:     actualSessionID,
 					OutputText:            combinedContinuationText,
@@ -1676,7 +1796,7 @@ func (a *SessionAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 	return nil
 }
 
-func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req ExecuteRequest, sessionID, invocationID string, commandOrdinal int) (continuationTurnResult, error) {
+func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req ExecuteRequest, sessionID, invocationID string, commandOrdinal int, streamBudget *providerStreamBudget) (continuationTurnResult, error) {
 	startedRun, err := a.startOpencodeRun(ctx, req, sessionID, promptWithProviderInvocationMetadata("Continue from the pending tool-call state and finish the response.", req.AttemptID, invocationID), commandOrdinal)
 	if err != nil {
 		return continuationTurnResult{}, err
@@ -1715,7 +1835,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	terminalSuccessSeen := false
 	terminalFailureSeen := false
 
-	streamErr := decodeOpencodeRunEventStream(stdout, func(event opencodeRunEvent) error {
+	streamErr := decodeOpencodeRunEventStream(stdout, streamBudget.consumeEvent, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		result.EventCount++
@@ -1776,6 +1896,9 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		}
 		emitActivityObservation(req, event)
 		if event.Type == "text" && strings.TrimSpace(event.Part.Text) != "" {
+			if err := streamBudget.consumeOutput(event.Part.Text); err != nil {
+				return err
+			}
 			result.TextChunks = append(result.TextChunks, event.Part.Text)
 			result.MeaningfulProgress = true
 			stepText.appendText(event.Part.Text)

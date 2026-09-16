@@ -84,6 +84,9 @@ func (o *orchestrationLoop) restoreExecutionTarget(ctx context.Context, runID, e
 	if err != nil {
 		return fmt.Errorf("load execution target for snapshot recovery: %w", err)
 	}
+	if strings.TrimSpace(target.State) == "unknown" {
+		return fmt.Errorf("execution target is quarantined after an unsafe workspace failure")
+	}
 	if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, trustedSnapshotID, target.PublishRoot, target.SourceRoot); err != nil {
 		return err
 	}

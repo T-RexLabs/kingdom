@@ -9,20 +9,21 @@ import (
 	"path/filepath"
 	"strings"
 
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
 )
 
 const (
-	// CompletionReceiptWireLimit is the maximum accepted serialized receipt size.
-	CompletionReceiptWireLimit int64 = 1 << 20
+	// CompletionReceiptWireLimit is retained for package-local receipt callers.
+	CompletionReceiptWireLimit = providerlimits.CompletionReceiptWireBytes
 	// CompletionReceiptEntryLimit is the maximum number of receipt candidates
 	// returned from one invocation inbox in a pass.
 	CompletionReceiptEntryLimit = 16
 	// CompletionReceiptStagingEntryLimit bounds exact tool publication staging
 	// entries independently from receipt candidates.
 	CompletionReceiptStagingEntryLimit = 16
-	// ProviderTerminalHandoffWireLimit bounds the complete trusted handoff wire.
-	ProviderTerminalHandoffWireLimit int64 = 32 * 1024 * 1024
+	// ProviderTerminalHandoffWireLimit is retained for package-local handoff callers.
+	ProviderTerminalHandoffWireLimit = providerlimits.TerminalHandoffWireBytes
 )
 
 const (

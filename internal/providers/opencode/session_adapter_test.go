@@ -2466,12 +2466,15 @@ write_large_stderr() {
   if [ -z "$BYTES" ]; then
     return
   fi
-  python3 - "$BYTES" "${FAKE_OPENCODE_LARGE_STDERR_MARKER:-large-stderr-complete}" <<'PY' >&2
+  python3 - "$BYTES" "${FAKE_OPENCODE_LARGE_STDERR_MARKER:-large-stderr-complete}" "${FAKE_OPENCODE_LARGE_STDERR_UNTERMINATED:-}" <<'PY' >&2
 import sys
 
 size = int(sys.argv[1])
 marker = sys.argv[2]
-sys.stdout.write("x" * size + marker + "\n")
+unterminated = sys.argv[3] == "1"
+sys.stdout.write("x" * size + marker)
+if not unterminated:
+    sys.stdout.write("\n")
 PY
 }
 
@@ -2504,6 +2507,13 @@ fi
 echo "{\"type\":\"step_start\"$SESSION_FIELD}"
 
 write_large_stderr "$FAKE_OPENCODE_LARGE_STDERR_BYTES"
+
+if [ -n "$FAKE_OPENCODE_MALFORMED_EVENT_BYTES" ]; then
+  python3 - "$FAKE_OPENCODE_MALFORMED_EVENT_BYTES" <<'PY'
+import sys
+sys.stdout.write("x" * int(sys.argv[1]) + "\n")
+PY
+fi
 
 if [ "$FAKE_OPENCODE_STALL_AFTER_FIRST" = "1" ]; then
   sleep 3
@@ -2696,7 +2706,19 @@ if [ "$FAKE_OPENCODE_UNKNOWN_THEN_STOP" = "1" ]; then
   exit 0
 fi
 
-if [ -n "$FAKE_OPENCODE_TEXT" ]; then
+if [ -n "$FAKE_OPENCODE_TEXT_BYTES" ]; then
+  python3 - "$FAKE_OPENCODE_TEXT_BYTES" "$SESSION_FIELD" <<'PY'
+import json
+import sys
+
+size = int(sys.argv[1])
+session_field = sys.argv[2]
+payload = {"type": "text", "part": {"text": "x" * size}}
+if session_field:
+    payload["sessionID"] = json.loads("{" + session_field[1:] + "}")["sessionID"]
+print(json.dumps(payload))
+PY
+elif [ -n "$FAKE_OPENCODE_TEXT" ]; then
   TEXT_JSON="$(python3 -c 'import json, os; print(json.dumps(os.environ["FAKE_OPENCODE_TEXT"]))')"
   printf '{"type":"text"%s,"part":{"text":%s}}\n' "$SESSION_FIELD" "$TEXT_JSON"
 else

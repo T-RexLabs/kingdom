@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/runtimefs"
+	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
 	"kingdom/internal/workspace"
 )
@@ -165,6 +167,9 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 	} else if err != nil {
 		return executionWorkspaceContext{}, fmt.Errorf("load execution target: %w", err)
 	}
+	if strings.TrimSpace(record.State) == "unknown" {
+		return executionWorkspaceContext{}, fmt.Errorf("execution target is quarantined after an unsafe workspace failure")
+	}
 
 	return executionWorkspaceContext{
 		SeedRoot:          sourceRoot,
@@ -176,6 +181,129 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 		WorkspaceEmpty:    workspaceEmpty,
 		UseGitWorktree:    useGitWorktree,
 	}, nil
+}
+
+func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx context.Context, runID, nodeRunID string, record runtimefs.RunExecutionTarget, restoredAt string) (runtimefs.RunExecutionTarget, error) {
+	if strings.TrimSpace(record.State) != "unknown" {
+		return record, nil
+	}
+	if !o.manualTargetRecoveryAuthorized(ctx, runID, nodeRunID, record.UpdatedAt) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit retry or rerun")
+	}
+	quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	if !quiescent {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target recovery is waiting for provider process quiescence")
+	}
+	var recovered runtimefs.RunExecutionTarget
+	switch strings.TrimSpace(record.TargetMode) {
+	case PublishModeDirect:
+		recovered, err = o.fsStore.RecoverQuarantinedExecutionTarget(ctx, runID, restoredAt)
+	case PublishModeGitWorktree:
+		recovered, err = o.recoverQuarantinedManagedWorktree(ctx, runID, record, restoredAt)
+	default:
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target has unsupported mode %q", record.TargetMode)
+	}
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	return recovered, nil
+}
+
+func (o *orchestrationLoop) recoverQuarantinedManagedWorktree(ctx context.Context, runID string, target runtimefs.RunExecutionTarget, restoredAt string) (runtimefs.RunExecutionTarget, error) {
+	if o == nil || o.fsStore == nil || o.executionStore == nil || o.runWorktrees == nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("managed worktree recovery is not configured")
+	}
+	record, err := o.runWorktrees.GetByRun(ctx, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("load managed worktree for recovery: %w", err)
+	}
+	if err := validateManagedRunWorktreeBoundary(record); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("validate managed worktree recovery boundary: %w", err)
+	}
+	if filepath.Clean(strings.TrimSpace(target.ExecutionRoot)) != filepath.Clean(workspace.ScopedProjectRootInCheckout(record.WorktreePath, workspace.GitProjectTopology{ProjectRelPath: record.ProjectRelPath})) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target is outside its registered managed worktree")
+	}
+	if err := o.discardQuarantinedManagedWorktreeForManualRecovery(ctx, record, strings.TrimSpace(restoredAt)); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("discard quarantined managed worktree: %w", err)
+	}
+	fresh, err := o.ensureRunWorktree(ctx, o.yoloRoot, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recreate quarantined managed worktree: %w", err)
+	}
+	if filepath.Clean(strings.TrimSpace(target.ExecutionRoot)) != filepath.Clean(fresh.ProjectRoot) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recreated managed worktree does not match its execution target")
+	}
+	if strings.TrimSpace(target.TrustedSnapshotID) == "" {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target has no trusted snapshot")
+	}
+	if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, target.TrustedSnapshotID, target.PublishRoot, target.SourceRoot); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recover trusted snapshot blobs: %w", err)
+	}
+	if err := o.fsStore.RestoreSnapshot(ctx, target.TrustedSnapshotID, fresh.ProjectRoot); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("restore recreated managed worktree: %w", err)
+	}
+	if err := o.fsStore.UpdateExecutionTargetState(ctx, runID, "trusted", target.TrustedSnapshotID, "", restoredAt); err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	target.State = "trusted"
+	target.UpdatedAt = strings.TrimSpace(restoredAt)
+	return target, nil
+}
+
+func (o *orchestrationLoop) recoverQuarantinedExecutionTargetBeforeDispatch(ctx context.Context, runID, nodeRunID string) error {
+	if o == nil || o.fsStore == nil {
+		return nil
+	}
+	record, err := o.fsStore.GetExecutionTarget(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load execution target before dispatch: %w", err)
+	}
+	_, err = o.recoverQuarantinedExecutionTargetForManualReplay(ctx, runID, nodeRunID, record, o.now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (o *orchestrationLoop) manualTargetRecoveryAuthorized(ctx context.Context, runID, nodeRunID, quarantinedAt string) bool {
+	if o == nil || o.db == nil {
+		return false
+	}
+	var replayedAt, queuedAt string
+	err := o.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM transitions
+WHERE run_id = ?
+  AND entity_type = 'run'
+  AND from_state IN ('failed', 'cancelled')
+  AND to_state = 'running'
+  AND reason_code IN ('manual_retry_requested', 'manual_rerun_requested')
+ORDER BY created_at DESC, transition_id DESC
+LIMIT 1`, strings.TrimSpace(runID)).Scan(&replayedAt)
+	if err != nil {
+		return false
+	}
+	err = o.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM transitions
+WHERE run_id = ?
+  AND node_run_id = ?
+  AND entity_type = 'node'
+  AND from_state = 'pending'
+  AND to_state = 'ready'
+  AND authority_source IN ('api.retry', 'api.rerun')
+ORDER BY created_at DESC, transition_id DESC
+LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeRunID)).Scan(&queuedAt)
+	if err != nil {
+		return false
+	}
+	quarantinedTime, quarantineErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(quarantinedAt))
+	replayedTime, replayErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(replayedAt))
+	queuedTime, queuedErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(queuedAt))
+	return quarantineErr == nil && replayErr == nil && queuedErr == nil && !replayedTime.Before(quarantinedTime) && !queuedTime.Before(quarantinedTime)
 }
 
 func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, workspaceCtx executionWorkspaceContext) error {
@@ -199,13 +327,21 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 		if err != nil {
 			return fmt.Errorf("walk execution seed root: %w", err)
 		}
+		seedRoot, err := securefs.OpenRoot(workspaceCtx.SeedRoot)
+		if err != nil {
+			return fmt.Errorf("open execution seed root: %w", err)
+		}
+		defer seedRoot.Close()
 		for _, file := range trackedFiles {
 			resolvedPath, err := resolvePathWithinRoot(resolvedWorkspace, file.RelativePath)
 			if err != nil {
 				return err
 			}
-			raw, err := os.ReadFile(file.AbsolutePath)
+			raw, err := seedRoot.ReadRegular(file.RelativePath, providerlimits.TrackedWorkspaceFileBytes)
 			if err != nil {
+				if errors.Is(err, securefs.ErrLimitExceeded) {
+					return &providerlimits.LimitExceededError{Resource: "execution seed file", Limit: providerlimits.TrackedWorkspaceFileBytes}
+				}
 				return fmt.Errorf("read execution seed file %q: %w", file.RelativePath, err)
 			}
 			if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {

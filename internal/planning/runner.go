@@ -13,6 +13,7 @@ import (
 	"kingdom/internal/acp"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/sqlitex"
 	"kingdom/internal/state"
 )
 
@@ -25,11 +26,6 @@ import (
 // db.Close. This timeout is strictly less than the kingdomd shutdown
 // coordinator's 10s grace; SQLite writes here are normally sub-second.
 const terminalCancelWriteTimeout = 5 * time.Second
-
-const (
-	planningStartMaxClaimAttempts = 4
-	planningStartRetryBaseDelay   = 100 * time.Millisecond
-)
 
 type operationStartSource string
 
@@ -1374,7 +1370,11 @@ func (r *operationRunner) buildTerminalEventFromCursor(ctx context.Context, oper
 
 func (r *operationRunner) claimOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, error) {
 	now := nowTime(r.deps.nowString())
-	claimed, ok, err := r.deps.store.ClaimOperation(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	claimed, ok, err := r.deps.store.ClaimOperationWithObserver(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), func(stats sqlitex.Stats) {
+		if r.deps.metrics != nil && stats.Attempts > 1 {
+			r.deps.metrics.claimRetries.Add(uint64(stats.Attempts - 1))
+		}
+	})
 	if err != nil || !ok {
 		return claimed, ok, err
 	}
@@ -1382,34 +1382,18 @@ func (r *operationRunner) claimOperation(ctx context.Context, operationID string
 }
 
 func (r *operationRunner) claimOperationWithRetry(ctx context.Context, operationID string, source operationStartSource) (state.PlanningOperation, bool, error) {
-	var lastErr error
-	for attempt := 1; attempt <= planningStartMaxClaimAttempts; attempt++ {
-		claimed, ok, err := r.claimOperation(ctx, operationID)
-		if err == nil {
-			if ok {
-				r.observeClaimSuccess(source)
-				if r.deps.retryWakeProgress != nil {
-					r.deps.retryWakeProgress()
-				}
-			}
-			return claimed, ok, nil
-		}
-		lastErr = err
+	claimed, claimedOK, err := r.claimOperation(ctx, operationID)
+	if err != nil {
 		r.observeClaimFailure(source, err)
-		if ctx.Err() != nil || !state.IsSQLiteBusy(err) || attempt == planningStartMaxClaimAttempts {
-			break
-		}
-		r.observeClaimRetry(source)
-		delay := time.Duration(attempt) * planningStartRetryBaseDelay
-		log.Printf("planner claim retry source=%s operation_id=%s attempt=%d delay_ms=%d err=%v", source, operationID, attempt, delay.Milliseconds(), err)
-		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-			return state.PlanningOperation{}, false, sleepErr
+		return state.PlanningOperation{}, false, err
+	}
+	if claimedOK {
+		r.observeClaimSuccess(source)
+		if r.deps.retryWakeProgress != nil {
+			r.deps.retryWakeProgress()
 		}
 	}
-	if lastErr != nil {
-		return state.PlanningOperation{}, false, lastErr
-	}
-	return state.PlanningOperation{}, false, nil
+	return claimed, claimedOK, nil
 }
 
 func (r *operationRunner) observeStartRequested(source operationStartSource) {
@@ -1443,13 +1427,6 @@ func (r *operationRunner) observeClaimFailure(source operationStartSource, err e
 	r.deps.metrics.claimFailures.Add(1)
 }
 
-func (r *operationRunner) observeClaimRetry(source operationStartSource) {
-	if r == nil || r.deps.metrics == nil {
-		return
-	}
-	r.deps.metrics.claimRetries.Add(1)
-}
-
 func (r *operationRunner) observeStartFailure(source operationStartSource, err error) {
 	if r == nil || r.deps.metrics == nil || err == nil {
 		return
@@ -1470,20 +1447,6 @@ func queueAgeMilliseconds(operation state.PlanningOperation) int64 {
 		return -1
 	}
 	return startedAt.Sub(createdAt).Milliseconds()
-}
-
-func sleepWithContext(ctx context.Context, delay time.Duration) error {
-	if delay <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, outputText string) string {

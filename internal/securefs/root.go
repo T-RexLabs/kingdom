@@ -164,6 +164,12 @@ func (r *Root) RemoveEmptyDir(path string) error {
 	return removeRootEmptyDir(r, path)
 }
 
+// RemoveTree removes a descendant directory tree without following symlinks.
+// A final non-directory entry is unlinked rather than traversed.
+func (r *Root) RemoveTree(path string) error {
+	return removeRootTree(r, path)
+}
+
 // SyncDir fsyncs one descendant directory. An empty path or "." syncs the
 // pinned root itself.
 func (r *Root) SyncDir(path string) error {

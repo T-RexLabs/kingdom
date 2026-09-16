@@ -16,6 +16,7 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 	"kingdom/internal/testutil/planningfixture"
@@ -776,6 +777,46 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 				t.Fatalf("expected failure reason %q, got %+v", tc.wantReason, settlement)
 			}
 		})
+	}
+}
+
+func TestServiceReplyResourceLimitFailsDurablyWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	const untrustedPrompt = "operator-secret-prompt-content"
+	service := NewServiceWithRetryEngine(store, &erroringAgent{err: &providerlimits.LimitExceededError{Resource: "prompt", Limit: providerlimits.PromptBytes}}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
+
+	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     untrustedPrompt,
+		AnswerPayloadJSON: `{"text":"operator-secret-prompt-content"}`,
+	})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusFailed || terminal.Error == nil || terminal.CanonicalSettlementID == nil || !strings.Contains(*terminal.Error, "resource limit") || strings.Contains(*terminal.Error, untrustedPrompt) {
+		t.Fatalf("planner terminal state must expose only the safe limit failure: %+v", terminal)
+	}
+	settlement, found, err := store.GetPlanningProviderCompletionSettlement(context.Background(), *terminal.CanonicalSettlementID)
+	if err != nil || !found || settlement.FailureReasonCode != "resource_limit_exceeded" {
+		t.Fatalf("planner resource-limit settlement found=%t err=%v settlement=%+v", found, err, settlement)
+	}
+	var decision, reasonCode string
+	if err := db.QueryRow(`SELECT decision, error_code FROM retry_decisions WHERE planning_operation_id = ?`, operation.Operation.OperationID).Scan(&decision, &reasonCode); err != nil {
+		t.Fatalf("load planner retry decision: %v", err)
+	}
+	if decision != string(state.RetryDecisionFailFast) || reasonCode != "resource_limit_exceeded" {
+		t.Fatalf("planner resource-limit retry decision=%q reason=%q, want fail_fast/resource_limit_exceeded", decision, reasonCode)
 	}
 }
 

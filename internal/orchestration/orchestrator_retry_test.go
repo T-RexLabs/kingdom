@@ -12,6 +12,7 @@ import (
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -475,5 +476,89 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 				t.Fatalf("terminal reason lineage failure=%q event=%q retry=%q decision=%q", failureCode, eventReasonCode, retryCode, retryDecision)
 			}
 		})
+	}
+}
+
+func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	const attemptID = "run_1:decree_intake:1"
+	const invocationID = "pinv_resource_limit"
+	const sessionID = "session_resource_limit"
+	const providerSessionID = "ses_resource_limit"
+	const now = "2026-03-19T18:30:00Z"
+
+	store := executionstore.New(db)
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: sessionID, CreatedAt: now}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	claim, acquired, err := store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "resource-limit-worker", LeaseUntil: "2099-03-01T12:00:00Z", ClaimedAt: now})
+	if err != nil || !acquired {
+		t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '`+now+`' WHERE attempt_id = '`+attemptID+`'`)
+	seedOpenProviderInvocationForAttempt(t, store, attemptID, "run_1", "nr_1", sessionID, providerSessionID, invocationID, now)
+	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, now)
+
+	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
+	if err != nil {
+		t.Fatalf("load retry policy: %v", err)
+	}
+	retries, err := retryengine.NewEngine(policy)
+	if err != nil {
+		t.Fatalf("create retry engine: %v", err)
+	}
+	nowTime, err := time.Parse(time.RFC3339, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limitErr := &providerlimits.LimitExceededError{Resource: "canonical output", Limit: providerlimits.CanonicalOutputBytes}
+	outcome := normalizeExecutionOutcome(opencode.ExecutionOutcome{}, limitErr)
+	if outcome.ReasonCode != "resource_limit_exceeded" || outcome.FailureText != limitErr.Error() {
+		t.Fatalf("resource-limit execution outcome=%+v", outcome)
+	}
+	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), mailbox: state.NewMailboxStore(db, nil), events: state.NewAttemptEventIngestor(db, nil), executionStore: store, retryEngine: retries, now: func() time.Time { return nowTime }}
+	job := asyncExecutionResult{
+		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "draft"},
+		node:                      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attemptID:                 attemptID,
+		sessionID:                 sessionID,
+		providerSessionID:         providerSessionID,
+		providerInvocationID:      invocationID,
+		providerInvocationAt:      now,
+		completionMode:            executionstore.ProviderCompletionModeServerResponse,
+		expectedLeaseOwner:        claim.LeaseOwner,
+		expectedLeaseVersion:      claim.LeaseVersion,
+		occurredAt:                now,
+		outcome:                   outcome,
+		err:                       limitErr,
+		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID},
+	}
+	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
+		t.Fatalf("settle resource-limit failure: %v", err)
+	}
+	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
+		t.Fatalf("project resource-limit failure: %v", err)
+	}
+
+	var failureCode, failureText, eventReasonCode, retryCode, retryDecision, responseText string
+	if err := db.QueryRow(`SELECT failure_code, failure_text FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&failureCode, &failureText); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT reason_code FROM events WHERE attempt_id = ? AND event_type = 'attempt.failed'`, attemptID).Scan(&eventReasonCode); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT error_code, decision FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&retryCode, &retryDecision); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = ? AND json_extract(payload_json, '$.communication_type') = 'response_received'`, "run_1").Scan(&responseText); err != nil {
+		t.Fatal(err)
+	}
+	if failureCode != "resource_limit_exceeded" || eventReasonCode != failureCode || retryCode != failureCode || retryDecision != string(state.RetryDecisionFailFast) || failureText != limitErr.Error() || responseText != limitErr.Error() {
+		t.Fatalf("resource-limit failure lineage code=%q event=%q retry=%q decision=%q text=%q response=%q", failureCode, eventReasonCode, retryCode, retryDecision, failureText, responseText)
 	}
 }

@@ -19,6 +19,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 )
 
 const (
@@ -36,8 +37,6 @@ type Adapter interface {
 }
 
 const CompletionProtocolVersion = "v1"
-
-const MaxPromptBytes = 24 * 1024
 
 type ExecuteRequest struct {
 	CompletionMode            CompletionMode `json:"completion_mode"`
@@ -447,13 +446,20 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	if req.Prompt == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if len(req.Prompt) > MaxPromptBytes {
-		return fmt.Errorf("provider prompt exceeds %d-byte limit", MaxPromptBytes)
+	if err := validatePromptBytes(req.Prompt); err != nil {
+		return err
 	}
 	if req.OccurredAt == "" {
 		return fmt.Errorf("occurred_at is required")
 	}
 
+	return nil
+}
+
+func validatePromptBytes(prompt string) error {
+	if len(prompt) > providerlimits.PromptBytes {
+		return &providerlimits.LimitExceededError{Resource: "prompt", Limit: int64(providerlimits.PromptBytes)}
+	}
 	return nil
 }
 

@@ -10,12 +10,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"kingdom/internal/core/schemas"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 )
@@ -327,7 +330,7 @@ func TestProviderReceiptIngestionPassVisitsAtMostOneHundredTwentyEightInboxes(t 
 		}
 	}
 
-	if err := h.loop.ingestProviderCompletionReceipts(context.Background()); err != nil {
+	if _, err := h.loop.ingestProviderCompletionReceiptPass(context.Background()); err != nil {
 		t.Fatalf("ingest candidate pass: %v", err)
 	}
 	var evidenceCount int
@@ -663,7 +666,7 @@ func TestProviderReceiptIngestionPoisonedFirstInboxDoesNotStarveLaterCandidate(t
 		t.Fatalf("write second completion receipt: %v", err)
 	}
 
-	if err := h.loop.ingestProviderCompletionReceipts(context.Background()); err != nil {
+	if _, err := h.loop.ingestProviderCompletionReceiptPass(context.Background()); err != nil {
 		t.Fatalf("bulk ingestion should safely disposition traversal failures: %v", err)
 	}
 	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), second.ProviderInvocationID); err != nil || !found {
@@ -672,6 +675,57 @@ func TestProviderReceiptIngestionPoisonedFirstInboxDoesNotStarveLaterCandidate(t
 	evidence, err := h.store.ListProviderCompletionEvidence(context.Background(), first.ProviderInvocationID)
 	if err != nil || len(evidence) != 1 || !strings.Contains(evidence[0].PayloadJSON, `"reason_text":"completion receipt inbox could not be traversed safely"`) {
 		t.Fatalf("first inbox did not receive fixed safe traversal disposition: evidence=%#v err=%v", evidence, err)
+	}
+}
+
+func TestTerminalHandoffDurablyDispositionedInfrastructureErrorDoesNotStarveLaterHandoff(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	first, _, firstInbox := h.addInvocation(t, 1)
+	second, _, _ := h.addInvocation(t, 2)
+	h.persistHandoffJob(t, first, 1)
+	h.persistHandoffJob(t, second, 2)
+	if err := os.Remove(firstInbox); err != nil {
+		t.Fatalf("remove first inbox: %v", err)
+	}
+	if err := os.Symlink(h.runtimeDir, firstInbox); err != nil {
+		t.Fatalf("poison first inbox: %v", err)
+	}
+
+	visited, err := h.loop.convergeProviderTerminalHandoffs(context.Background())
+	if err != nil {
+		t.Fatalf("durably dispositioned handoff infrastructure error blocked pass: %v", err)
+	}
+	if visited != 2 || h.loop.terminalHandoffCursor != second.ProviderInvocationID {
+		t.Fatalf("handoff pass visited=%d cursor=%q, want 2/%q", visited, h.loop.terminalHandoffCursor, second.ProviderInvocationID)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), second.ProviderInvocationID); err != nil || !found {
+		t.Fatalf("first poisoned handoff starved later handoff: found=%t err=%v", found, err)
+	}
+	evidence, err := h.store.ListProviderCompletionEvidence(context.Background(), first.ProviderInvocationID)
+	if err != nil || len(evidence) != 1 || !strings.Contains(evidence[0].PayloadJSON, `"reason_code":"receipt_inbox_traversal_failed"`) {
+		t.Fatalf("first handoff did not retain its safe infrastructure disposition: evidence=%#v err=%v", evidence, err)
+	}
+}
+
+func TestTerminalHandoffUnrecoverableInfrastructureErrorRetainsCursor(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	first, _, _ := h.addInvocation(t, 1)
+	second, _, _ := h.addInvocation(t, 2)
+	h.persistHandoffJob(t, first, 1)
+	h.persistHandoffJob(t, second, 2)
+	if err := os.WriteFile(providerTerminalHandoffTestPath(h.runtimeDir, first.ProviderInvocationID), []byte(`{`), 0o600); err != nil {
+		t.Fatalf("write malformed handoff file: %v", err)
+	}
+
+	visited, err := h.loop.convergeProviderTerminalHandoffs(context.Background())
+	if err == nil {
+		t.Fatal("expected unrecoverable handoff infrastructure error")
+	}
+	if visited != 0 || h.loop.terminalHandoffCursor != "" {
+		t.Fatalf("unrecoverable handoff advanced cursor: visited=%d cursor=%q", visited, h.loop.terminalHandoffCursor)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), second.ProviderInvocationID); err != nil || found {
+		t.Fatalf("unrecoverable first handoff processed later candidate: found=%t err=%v", found, err)
 	}
 }
 
@@ -746,9 +800,9 @@ func TestProviderReceiptSpoolSurvivesDeletedDirectAndWorktreeExecutionRoots(t *t
 	}
 }
 
-func TestStartupDrainsMoreThanOneReceiptAndHandoffPage(t *testing.T) {
+func TestStartupReplayCompletesExactReceiptAndHandoffBudget(t *testing.T) {
 	h := newReceiptIngestionHarness(t)
-	for index := 1; index <= providerTerminalHandoffPassLimit+1; index++ {
+	for index := 1; index <= providerlimits.StartupReplayMaxItems; index++ {
 		invocation, capability, inbox := h.addInvocation(t, index)
 		h.persistHandoffJob(t, invocation, index)
 		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
@@ -757,7 +811,7 @@ func TestStartupDrainsMoreThanOneReceiptAndHandoffPage(t *testing.T) {
 	}
 	runtime := &Runtime{orchestrator: h.loop}
 	if err := runtime.recoverDurableExecutionState(context.Background()); err != nil {
-		t.Fatalf("recover all startup receipt and handoff pages: %v", err)
+		t.Fatalf("recover exact startup receipt and handoff budget: %v", err)
 	}
 	var settlementCount, handoffCount int
 	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_completion_settlements`).Scan(&settlementCount); err != nil {
@@ -766,8 +820,158 @@ func TestStartupDrainsMoreThanOneReceiptAndHandoffPage(t *testing.T) {
 	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_terminal_handoffs`).Scan(&handoffCount); err != nil {
 		t.Fatalf("count pending startup handoffs: %v", err)
 	}
-	if settlementCount != providerTerminalHandoffPassLimit+1 || handoffCount != 0 {
-		t.Fatalf("startup paging did not converge all durable handoffs: settlements=%d handoffs=%d", settlementCount, handoffCount)
+	if settlementCount != providerlimits.StartupReplayMaxItems || handoffCount != 0 {
+		t.Fatalf("startup replay did not converge its exact budget: settlements=%d handoffs=%d", settlementCount, handoffCount)
+	}
+}
+
+func TestStartupReplayDefersReceiptAndHandoffBeyondBudget(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
+		invocation, capability, inbox := h.addInvocation(t, index)
+		h.persistHandoffJob(t, invocation, index)
+		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+			t.Fatalf("write startup receipt %d: %v", index, err)
+		}
+	}
+	runtime := &Runtime{orchestrator: h.loop}
+	if err := runtime.recoverDurableExecutionState(context.Background()); err != nil {
+		t.Fatalf("recover bounded startup receipt and handoff work: %v", err)
+	}
+	var settlementCount, handoffCount int
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_completion_settlements`).Scan(&settlementCount); err != nil {
+		t.Fatalf("count bounded startup settlements: %v", err)
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_terminal_handoffs`).Scan(&handoffCount); err != nil {
+		t.Fatalf("count deferred startup handoffs: %v", err)
+	}
+	if settlementCount != 0 || handoffCount != providerlimits.StartupReplayMaxItems+1 {
+		t.Fatalf("receipt overflow advanced terminal handoffs: settlements=%d handoffs=%d", settlementCount, handoffCount)
+	}
+	deferredInvocationID := fmt.Sprintf("pinv_receipt_ingestion_%03d", providerlimits.StartupReplayMaxItems+1)
+	deferredInbox, err := h.fsStore.EnsureProviderCompletionInbox(deferredInvocationID)
+	if err != nil {
+		t.Fatalf("resolve deferred receipt inbox: %v", err)
+	}
+	deferredReceipt := filepath.Join(deferredInbox, "completion.json")
+	if _, err := os.Stat(deferredReceipt); err != nil {
+		t.Fatalf("startup replay removed deferred receipt evidence: %v", err)
+	}
+	for {
+		visited, err := h.loop.ingestProviderCompletionReceiptPass(context.Background())
+		if err != nil {
+			t.Fatalf("normal receipt loop did not continue deferred startup work: %v", err)
+		}
+		if visited == 0 {
+			break
+		}
+	}
+	for {
+		visited, err := h.loop.convergeProviderTerminalHandoffs(context.Background())
+		if err != nil {
+			t.Fatalf("normal handoff loop did not continue deferred startup work: %v", err)
+		}
+		if visited == 0 {
+			break
+		}
+	}
+	if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_completion_settlements`).Scan(&settlementCount); err != nil {
+		t.Fatalf("count converged settlements: %v", err)
+	}
+	if settlementCount != providerlimits.StartupReplayMaxItems+1 {
+		t.Fatalf("normal loops did not converge deferred handoff: settlements=%d", settlementCount)
+	}
+}
+
+func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		items    int
+		deferred bool
+	}{
+		{name: "exact budget", items: providerlimits.StartupReplayMaxItems},
+		{name: "one item overflow", items: providerlimits.StartupReplayMaxItems + 1, deferred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReceiptIngestionHarness(t)
+			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			for index := 1; index <= tc.items; index++ {
+				h.addPendingGuardEvidence(t, index)
+			}
+
+			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderProcessGuards(context.Background())
+			if err != nil {
+				t.Fatalf("replay pending process guards: %v", err)
+			}
+			if deferred != tc.deferred {
+				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
+			}
+			var quiescent int
+			if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&quiescent); err != nil {
+				t.Fatalf("count ingested process guards: %v", err)
+			}
+			want := min(tc.items, providerlimits.StartupReplayMaxItems)
+			if quiescent != want {
+				t.Fatalf("startup ingested %d guards, want %d", quiescent, want)
+			}
+			if deferred {
+				if err := h.loop.ingestPendingProviderProcessGuards(context.Background()); err != nil {
+					t.Fatalf("normal process guard loop did not continue deferred work: %v", err)
+				}
+				if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&quiescent); err != nil {
+					t.Fatalf("count converged process guards: %v", err)
+				}
+				if quiescent != tc.items {
+					t.Fatalf("normal process guard loop ingested %d guards, want %d", quiescent, tc.items)
+				}
+			}
+		})
+	}
+}
+
+func TestStartupReplayBoundsLostTerminalHandoffSettlement(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		items    int
+		deferred bool
+	}{
+		{name: "exact budget", items: providerlimits.StartupReplayMaxItems},
+		{name: "one item overflow", items: providerlimits.StartupReplayMaxItems + 1, deferred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReceiptIngestionHarness(t)
+			for index := 1; index <= tc.items; index++ {
+				invocation, _, _ := h.addInvocation(t, index)
+				h.runningHandoffJob(t, invocation, "", "", index)
+			}
+
+			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupLostProviderTerminalHandoffs(context.Background())
+			if err != nil {
+				t.Fatalf("replay lost terminal handoffs: %v", err)
+			}
+			if deferred != tc.deferred {
+				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
+			}
+			var settled int
+			if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`).Scan(&settled); err != nil {
+				t.Fatalf("count settled lost handoffs: %v", err)
+			}
+			want := min(tc.items, providerlimits.StartupReplayMaxItems)
+			if settled != want {
+				t.Fatalf("startup settled %d lost handoffs, want %d", settled, want)
+			}
+			if deferred {
+				if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+					t.Fatalf("normal lost-handoff loop did not continue deferred work: %v", err)
+				}
+				if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`).Scan(&settled); err != nil {
+					t.Fatalf("count converged lost handoffs: %v", err)
+				}
+				if settled != tc.items {
+					t.Fatalf("normal lost-handoff loop settled %d items, want %d", settled, tc.items)
+				}
+			}
+		})
 	}
 }
 
@@ -790,6 +994,179 @@ func TestProviderTerminalHandoffPassVisitsAtMostOneHundredTwentyEight(t *testing
 	}
 	if visited != providerTerminalHandoffPassLimit || settlementCount != providerTerminalHandoffPassLimit || handoffCount != 1 {
 		t.Fatalf("terminal handoff pass exceeded bound: visited=%d settlements=%d handoffs=%d", visited, settlementCount, handoffCount)
+	}
+}
+
+func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *testing.T) {
+	type recoveryPass struct {
+		name     string
+		seed     func(*testing.T, receiptIngestionHarness)
+		arm      func(*testing.T, receiptIngestionHarness)
+		drop     func(*testing.T, receiptIngestionHarness)
+		normal   func(context.Context, receiptIngestionHarness) (string, error)
+		deferred func(*Runtime) startupRecoveryStage
+		cursor   func(*Runtime, receiptIngestionHarness) string
+		count    func(*testing.T, receiptIngestionHarness) int
+	}
+
+	trigger := func(name, table, condition string) (func(*testing.T, receiptIngestionHarness), func(*testing.T, receiptIngestionHarness)) {
+		return func(t *testing.T, h receiptIngestionHarness) {
+				t.Helper()
+				mustExec(t, h.db, `CREATE TRIGGER `+name+` BEFORE INSERT ON `+table+` WHEN `+condition+` BEGIN SELECT RAISE(FAIL, 'forced `+name+` failure'); END`)
+			}, func(t *testing.T, h receiptIngestionHarness) {
+				t.Helper()
+				mustExec(t, h.db, `DROP TRIGGER `+name)
+			}
+	}
+	guardArm := func(t *testing.T, h receiptIngestionHarness) {
+		t.Helper()
+		mustExec(t, h.db, `CREATE TRIGGER fail_recovery_guard BEFORE UPDATE ON provider_process_guards WHEN NEW.guard_id = 'guard_startup_replay_001' AND NEW.lifecycle = 'quiescent' BEGIN SELECT RAISE(FAIL, 'forced fail_recovery_guard failure'); END`)
+	}
+	guardDrop := func(t *testing.T, h receiptIngestionHarness) {
+		t.Helper()
+		mustExec(t, h.db, `DROP TRIGGER fail_recovery_guard`)
+	}
+	receiptArm, receiptDrop := trigger("fail_recovery_receipt", "provider_completion_evidence", "NEW.provider_invocation_id = 'pinv_receipt_ingestion_001'")
+	handoffArm, handoffDrop := trigger("fail_recovery_handoff", "provider_completion_settlements", "NEW.provider_invocation_id = 'pinv_receipt_ingestion_001'")
+	lostArm, lostDrop := trigger("fail_recovery_lost_handoff", "provider_completion_settlements", "NEW.provider_invocation_id = 'pinv_receipt_ingestion_001'")
+
+	for _, tc := range []recoveryPass{
+		{
+			name: "provider guard",
+			seed: func(t *testing.T, h receiptIngestionHarness) {
+				h.loop.processGuardRuntimeRoot = h.runtimeDir
+				h.addPendingGuardEvidence(t, 1)
+				h.addPendingGuardEvidence(t, 2)
+			},
+			arm:  guardArm,
+			drop: guardDrop,
+			normal: func(ctx context.Context, h receiptIngestionHarness) (string, error) {
+				result, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", providerProcessGuardPassLimit, false)
+				return result.NextCursor, err
+			},
+			deferred: func(rt *Runtime) startupRecoveryStage {
+				rt.setStartupRecoveryPending(true, true, true, true)
+				return startupRecoveryStageGuards
+			},
+			cursor: func(rt *Runtime, _ receiptIngestionHarness) string { return rt.startupGuardCursor },
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				return countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`)
+			},
+		},
+		{
+			name: "receipt ingestion",
+			seed: func(t *testing.T, h receiptIngestionHarness) {
+				for index := 1; index <= 2; index++ {
+					invocation, capability, inbox := h.addInvocation(t, index)
+					if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
+						t.Fatalf("write completion receipt %d: %v", index, err)
+					}
+				}
+			},
+			arm:  receiptArm,
+			drop: receiptDrop,
+			normal: func(ctx context.Context, h receiptIngestionHarness) (string, error) {
+				_, err := h.loop.ingestProviderCompletionReceiptPassWithLimit(ctx, providerReceiptInvocationPassLimit)
+				return h.loop.receiptIngestionCursor, err
+			},
+			deferred: func(rt *Runtime) startupRecoveryStage {
+				rt.setStartupRecoveryPending(false, true, true, true)
+				return startupRecoveryStageReceipts
+			},
+			cursor: func(_ *Runtime, h receiptIngestionHarness) string { return h.loop.receiptIngestionCursor },
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				return countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_evidence WHERE evidence_kind = 'completion_receipt_attempt'`)
+			},
+		},
+		{
+			name: "terminal handoff",
+			seed: func(t *testing.T, h receiptIngestionHarness) {
+				for index := 1; index <= 2; index++ {
+					invocation, _, _ := h.addInvocation(t, index)
+					h.persistHandoffJob(t, invocation, index)
+				}
+			},
+			arm:  handoffArm,
+			drop: handoffDrop,
+			normal: func(ctx context.Context, h receiptIngestionHarness) (string, error) {
+				_, err := h.loop.convergeProviderTerminalHandoffsWithLimit(ctx, providerTerminalHandoffPassLimit)
+				return h.loop.terminalHandoffCursor, err
+			},
+			deferred: func(rt *Runtime) startupRecoveryStage {
+				rt.setStartupRecoveryPending(false, false, true, true)
+				return startupRecoveryStageHandoffs
+			},
+			cursor: func(_ *Runtime, h receiptIngestionHarness) string { return h.loop.terminalHandoffCursor },
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				return countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
+			},
+		},
+		{
+			name: "lost terminal handoff",
+			seed: func(t *testing.T, h receiptIngestionHarness) {
+				for index := 1; index <= 2; index++ {
+					invocation, _, _ := h.addInvocation(t, index)
+					h.runningHandoffJob(t, invocation, "", "", index)
+				}
+			},
+			arm:  lostArm,
+			drop: lostDrop,
+			normal: func(ctx context.Context, h receiptIngestionHarness) (string, error) {
+				cursor, _, err := h.loop.settleLostProviderTerminalHandoffsPass(ctx, false, "", providerTerminalHandoffPassLimit)
+				return cursor, err
+			},
+			deferred: func(rt *Runtime) startupRecoveryStage {
+				rt.setStartupRecoveryPending(false, false, false, true)
+				return startupRecoveryStageLostHandoffs
+			},
+			cursor: func(rt *Runtime, _ receiptIngestionHarness) string { return rt.startupLostHandoffCursor },
+			count: func(t *testing.T, h receiptIngestionHarness) int {
+				return countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
+			},
+		},
+	} {
+		t.Run(tc.name+" normal", func(t *testing.T) {
+			h := newReceiptIngestionHarness(t)
+			tc.seed(t, h)
+			tc.arm(t, h)
+			cursor, err := tc.normal(context.Background(), h)
+			if err == nil {
+				t.Fatal("expected injected recovery failure")
+			}
+			if cursor != "" || tc.count(t, h) != 0 {
+				t.Fatalf("failed pass advanced cursor=%q or processed later items=%d", cursor, tc.count(t, h))
+			}
+			tc.drop(t, h)
+			if _, err := tc.normal(context.Background(), h); err != nil {
+				t.Fatalf("retry recovery pass: %v", err)
+			}
+			if got := tc.count(t, h); got != 2 {
+				t.Fatalf("retry did not resume at failed ID: processed=%d, want 2", got)
+			}
+		})
+
+		t.Run(tc.name+" deferred startup", func(t *testing.T) {
+			h := newReceiptIngestionHarness(t)
+			tc.seed(t, h)
+			rt := &Runtime{orchestrator: h.loop}
+			rt.beginStartupRecovery()
+			stage := tc.deferred(rt)
+			tc.arm(t, h)
+			caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
+			if err == nil {
+				t.Fatal("expected injected deferred startup recovery failure")
+			}
+			if caughtUp || rt.pendingStartupRecoveryStage() != stage || rt.startupRecoveryIsOpen() || tc.cursor(rt, h) != "" || tc.count(t, h) != 0 {
+				t.Fatalf("failed startup pass bypassed its cursor or gate: caught_up=%t stage=%d open=%t cursor=%q processed=%d", caughtUp, rt.pendingStartupRecoveryStage(), rt.startupRecoveryIsOpen(), tc.cursor(rt, h), tc.count(t, h))
+			}
+			tc.drop(t, h)
+			if _, err := rt.replayPendingStartupRecovery(context.Background()); err != nil {
+				t.Fatalf("retry deferred startup recovery: %v", err)
+			}
+			if got := tc.count(t, h); got != 2 {
+				t.Fatalf("deferred retry did not resume at failed ID: processed=%d, want 2", got)
+			}
+		})
 	}
 }
 
@@ -832,6 +1209,58 @@ func (h receiptIngestionHarness) runningHandoffJob(t *testing.T, invocation exec
 	}
 	attachQuiescentProviderProcessGuard(t, h.store, invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, job.expectedLeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:01Z")
 	return job
+}
+
+func (h receiptIngestionHarness) addPendingGuardEvidence(t *testing.T, index int) {
+	t.Helper()
+	invocation, _, _ := h.addInvocation(t, index)
+	job := h.baseHandoffJob(invocation, index)
+	claim, acquired, err := h.store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID: invocation.AttemptID, LeaseOwner: job.expectedLeaseOwner, LeaseUntil: "2099-03-01T12:10:00Z", ClaimedAt: "2026-03-01T12:00:01Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim pending process guard attempt: acquired=%t err=%v", acquired, err)
+	}
+	if _, err := h.db.Exec(`UPDATE attempt_executions SET state = 'running' WHERE attempt_id = ?`, invocation.AttemptID); err != nil {
+		t.Fatalf("mark pending process guard attempt running: %v", err)
+	}
+	guardID := fmt.Sprintf("guard_startup_replay_%03d", index)
+	ownership := processguardian.Ownership{
+		GuardID: guardID, GuardianPID: index + 1000, GuardianIdentityToken: fmt.Sprintf("guardian-%03d", index),
+		ChildPID: index + 2000, ChildIdentityToken: fmt.Sprintf("child-%03d", index), TreeID: index + 2000,
+		TreeIdentityToken: fmt.Sprintf("tree-%03d", index), Platform: "unix_process_group", QuiescenceCapability: fmt.Sprintf("capability-%03d", index),
+	}
+	if _, err := h.store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
+		GuardID: ownership.GuardID, ProviderInvocationID: invocation.ProviderInvocationID, AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		CommandOrdinal: 1, Platform: ownership.Platform, GuardianPID: int64(ownership.GuardianPID), GuardianIdentityToken: ownership.GuardianIdentityToken,
+		ChildPID: int64(ownership.ChildPID), ChildIdentityToken: ownership.ChildIdentityToken, TreeID: strconv.Itoa(ownership.TreeID), TreeIdentityToken: ownership.TreeIdentityToken,
+		QuiescenceCapability: ownership.QuiescenceCapability, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion,
+		StartedAt: "2026-03-01T11:59:59Z", AcknowledgedAt: "2026-03-01T11:59:59Z",
+	}); err != nil {
+		t.Fatalf("acknowledge pending process guard: %v", err)
+	}
+	evidence, err := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: processguardian.Result{Ownership: ownership, Quiescent: true}})
+	if err != nil {
+		t.Fatalf("marshal process guard evidence: %v", err)
+	}
+	sum := sha256.Sum256([]byte(guardID))
+	evidenceDir := filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence")
+	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
+		t.Fatalf("create process guard evidence directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evidenceDir, fmt.Sprintf("%x.json", sum[:])), evidence, 0o600); err != nil {
+		t.Fatalf("write process guard evidence: %v", err)
+	}
+	observed, _, _, err := processguardian.ReadQuiescenceEvidence(h.runtimeDir, guardID)
+	if err != nil {
+		t.Fatalf("read process guard evidence: %v", err)
+	}
+	if observed.GuardID != guardID || observed.ChildPID != ownership.ChildPID || observed.TreeID != ownership.TreeID || observed.Platform != ownership.Platform || !observed.Quiescent {
+		t.Fatalf("process guard evidence decoded incorrectly: %#v", observed)
+	}
 }
 
 func (h receiptIngestionHarness) persistHandoffJob(t *testing.T, invocation executionstore.ProviderInvocation, index int) asyncExecutionResult {
