@@ -315,6 +315,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if sharedSlug != "" && (!appSlugPatternAPI.MatchString(sharedSlug) || !githubClientIDPattern.MatchString(sharedClientID)) {
 		return nil, fmt.Errorf("github shared app slug or client id is invalid")
 	}
+	externalStore := state.NewExternalStore(cfg.DB)
 	if githubKeys == nil && projectRoot != "" {
 		githubKeys, err = githubexternal.NewKeyStore(filepath.Join(projectRoot, ".kingdom", "secrets"))
 		if err != nil {
@@ -340,6 +341,16 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		clientConfig := githubexternal.ClientConfig{Keys: githubKeys, Now: now}
 		if sharedSlug != "" {
 			clientConfig.UserTokens, clientConfig.DeviceOAuth, clientConfig.SharedClientID = githubUserTokens, githubDeviceOAuth, sharedClientID
+			clientConfig.UserCredentialGeneration = func(ctx context.Context, connectionID string) (int, error) {
+				publication, err := externalStore.GetCredentialPublication(ctx, connectionID)
+				if err != nil {
+					return 0, err
+				}
+				if publication.CredentialStrategy != "user_access_token" {
+					return 0, nil
+				}
+				return publication.CredentialGeneration, nil
+			}
 		}
 		externalAdapter, err = githubexternal.NewClient(clientConfig)
 		if err != nil {
@@ -369,7 +380,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		artifactService:            state.NewArtifactService(cfg.DB),
 		tokenUsageStore:            state.NewTokenUsageStore(cfg.DB),
 		planningStore:              planningStore,
-		externalStore:              state.NewExternalStore(cfg.DB),
+		externalStore:              externalStore,
 		externalRegistry:           external.NewRegistry(adapters),
 		githubKeys:                 githubKeys,
 		githubUserTokens:           githubUserTokens,

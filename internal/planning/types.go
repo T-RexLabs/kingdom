@@ -20,7 +20,8 @@ const (
 )
 
 const (
-	defaultMaxSnapshotFiles    = 200
+	defaultMaxSnapshotFiles    = state.MaxPlanningContextSnapshotEntries
+	defaultMaxExcludedFiles    = state.MaxPlanningContextSnapshotEntries
 	defaultMaxSnapshotFileSize = 64 * 1024
 	// maxEnumeratedFiles bounds how many paths a scan looks at at all. It is
 	// far above the capture budget because counting a path costs nothing but a
@@ -28,8 +29,10 @@ const (
 	maxEnumeratedFiles = 20000
 	// maxProjectPathLength bounds one entry read from the enumerator, so a
 	// hostile or corrupt listing cannot make the scan allocate without limit.
-	maxProjectPathLength      = 4096
-	planningOperationLeaseTTL = 30 * time.Second
+	maxProjectPathLength       = state.MaxPlanningContextSnapshotPathBytes
+	maxSnapshotLayoutEntries   = 100
+	maxSnapshotLayoutNameBytes = 128
+	planningOperationLeaseTTL  = 30 * time.Second
 )
 
 const openingQuestionPrompt = "How would you like to start?"

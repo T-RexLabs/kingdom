@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -293,6 +294,43 @@ func TestServerGetRunArtifactsArchiveMixedWriteAndDelete(t *testing.T) {
 	if !(containsString(names, "artifacts/report.txt") && containsString(names, "deletions.json")) {
 		t.Fatalf("expected write artifact and deletions metadata, got %v", names)
 	}
+}
+
+func TestServerGetRunArtifactsArchiveRejectsTooManyArtifacts(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedArtifact(t, db, runID)
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := 0; i < runArtifactArchiveMaxEntries; i++ {
+		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-1', 'attempt-seed', 'deliverable', 'write', ?, 'text/plain', ?, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, 'council-member', ?)`, "artifact-limit-"+strconv.Itoa(i), runID, "file-"+strconv.Itoa(i)+".txt", "artifacts/file-"+strconv.Itoa(i)+".txt", now); err != nil {
+			t.Fatalf("seed artifact %d: %v", i, err)
+		}
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
+	if res.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (%s)", res.Code, res.Body.String())
+	}
+	assertErrorCode(t, res.Body.Bytes(), "resource_limit_exceeded")
+}
+
+func TestServerGetRunArtifactsArchiveRejectsTooManyBytes(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedArtifact(t, db, runID)
+	if _, err := db.Exec(`UPDATE artifacts SET size_bytes = ? WHERE artifact_id = 'artifact-1'`, runArtifactArchiveMaxBytes+1); err != nil {
+		t.Fatalf("enlarge artifact metadata: %v", err)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
+	if res.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (%s)", res.Code, res.Body.String())
+	}
+	assertErrorCode(t, res.Body.Bytes(), "resource_limit_exceeded")
 }
 
 func TestServerGetRunArtifactsArchiveRunNotFound(t *testing.T) {

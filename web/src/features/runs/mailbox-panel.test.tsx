@@ -288,7 +288,8 @@ describe("mailbox panel", () => {
     render(<MailboxHarness messages={[]} detailById={{}} />);
 
     await user.click(screen.getByRole("button", { name: "Message type" }));
-		await user.keyboard("{Home}{ArrowDown}{ArrowDown}{Enter}");
+		await waitFor(() => expect(screen.getByRole("option", { name: "All messages" })).toHaveFocus());
+    await user.keyboard("{Home}{ArrowDown}{ArrowDown}{Enter}");
 
     expect(screen.getByRole("button", { name: "Message type" })).toHaveTextContent("Response");
   });

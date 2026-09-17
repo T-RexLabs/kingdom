@@ -114,13 +114,16 @@ func (d runtimeDeps) refreshContextSnapshot(ctx context.Context, planningSession
 // creation needs the request without writing it, so it can go into the same
 // transaction as the session.
 func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary SnapshotSummary, createdAt string) (state.CreatePlanningContextSnapshotRequest, error) {
-	includedJSON, err := json.Marshal(summary.IncludedFiles)
-	if err != nil {
-		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("marshal included files: %w", err)
+	if len(summary.SummaryMarkdown) > state.MaxPlanningContextSnapshotSummaryBytes {
+		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("planning context summary exceeds %d bytes", state.MaxPlanningContextSnapshotSummaryBytes)
 	}
-	excludedJSON, err := json.Marshal(summary.ExcludedFiles)
+	includedJSON, err := marshalSnapshotFiles(summary.IncludedFiles, "included")
 	if err != nil {
-		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("marshal excluded files: %w", err)
+		return state.CreatePlanningContextSnapshotRequest{}, err
+	}
+	excludedJSON, err := marshalSnapshotFiles(summary.ExcludedFiles, "excluded")
+	if err != nil {
+		return state.CreatePlanningContextSnapshotRequest{}, err
 	}
 	return state.CreatePlanningContextSnapshotRequest{
 		PlanningContextSnapshotID: d.nextID("planning_context"),
@@ -132,6 +135,31 @@ func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary Sna
 	}, nil
 }
 
+func marshalSnapshotFiles(entries []SnapshotFileEntry, kind string) ([]byte, error) {
+	if len(entries) > state.MaxPlanningContextSnapshotEntries {
+		return nil, fmt.Errorf("%s planning context files exceed %d entries", kind, state.MaxPlanningContextSnapshotEntries)
+	}
+	for _, entry := range entries {
+		if len(entry.Path) == 0 || len(entry.Path) > state.MaxPlanningContextSnapshotPathBytes {
+			return nil, fmt.Errorf("%s planning context file path exceeds %d bytes", kind, state.MaxPlanningContextSnapshotPathBytes)
+		}
+		if len(entry.Reason) > state.MaxPlanningContextSnapshotReasonBytes {
+			return nil, fmt.Errorf("%s planning context file reason exceeds %d bytes", kind, state.MaxPlanningContextSnapshotReasonBytes)
+		}
+		if entry.Size < 0 {
+			return nil, fmt.Errorf("%s planning context file size must not be negative", kind)
+		}
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s planning context files: %w", kind, err)
+	}
+	if len(raw) > state.MaxPlanningContextSnapshotJSONBytes {
+		return nil, fmt.Errorf("%s planning context file json exceeds %d bytes", kind, state.MaxPlanningContextSnapshotJSONBytes)
+	}
+	return raw, nil
+}
+
 // scanProjectRoot collects a deterministic snapshot of the project's source
 // files. It respects the supplied context — long scans on big repositories or
 // network mounts can otherwise block the recovery or API request that triggered
@@ -140,45 +168,71 @@ func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary Sna
 // Two budgets, because they buy different things. Every enumerated path is
 // counted towards the project's shape, which is what actually reaches a planner
 // prompt and costs nothing but a string. Only the first `defaultMaxSnapshotFiles`
-// are stat'd and captured with their sizes. So the summary describes the whole
-// project even when the captured list is a prefix of it.
+// are stat'd and captured with their sizes. So the summary describes the
+// bounded enumerated project shape even when the captured list is a prefix of
+// it.
 //
 // The scan never reads file contents. What a snapshot contributes to a prompt
 // is a shape, and reading bytes to classify them changed nothing about that
 // while costing real I/O on every session creation.
 func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) {
-	included := make([]SnapshotFileEntry, 0, defaultMaxSnapshotFiles)
-	excluded := make([]SnapshotFileEntry, 0)
+	return scanProjectRootWithLimits(ctx, root, snapshotScanLimits{MaxEnumerated: maxEnumeratedFiles, MaxIncluded: defaultMaxSnapshotFiles, MaxExcluded: defaultMaxExcludedFiles})
+}
+
+type snapshotScanLimits struct {
+	MaxEnumerated int
+	MaxIncluded   int
+	MaxExcluded   int
+}
+
+func scanProjectRootWithLimits(ctx context.Context, root string, limits snapshotScanLimits) (SnapshotSummary, error) {
+	included := make([]SnapshotFileEntry, 0, limits.MaxIncluded)
+	excluded := make([]SnapshotFileEntry, 0, limits.MaxExcluded)
 	layout := make(map[string]int)
 	enumerated := 0
+	excludedCount := 0
+	excludedReasons := make(map[string]int)
+	recordExcluded := func(entry SnapshotFileEntry) {
+		excludedCount++
+		reason := strings.TrimSpace(entry.Reason)
+		if reason == "" {
+			reason = "unknown"
+		}
+		excludedReasons[reason]++
+		if len(excluded) < limits.MaxExcluded {
+			excluded = append(excluded, entry)
+		}
+	}
 
 	err := enumerateProjectFiles(ctx, root, func(candidate projectFileCandidate) bool {
-		if candidate.Reason != "" {
-			excluded = append(excluded, SnapshotFileEntry{Path: candidate.Path, Reason: candidate.Reason})
-			return true
-		}
+		// Exclusions consume the budget too, preventing excluded-only trees
+		// from keeping enumeration and persisted rows unbounded.
 		enumerated++
+		if candidate.Reason != "" {
+			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: candidate.Reason})
+			return enumerated < limits.MaxEnumerated
+		}
 		layout[topLevelSegment(candidate.Path)]++
-		if len(included) >= defaultMaxSnapshotFiles {
+		if len(included) >= limits.MaxIncluded {
 			// Past the capture budget the path still counts towards the shape,
 			// but stat'ing it would buy a row no prompt reads.
-			return enumerated < maxEnumeratedFiles
+			return enumerated < limits.MaxEnumerated
 		}
 		info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(candidate.Path)))
 		if statErr != nil {
-			excluded = append(excluded, SnapshotFileEntry{Path: candidate.Path, Reason: "stat_failed"})
-			return true
+			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "stat_failed"})
+			return enumerated < limits.MaxEnumerated
 		}
 		if !info.Mode().IsRegular() {
-			excluded = append(excluded, SnapshotFileEntry{Path: candidate.Path, Reason: "non_regular"})
-			return true
+			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "non_regular"})
+			return enumerated < limits.MaxEnumerated
 		}
 		if reason := excludedFileReason(candidate.Path, info.Size()); reason != "" {
-			excluded = append(excluded, SnapshotFileEntry{Path: candidate.Path, Reason: reason, Size: info.Size()})
-			return true
+			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: reason, Size: info.Size()})
+			return enumerated < limits.MaxEnumerated
 		}
 		included = append(included, SnapshotFileEntry{Path: candidate.Path, Size: info.Size()})
-		return enumerated < maxEnumeratedFiles
+		return enumerated < limits.MaxEnumerated
 	})
 	if err != nil {
 		return SnapshotSummary{}, fmt.Errorf("scan project root: %w", err)
@@ -188,7 +242,7 @@ func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) 
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Path < excluded[j].Path })
 
 	return SnapshotSummary{
-		SummaryMarkdown: renderSnapshotSummary(included, excluded, layout, enumerated),
+		SummaryMarkdown: renderSnapshotSummary(included, excludedCount, excludedReasons, layout, enumerated),
 		IncludedFiles:   included,
 		ExcludedFiles:   excluded,
 	}, nil
@@ -202,23 +256,15 @@ func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) 
 // what it was planning against. Naming the top-level directories and how much
 // of the project sits in each costs the same handful of lines and describes the
 // shape of the thing.
-func renderSnapshotSummary(included, excluded []SnapshotFileEntry, layout map[string]int, enumerated int) string {
+func renderSnapshotSummary(included []SnapshotFileEntry, excludedCount int, excludedReasons, layout map[string]int, enumerated int) string {
 	lines := []string{fmt.Sprintf("- Captured files: %d of %d", len(included), enumerated)}
 	if len(layout) > 0 {
 		lines = append(lines, fmt.Sprintf("- Project layout: %s", strings.Join(renderLayout(layout), ", ")))
 	}
-	lines = append(lines, fmt.Sprintf("- Excluded entries: %d", len(excluded)))
-	if len(excluded) > 0 {
-		reasonCounts := make(map[string]int)
-		for _, item := range excluded {
-			reason := strings.TrimSpace(item.Reason)
-			if reason == "" {
-				reason = "unknown"
-			}
-			reasonCounts[reason]++
-		}
-		reasons := make([]string, 0, len(reasonCounts))
-		for reason, count := range reasonCounts {
+	lines = append(lines, fmt.Sprintf("- Excluded entries: %d", excludedCount))
+	if excludedCount > 0 {
+		reasons := make([]string, 0, len(excludedReasons))
+		for reason, count := range excludedReasons {
 			reasons = append(reasons, fmt.Sprintf("%s=%d", reason, count))
 		}
 		sort.Strings(reasons)
@@ -243,9 +289,20 @@ func renderLayout(counts map[string]int) []string {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	layout := make([]string, 0, len(names))
-	for _, name := range names {
-		layout = append(layout, fmt.Sprintf("%s (%d)", name, counts[name]))
+	limit := len(names)
+	if limit > maxSnapshotLayoutEntries {
+		limit = maxSnapshotLayoutEntries
+	}
+	layout := make([]string, 0, limit+1)
+	for _, name := range names[:limit] {
+		displayName := name
+		if len(displayName) > maxSnapshotLayoutNameBytes {
+			displayName = displayName[:maxSnapshotLayoutNameBytes-3] + "..."
+		}
+		layout = append(layout, fmt.Sprintf("%s (%d)", displayName, counts[name]))
+	}
+	if omitted := len(names) - limit; omitted > 0 {
+		layout = append(layout, fmt.Sprintf("... %d more top-level entries", omitted))
 	}
 	return layout
 }

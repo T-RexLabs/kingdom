@@ -191,6 +191,40 @@ func TestScanProjectRootStopsAtTheFileBudget(t *testing.T) {
 	}
 }
 
+func TestScanProjectRootBoundsExcludedPathsAndRetainsReasonCounts(t *testing.T) {
+	t.Parallel()
+
+	root := initTestGitRepository(t)
+	for index := 0; index < 50; index++ {
+		writeTestFile(t, root, fmt.Sprintf("credentials_%03d.json", index), "{}\n")
+	}
+
+	summary, err := scanProjectRootWithLimits(context.Background(), root, snapshotScanLimits{
+		MaxEnumerated: 25,
+		MaxIncluded:   10,
+		MaxExcluded:   10,
+	})
+	if err != nil {
+		t.Fatalf("scan project root: %v", err)
+	}
+	if len(summary.IncludedFiles) != 0 {
+		t.Fatalf("excluded files were included: %+v", summary.IncludedFiles)
+	}
+	if len(summary.ExcludedFiles) != 10 {
+		t.Fatalf("expected 10 stored exclusion samples, got %d", len(summary.ExcludedFiles))
+	}
+	for _, entry := range summary.ExcludedFiles {
+		if entry.Reason != "secret" {
+			t.Fatalf("unexpected exclusion sample: %+v", entry)
+		}
+	}
+	for _, want := range []string{"- Captured files: 0 of 25", "- Excluded entries: 25", "- Excluded reason counts: secret=25"} {
+		if !strings.Contains(summary.SummaryMarkdown, want) {
+			t.Fatalf("expected %q in summary, got:\n%s", want, summary.SummaryMarkdown)
+		}
+	}
+}
+
 // The summary is the only part of a snapshot a planner prompt ever sees, so it
 // has to describe the project rather than name five arbitrary files.
 func TestScanProjectRootSummaryDescribesLayout(t *testing.T) {

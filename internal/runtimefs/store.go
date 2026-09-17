@@ -290,12 +290,18 @@ func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest)
 	if record.SnapshotID == "" || record.RunID == "" || record.SnapshotKind == "" || record.CreatedAt == "" || rootPath == "" {
 		return SnapshotRecord{}, fmt.Errorf("snapshot capture fields are required")
 	}
-	baseManifest, err := s.ResolveSnapshotManifest(ctx, record.ParentSnapshotID)
+	baseManifest, _, parentDepth, err := s.resolveSnapshotStateWithDepth(ctx, record.ParentSnapshotID)
 	if err != nil {
 		return SnapshotRecord{}, err
 	}
 	if err := validateSnapshotManifestLimits(baseManifest); err != nil {
 		return SnapshotRecord{}, err
+	}
+	compact := parentDepth >= providerlimits.SnapshotLineageDepth
+	if compact {
+		// A full manifest cuts the immutable overlay chain without changing the
+		// snapshot's resolved filesystem state.
+		record.ParentSnapshotID = ""
 	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
 	if err != nil {
@@ -319,6 +325,9 @@ func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest)
 				return SnapshotRecord{}, err
 			}
 			if sameSnapshotContentAndMode(base, blobID, metadata) {
+				if compact {
+					entries = append(entries, base)
+				}
 				continue
 			}
 			if blobID != base.BlobID {
@@ -382,59 +391,77 @@ func (s *Store) ResolveSnapshotManifest(ctx context.Context, snapshotID string) 
 }
 
 func (s *Store) resolveSnapshotState(ctx context.Context, snapshotID string) (map[string]SnapshotEntry, map[string]struct{}, error) {
+	manifest, deleted, _, err := s.resolveSnapshotStateWithDepth(ctx, snapshotID)
+	return manifest, deleted, err
+}
+
+func (s *Store) resolveSnapshotStateWithDepth(ctx context.Context, snapshotID string) (map[string]SnapshotEntry, map[string]struct{}, int, error) {
 	manifest := make(map[string]SnapshotEntry)
 	deleted := make(map[string]struct{})
 	if s == nil || s.db == nil {
-		return manifest, deleted, fmt.Errorf("runtime fs store is required")
+		return manifest, deleted, 0, fmt.Errorf("runtime fs store is required")
 	}
-	trimmedSnapshotID := strings.TrimSpace(snapshotID)
-	if trimmedSnapshotID == "" {
-		return manifest, deleted, nil
-	}
-	var parentSnapshotID string
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, trimmedSnapshotID).Scan(&parentSnapshotID)
+	lineage, err := s.snapshotLineage(ctx, snapshotID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load snapshot %q: %w", trimmedSnapshotID, err)
+		return nil, nil, 0, err
 	}
-	if strings.TrimSpace(parentSnapshotID) != "" {
-		parentManifest, parentDeleted, err := s.resolveSnapshotState(ctx, parentSnapshotID)
+	for index := len(lineage) - 1; index >= 0; index-- {
+		snapshotID := lineage[index]
+		rows, err := s.db.QueryContext(ctx, `SELECT path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns FROM filesystem_snapshot_entries WHERE snapshot_id = ? ORDER BY path ASC`, snapshotID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, fmt.Errorf("load snapshot entries %q: %w", snapshotID, err)
 		}
-		for path, entry := range parentManifest {
-			manifest[path] = entry
-		}
-		for path := range parentDeleted {
-			deleted[path] = struct{}{}
-		}
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns FROM filesystem_snapshot_entries WHERE snapshot_id = ? ORDER BY path ASC`, trimmedSnapshotID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load snapshot entries %q: %w", trimmedSnapshotID, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var entry SnapshotEntry
-		if err := rows.Scan(&entry.Path, &entry.EntryType, &entry.BlobID, &entry.SizeBytes, &entry.ModeBits, &entry.ModifiedNS); err != nil {
-			return nil, nil, fmt.Errorf("scan snapshot entry %q: %w", trimmedSnapshotID, err)
-		}
-		if trackedfs.IsProtectedRelativePath(entry.Path) {
-			delete(manifest, entry.Path)
+		for rows.Next() {
+			var entry SnapshotEntry
+			if err := rows.Scan(&entry.Path, &entry.EntryType, &entry.BlobID, &entry.SizeBytes, &entry.ModeBits, &entry.ModifiedNS); err != nil {
+				_ = rows.Close()
+				return nil, nil, 0, fmt.Errorf("scan snapshot entry %q: %w", snapshotID, err)
+			}
+			if trackedfs.IsProtectedRelativePath(entry.Path) {
+				delete(manifest, entry.Path)
+				delete(deleted, entry.Path)
+				continue
+			}
+			if entry.EntryType == "delete" {
+				delete(manifest, entry.Path)
+				deleted[entry.Path] = struct{}{}
+				continue
+			}
+			manifest[entry.Path] = entry
 			delete(deleted, entry.Path)
-			continue
 		}
-		if entry.EntryType == "delete" {
-			delete(manifest, entry.Path)
-			deleted[entry.Path] = struct{}{}
-			continue
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, nil, 0, fmt.Errorf("iterate snapshot entries %q: %w", snapshotID, err)
 		}
-		manifest[entry.Path] = entry
-		delete(deleted, entry.Path)
+		if err := rows.Close(); err != nil {
+			return nil, nil, 0, fmt.Errorf("close snapshot entries %q: %w", snapshotID, err)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate snapshot entries %q: %w", trimmedSnapshotID, err)
+	return manifest, deleted, len(lineage), nil
+}
+
+func (s *Store) snapshotLineage(ctx context.Context, snapshotID string) ([]string, error) {
+	currentSnapshotID := strings.TrimSpace(snapshotID)
+	lineage := make([]string, 0, providerlimits.SnapshotLineageDepth)
+	seen := make(map[string]struct{}, providerlimits.SnapshotLineageDepth)
+	for currentSnapshotID != "" {
+		if len(lineage) >= providerlimits.SnapshotLineageDepth {
+			return nil, &providerlimits.DepthExceededError{Resource: "snapshot lineage", Limit: providerlimits.SnapshotLineageDepth}
+		}
+		if _, exists := seen[currentSnapshotID]; exists {
+			return nil, fmt.Errorf("snapshot lineage cycle at %q", currentSnapshotID)
+		}
+		seen[currentSnapshotID] = struct{}{}
+		lineage = append(lineage, currentSnapshotID)
+
+		var parentSnapshotID string
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, currentSnapshotID).Scan(&parentSnapshotID); err != nil {
+			return nil, fmt.Errorf("load snapshot %q: %w", currentSnapshotID, err)
+		}
+		currentSnapshotID = strings.TrimSpace(parentSnapshotID)
 	}
-	return manifest, deleted, nil
+	return lineage, nil
 }
 
 func (s *Store) CountChangesAgainstSnapshot(ctx context.Context, rootPath, snapshotID string) (int, error) {

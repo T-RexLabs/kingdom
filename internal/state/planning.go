@@ -3,9 +3,20 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+)
+
+const (
+	// These limits bound both the context scan and its durable representation.
+	// Keep them here so direct store callers cannot persist a larger payload.
+	MaxPlanningContextSnapshotEntries      = 200
+	MaxPlanningContextSnapshotJSONBytes    = 1 << 20
+	MaxPlanningContextSnapshotSummaryBytes = 32 << 10
+	MaxPlanningContextSnapshotPathBytes    = 4096
+	MaxPlanningContextSnapshotReasonBytes  = 128
 )
 
 var ErrPlanningOperationEventNotFound = errors.New("planning operation event not found")
@@ -637,11 +648,55 @@ func validatePlanningContextSnapshotCreate(req CreatePlanningContextSnapshotRequ
 	if strings.TrimSpace(req.SummaryMarkdown) == "" {
 		return fmt.Errorf("planning context summary is required")
 	}
+	if len(req.SummaryMarkdown) > MaxPlanningContextSnapshotSummaryBytes {
+		return fmt.Errorf("planning context summary exceeds %d bytes", MaxPlanningContextSnapshotSummaryBytes)
+	}
 	if strings.TrimSpace(req.IncludedFilesJSON) == "" || strings.TrimSpace(req.ExcludedFilesJSON) == "" {
 		return fmt.Errorf("planning context file json fields are required")
 	}
+	if err := validatePlanningContextSnapshotFilesJSON("included", req.IncludedFilesJSON); err != nil {
+		return err
+	}
+	if err := validatePlanningContextSnapshotFilesJSON("excluded", req.ExcludedFilesJSON); err != nil {
+		return err
+	}
 	if strings.TrimSpace(req.CreatedAt) == "" {
 		return fmt.Errorf("planning context created_at is required")
+	}
+	return nil
+}
+
+type planningContextSnapshotFileEntry struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+	Size   int64  `json:"size_bytes,omitempty"`
+}
+
+func validatePlanningContextSnapshotFilesJSON(kind, raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) > MaxPlanningContextSnapshotJSONBytes {
+		return fmt.Errorf("%s planning context file json exceeds %d bytes", kind, MaxPlanningContextSnapshotJSONBytes)
+	}
+	if !strings.HasPrefix(trimmed, "[") {
+		return fmt.Errorf("%s planning context file json must be an array", kind)
+	}
+	var entries []planningContextSnapshotFileEntry
+	if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
+		return fmt.Errorf("decode %s planning context file json: %w", kind, err)
+	}
+	if len(entries) > MaxPlanningContextSnapshotEntries {
+		return fmt.Errorf("%s planning context files exceed %d entries", kind, MaxPlanningContextSnapshotEntries)
+	}
+	for _, entry := range entries {
+		if len(entry.Path) == 0 || len(entry.Path) > MaxPlanningContextSnapshotPathBytes {
+			return fmt.Errorf("%s planning context file path exceeds %d bytes", kind, MaxPlanningContextSnapshotPathBytes)
+		}
+		if len(entry.Reason) > MaxPlanningContextSnapshotReasonBytes {
+			return fmt.Errorf("%s planning context file reason exceeds %d bytes", kind, MaxPlanningContextSnapshotReasonBytes)
+		}
+		if entry.Size < 0 {
+			return fmt.Errorf("%s planning context file size must not be negative", kind)
+		}
 	}
 	return nil
 }

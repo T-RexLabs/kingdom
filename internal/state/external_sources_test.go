@@ -1045,7 +1045,7 @@ func TestConnectionHealthPinsInstallationAccountIdentity(t *testing.T) {
 	if onlyInstallation(t, renamed) != (ConnectionInstallation{InstallationID: "2", AccountID: "10", AccountLogin: "octocat-renamed"}) {
 		t.Fatalf("renamed account login was not refreshed: %#v", renamed)
 	}
-	if _, err := db.Exec(`UPDATE external_connection_installations SET account_id='11' WHERE connection_id='conn-identity'`); err == nil || !strings.Contains(err.Error(), "immutable") {
+	if _, err := db.Exec(`UPDATE external_installations SET account_id='11' WHERE installation_id='2'`); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("expected pinned installation identity trigger, got %v", err)
 	}
 	if _, err := db.Exec(`UPDATE external_connection_installations SET connection_id='conn-other' WHERE connection_id='conn-identity'`); err == nil || !strings.Contains(err.Error(), "immutable") {
@@ -1719,7 +1719,7 @@ func TestSettingTheSameNormalizedInstallationSetDoesNotChurnState(t *testing.T) 
 	}
 }
 
-func TestTombstoneReleasesInstallationsSoTheyCanBeConnectedAgain(t *testing.T) {
+func TestTombstoneReleasesInstallationsButRetainsAccountIdentity(t *testing.T) {
 	store, ctx, connection := multiInstallationFixture(t)
 	at := "2026-08-19T11:00:00Z"
 	if err := store.UpdateConnectionStateAudited(ctx, connection.ConnectionID, "removed", "removed", "", at, false, "local-operator", "audit-removed", "connection.removed"); err != nil {
@@ -1731,12 +1731,24 @@ func TestTombstoneReleasesInstallationsSoTheyCanBeConnectedAgain(t *testing.T) {
 		t.Fatalf("tombstone left %d installations held", remaining)
 	}
 	if _, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-impostor", CredentialStrategy: "user_access_token", DisplayName: "Impostor",
+		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "999", AccountLogin: "impostor"}},
+		CredentialHandle: "github-user:conn-impostor", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-impostor",
+	}}); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("re-added installation accepted a different account identity: %v", err)
+	}
+	readded, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
 		ConnectionID: "conn-again", CredentialStrategy: "user_access_token", DisplayName: "Again",
 		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
-		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}},
 		CredentialHandle: "github-user:conn-again", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-again",
-	}}); err != nil {
+	}})
+	if err != nil {
 		t.Fatalf("a released installation must be connectable again: %v", err)
+	}
+	if onlyInstallation(t, readded) != (ConnectionInstallation{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}) {
+		t.Fatalf("re-added installation did not retain its account identity: %#v", readded.Installations)
 	}
 }
 

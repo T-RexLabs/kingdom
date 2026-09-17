@@ -463,13 +463,49 @@ func normalizedInstallations(in []ConnectionInstallation) ([]ConnectionInstallat
 	return out, nil
 }
 
-func insertConnectionInstallations(ctx context.Context, tx *sql.Tx, connectionID string, installations []ConnectionInstallation, at string) error {
-	for _, installation := range installations {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO external_connection_installations (installation_id,connection_id,account_id,account_login,created_at) VALUES (?,?,?,?,?)`, installation.InstallationID, connectionID, installation.AccountID, installation.AccountLogin, at); err != nil {
-			return err
+func persistInstallationIdentity(ctx context.Context, tx *sql.Tx, installation ConnectionInstallation, at string) (ConnectionInstallation, error) {
+	var stored ConnectionInstallation
+	err := tx.QueryRowContext(ctx, `SELECT installation_id,account_id,account_login FROM external_installations WHERE installation_id=?`, installation.InstallationID).Scan(&stored.InstallationID, &stored.AccountID, &stored.AccountLogin)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_installations (installation_id,account_id,account_login,created_at) VALUES (?,?,?,?)`, installation.InstallationID, installation.AccountID, installation.AccountLogin, at); err != nil {
+			return ConnectionInstallation{}, err
 		}
+		return installation, nil
 	}
-	return nil
+	if err != nil {
+		return ConnectionInstallation{}, err
+	}
+	if installation.AccountID != "" && stored.AccountID != "" && installation.AccountID != stored.AccountID {
+		return ConnectionInstallation{}, ErrExternalConflict
+	}
+	if stored.AccountID == "" && installation.AccountID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE external_installations SET account_id=?,account_login=? WHERE installation_id=? AND account_id=''`, installation.AccountID, installation.AccountLogin, installation.InstallationID); err != nil {
+			return ConnectionInstallation{}, err
+		}
+		return installation, nil
+	}
+	if stored.AccountID != "" && installation.AccountLogin != "" && installation.AccountLogin != stored.AccountLogin {
+		if _, err := tx.ExecContext(ctx, `UPDATE external_installations SET account_login=? WHERE installation_id=? AND account_id=?`, installation.AccountLogin, installation.InstallationID, stored.AccountID); err != nil {
+			return ConnectionInstallation{}, err
+		}
+		stored.AccountLogin = installation.AccountLogin
+	}
+	return stored, nil
+}
+
+func insertConnectionInstallations(ctx context.Context, tx *sql.Tx, connectionID string, installations []ConnectionInstallation, at string) ([]ConnectionInstallation, error) {
+	resolved := make([]ConnectionInstallation, 0, len(installations))
+	for _, installation := range installations {
+		identity, err := persistInstallationIdentity(ctx, tx, installation, at)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO external_connection_installations (installation_id,connection_id,created_at) VALUES (?,?,?)`, identity.InstallationID, connectionID, at); err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, identity)
+	}
+	return resolved, nil
 }
 
 func loadConnectionInstallations(ctx context.Context, q interface {
@@ -483,7 +519,7 @@ func loadConnectionInstallations(ctx context.Context, q interface {
 	for _, id := range connectionIDs {
 		args = append(args, id)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT connection_id,installation_id,account_id,account_login FROM external_connection_installations WHERE connection_id IN (`+placeholders+`) ORDER BY installation_id`, args...)
+	rows, err := q.QueryContext(ctx, `SELECT claim.connection_id,claim.installation_id,identity.account_id,identity.account_login FROM external_connection_installations claim JOIN external_installations identity ON identity.installation_id=claim.installation_id WHERE claim.connection_id IN (`+placeholders+`) ORDER BY claim.installation_id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +567,7 @@ func (s *ExternalStore) CreateConnection(ctx context.Context, req CreateExternal
 		_ = tx.Rollback()
 		return ExternalConnection{}, fmt.Errorf("insert external connection: %w", err)
 	}
-	if err = insertConnectionInstallations(ctx, tx, row.ConnectionID, installations, req.CreatedAt); err != nil {
+	if row.Installations, err = insertConnectionInstallations(ctx, tx, row.ConnectionID, installations, req.CreatedAt); err != nil {
 		_ = tx.Rollback()
 		return ExternalConnection{}, fmt.Errorf("insert external connection installations: %w", err)
 	}
@@ -590,7 +626,7 @@ func (s *ExternalStore) FinalizeConnection(ctx context.Context, req FinalizeExte
 	}()
 	_, err = tx.ExecContext(ctx, `INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,credential_handle,lifecycle,health_class,last_checked_at,last_success_at,row_version,credential_generation,validated_generation,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, row.ConnectionID, row.Provider, row.CredentialStrategy, row.DisplayName, row.AppID, row.ClientID, row.AppSlug, row.CredentialHandle, row.Lifecycle, row.HealthClass, row.CreatedAt, row.CreatedAt, row.RowVersion, row.CredentialGeneration, row.ValidatedGeneration, row.CreatedAt, row.UpdatedAt)
 	if err == nil {
-		err = insertConnectionInstallations(ctx, tx, row.ConnectionID, installations, row.CreatedAt)
+		row.Installations, err = insertConnectionInstallations(ctx, tx, row.ConnectionID, installations, row.CreatedAt)
 	}
 	if err != nil {
 		return ExternalConnection{}, fmt.Errorf("insert finalized external connection: %w", err)
@@ -884,7 +920,7 @@ func (s *ExternalStore) updateConnectionStateVersion(ctx context.Context, id, li
 		}
 	}
 	for _, installation := range installations {
-		pinned, pinErr := tx.ExecContext(ctx, `UPDATE external_connection_installations SET account_id=?,account_login=? WHERE connection_id=? AND installation_id=? AND (account_id='' OR account_id=?)`, installation.AccountID, installation.AccountLogin, id, installation.InstallationID, installation.AccountID)
+		pinned, pinErr := tx.ExecContext(ctx, `UPDATE external_installations SET account_id=?,account_login=? WHERE installation_id=? AND (account_id='' OR account_id=?)`, installation.AccountID, installation.AccountLogin, installation.InstallationID, installation.AccountID)
 		if pinErr != nil {
 			_ = tx.Rollback()
 			return pinErr
@@ -971,21 +1007,6 @@ func (s *ExternalStore) SetConnectionInstallations(ctx context.Context, connecti
 		return ExternalConnection{}, err
 	}
 	current.Installations = existing[connectionID]
-	pinned := map[string]ConnectionInstallation{}
-	for _, installation := range current.Installations {
-		pinned[installation.InstallationID] = installation
-	}
-	for i, installation := range installations {
-		if previous, ok := pinned[installation.InstallationID]; ok && previous.AccountID != "" {
-			if installation.AccountID != "" && installation.AccountID != previous.AccountID {
-				return ExternalConnection{}, ErrExternalConflict
-			}
-			installations[i].AccountID = previous.AccountID
-			if installations[i].AccountLogin == "" {
-				installations[i].AccountLogin = previous.AccountLogin
-			}
-		}
-	}
 	unchanged := len(installations) == len(current.Installations)
 	for i := range installations {
 		if unchanged && installations[i] != current.Installations[i] {
@@ -1005,7 +1026,7 @@ func (s *ExternalStore) SetConnectionInstallations(ctx context.Context, connecti
 	if _, err := tx.ExecContext(ctx, `DELETE FROM external_connection_installations WHERE connection_id=?`, connectionID); err != nil {
 		return ExternalConnection{}, err
 	}
-	if err := insertConnectionInstallations(ctx, tx, connectionID, installations, req.UpdatedAt); err != nil {
+	if _, err := insertConnectionInstallations(ctx, tx, connectionID, installations, req.UpdatedAt); err != nil {
 		return ExternalConnection{}, err
 	}
 	if err := appendExternalAudit(ctx, tx, req.AuditEventID, connectionID, "", "connection.installations_changed", req.ActorID, map[string]any{"installations": installationAuditPayload(installations)}, req.UpdatedAt); err != nil {
@@ -1068,7 +1089,7 @@ func (s *ExternalStore) ReauthorizeSharedConnection(ctx context.Context, expecte
 		return ExternalConnection{}, ErrExternalConflict
 	}
 	for _, installation := range installations {
-		if _, err := tx.ExecContext(ctx, `UPDATE external_connection_installations SET account_login=? WHERE connection_id=? AND installation_id=?`, installation.AccountLogin, expected.ConnectionID, installation.InstallationID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE external_installations SET account_login=? WHERE installation_id=? AND account_id=?`, installation.AccountLogin, installation.InstallationID, installation.AccountID); err != nil {
 			return ExternalConnection{}, err
 		}
 	}

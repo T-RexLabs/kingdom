@@ -1292,7 +1292,7 @@ func TestDoJSONKeepsTransportAndAuthenticationRetryBudgetsIndependent(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+			client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1650,7 +1650,7 @@ func TestSharedUserTokenDoesNotProbeMasked404PerInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}

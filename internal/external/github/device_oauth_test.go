@@ -23,6 +23,10 @@ func (f deviceRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, e
 	return f(request)
 }
 
+func testSelectedUserCredentialGeneration(generation int) func(context.Context, string) (int, error) {
+	return func(context.Context, string) (int, error) { return generation, nil }
+}
+
 func TestDeviceOAuthRequiresExpiringRotatingTokensAndFiltersCandidates(t *testing.T) {
 	now := time.Now().UTC()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +99,7 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 		t.Fatal(err)
 	}
 	oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-	client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	client, err := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +169,7 @@ func TestSharedListInstallationsRefreshesExpiredTokenAndRetriesOne401(t *testing
 			}
 			now = now.Add(test.advanceBefore)
 			oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
 			installations, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
 			if err != nil {
 				t.Fatal(err)
@@ -189,9 +193,11 @@ func TestSharedListInstallationsRefreshesExpiredTokenAndRetriesOne401(t *testing
 
 func TestStaleGenerationRefreshCannotOverwriteNewerTokenGeneration(t *testing.T) {
 	now := time.Now().UTC()
+	var refreshCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/login/oauth/access_token":
+			refreshCalls.Add(1)
 			_ = r.ParseForm()
 			if r.Form.Get("refresh_token") != "refresh-token-old" {
 				t.Errorf("refresh used wrong generation token")
@@ -220,18 +226,19 @@ func TestStaleGenerationRefreshCannotOverwriteNewerTokenGeneration(t *testing.T)
 		t.Fatal(err)
 	}
 	oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-	client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-	installations, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
-	if err != nil || len(installations) != 1 || installations[0].InstallationID != "2" {
-		t.Fatalf("stale generation installations=%#v err=%v", installations, err)
+	client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(2), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	_, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
+	assertProviderFailureClass(t, err, external.FailureAuthentication)
+	if refreshCalls.Load() != 0 {
+		t.Fatalf("retired generation refreshes=%d, want 0", refreshCalls.Load())
 	}
 	selected, err := store.Load("connection-1", 2)
 	if err != nil || selected.AccessToken != newer.AccessToken || selected.RefreshToken != newer.RefreshToken {
 		t.Fatalf("newer generation was overwritten: %#v err=%v", selected, err)
 	}
-	refreshedStale, err := store.Load("connection-1", 1)
-	if err != nil || refreshedStale.AccessToken != "access-rotated-old" {
-		t.Fatalf("ordinary same-generation refresh was not atomic: %#v err=%v", refreshedStale, err)
+	retired, err := store.Load("connection-1", 1)
+	if err != nil || retired.AccessToken != stale.AccessToken || retired.RefreshToken != stale.RefreshToken {
+		t.Fatalf("retired generation was refreshed: %#v err=%v", retired, err)
 	}
 }
 
@@ -258,7 +265,7 @@ func TestSharedListInstallationsPreservesProviderFailureClass(t *testing.T) {
 				t.Fatal(err)
 			}
 			oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+			client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
 			_, err := client.ListInstallations(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom"})
 			assertProviderFailureClass(t, err, test.class)
 		})
@@ -347,7 +354,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
 		_, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}})
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
@@ -365,7 +372,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
+		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }, RetryDelay: func(int) time.Duration { return 0 }})
 		_, err := client.ListRepositories(context.Background(), state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, "", "")
 		assertProviderFailureClass(t, err, external.FailureUnavailable)
 	})
@@ -382,7 +389,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
 		_, err := client.userAccessToken(context.Background(), "connection-1", 1, "", false)
 		var providerErr *external.ProviderError
 		if !errors.As(err, &providerErr) || providerErr.Class != external.FailureRateLimited || providerErr.RetryAt == nil || !providerErr.RetryAt.Equal(now.Add(30*time.Second)) {
@@ -401,7 +408,7 @@ func TestSharedValidationAndRefreshPreserveProviderFailureClass(t *testing.T) {
 			t.Fatal(err)
 		}
 		oauth, _ := NewDeviceOAuthClient(DeviceOAuthClientConfig{HTTPClient: server.Client(), APIBaseURL: server.URL, WebBaseURL: server.URL, AllowTestEndpoints: true, Now: func() time.Time { return now }})
-		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+		client, _ := NewClient(ClientConfig{UserTokens: store, DeviceOAuth: oauth, SharedClientID: "IvShared", UserCredentialGeneration: testSelectedUserCredentialGeneration(1), HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
 		_, err := client.userAccessToken(context.Background(), "connection-1", 1, "", false)
 		assertProviderFailureClass(t, err, external.FailureAuthentication)
 	})

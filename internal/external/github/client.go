@@ -33,17 +33,18 @@ const (
 )
 
 type ClientConfig struct {
-	HTTPClient        *http.Client
-	Keys              *KeyStore
-	UserTokens        *UserTokenStore
-	DeviceOAuth       *DeviceOAuthClient
-	SharedClientID    string
-	Now               func() time.Time
-	BaseURL           string
-	AllowTestEndpoint bool
-	GlobalConcurrency int
-	RetryDelay        func(attempt int) time.Duration
-	OperationTimeout  time.Duration
+	HTTPClient               *http.Client
+	Keys                     *KeyStore
+	UserTokens               *UserTokenStore
+	DeviceOAuth              *DeviceOAuthClient
+	SharedClientID           string
+	UserCredentialGeneration func(context.Context, string) (int, error)
+	Now                      func() time.Time
+	BaseURL                  string
+	AllowTestEndpoint        bool
+	GlobalConcurrency        int
+	RetryDelay               func(attempt int) time.Duration
+	OperationTimeout         time.Duration
 }
 type cachedToken struct {
 	value   string
@@ -54,29 +55,30 @@ type tokenCacheKey struct {
 	credentialGeneration                                       int
 }
 type Client struct {
-	http              *http.Client
-	keys              *KeyStore
-	userTokens        *UserTokenStore
-	deviceOAuth       *DeviceOAuthClient
-	sharedClientID    string
-	now               func() time.Time
-	base              string
-	tokensMu          sync.Mutex
-	tokens            map[tokenCacheKey]cachedToken
-	mintMu            sync.Mutex
-	mints             map[tokenCacheKey]*tokenMint
-	epochs            map[string]uint64
-	gateMu            sync.Mutex
-	gates             map[string]chan struct{}
-	global            chan struct{}
-	retryDelay        func(int) time.Duration
-	operationTimeout  time.Duration
-	strategiesMu      sync.RWMutex
-	strategies        map[string]string
-	userRefreshMu     sync.Mutex
-	userRefreshLocks  map[string]*sync.Mutex
-	repositoryIndexMu sync.Mutex
-	repositoryIndex   map[string]*connectionRepositoryIndex
+	http                     *http.Client
+	keys                     *KeyStore
+	userTokens               *UserTokenStore
+	deviceOAuth              *DeviceOAuthClient
+	sharedClientID           string
+	userCredentialGeneration func(context.Context, string) (int, error)
+	now                      func() time.Time
+	base                     string
+	tokensMu                 sync.Mutex
+	tokens                   map[tokenCacheKey]cachedToken
+	mintMu                   sync.Mutex
+	mints                    map[tokenCacheKey]*tokenMint
+	epochs                   map[string]uint64
+	gateMu                   sync.Mutex
+	gates                    map[string]chan struct{}
+	global                   chan struct{}
+	retryDelay               func(int) time.Duration
+	operationTimeout         time.Duration
+	strategiesMu             sync.RWMutex
+	strategies               map[string]string
+	userRefreshMu            sync.Mutex
+	userRefreshLocks         map[string]*sync.Mutex
+	repositoryIndexMu        sync.Mutex
+	repositoryIndex          map[string]*connectionRepositoryIndex
 }
 
 const (
@@ -111,8 +113,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Keys == nil && cfg.UserTokens == nil {
 		return nil, fmt.Errorf("github credential store is required")
 	}
-	if cfg.UserTokens != nil && (cfg.DeviceOAuth == nil || !clientIDPattern.MatchString(cfg.SharedClientID)) {
-		return nil, fmt.Errorf("github user token refresh requires shared client id and device oauth client")
+	if cfg.UserTokens != nil && (cfg.DeviceOAuth == nil || !clientIDPattern.MatchString(cfg.SharedClientID) || cfg.UserCredentialGeneration == nil) {
+		return nil, fmt.Errorf("github user token refresh requires shared client id, device oauth client, and credential generation selector")
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if base == "" {
@@ -157,7 +159,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if opTimeout <= 0 {
 		opTimeout = operationTimeout
 	}
-	return &Client{http: hc, keys: cfg.Keys, userTokens: cfg.UserTokens, deviceOAuth: cfg.DeviceOAuth, sharedClientID: cfg.SharedClientID, now: now, base: base, tokens: map[tokenCacheKey]cachedToken{}, mints: map[tokenCacheKey]*tokenMint{}, epochs: map[string]uint64{}, gates: map[string]chan struct{}{}, global: make(chan struct{}, globalConcurrency), retryDelay: retryDelay, operationTimeout: opTimeout, strategies: map[string]string{}, userRefreshLocks: map[string]*sync.Mutex{}}, nil
+	return &Client{http: hc, keys: cfg.Keys, userTokens: cfg.UserTokens, deviceOAuth: cfg.DeviceOAuth, sharedClientID: cfg.SharedClientID, userCredentialGeneration: cfg.UserCredentialGeneration, now: now, base: base, tokens: map[tokenCacheKey]cachedToken{}, mints: map[tokenCacheKey]*tokenMint{}, epochs: map[string]uint64{}, gates: map[string]chan struct{}{}, global: make(chan struct{}, globalConcurrency), retryDelay: retryDelay, operationTimeout: opTimeout, strategies: map[string]string{}, userRefreshLocks: map[string]*sync.Mutex{}}, nil
 }
 func safeRedirectForOrigin(origin *url.URL) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
@@ -478,6 +480,13 @@ func (c *Client) userAccessToken(ctx context.Context, connectionID string, gener
 		if !force && c.now().Add(5*time.Minute).Before(current.AccessExpiresAt) {
 			token = current.AccessToken
 			return nil
+		}
+		selected, err := c.userCredentialGeneration(ctx, connectionID)
+		if err != nil {
+			return fmt.Errorf("load github user credential publication: %w", err)
+		}
+		if selected != generation {
+			return &external.ProviderError{Class: external.FailureAuthentication}
 		}
 		rotated, err := c.deviceOAuth.Refresh(ctx, c.sharedClientID, current.RefreshToken)
 		if err != nil {

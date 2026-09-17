@@ -875,10 +875,20 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,credential_handle,lifecycle,health_class,credential_generation,validated_generation,created_at,updated_at) VALUES ('invalid-healthy','github','app_private_key','Invalid','1','Iv1','app','github-app:invalid-healthy','enabled','healthy',0,0,'2026-08-15T12:00:00Z','2026-08-15T12:00:00Z')`); err == nil {
 		t.Fatal("schema accepted healthy connection with generation zero")
 	}
-	// Installation identity is a set the connection covers, not a column on it.
-	for _, column := range []string{"installation_id", "connection_id", "account_id", "account_login"} {
+	// Live installation claims are separate from the durable account identity.
+	for _, column := range []string{"installation_id", "connection_id"} {
 		if !columnExists(t, db, "external_connection_installations", column) {
 			t.Fatalf("external_connection_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"installation_id", "account_id", "account_login"} {
+		if !columnExists(t, db, "external_installations", column) {
+			t.Fatalf("external_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"account_id", "account_login"} {
+		if columnExists(t, db, "external_connection_installations", column) {
+			t.Fatalf("external_connection_installations.%s must not duplicate durable identity", column)
 		}
 	}
 	for _, column := range []string{"installation_id", "installation_account_id", "installation_account_login"} {

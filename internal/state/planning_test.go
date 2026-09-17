@@ -64,6 +64,51 @@ func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	}
 }
 
+func TestValidatePlanningContextSnapshotCreateBoundsFileJSON(t *testing.T) {
+	t.Parallel()
+
+	valid := CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "pcs_bounds",
+		PlanningSessionID:         "ps_bounds",
+		SummaryMarkdown:           "context",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-21T16:14:00Z",
+	}
+	tests := []struct {
+		name string
+		edit func(*CreatePlanningContextSnapshotRequest)
+	}{
+		{
+			name: "too many excluded entries",
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.ExcludedFilesJSON = "[" + strings.Repeat(`{"path":".env","reason":"secret"},`, MaxPlanningContextSnapshotEntries) + `{"path":".env","reason":"secret"}]`
+			},
+		},
+		{
+			name: "oversized included json",
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.IncludedFilesJSON = `[{"path":"` + strings.Repeat("a", MaxPlanningContextSnapshotJSONBytes) + `"}]`
+			},
+		},
+		{
+			name: "malformed excluded json",
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.ExcludedFilesJSON = `not-json`
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := valid
+			tt.edit(&req)
+			if err := validatePlanningContextSnapshotCreate(req); err == nil {
+				t.Fatal("expected bounded snapshot validation failure")
+			}
+		})
+	}
+}
+
 func TestListRecentCompletedOperationTelemetryUsesCurrentACPEvents(t *testing.T) {
 	t.Parallel()
 
@@ -323,7 +368,7 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 		PlanningContextSnapshotID: "pcs_1",
 		PlanningSessionID:         "ps_flow",
 		SummaryMarkdown:           "Scanned 2 files",
-		IncludedFilesJSON:         `["README.md","docs/system-architecture.md"]`,
+		IncludedFilesJSON:         `[{"path":"README.md","size_bytes":1},{"path":"docs/system-architecture.md","size_bytes":1}]`,
 		ExcludedFilesJSON:         `[{"path":".env","reason":"secret"}]`,
 		CreatedAt:                 "2026-04-21T16:14:00Z",
 	})

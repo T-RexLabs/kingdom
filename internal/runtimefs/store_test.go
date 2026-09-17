@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,6 +283,102 @@ func TestCaptureSnapshotHashesFilesWithMatchingMetadata(t *testing.T) {
 	}
 	if baseManifest["same.txt"].BlobID == childManifest["same.txt"].BlobID {
 		t.Fatal("matching size, mode, and mtime must not hide changed content")
+	}
+}
+
+func TestCaptureSnapshotCompactsLineageAtDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_lineage_compaction")
+	root := t.TempDir()
+	writeTestFile(t, root, "stable.txt", "stable")
+	writeTestFile(t, root, "removed.txt", "remove me")
+
+	parentSnapshotID := ""
+	for index := 0; index <= providerlimits.SnapshotLineageDepth; index++ {
+		if index == 1 {
+			if err := os.Remove(filepath.Join(root, "removed.txt")); err != nil {
+				t.Fatalf("remove inherited file: %v", err)
+			}
+		}
+		writeTestFile(t, root, "changing.txt", fmt.Sprintf("version-%d", index))
+		snapshot, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+			SnapshotID:       fmt.Sprintf("snap_lineage_%d", index),
+			RunID:            "run_lineage_compaction",
+			ParentSnapshotID: parentSnapshotID,
+			SnapshotKind:     "attempt_result",
+			RootPath:         root,
+			CreatedAt:        "2026-03-01T12:00:00Z",
+		})
+		if err != nil {
+			t.Fatalf("capture snapshot %d: %v", index, err)
+		}
+		parentSnapshotID = snapshot.SnapshotID
+	}
+
+	var compactedParent string
+	if err := db.QueryRow(`SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, parentSnapshotID).Scan(&compactedParent); err != nil {
+		t.Fatalf("load compacted snapshot parent: %v", err)
+	}
+	if compactedParent != "" {
+		t.Fatalf("compacted snapshot parent=%q, want empty", compactedParent)
+	}
+	manifest, err := store.ResolveSnapshotManifest(context.Background(), parentSnapshotID)
+	if err != nil {
+		t.Fatalf("resolve compacted snapshot: %v", err)
+	}
+	stable := manifest["stable.txt"]
+	if stable.BlobID == "" {
+		t.Fatalf("compacted manifest omitted unchanged file: %#v", manifest)
+	}
+	changing := manifest["changing.txt"]
+	if changing.BlobID == "" {
+		t.Fatalf("compacted manifest omitted changed file: %#v", manifest)
+	}
+	if _, exists := manifest["removed.txt"]; exists {
+		t.Fatalf("compacted manifest retained deleted file: %#v", manifest)
+	}
+	stableBytes, err := store.ReadBlob(stable.BlobID)
+	if err != nil || string(stableBytes) != "stable" {
+		t.Fatalf("compacted stable file=%q err=%v, want stable", stableBytes, err)
+	}
+	changingBytes, err := store.ReadBlob(changing.BlobID)
+	if err != nil || string(changingBytes) != fmt.Sprintf("version-%d", providerlimits.SnapshotLineageDepth) {
+		t.Fatalf("compacted changing file=%q err=%v", changingBytes, err)
+	}
+}
+
+func TestResolveSnapshotManifestRejectsOverLimitLineage(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_lineage_limit")
+
+	parentSnapshotID := ""
+	for index := 0; index <= providerlimits.SnapshotLineageDepth; index++ {
+		snapshotID := fmt.Sprintf("snap_over_limit_%d", index)
+		mustRuntimeFSExec(t, db, fmt.Sprintf(`INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('%s', 'run_lineage_limit', NULLIF('%s', ''), 'attempt_result', '2026-03-01T12:00:00Z')`, snapshotID, parentSnapshotID))
+		parentSnapshotID = snapshotID
+	}
+
+	_, err = store.ResolveSnapshotManifest(context.Background(), parentSnapshotID)
+	var depthErr *providerlimits.DepthExceededError
+	if !errors.As(err, &depthErr) {
+		t.Fatalf("resolve over-limit lineage error=%v, want DepthExceededError", err)
+	}
+	if depthErr.Resource != "snapshot lineage" || depthErr.Limit != providerlimits.SnapshotLineageDepth {
+		t.Fatalf("unexpected lineage limit error=%#v", depthErr)
 	}
 }
 

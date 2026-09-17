@@ -23,32 +23,41 @@ CREATE TABLE external_connections (
   CHECK (health_class <> 'healthy' OR (length(trim(app_slug)) > 0 AND credential_generation > 0 AND validated_generation = credential_generation))
 );
 
--- A connection is one App credential covering the installations that credential
--- reaches. installation_id is the primary key rather than a unique index on the
--- parent, so at most one live connection can hold a given installation; rows are
--- deleted when a connection is tombstoned, leaving the installation free to be
--- connected again while the audit stream keeps the removal provenance.
-CREATE TABLE external_connection_installations (
+-- An installation's numeric account identity survives connection removal. The
+-- login can change after a verified GitHub rename, but the account cannot.
+CREATE TABLE external_installations (
   installation_id TEXT PRIMARY KEY,
-  connection_id TEXT NOT NULL,
   account_id TEXT NOT NULL DEFAULT '',
   account_login TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
-  CHECK ((account_id = '') = (account_login = '')),
+  CHECK ((account_id = '') = (account_login = ''))
+);
+
+CREATE TRIGGER external_installation_identity_pinned
+BEFORE UPDATE OF installation_id, account_id ON external_installations
+WHEN NEW.installation_id <> OLD.installation_id
+  OR (OLD.account_id <> '' AND NEW.account_id <> OLD.account_id)
+BEGIN SELECT RAISE(ABORT, 'external installation identity is immutable'); END;
+
+-- A connection is one App credential covering the installations that credential
+-- reaches. installation_id is the primary key rather than a unique index on the
+-- parent, so at most one live connection can hold a given installation. Deleting
+-- this live claim on tombstone releases it without erasing its identity.
+CREATE TABLE external_connection_installations (
+  installation_id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (installation_id) REFERENCES external_installations(installation_id),
   FOREIGN KEY (connection_id) REFERENCES external_connections(connection_id)
 );
 
 CREATE INDEX idx_external_connection_installations_connection
 ON external_connection_installations (connection_id);
 
--- Account identity pins on first successful validation, matching how a manual
--- connection is created before its account is known. account_login is
--- deliberately absent so a verified GitHub rename can still flow through.
-CREATE TRIGGER external_connection_installation_identity_pinned
-BEFORE UPDATE OF installation_id, connection_id, account_id ON external_connection_installations
+CREATE TRIGGER external_connection_installation_claim_pinned
+BEFORE UPDATE OF installation_id, connection_id ON external_connection_installations
 WHEN NEW.installation_id <> OLD.installation_id
   OR NEW.connection_id <> OLD.connection_id
-  OR (OLD.account_id <> '' AND NEW.account_id <> OLD.account_id)
 BEGIN SELECT RAISE(ABORT, 'external installation identity is immutable'); END;
 
 CREATE TRIGGER external_connection_app_identity_pinned

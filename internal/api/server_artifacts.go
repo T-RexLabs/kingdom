@@ -16,6 +16,11 @@ import (
 	"kingdom/internal/state"
 )
 
+const (
+	runArtifactArchiveMaxEntries = 1_000
+	runArtifactArchiveMaxBytes   = 256 * 1024 * 1024
+)
+
 type runArtifactsResponse struct {
 	RunID string            `json:"run_id"`
 	Items []runArtifactItem `json:"items"`
@@ -99,8 +104,13 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	records, err := s.artifactService.ListRunArtifacts(r.Context(), runID)
+	records, err := s.artifactService.ListRunArtifactsBounded(r.Context(), runID, runArtifactArchiveMaxEntries)
 	if err != nil {
+		var limitErr *state.ArtifactListLimitExceededError
+		if errors.As(err, &limitErr) {
+			writeCanonicalError(w, http.StatusRequestEntityTooLarge, errorcatalog.CodeResourceLimitExceeded, limitErr.Error(), "api.get_run_artifacts_archive", map[string]any{"run_id": runID})
+			return
+		}
 		s.writeInternalError(w, "list run artifacts failed")
 		return
 	}
@@ -108,12 +118,13 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 	type archiveEntry struct {
 		record state.ArtifactRecord
 		name   string
-		body   []byte
 	}
 
-	entries := make([]archiveEntry, 0, len(records))
+	entries := make([]archiveEntry, 0, len(records)+1)
 	usedNames := make(map[string]struct{}, len(records))
 	deletions := make([]artifactDeletionArchiveEntry, 0)
+	var deletionMetadata []byte
+	var totalBytes int64
 	for _, record := range records {
 		if strings.TrimSpace(record.ArtifactAction) == "delete" {
 			deletions = append(deletions, artifactDeletionArchiveEntry{
@@ -126,28 +137,24 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 			})
 			continue
 		}
-		_, content, contentErr := s.artifactService.GetArtifactContent(r.Context(), record.ArtifactID)
-		if contentErr != nil {
-			var notFoundErr *state.ArtifactNotFoundError
-			var unavailableErr *state.ArtifactContentUnavailableError
-			switch {
-			case errors.As(contentErr, &notFoundErr):
-				writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "artifact not found", "api.get_run_artifacts_archive", map[string]any{"artifact_id": record.ArtifactID})
-			case errors.As(contentErr, &unavailableErr):
-				writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, unavailableErr.Error(), "api.get_run_artifacts_archive", map[string]any{"artifact_id": record.ArtifactID})
-			default:
-				s.writeInternalError(w, "resolve artifact content failed")
-			}
-			return
-		}
-
 		entryName, nameErr := buildArchiveEntryName(record, usedNames)
 		if nameErr != nil {
 			s.writeBadRequest(w, nameErr.Error())
 			return
 		}
 
-		entries = append(entries, archiveEntry{record: record, name: entryName, body: content})
+		if record.SizeBytes < 0 || record.SizeBytes > runArtifactArchiveMaxBytes-totalBytes {
+			writeArchiveResourceLimitError(w, runID)
+			return
+		}
+		totalBytes += record.SizeBytes
+
+		// Validate now so an unavailable artifact cannot produce a partial ZIP.
+		if _, _, contentErr := s.artifactService.GetArtifactContent(r.Context(), record.ArtifactID); contentErr != nil {
+			writeArchiveContentError(w, record.ArtifactID, contentErr)
+			return
+		}
+		entries = append(entries, archiveEntry{record: record, name: entryName})
 	}
 	if len(deletions) > 0 {
 		body, err := json.MarshalIndent(artifactDeletionArchive{Version: "v1", Entries: deletions}, "", "  ")
@@ -155,6 +162,12 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 			s.writeInternalError(w, "marshal artifact deletions archive failed")
 			return
 		}
+		deletionMetadata = body
+		if len(entries) >= runArtifactArchiveMaxEntries || int64(len(body)) > runArtifactArchiveMaxBytes-totalBytes {
+			writeArchiveResourceLimitError(w, runID)
+			return
+		}
+		totalBytes += int64(len(body))
 		metadataName := reserveArchiveMetadataName(usedNames, "deletions.json")
 		entries = append(entries, archiveEntry{
 			record: state.ArtifactRecord{
@@ -164,7 +177,6 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
 			},
 			name: metadataName,
-			body: body,
 		})
 	}
 
@@ -176,6 +188,17 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 
 	archiveWriter := zip.NewWriter(w)
 	for _, entry := range entries {
+		var body []byte
+		if entry.record.ArtifactID == "run-deletions-metadata" {
+			body = deletionMetadata
+		} else {
+			_, content, contentErr := s.artifactService.GetArtifactContent(r.Context(), entry.record.ArtifactID)
+			if contentErr != nil {
+				_ = archiveWriter.Close()
+				return
+			}
+			body = content
+		}
 		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
 		header.SetMode(0o644)
 		header.Modified = mustParseRFC3339(entry.record.CreatedAt)
@@ -184,12 +207,29 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 			_ = archiveWriter.Close()
 			return
 		}
-		if _, writeErr := fileWriter.Write(entry.body); writeErr != nil {
+		if _, writeErr := fileWriter.Write(body); writeErr != nil {
 			_ = archiveWriter.Close()
 			return
 		}
 	}
 	_ = archiveWriter.Close()
+}
+
+func writeArchiveResourceLimitError(w http.ResponseWriter, runID string) {
+	writeCanonicalError(w, http.StatusRequestEntityTooLarge, errorcatalog.CodeResourceLimitExceeded, "artifact archive exceeds resource limits", "api.get_run_artifacts_archive", map[string]any{"run_id": runID})
+}
+
+func writeArchiveContentError(w http.ResponseWriter, artifactID string, err error) {
+	var notFoundErr *state.ArtifactNotFoundError
+	var unavailableErr *state.ArtifactContentUnavailableError
+	switch {
+	case errors.As(err, &notFoundErr):
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "artifact not found", "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	case errors.As(err, &unavailableErr):
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, unavailableErr.Error(), "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	default:
+		writeCanonicalError(w, http.StatusInternalServerError, errorcatalog.CodeInternalError, "resolve artifact content failed", "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	}
 }
 
 func reserveArchiveMetadataName(used map[string]struct{}, candidate string) string {

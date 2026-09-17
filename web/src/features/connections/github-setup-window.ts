@@ -7,17 +7,27 @@
  * to a chromeless handoff page so it can close itself.
  *
  * Opening must happen synchronously inside the click that starts a hop —
- * browsers block `window.open` once an await has intervened. No window features
- * are passed, so the browser opens an ordinary tab rather than a popup window.
+ * browsers block `window.open` once an await has intervened. Direct GitHub hops
+ * use `noopener`. The initial blank named tab is severed from its opener before
+ * the deferred manifest form POST below so it can retain its target name.
  */
 const SETUP_WINDOW_NAME = "kingdom-github-setup";
 
 export const setupWindowBlockedMessage =
   "Kingdom could not open a tab for GitHub. Allow pop-ups for this site, then try again.";
 
-/** Opens or focuses the setup tab. Returns false when the browser blocked it. */
+/** Opens or focuses the setup tab. The blank manifest tab returns false when blocked. */
 export function openSetupWindow(url = ""): boolean {
+  if (url) {
+    // A noopener window intentionally returns null to its opener, so that result
+    // cannot distinguish a successful secure open from a blocked pop-up.
+    window.open(url, SETUP_WINDOW_NAME, "noopener");
+    return true;
+  }
   const target = window.open(url, SETUP_WINDOW_NAME);
+  // `noopener` would discard the tab's target name, which the deferred form
+  // POST needs. Sever its opener before it can navigate to GitHub instead.
+  if (target) target.opener = null;
   target?.focus();
   return !!target;
 }

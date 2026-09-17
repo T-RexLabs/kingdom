@@ -20,6 +20,7 @@ const (
 	GuardedCommandStreamBytes  int64 = 1 << 20
 	TrackedWorkspaceEntries          = 10_000
 	TrackedWorkspaceDepth            = 64
+	SnapshotLineageDepth             = 64
 	TrackedWorkspaceFileBytes  int64 = 32 * 1024 * 1024
 	TrackedWorkspaceBytes      int64 = 256 * 1024 * 1024
 	StartupReplayBatchItems          = 64

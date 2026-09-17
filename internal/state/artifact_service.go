@@ -24,6 +24,10 @@ type ArtifactContentUnavailableError struct {
 	Reason     string
 }
 
+type ArtifactListLimitExceededError struct {
+	Limit int
+}
+
 func (e *ArtifactNotFoundError) Error() string {
 	return fmt.Sprintf("artifact not found: %q", e.ArtifactID)
 }
@@ -33,6 +37,10 @@ func (e *ArtifactContentUnavailableError) Error() string {
 		return fmt.Sprintf("artifact content unavailable: %q", e.ArtifactID)
 	}
 	return fmt.Sprintf("artifact content unavailable: %q (%s)", e.ArtifactID, e.Reason)
+}
+
+func (e *ArtifactListLimitExceededError) Error() string {
+	return fmt.Sprintf("artifact list exceeds %d-entry resource limit", e.Limit)
 }
 
 func NewArtifactService(db *sql.DB) *ArtifactService {
@@ -72,15 +80,36 @@ func (s *ArtifactService) GetArtifact(ctx context.Context, artifactID string) (A
 }
 
 func (s *ArtifactService) ListRunArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
+	return s.listRunArtifacts(ctx, runID, 0)
+}
+
+// ListRunArtifactsBounded returns no more than limit records and reports when
+// further records exist, so callers can reject oversized aggregate exports
+// before loading artifact content.
+func (s *ArtifactService) ListRunArtifactsBounded(ctx context.Context, runID string, limit int) ([]ArtifactRecord, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("artifact list limit must be positive")
+	}
+	return s.listRunArtifacts(ctx, runID, limit)
+}
+
+func (s *ArtifactService) listRunArtifacts(ctx context.Context, runID string, limit int) ([]ArtifactRecord, error) {
+	query := `SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
 		 FROM artifacts
 		 WHERE run_id = ?
 		 ORDER BY
 		   CASE artifact_kind WHEN 'deliverable' THEN 0 WHEN 'verification' THEN 1 ELSE 2 END,
 		   created_at DESC,
-		   artifact_id ASC`,
-		runID,
+		   artifact_id ASC`
+	args := []any{runID}
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit+1)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		query,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list artifacts for run %q: %w", runID, err)
@@ -108,6 +137,9 @@ func (s *ArtifactService) ListRunArtifacts(ctx context.Context, runID string) ([
 			return nil, fmt.Errorf("scan artifact row for run %q: %w", runID, err)
 		}
 		records = append(records, record)
+		if limit > 0 && len(records) > limit {
+			return nil, &ArtifactListLimitExceededError{Limit: limit}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate artifact rows for run %q: %w", runID, err)
@@ -166,6 +198,8 @@ func (s *ArtifactService) ResolveArtifactContentPath(ctx context.Context, artifa
 		return ArtifactRecord{}, "", fmt.Errorf("stat artifact file %q: %w", absPath, statErr)
 	} else if info.IsDir() {
 		return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact path resolves to directory"}
+	} else if info.Size() != record.SizeBytes {
+		return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact size mismatch"}
 	}
 
 	return record, absPath, nil
@@ -245,6 +279,9 @@ func (s *ArtifactService) lookupStoredArtifactContent(ctx context.Context, artif
 
 	if contentSize != int64(len(content)) {
 		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "stored artifact size mismatch"}
+	}
+	if record.SizeBytes != int64(len(content)) {
+		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact metadata size mismatch"}
 	}
 
 	checksum := checksumHex(content)
