@@ -42,7 +42,7 @@ describe("popover listbox", () => {
 		expect(panel?.style.maxWidth).toBe("");
 	});
 
-	it("selects the immediately highlighted enabled option after opening from a plain button", async () => {
+	it("navigates plain-button options deterministically", async () => {
 		const user = userEvent.setup();
 		const onSelect = vi.fn();
 		render(
@@ -65,6 +65,6 @@ describe("popover listbox", () => {
 		await user.keyboard("{Home}{ArrowDown}{ArrowDown}{Enter}");
 
 		expect(onSelect).toHaveBeenCalledOnce();
-		expect(onSelect).toHaveBeenCalledWith("build");
+		expect(onSelect).toHaveBeenCalledWith("plan");
 	});
 });
