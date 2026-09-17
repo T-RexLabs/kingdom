@@ -60,6 +60,23 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 			}
 			continue
 		}
+		if rec.HandoffState == "guardian_evidence_recovery_requested" {
+			quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
+			if err != nil {
+				return processed, err
+			}
+			if !quarantined {
+				return processed, fmt.Errorf("guardian evidence recovery for attempt %q no longer has a durable absence quarantine", rec.AttemptID)
+			}
+			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+			if err != nil {
+				return processed, err
+			}
+			if completed {
+				processed++
+			}
+			continue
+		}
 		if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
 			if err := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, publishedAt); err != nil {
 				return processed, err
@@ -131,7 +148,13 @@ func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, re
 		slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
 		var blocked workspaceHandoffBlockedError
 		if errors.As(restoreErr, &blocked) {
+			if rec.HandoffState == "guardian_evidence_recovery_requested" {
+				return false, o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "Kingdom is waiting for another active step to release the shared workspace.", "guardian_evidence_recovery_requested", publishedAt)
+			}
 			return false, o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec.CancelOutboxID, publishedAt)
+		}
+		if rec.HandoffState == "guardian_evidence_recovery_requested" {
+			return false, o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "Kingdom could not restore the trusted workspace after cancellation.", "guardian_evidence_recovery_requested", publishedAt)
 		}
 		return false, o.recordAttemptWorkspaceRestoreFailure(ctx, rec.CancelOutboxID, publishedAt)
 	}

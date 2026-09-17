@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/retryengine"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 )
 
@@ -30,6 +31,11 @@ type Service struct {
 	recoveryCancel context.CancelFunc
 	recoveryDone   chan struct{}
 	recoveryStart  sync.Once
+
+	startupProcessGuardReplayMu      sync.Mutex
+	startupProcessGuardReplayStarted bool
+	startupProcessGuardReplayPending bool
+	startupProcessGuardReplayCursor  string
 
 	retryWakeMu           sync.Mutex
 	retryWakeTimer        retryWakeTimer
@@ -359,13 +365,57 @@ func (s *Service) recoverOperationsAndSchedule(ctx context.Context, backoffOverd
 	if s == nil || s.recovery == nil {
 		return fmt.Errorf("planning service recovery runtime is required")
 	}
-	if err := s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx); err != nil {
+	deferred, err := s.replayStartupPlanningProcessGuards(ctx)
+	if err != nil {
 		return err
+	}
+	if deferred {
+		return nil
 	}
 	if err := s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck); err != nil {
 		return err
 	}
 	return s.scheduleNextPlanningRetryWake(ctx, backoffOverdueWake)
+}
+
+// replayStartupPlanningProcessGuards protects startup latency from a large
+// guardian backlog. While deferred work remains, operation recovery waits for
+// the next bounded periodic pass so stale recovery never runs ahead of guard
+// evidence.
+func (s *Service) replayStartupPlanningProcessGuards(ctx context.Context) (bool, error) {
+	if s == nil || s.operations == nil || s.operations.deps.store == nil {
+		return false, nil
+	}
+	s.startupProcessGuardReplayMu.Lock()
+	defer s.startupProcessGuardReplayMu.Unlock()
+
+	if s.startupProcessGuardReplayStarted && !s.startupProcessGuardReplayPending {
+		return false, s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx)
+	}
+
+	passes := 1
+	if !s.startupProcessGuardReplayStarted {
+		s.startupProcessGuardReplayStarted = true
+		s.startupProcessGuardReplayPending = true
+		passes = providerlimits.StartupReplayMaxPasses
+	}
+	for pass := 0; pass < passes; pass++ {
+		replay, err := s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidencePass(ctx, s.startupProcessGuardReplayCursor, providerlimits.StartupReplayBatchItems)
+		if err != nil {
+			return false, err
+		}
+		s.startupProcessGuardReplayCursor = replay.NextCursor
+		if replay.Visited < providerlimits.StartupReplayBatchItems {
+			s.startupProcessGuardReplayPending = false
+			return false, nil
+		}
+	}
+	pending, err := s.operations.deps.store.PlanningProcessGuardReplayPending(ctx, s.startupProcessGuardReplayCursor)
+	if err != nil {
+		return false, err
+	}
+	s.startupProcessGuardReplayPending = pending
+	return pending, nil
 }
 
 // FinaliseIfStuck transitions a running operation to failed if and only if

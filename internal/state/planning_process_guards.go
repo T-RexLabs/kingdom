@@ -148,61 +148,100 @@ func (s *PlanningStore) IngestPlanningProcessGuardQuiescence(ctx context.Context
 	return fmt.Errorf("planning process guard quiescence conflict")
 }
 
-// ReplayPlanningProcessGuardEvidence converges durable guardian records before
-// planner recovery considers a running operation stale. Missing evidence stays
-// pending and never becomes inferred quiescence.
-func (s *PlanningStore) ReplayPlanningProcessGuardEvidence(ctx context.Context, runtimeRoot string) error {
+// PlanningProcessGuardReplayPass is one cursor-bounded guardian evidence
+// replay page. Missing evidence is still visited so a later guard cannot
+// starve behind it.
+type PlanningProcessGuardReplayPass struct {
+	NextCursor string
+	Visited    int
+}
+
+// ReplayPlanningProcessGuardEvidencePass converges one bounded page of durable
+// guardian records before planner recovery considers a running operation stale.
+// Missing evidence stays pending and never becomes inferred quiescence.
+func (s *PlanningStore) ReplayPlanningProcessGuardEvidencePass(ctx context.Context, runtimeRoot, cursor string, limit int) (PlanningProcessGuardReplayPass, error) {
 	if s == nil || s.db == nil {
-		return fmt.Errorf("planning store database is required")
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, fmt.Errorf("planning store database is required")
 	}
 	if strings.TrimSpace(runtimeRoot) == "" {
-		return fmt.Errorf("planning process guard runtime root is required")
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, fmt.Errorf("planning process guard runtime root is required")
 	}
-	for cursor := ""; ; {
-		rows, err := s.db.QueryContext(ctx, `SELECT guard_id, lifecycle, quiescence_evidence_sha256, child_pid, child_identity_token, tree_id, tree_identity_token FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL) ORDER BY guard_id ASC LIMIT 128`, cursor)
+	if limit < 1 {
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, fmt.Errorf("planning process guard replay limit must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT guard_id, lifecycle, quiescence_evidence_sha256, child_pid, child_identity_token, tree_id, tree_identity_token FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL) ORDER BY guard_id ASC LIMIT ?`, cursor, limit)
+	if err != nil {
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, fmt.Errorf("list pending planning process guards: %w", err)
+	}
+	type candidate struct {
+		id, lifecycle, digest, childIdentity, treeID, treeIdentity string
+		childPID                                                   int
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var item candidate
+		if err := rows.Scan(&item.id, &item.lifecycle, &item.digest, &item.childPID, &item.childIdentity, &item.treeID, &item.treeIdentity); err != nil {
+			rows.Close()
+			return PlanningProcessGuardReplayPass{NextCursor: cursor}, err
+		}
+		candidates = append(candidates, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, err
+	}
+	if err := rows.Close(); err != nil {
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, err
+	}
+	pass := PlanningProcessGuardReplayPass{NextCursor: cursor}
+	for _, item := range candidates {
+		pass.NextCursor = item.id
+		pass.Visited++
+		result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(runtimeRoot, item.id)
 		if err != nil {
-			return fmt.Errorf("list pending planning process guards: %w", err)
+			continue
 		}
-		type candidate struct {
-			id, lifecycle, digest, childIdentity, treeID, treeIdentity string
-			childPID                                                   int
-		}
-		var candidates []candidate
-		for rows.Next() {
-			var item candidate
-			if err := rows.Scan(&item.id, &item.lifecycle, &item.digest, &item.childPID, &item.childIdentity, &item.treeID, &item.treeIdentity); err != nil {
-				rows.Close()
-				return err
+		if item.lifecycle == "quiescent" {
+			if digest == item.digest {
+				if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
+					_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
+				}
 			}
-			candidates = append(candidates, item)
+			continue
 		}
-		if err := rows.Close(); err != nil {
+		if err := s.IngestPlanningProcessGuardQuiescence(ctx, PlanningProcessGuardQuiescence{GuardID: item.id, Capability: result.QuiescenceCapability, Platform: result.Platform, GuardianPID: result.GuardianPID, GuardianIdentityToken: result.GuardianIdentityToken, ChildPID: result.ChildPID, ChildIdentityToken: result.ChildIdentityToken, TreeID: fmt.Sprintf("%d", result.TreeID), TreeIdentityToken: result.TreeIdentityToken, QuiescentAt: time.Now().UTC().Format(time.RFC3339Nano), ExitCode: result.ExitCode, ExitSignal: result.ExitSignal, Forced: result.Forced, FailureCode: result.FailureCode, FailureText: result.FailureText, EvidenceSHA256: digest, EvidenceJSON: evidence}); err != nil {
+			return pass, err
+		}
+		if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
+			_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
+		}
+	}
+	return pass, nil
+}
+
+// PlanningProcessGuardReplayPending reports whether a replay cursor has more
+// durable guard work without consuming another replay item.
+func (s *PlanningStore) PlanningProcessGuardReplayPending(ctx context.Context, cursor string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("planning store database is required")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)`, cursor).Scan(&count); err != nil {
+		return false, fmt.Errorf("check pending planning process guards: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *PlanningStore) ReplayPlanningProcessGuardEvidence(ctx context.Context, runtimeRoot string) error {
+	for cursor := ""; ; {
+		pass, err := s.ReplayPlanningProcessGuardEvidencePass(ctx, runtimeRoot, cursor, 128)
+		if err != nil {
 			return err
 		}
-		for _, item := range candidates {
-			cursor = item.id
-			result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(runtimeRoot, item.id)
-			if err != nil {
-				continue
-			}
-			if item.lifecycle == "quiescent" {
-				if digest == item.digest {
-					if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
-						_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
-					}
-				}
-				continue
-			}
-			if err := s.IngestPlanningProcessGuardQuiescence(ctx, PlanningProcessGuardQuiescence{GuardID: item.id, Capability: result.QuiescenceCapability, Platform: result.Platform, GuardianPID: result.GuardianPID, GuardianIdentityToken: result.GuardianIdentityToken, ChildPID: result.ChildPID, ChildIdentityToken: result.ChildIdentityToken, TreeID: fmt.Sprintf("%d", result.TreeID), TreeIdentityToken: result.TreeIdentityToken, QuiescentAt: time.Now().UTC().Format(time.RFC3339Nano), ExitCode: result.ExitCode, ExitSignal: result.ExitSignal, Forced: result.Forced, FailureCode: result.FailureCode, FailureText: result.FailureText, EvidenceSHA256: digest, EvidenceJSON: evidence}); err != nil {
-				return err
-			}
-			if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
-				_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
-			}
-		}
-		if len(candidates) < 128 {
+		if pass.Visited < 128 {
 			return nil
 		}
+		cursor = pass.NextCursor
 	}
 }
 
@@ -211,6 +250,15 @@ func (s *PlanningStore) ReplayConfiguredPlanningProcessGuardEvidence(ctx context
 		return nil
 	}
 	return s.ReplayPlanningProcessGuardEvidence(ctx, s.processGuardRuntimeRoot)
+}
+
+// ReplayConfiguredPlanningProcessGuardEvidencePass replays one configured
+// runtime-root page, or returns an empty pass when no root is configured.
+func (s *PlanningStore) ReplayConfiguredPlanningProcessGuardEvidencePass(ctx context.Context, cursor string, limit int) (PlanningProcessGuardReplayPass, error) {
+	if s == nil || s.processGuardRuntimeRoot == "" {
+		return PlanningProcessGuardReplayPass{NextCursor: cursor}, nil
+	}
+	return s.ReplayPlanningProcessGuardEvidencePass(ctx, s.processGuardRuntimeRoot, cursor, limit)
 }
 
 func (s *PlanningStore) PlanningOperationHasUnresolvedProcessGuard(ctx context.Context, operationID string) (bool, error) {

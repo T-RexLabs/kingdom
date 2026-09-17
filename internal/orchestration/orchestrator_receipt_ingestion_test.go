@@ -929,6 +929,72 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 	}
 }
 
+func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProvingQuiescence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "missing evidence",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove guardian evidence: %v", err)
+				}
+			},
+		},
+		{
+			name: "corrupt evidence",
+			mutate: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(`{"type":"result","unexpected":true}`), 0o600); err != nil {
+					t.Fatalf("corrupt guardian evidence: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newReceiptIngestionHarness(t)
+			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.addPendingGuardEvidence(t, 1)
+			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_receipt_ingestion:delegated_execution_berserker:1'`)
+			const guardID = "guard_startup_replay_001"
+			sum := sha256.Sum256([]byte(guardID))
+			tc.mutate(t, filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence", fmt.Sprintf("%x.json", sum[:])))
+			if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+				CancelOutboxID: "cancel_guardian_evidence_lost", AttemptID: "run_receipt_ingestion:delegated_execution_berserker:1", RunID: "run_receipt_ingestion", NodeRunID: "nr_receipt_ingestion_001", ReasonCode: "agent_unresponsive", RequestedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z",
+			}); err != nil {
+				t.Fatalf("queue cancelled attempt handoff: %v", err)
+			}
+			h.loop.processGuardAbsent = func(executionstore.ProviderProcessGuard) bool { return true }
+
+			result, err := h.loop.ingestPendingProviderProcessGuardsPass(context.Background(), "", 1, true)
+			if err != nil || result.Blocked || result.Visited != 1 {
+				t.Fatalf("ingest absent guardian evidence: result=%#v err=%v", result, err)
+			}
+			var lifecycle string
+			var quarantinedAt sql.NullString
+			if err := h.db.QueryRow(`SELECT lifecycle, quiescence_evidence_lost_at FROM provider_process_guards WHERE guard_id = ?`, guardID).Scan(&lifecycle, &quarantinedAt); err != nil {
+				t.Fatalf("load quarantined guard: %v", err)
+			}
+			if lifecycle != "acknowledged" || !quarantinedAt.Valid {
+				t.Fatalf("missing guardian evidence authorized quiescence: lifecycle=%q quarantined_at=%#v", lifecycle, quarantinedAt)
+			}
+			quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), "run_receipt_ingestion:delegated_execution_berserker:1")
+			if err != nil || quiescent {
+				t.Fatalf("quarantined guardian evidence authorized attempt quiescence: quiescent=%t err=%v", quiescent, err)
+			}
+			var handoffState string
+			if err := h.db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_guardian_evidence_lost'`).Scan(&handoffState); err != nil {
+				t.Fatalf("load cancellation quarantine: %v", err)
+			}
+			if handoffState != "guardian_evidence_lost" {
+				t.Fatalf("expected durable guardian evidence quarantine, got %q", handoffState)
+			}
+		})
+	}
+}
+
 func TestStartupReplayBoundsLostTerminalHandoffSettlement(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

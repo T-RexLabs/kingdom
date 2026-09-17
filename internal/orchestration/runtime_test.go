@@ -2098,6 +2098,55 @@ func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *t
 	}
 }
 
+func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOperatorRecovery(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	const now = "2026-03-01T12:00:05Z"
+	const attemptID = "run_1:decree_intake:1"
+	mustExec(t, db, `UPDATE agents SET status = 'blocked', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'blocked', started_at = '`+now+`', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_1', 'nr_1', 'committed_cancelled', 'provider_backed', 'server_response', '', 1, 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', '`+now+`', '`+now+`', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', 'superseded', 'server_response', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv_guardian_evidence_lost' WHERE attempt_id = '`+attemptID+`'`)
+	mustExec(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard_guardian_evidence_lost', 'decree_attempt', '`+attemptID+`', 'inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_guardian_evidence_lost', 1, '`+now+`', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'ses_guardian_evidence_lost', 'agent_unresponsive', 'provider stopped responding', '`+now+`', 'pending', 'guardian_evidence_lost', 1, 'guardian evidence missing', '`+now+`', '`+now+`')`)
+
+	adapter := &timeoutCancelObserverAdapter{}
+	loop := orchestrationLoop{db: db, adapter: adapter, executionStore: executionstore.New(db), cancelGrace: time.Second, now: func() time.Time {
+		return time.Date(2026, 3, 1, 12, 0, 6, 0, time.UTC)
+	}}
+	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+		t.Fatalf("drain quarantined cancellation before recovery: %v", err)
+	}
+	if got := adapter.cancelCalls(); got != 0 {
+		t.Fatalf("quarantined evidence loss retried provider stop automatically: calls=%d", got)
+	}
+	var handoffState string
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_guardian_evidence_lost'`).Scan(&handoffState); err != nil || handoffState != "guardian_evidence_lost" {
+		t.Fatalf("quarantine changed without operator recovery: state=%q err=%v", handoffState, err)
+	}
+
+	if err := loop.transitionService().RequestAttemptStopRetry(context.Background(), state.AttemptStopRetryRequest{RunID: "run_1", AttemptID: attemptID, ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:00:07Z"}); err != nil {
+		t.Fatalf("request guardian evidence recovery: %v", err)
+	}
+	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+		t.Fatalf("drain operator-authorized guardian evidence recovery: %v", err)
+	}
+	if got := adapter.cancelCalls(); got != 0 {
+		t.Fatalf("guardian evidence recovery issued an unnecessary provider stop: calls=%d", got)
+	}
+	var status, lifecycle string
+	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_guardian_evidence_lost'`).Scan(&status); err != nil || status != "published" {
+		t.Fatalf("operator recovery did not release cancellation handoff: status=%q err=%v", status, err)
+	}
+	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = 'guard_guardian_evidence_lost'`).Scan(&lifecycle); err != nil || lifecycle != "acknowledged" {
+		t.Fatalf("operator recovery authorized guardian quiescence: lifecycle=%q err=%v", lifecycle, err)
+	}
+}
+
 func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *testing.T) {
 	t.Parallel()
 

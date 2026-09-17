@@ -77,13 +77,17 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 	for _, guard := range guards {
 		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
 		if err != nil {
-			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged && !o.pendingProviderProcessGuardAbsent(guard) {
-				if blockOnLiveGuard {
+			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged {
+				if o.pendingProviderProcessGuardAbsent(guard) {
+					if _, quarantineErr := o.executionStore.QuarantineProviderProcessGuardEvidence(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); quarantineErr != nil {
+						return pass, quarantineErr
+					}
+				} else if blockOnLiveGuard {
 					return providerProcessGuardPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
 				}
 			}
-			// Missing or invalid evidence never proves quiescence. The durable guard
-			// remains pending until the guardian publishes a valid record.
+			// Missing or invalid evidence never proves quiescence. Proven process
+			// absence is retained only as an operator-recoverable quarantine.
 			pass.NextCursor = guard.GuardID
 			pass.Visited++
 			continue

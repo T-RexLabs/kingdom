@@ -1061,7 +1061,7 @@ export interface paths {
         put?: never;
         /**
          * Retry stopping a paused stale execution.
-         * @description Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence.
+         * @description Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence. When Kingdom has durably proved process absence but guardian evidence is missing or invalid, this explicitly authorizes cancellation recovery without treating the process as quiescent.
          */
         post: operations["retryExecutionStop"];
         delete?: never;
@@ -2828,7 +2828,7 @@ export interface components {
             failure_text?: string;
             completion_invalid_reason?: string;
             /** @enum {string} */
-            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
             stop_retry_available: boolean;
         };
         RunExecutionDetail: components["schemas"]["RunExecution"] & {
@@ -2964,7 +2964,7 @@ export interface components {
             failure_text?: string;
             completion_invalid_reason?: string;
             /** @enum {string} */
-            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
             stop_retry_available: boolean;
             superseded: boolean;
             /** Format: date-time */

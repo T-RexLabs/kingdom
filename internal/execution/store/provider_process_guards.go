@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -283,6 +284,100 @@ func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID str
 	return pending == 0, nil
 }
 
+// QuarantineProviderProcessGuardEvidence records that process absence was
+// proven without the capability-bound guardian evidence required for
+// quiescence. The guard deliberately remains acknowledged and non-quiescent.
+func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guardID, observedAt string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("store database is required")
+	}
+	guardID = strings.TrimSpace(guardID)
+	observedAt = strings.TrimSpace(observedAt)
+	if guardID == "" || observedAt == "" {
+		return false, fmt.Errorf("guard id and observed at are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, observedAt); err != nil {
+		return false, fmt.Errorf("parse guardian evidence quarantine time: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin guardian evidence quarantine transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var attemptID, lifecycle string
+	var quarantinedAt sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_id, lifecycle, quiescence_evidence_lost_at
+		FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'decree_attempt'`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("provider process guard %q not found", guardID)
+		}
+		return false, fmt.Errorf("load provider process guard %q for evidence quarantine: %w", guardID, err)
+	}
+	if lifecycle != string(ProviderProcessGuardLifecycleAcknowledged) {
+		if err := tx.Commit(); err != nil {
+			return false, fmt.Errorf("commit unchanged guardian evidence quarantine transaction: %w", err)
+		}
+		committed = true
+		return false, nil
+	}
+	if !quarantinedAt.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_process_guards
+			SET quiescence_evidence_lost_at = ?, updated_at = ?
+			WHERE guard_id = ? AND lifecycle = 'acknowledged' AND quiescence_evidence_lost_at IS NULL`, observedAt, observedAt, guardID); err != nil {
+			return false, fmt.Errorf("quarantine provider process guard %q evidence: %w", guardID, err)
+		}
+	}
+	var unresolved, unquarantined int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
+		FROM provider_process_guards
+		WHERE owner_kind = 'decree_attempt' AND attempt_id = ?`, attemptID).Scan(&unresolved, &unquarantined); err != nil {
+		return false, fmt.Errorf("load attempt evidence quarantine for guard %q: %w", guardID, err)
+	}
+	if unresolved > 0 && unquarantined == 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+			SET handoff_state = 'guardian_evidence_lost',
+			    last_error = 'Kingdom proved the managed provider process is absent, but guardian quiescence evidence is missing or invalid.',
+			    publish_attempts = CASE WHEN handoff_state = 'guardian_evidence_lost' THEN publish_attempts ELSE publish_attempts + 1 END,
+			    updated_at = CASE WHEN handoff_state = 'guardian_evidence_lost' THEN updated_at ELSE ? END
+			WHERE attempt_id = ? AND status = 'pending'
+			  AND handoff_state <> 'guardian_evidence_recovery_requested'`, observedAt, attemptID); err != nil {
+			return false, fmt.Errorf("quarantine attempt cancellation handoff for guard %q: %w", guardID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit guardian evidence quarantine transaction: %w", err)
+	}
+	committed = true
+	return true, nil
+}
+
+// AttemptProcessGuardEvidenceQuarantined reports whether every unresolved
+// process guard has a durable process-absence proof but lacks guardian
+// quiescence evidence. It is intentionally distinct from quiescence.
+func (s *Store) AttemptProcessGuardEvidenceQuarantined(ctx context.Context, attemptID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("store database is required")
+	}
+	var unresolved, unquarantined int
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
+		FROM provider_process_guards
+		WHERE owner_kind = 'decree_attempt' AND attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
+		return false, fmt.Errorf("load attempt process guard evidence quarantine: %w", err)
+	}
+	return unresolved > 0 && unquarantined == 0, nil
+}
+
 func (s *Store) IngestProviderProcessGuardQuiescence(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
 	var result IngestProviderProcessGuardQuiescenceResult
 	_, err := sqlitex.Retry(ctx, func() error {
@@ -352,6 +447,19 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 		normalized.EvidenceSHA256, normalized.EvidenceJSON, normalized.QuiescentAt, guard.GuardID,
 	); err != nil {
 		return result, fmt.Errorf("mark provider process guard %q quiescent: %w", guard.GuardID, err)
+	}
+	// A delayed valid record supersedes an evidence-loss quarantine, but the
+	// cancellation worker still rechecks quiescence before it can release.
+	if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+		SET handoff_state = 'cancellation_requested', last_error = '', updated_at = ?
+		WHERE attempt_id = ? AND status = 'pending'
+		  AND handoff_state IN ('awaiting_quiescence', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested')
+		  AND NOT EXISTS (
+			SELECT 1 FROM provider_process_guards unresolved
+			WHERE unresolved.owner_kind = 'decree_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
+			  AND unresolved.lifecycle <> 'quiescent'
+		  )`, normalized.QuiescentAt, guard.AttemptID); err != nil {
+		return result, fmt.Errorf("resume attempt cancellation handoff for guard %q: %w", guard.GuardID, err)
 	}
 	guard, found, err = loadProviderProcessGuardTx(ctx, tx, guard.GuardID)
 	if err != nil {

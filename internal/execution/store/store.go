@@ -1994,7 +1994,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 		 LEFT JOIN workflow_runs wr ON wr.run_id = aco.run_id
 		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE status = 'pending'
-		   AND handoff_state IN ('cancellation_requested', 'stop_retry_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')
+		   AND handoff_state IN ('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')
 		 ORDER BY aco.created_at ASC, aco.cancel_outbox_id ASC
 		 LIMIT ?`,
 		limit,
@@ -2280,7 +2280,7 @@ func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, 
 	if lastError == "" {
 		lastError = "attempt cancel failed"
 	}
-	if handoffState != "awaiting_quiescence" && handoffState != "awaiting_workspace_quiescence" && handoffState != "workspace_restore_failed" {
+	if handoffState != "awaiting_quiescence" && handoffState != "guardian_evidence_recovery_requested" && handoffState != "awaiting_workspace_quiescence" && handoffState != "workspace_restore_failed" {
 		return fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
 	}
 	if updatedAt == "" {

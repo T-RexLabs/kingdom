@@ -1410,7 +1410,7 @@ paths:
       tags: [runs]
       operationId: retryExecutionStop
       summary: Retry stopping a paused stale execution.
-      description: Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence.
+      description: Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence. When Kingdom has durably proved process absence but guardian evidence is missing or invalid, this explicitly authorizes cancellation recovery without treating the process as quiescent.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/AttemptId"
@@ -5019,7 +5019,7 @@ components:
           minLength: 1
         handoff_state:
           type: string
-          enum: [cancellation_requested, cancellation_dispatched, awaiting_quiescence, stop_retry_requested, stop_retry_dispatched, awaiting_workspace_quiescence, workspace_restore_failed]
+          enum: [cancellation_requested, cancellation_dispatched, awaiting_quiescence, stop_retry_requested, stop_retry_dispatched, guardian_evidence_lost, guardian_evidence_recovery_requested, awaiting_workspace_quiescence, workspace_restore_failed]
         stop_retry_available:
           type: boolean
 
@@ -5334,7 +5334,7 @@ components:
           minLength: 1
         handoff_state:
           type: string
-          enum: [cancellation_requested, cancellation_dispatched, awaiting_quiescence, stop_retry_requested, stop_retry_dispatched, awaiting_workspace_quiescence, workspace_restore_failed]
+          enum: [cancellation_requested, cancellation_dispatched, awaiting_quiescence, stop_retry_requested, stop_retry_dispatched, guardian_evidence_lost, guardian_evidence_recovery_requested, awaiting_workspace_quiescence, workspace_restore_failed]
         stop_retry_available:
           type: boolean
         superseded:

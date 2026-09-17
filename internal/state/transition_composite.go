@@ -2826,24 +2826,47 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 	if err != nil {
 		return fmt.Errorf("load attempt stop retry handoff: %w", err)
 	}
-	if status != "pending" || (handoffState != "awaiting_quiescence" && handoffState != "cancellation_dispatched" && handoffState != "stop_retry_dispatched") || nodeStatus != "blocked" || executionState != "committed_cancelled" || reasonCode != "agent_unresponsive" {
+	if status != "pending" || (handoffState != "awaiting_quiescence" && handoffState != "cancellation_dispatched" && handoffState != "stop_retry_dispatched" && handoffState != "guardian_evidence_lost") || nodeStatus != "blocked" || executionState != "committed_cancelled" || reasonCode != "agent_unresponsive" {
 		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "attempt is not paused for stale-process recovery"}
 	}
 
 	var addressableGuards int
+	guardCondition := `lifecycle = 'acknowledged'`
+	if handoffState == "guardian_evidence_lost" {
+		var unresolved, unquarantined int
+		if err := tx.QueryRowContext(ctx, `SELECT
+			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
+			FROM provider_process_guards
+			WHERE owner_kind = 'decree_attempt' AND attempt_id = ?`, req.AttemptID).Scan(&unresolved, &unquarantined); err != nil {
+			return fmt.Errorf("check guardian evidence recovery quarantine: %w", err)
+		}
+		if unresolved == 0 || unquarantined != 0 {
+			return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "the prior provider process absence is not fully quarantined"}
+		}
+		guardCondition += ` AND quiescence_evidence_lost_at IS NOT NULL`
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1)
 		FROM provider_process_guards
-		WHERE owner_kind = 'decree_attempt' AND attempt_id = ? AND lifecycle = 'acknowledged'`, req.AttemptID).Scan(&addressableGuards); err != nil {
+		WHERE owner_kind = 'decree_attempt' AND attempt_id = ? AND `+guardCondition, req.AttemptID).Scan(&addressableGuards); err != nil {
 		return fmt.Errorf("check attempt stop retry guardian: %w", err)
 	}
 	if addressableGuards == 0 {
 		return &AttemptStopRetryUnavailableError{RunID: req.RunID, AttemptID: req.AttemptID, Reason: "the prior provider process is not addressable"}
 	}
 
+	nextHandoffState := "stop_retry_requested"
+	eventType := "attempt.stop_retry_requested"
+	eventReasonCode := "agent_unresponsive"
+	if handoffState == "guardian_evidence_lost" {
+		nextHandoffState = "guardian_evidence_recovery_requested"
+		eventType = "attempt.guardian_evidence_recovery_requested"
+		eventReasonCode = "guardian_evidence_lost"
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
-		SET handoff_state = 'stop_retry_requested', last_error = '', updated_at = ?
+		SET handoff_state = ?, last_error = '', updated_at = ?
 		WHERE cancel_outbox_id = ? AND status = 'pending'
-		  AND handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')`, req.OccurredAt, cancelOutboxID)
+		  AND handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched', 'guardian_evidence_lost')`, nextHandoffState, req.OccurredAt, cancelOutboxID)
 	if err != nil {
 		return fmt.Errorf("request attempt stop retry: %w", err)
 	}
@@ -2866,8 +2889,8 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 		return fmt.Errorf("marshal attempt stop retry event: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
-		VALUES (?, ?, ?, ?, ?, 'attempt.stop_retry_requested', 'agent_unresponsive', ?, ?)`,
-		generateID(req.GenerateID, "attempt_event"), req.AttemptID, req.RunID, nodeRunID, seq, string(payload), req.OccurredAt); err != nil {
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		generateID(req.GenerateID, "attempt_event"), req.AttemptID, req.RunID, nodeRunID, seq, eventType, eventReasonCode, string(payload), req.OccurredAt); err != nil {
 		return fmt.Errorf("append attempt stop retry event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

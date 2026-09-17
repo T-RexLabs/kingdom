@@ -2,6 +2,7 @@ package planning
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,89 @@ func TestServiceDefersPeriodicRecoveryUntilExplicitStart(t *testing.T) {
 		t.Fatal("periodic planning recovery exited before service shutdown")
 	default:
 	}
+}
+
+func TestServiceBoundsStartupProcessGuardReplayAndDefersContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		items    int
+		deferred bool
+	}{
+		{name: "exact budget", items: providerlimits.StartupReplayMaxItems},
+		{name: "overflow", items: providerlimits.StartupReplayMaxItems + providerlimits.StartupReplayBatchItems + 1, deferred: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := stateTestDB(t)
+			store := state.NewPlanningStore(db)
+			runtimeRoot := t.TempDir()
+			store.SetProcessGuardRuntimeRoot(runtimeRoot)
+			service := NewService(store, &mockAgent{}, t.TempDir(), func() string { return "2026-04-21T17:00:00Z" }, deterministicID())
+			t.Cleanup(func() { _ = service.Close(context.Background()) })
+
+			for index := 1; index <= tc.items; index++ {
+				seedQuiescentPlanningProcessGuard(t, db, runtimeRoot, index)
+			}
+			if err := service.RecoverOperations(context.Background()); err != nil {
+				t.Fatalf("recover operations: %v", err)
+			}
+			if got := countCleanedPlanningProcessGuards(t, db); got != providerlimits.StartupReplayMaxItems {
+				t.Fatalf("startup replay cleaned %d guards, want %d", got, providerlimits.StartupReplayMaxItems)
+			}
+			if service.startupProcessGuardReplayPending != tc.deferred {
+				t.Fatalf("startup replay deferred=%t, want %t", service.startupProcessGuardReplayPending, tc.deferred)
+			}
+			if !tc.deferred {
+				return
+			}
+
+			if err := service.recoverOperationsAndSchedule(context.Background(), false); err != nil {
+				t.Fatalf("run first deferred recovery pass: %v", err)
+			}
+			if got := countCleanedPlanningProcessGuards(t, db); got != providerlimits.StartupReplayMaxItems+providerlimits.StartupReplayBatchItems {
+				t.Fatalf("first deferred pass cleaned %d guards, want %d", got, providerlimits.StartupReplayMaxItems+providerlimits.StartupReplayBatchItems)
+			}
+			if !service.startupProcessGuardReplayPending {
+				t.Fatal("first deferred recovery pass exhausted backlog unexpectedly")
+			}
+
+			if err := service.recoverOperationsAndSchedule(context.Background(), false); err != nil {
+				t.Fatalf("finish deferred recovery: %v", err)
+			}
+			if got := countCleanedPlanningProcessGuards(t, db); got != tc.items {
+				t.Fatalf("deferred recovery cleaned %d guards, want %d", got, tc.items)
+			}
+			if service.startupProcessGuardReplayPending {
+				t.Fatal("deferred recovery did not catch up")
+			}
+		})
+	}
+}
+
+func seedQuiescentPlanningProcessGuard(t *testing.T, db *sql.DB, runtimeRoot string, index int) {
+	t.Helper()
+	guardID := fmt.Sprintf("planning_guard_%03d", index)
+	evidence := fmt.Sprintf(`{"type":"result","result":{"GuardID":%q,"Quiescent":true}}`, guardID)
+	evidenceDigest := sha256.Sum256([]byte(evidence))
+	guardDigest := sha256.Sum256([]byte(guardID))
+	if err := os.MkdirAll(filepath.Join(runtimeRoot, "provider-process-guards", "quiescence"), 0o700); err != nil {
+		t.Fatalf("create planning guard evidence directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeRoot, "provider-process-guards", "quiescence", fmt.Sprintf("%x.json", guardDigest)), []byte(evidence), 0o600); err != nil {
+		t.Fatalf("write planning guard evidence: %v", err)
+	}
+	capabilityDigest := sha256.Sum256([]byte("capability_" + guardID))
+	if _, err := db.Exec(`INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, planning_operation_id, planning_session_id, command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid, child_identity_token, tree_id, tree_identity_token, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescent_at, quiescence_evidence_sha256, created_at, updated_at) VALUES (?, 'planning_operation', ?, ?, ?, 'session', 1, 'quiescent', 'unix_process_group', 1, 'guardian', 2, 'child', '2', 'tree', ?, 'owner', 1, '2026-04-21T17:00:00Z', '2026-04-21T17:00:00Z', '2026-04-21T17:00:01Z', ?, '2026-04-21T17:00:01Z', '2026-04-21T17:00:01Z')`, guardID, guardID, "invocation_"+guardID, guardID, fmt.Sprintf("%x", capabilityDigest), fmt.Sprintf("%x", evidenceDigest)); err != nil {
+		t.Fatalf("seed planning process guard: %v", err)
+	}
+}
+
+func countCleanedPlanningProcessGuards(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND evidence_cleaned_at IS NOT NULL`).Scan(&count); err != nil {
+		t.Fatalf("count cleaned planning process guards: %v", err)
+	}
+	return count
 }
 
 func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessionID string) string {

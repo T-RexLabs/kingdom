@@ -104,6 +104,52 @@ func TestStoreListPendingProviderProcessGuardsUsesKeyset(t *testing.T) {
 	}
 }
 
+func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *testing.T) {
+	t.Parallel()
+
+	s, db, req := providerProcessGuardFixture(t)
+	ack := providerProcessGuardAcknowledgement(req, "guard_evidence_lost", 1)
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+		t.Fatalf("acknowledge guard: %v", err)
+	}
+	quarantined, err := s.QuarantineProviderProcessGuardEvidence(context.Background(), ack.GuardID, "2026-03-01T12:00:04Z")
+	if err != nil || !quarantined {
+		t.Fatalf("quarantine missing guardian evidence: quarantined=%t err=%v", quarantined, err)
+	}
+
+	var lifecycle string
+	var quarantinedAt sql.NullString
+	if err := db.QueryRow(`SELECT lifecycle, quiescence_evidence_lost_at FROM provider_process_guards WHERE guard_id = ?`, ack.GuardID).Scan(&lifecycle, &quarantinedAt); err != nil {
+		t.Fatalf("load quarantined guard: %v", err)
+	}
+	if lifecycle != string(ProviderProcessGuardLifecycleAcknowledged) || !quarantinedAt.Valid {
+		t.Fatalf("evidence loss must remain non-quiescent: lifecycle=%q quarantined_at=%#v", lifecycle, quarantinedAt)
+	}
+	quiescent, err := s.AttemptProcessGuardsQuiescent(context.Background(), ack.AttemptID)
+	if err != nil || quiescent {
+		t.Fatalf("evidence-loss quarantine authorized quiescence: quiescent=%t err=%v", quiescent, err)
+	}
+	recoverable, err := s.AttemptProcessGuardEvidenceQuarantined(context.Background(), ack.AttemptID)
+	if err != nil || !recoverable {
+		t.Fatalf("expected durable evidence-loss quarantine: recoverable=%t err=%v", recoverable, err)
+	}
+	if err := s.QueueAttemptCancel(context.Background(), QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_evidence_lost", AttemptID: ack.AttemptID, RunID: ack.RunID, NodeRunID: ack.NodeRunID, ReasonCode: "agent_unresponsive", RequestedAt: "2026-03-01T12:00:04Z", CreatedAt: "2026-03-01T12:00:04Z",
+	}); err != nil {
+		t.Fatalf("queue cancellation handoff: %v", err)
+	}
+	if _, err := s.QuarantineProviderProcessGuardEvidence(context.Background(), ack.GuardID, "2026-03-01T12:00:04Z"); err != nil {
+		t.Fatalf("quarantine cancellation handoff: %v", err)
+	}
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(ack)); err != nil {
+		t.Fatalf("ingest delayed valid guardian evidence: %v", err)
+	}
+	var handoffState string
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_evidence_lost'`).Scan(&handoffState); err != nil || handoffState != "cancellation_requested" {
+		t.Fatalf("valid guardian evidence did not resume cancellation handoff: state=%q err=%v", handoffState, err)
+	}
+}
+
 func providerProcessGuardFixture(t *testing.T) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
 	t.Helper()
 	s, db, req := atomicProviderSettlementFixture(t)

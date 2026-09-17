@@ -93,6 +93,77 @@ func TestCaptureRestoreAndDiffSnapshots(t *testing.T) {
 	}
 }
 
+func TestCaptureSnapshotSyncsPublishedBlobDirectoryBeforeMetadataCommit(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_blob_sync")
+	root := t.TempDir()
+	writeTestFile(t, root, "snapshot.txt", "must be durable before metadata")
+
+	syncErr := errors.New("injected blob directory sync failure")
+	syncCalls := 0
+	store.syncBlobDir = func(blobID string) error {
+		syncCalls++
+		blobPath, pathErr := store.blobPath(blobID)
+		if pathErr != nil {
+			t.Fatalf("resolve published blob path: %v", pathErr)
+		}
+		if _, statErr := os.Stat(blobPath); statErr != nil {
+			t.Fatalf("blob directory sync preceded atomic publish: %v", statErr)
+		}
+		var snapshots int
+		if queryErr := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); queryErr != nil {
+			t.Fatalf("check metadata before directory sync: %v", queryErr)
+		}
+		if snapshots != 0 {
+			t.Fatalf("snapshot metadata committed before blob directory sync: %d", snapshots)
+		}
+		if syncCalls == 1 {
+			return syncErr
+		}
+		return nil
+	}
+
+	_, err = store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_blob_sync", RunID: "run_blob_sync", SnapshotKind: "baseline", RootPath: root, CreatedAt: "2026-03-01T12:00:00Z",
+	})
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("capture error=%v, want injected directory sync failure", err)
+	}
+	var snapshots, entries, blobs int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); err != nil {
+		t.Fatalf("count snapshot metadata: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshot_entries WHERE snapshot_id = 'snap_blob_sync'`).Scan(&entries); err != nil {
+		t.Fatalf("count snapshot entries: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_blobs`).Scan(&blobs); err != nil {
+		t.Fatalf("count blob metadata: %v", err)
+	}
+	if snapshots != 0 || entries != 0 || blobs != 0 {
+		t.Fatalf("directory sync failure committed snapshot metadata: snapshots=%d entries=%d blobs=%d", snapshots, entries, blobs)
+	}
+
+	if _, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_blob_sync", RunID: "run_blob_sync", SnapshotKind: "baseline", RootPath: root, CreatedAt: "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("retry snapshot capture: %v", err)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("blob directory sync calls=%d, want 2 including preexisting retry", syncCalls)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); err != nil {
+		t.Fatalf("count retried snapshot metadata: %v", err)
+	}
+	if snapshots != 1 {
+		t.Fatalf("retried snapshot metadata=%d, want 1", snapshots)
+	}
+}
+
 func TestRecoverQuarantinedExecutionTargetDiscardsDirtyGeneration(t *testing.T) {
 	t.Parallel()
 

@@ -54,8 +54,8 @@ func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-stop-retry', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-builder-stop-retry', 'ses-builder-stop-retry', ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, completion_capability_hash, completion_capability_issued_at, created_at, updated_at) VALUES ('inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'session-builder-stop-retry', 'ses-builder-stop-retry', 'superseded', 'receipt_required', 'capability-hash', ?, ?, ?)`, attemptID, runID, now, now, now)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-stop-retry' WHERE attempt_id = ?`, attemptID)
-	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'decree_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'ses-builder-stop-retry', 'agent_unresponsive', 'provider stopped responding', ?, 'pending', 'awaiting_quiescence', 1, 'Kingdom could not confirm that the previous provider process stopped.', ?, ?)`, attemptID, runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'decree_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'ses-builder-stop-retry', 'agent_unresponsive', 'provider stopped responding', ?, 'pending', 'guardian_evidence_lost', 1, 'Kingdom proved the managed provider process is absent, but guardian quiescence evidence is missing or invalid.', ?, ?)`, attemptID, runID, now, now, now)
 	projection := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if projection.Code != http.StatusOK {
 		t.Fatalf("expected execution projection 200, got %d (%s)", projection.Code, projection.Body.String())
@@ -94,8 +94,15 @@ func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
 	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel-builder-stop-retry'`).Scan(&handoffState); err != nil {
 		t.Fatalf("load stop retry handoff state: %v", err)
 	}
-	if handoffState != "stop_retry_requested" {
-		t.Fatalf("expected stop_retry_requested, got %q", handoffState)
+	if handoffState != "guardian_evidence_recovery_requested" {
+		t.Fatalf("expected guardian_evidence_recovery_requested, got %q", handoffState)
+	}
+	var recoveryEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = 'attempt.guardian_evidence_recovery_requested' AND reason_code = 'guardian_evidence_lost'`, attemptID).Scan(&recoveryEvents); err != nil {
+		t.Fatalf("count guardian evidence recovery events: %v", err)
+	}
+	if recoveryEvents != 1 {
+		t.Fatalf("expected one durable guardian evidence recovery event, got %d", recoveryEvents)
 	}
 	replayed := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,

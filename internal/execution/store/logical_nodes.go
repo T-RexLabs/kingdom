@@ -185,7 +185,8 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		   SELECT 1 FROM attempt_cancel_outbox aco
 		   JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
 		   WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
-		     AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+		     AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+		          OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))
 		 ) THEN 1 ELSE 0 END,
 	       COALESCE(cr.phase, ''), COALESCE(cr.trigger, ''), COALESCE(cr.reason_code, ''), COALESCE(cr.source_attempt_id, ''), COALESCE(cr.source_node_run_id, ''), cr.target_attempt_id,
 	       cr.target_node_run_id, COALESCE(cr.retry_index, 0), COALESCE(cr.retry_max, 0), COALESCE(cr.scheduled_at, ''), COALESCE(cr.last_updated_at, ''), cr.operator_text
@@ -373,7 +374,8 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 			SELECT 1 FROM attempt_cancel_outbox aco
 			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
 			WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
-			  AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+			  AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
+			       OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))
 		) THEN 1 ELSE 0 END,
 		nr.superseded_at, COALESCE(NULLIF(TRIM(pcs.provider_invocation_id), ''), NULLIF(TRIM(ae.active_provider_invocation_id), '')),
 		COALESCE(usage.usage_count, 0), COALESCE(usage.input_tokens, 0), COALESCE(usage.output_tokens, 0), COALESCE(usage.total_tokens, 0),

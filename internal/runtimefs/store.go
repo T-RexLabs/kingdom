@@ -21,10 +21,11 @@ import (
 )
 
 type Store struct {
-	db       *sql.DB
-	root     string
-	blobRoot string
-	tempRoot string
+	db          *sql.DB
+	root        string
+	blobRoot    string
+	tempRoot    string
+	syncBlobDir func(string) error
 }
 
 type RunExecutionTarget struct {
@@ -106,7 +107,9 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, fmt.Errorf("create runtime fs path %q: %w", path, err)
 		}
 	}
-	return &Store{db: db, root: cleanRoot, blobRoot: blobRoot, tempRoot: tempRoot}, nil
+	store := &Store{db: db, root: cleanRoot, blobRoot: blobRoot, tempRoot: tempRoot}
+	store.syncBlobDir = store.syncBlobDirectoryDurably
+	return store, nil
 }
 
 func (s *Store) RunTargetRoot(runID string) string {
@@ -732,11 +735,14 @@ func (s *Store) writeBlob(raw []byte) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(blobPath); err == nil {
+		if err := s.syncBlobDirectory(blobID); err != nil {
+			return "", err
+		}
 		return blobID, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("stat blob %q: %w", blobID, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+	if err := s.ensureBlobDirectory(blobID); err != nil {
 		return "", fmt.Errorf("create blob directory %q: %w", blobID, err)
 	}
 	tempFile, err := os.CreateTemp(s.tempRoot, "blob-*")
@@ -761,10 +767,16 @@ func (s *Store) writeBlob(raw []byte) (string, error) {
 	if err := os.Rename(tempPath, blobPath); err != nil {
 		if _, statErr := os.Stat(blobPath); statErr == nil {
 			_ = os.Remove(tempPath)
+			if err := s.syncBlobDirectory(blobID); err != nil {
+				return "", err
+			}
 			return blobID, nil
 		}
 		_ = os.Remove(tempPath)
 		return "", fmt.Errorf("commit blob %q: %w", blobID, err)
+	}
+	if err := s.syncBlobDirectory(blobID); err != nil {
+		return "", err
 	}
 	return blobID, nil
 }
@@ -816,21 +828,69 @@ func (s *Store) writeBlobFromTrackedFile(root *securefs.Root, path string) (stri
 		return "", trackedfs.Metadata{}, err
 	}
 	if _, err := os.Stat(blobPath); err == nil {
+		if err := s.syncBlobDirectory(blobID); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
 		return blobID, metadata, nil
 	} else if !os.IsNotExist(err) {
 		return "", trackedfs.Metadata{}, fmt.Errorf("stat blob %q: %w", blobID, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+	if err := s.ensureBlobDirectory(blobID); err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("create blob directory %q: %w", blobID, err)
 	}
 	if err := os.Rename(tempPath, blobPath); err != nil {
 		if _, statErr := os.Stat(blobPath); statErr != nil {
 			return "", trackedfs.Metadata{}, fmt.Errorf("commit blob %q: %w", blobID, err)
 		}
+		if err := s.syncBlobDirectory(blobID); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
 		return blobID, metadata, nil
 	}
 	committed = true
+	if err := s.syncBlobDirectory(blobID); err != nil {
+		return "", trackedfs.Metadata{}, err
+	}
 	return blobID, metadata, nil
+}
+
+func (s *Store) syncBlobDirectory(blobID string) error {
+	if s.syncBlobDir == nil {
+		return s.syncBlobDirectoryDurably(blobID)
+	}
+	return s.syncBlobDir(blobID)
+}
+
+func (s *Store) ensureBlobDirectory(blobID string) error {
+	if _, err := s.blobPath(blobID); err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(s.blobRoot)
+	if err != nil {
+		return fmt.Errorf("open snapshot blob root: %w", err)
+	}
+	defer root.Close()
+	path := filepath.Join(blobID[:2], blobID[2:4])
+	if err := root.EnsureDir(path, 0o755); err != nil {
+		return fmt.Errorf("create snapshot blob directory for %q: %w", blobID, err)
+	}
+	return nil
+}
+
+func (s *Store) syncBlobDirectoryDurably(blobID string) error {
+	if _, err := s.blobPath(blobID); err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(s.blobRoot)
+	if err != nil {
+		return fmt.Errorf("open snapshot blob root: %w", err)
+	}
+	defer root.Close()
+	path := filepath.Join(blobID[:2], blobID[2:4])
+	if err := root.SyncDir(path); err != nil {
+		return fmt.Errorf("sync snapshot blob directory for %q: %w", blobID, err)
+	}
+	return nil
 }
 
 func digestTrackedFile(root *securefs.Root, path string) (string, trackedfs.Metadata, error) {
