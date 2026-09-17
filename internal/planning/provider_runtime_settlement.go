@@ -237,9 +237,6 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 	}
 	if reasonCode := strings.TrimSpace(metadata.FailureReasonCode); reasonCode != "" {
 		reasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(reasonCode)
-		if reasonCode == "provider_timeout" {
-			return "timeout"
-		}
 		return reasonCode
 	}
 	if cancelled || errors.Is(cause, context.Canceled) {

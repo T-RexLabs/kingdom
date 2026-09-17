@@ -109,7 +109,7 @@ func TestReceiptDecisionForNodeRejectsInvalidStructuredVerdict(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected receipt contract error, got %T: %v", err, err)
 	}
-	if contractErr.ReasonCode != "invalid_execution_review_verdict" {
-		t.Fatalf("expected invalid_execution_review_verdict, got %#v", contractErr)
+	if contractErr.ReasonCode != "llm_invalid_response" {
+		t.Fatalf("expected llm_invalid_response, got %#v", contractErr)
 	}
 }

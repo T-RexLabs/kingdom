@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Laptop, RefreshCw, ShieldCheck, WifiOff } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, setCSRFToken, subscribeToUnauthorized } from "@/api/client";
@@ -133,7 +133,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
     };
   }, [addNotification, bootstrapAttempt, queryClient]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (state.status === "unsupported" || state.status === "unavailable") {
       failureHeading.current?.focus();
     }

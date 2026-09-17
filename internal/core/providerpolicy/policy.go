@@ -13,13 +13,12 @@ import (
 )
 
 type Policy struct {
-	Version         string          `yaml:"version" json:"version"`
-	PolicyID        string          `yaml:"policy_id" json:"policy_id"`
-	ModelPolicy     ModelPolicy     `yaml:"model_policy" json:"model_policy"`
-	AgentPolicy     AgentPolicy     `yaml:"agent_policy" json:"agent_policy"`
-	Timeouts        Timeouts        `yaml:"timeouts" json:"timeouts"`
-	RetryBoundaries RetryBoundaries `yaml:"retry_boundaries" json:"retry_boundaries"`
-	Escalation      Escalation      `yaml:"escalation" json:"escalation"`
+	Version     string      `yaml:"version" json:"version"`
+	PolicyID    string      `yaml:"policy_id" json:"policy_id"`
+	ModelPolicy ModelPolicy `yaml:"model_policy" json:"model_policy"`
+	AgentPolicy AgentPolicy `yaml:"agent_policy" json:"agent_policy"`
+	Timeouts    Timeouts    `yaml:"timeouts" json:"timeouts"`
+	Escalation  Escalation  `yaml:"escalation" json:"escalation"`
 }
 
 type ModelPolicy struct {
@@ -40,15 +39,6 @@ type Timeouts struct {
 	CancelGraceTimeout        string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
 	CancelForceTimeout        string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
 	NodeWallClock             map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
-}
-
-type RetryBoundaries struct {
-	PolicySource              string   `yaml:"policy_source" json:"policy_source"`
-	ProviderRetryClass        string   `yaml:"provider_retry_class" json:"provider_retry_class"`
-	InternalRuntimeRetryClass string   `yaml:"internal_runtime_retry_class" json:"internal_runtime_retry_class"`
-	ConditionalRetryClass     string   `yaml:"conditional_retry_class" json:"conditional_retry_class"`
-	NonRetryableClass         string   `yaml:"non_retryable_class" json:"non_retryable_class"`
-	HardFailCodes             []string `yaml:"hard_fail_codes" json:"hard_fail_codes"`
 }
 
 type Escalation struct {
@@ -87,11 +77,6 @@ func normalizeAndValidate(policy *Policy) error {
 	policy.PolicyID = strings.TrimSpace(policy.PolicyID)
 	policy.ModelPolicy.FallbackStrategy = strings.TrimSpace(policy.ModelPolicy.FallbackStrategy)
 	policy.AgentPolicy.DefaultAgent = strings.TrimSpace(policy.AgentPolicy.DefaultAgent)
-	policy.RetryBoundaries.PolicySource = strings.TrimSpace(policy.RetryBoundaries.PolicySource)
-	policy.RetryBoundaries.ProviderRetryClass = strings.TrimSpace(policy.RetryBoundaries.ProviderRetryClass)
-	policy.RetryBoundaries.InternalRuntimeRetryClass = strings.TrimSpace(policy.RetryBoundaries.InternalRuntimeRetryClass)
-	policy.RetryBoundaries.ConditionalRetryClass = strings.TrimSpace(policy.RetryBoundaries.ConditionalRetryClass)
-	policy.RetryBoundaries.NonRetryableClass = strings.TrimSpace(policy.RetryBoundaries.NonRetryableClass)
 	policy.Escalation.RetryExhaustedTargetRole = strings.TrimSpace(policy.Escalation.RetryExhaustedTargetRole)
 	policy.Escalation.UnresolvedStrategicTargetRole = strings.TrimSpace(policy.Escalation.UnresolvedStrategicTargetRole)
 
@@ -150,30 +135,6 @@ func normalizeAndValidate(policy *Policy) error {
 		}
 		if err := validateTimeout(timeout, fmt.Sprintf("timeouts.node_wall_clock[%s]", nodeClass)); err != nil {
 			return err
-		}
-	}
-
-	if policy.RetryBoundaries.PolicySource == "" {
-		return fmt.Errorf("provider policy retry_boundaries.policy_source is required")
-	}
-	if policy.RetryBoundaries.ProviderRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.provider_retry_class is required")
-	}
-	if policy.RetryBoundaries.InternalRuntimeRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.internal_runtime_retry_class is required")
-	}
-	if policy.RetryBoundaries.ConditionalRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.conditional_retry_class is required")
-	}
-	if policy.RetryBoundaries.NonRetryableClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.non_retryable_class is required")
-	}
-	if len(policy.RetryBoundaries.HardFailCodes) == 0 {
-		return fmt.Errorf("provider policy retry_boundaries.hard_fail_codes is required")
-	}
-	for i, code := range policy.RetryBoundaries.HardFailCodes {
-		if strings.TrimSpace(code) == "" {
-			return fmt.Errorf("provider policy retry_boundaries.hard_fail_codes[%d] is empty", i)
 		}
 	}
 

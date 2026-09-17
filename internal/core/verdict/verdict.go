@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/workflow"
 )
 
@@ -116,10 +117,10 @@ func ParseRequiredNearTop(outputText, ownerLabel, invalidReasonCode string) (str
 func ReceiptDecisionForNode(nodeID, nodeClass, structuredPayloadJSON, finalText string) (ReceiptDecision, bool, error) {
 	switch workflow.ResolveNodeClass(nodeID, nodeClass) {
 	case workflow.NodeClassExecutionReview:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "execution review", "invalid_execution_review_verdict", ReworkReasonCodeExecutionReview, "review requested rework")
+		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "execution review", string(errorcatalog.CodeLLMInvalidResponse), ReworkReasonCodeExecutionReview, "review requested rework")
 		return decision, true, err
 	case workflow.NodeClassValidationGates:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "validation", "invalid_validation_verdict", ReworkReasonCodeValidationGate, "validation requested rework")
+		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "validation", string(errorcatalog.CodeLLMInvalidResponse), ReworkReasonCodeValidationGate, "validation requested rework")
 		return decision, true, err
 	default:
 		return ReceiptDecision{}, false, nil

@@ -469,7 +469,7 @@ describe("mailbox panel", () => {
       node_id: "execution_review_shieldmaiden",
       communication_type: "response_received",
       preview: "Follow-up planning note without verdict",
-      reason_code: "invalid_execution_review_verdict",
+      reason_code: "llm_invalid_response",
       verdict_type: "review",
       verdict_status: "invalid",
       created_at: "2026-03-06T10:01:00.000Z",
@@ -579,7 +579,7 @@ describe("mailbox panel", () => {
       preview: "Malformed review response",
       verdict_type: "review",
       verdict_status: "invalid",
-      reason_code: "invalid_execution_review_verdict",
+      reason_code: "llm_invalid_response",
     });
 
     render(

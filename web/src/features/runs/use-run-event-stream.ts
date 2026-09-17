@@ -264,10 +264,7 @@ function applyRunStreamSideEffects(
 			invalidateSurfaces(["agents"]);
 			return;
 		case "attempt.started":
-		case "attempt.retrying":
-		case "attempt.retry_recovered":
-		case "attempt.retry_exhausted":
-		case "attempt.recovered":
+		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
 		case "attempt.final_rework_queued":
@@ -393,16 +390,6 @@ function patchExecutionLiveProjection(
 					default:
 						return undefined;
 				}
-		case "attempt.retrying":
-		case "attempt.retry_recovered":
-			return "running";
-		case "attempt.retry_exhausted":
-			return "blocked";
-		case "attempt.recovered":
-			if ((nodeState ?? "").trim() === "blocked") {
-				return "blocked";
-			}
-			return undefined;
 		case "attempt.progress":
 			if (isCompletionObservationReasonCode(reasonCode)) {
 				return "verifying";

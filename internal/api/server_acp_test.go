@@ -25,8 +25,6 @@ import (
 )
 
 func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
-	t.Parallel()
-
 	projectRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
@@ -161,7 +159,7 @@ func TestServerRealPlannerUsesPolicyStreamInactivityTimeout(t *testing.T) {
 		t.Fatalf("read provider policy: %v", err)
 	}
 	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: 10s", 1)
-	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: 150ms", 1)
+	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: 2s", 1)
 	if err := os.WriteFile(policyPath, []byte(policyText), 0o600); err != nil {
 		t.Fatalf("write timeout provider policy: %v", err)
 	}

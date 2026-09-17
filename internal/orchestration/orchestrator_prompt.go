@@ -777,11 +777,11 @@ func (o *orchestrationLoop) latestExecutionFailureContextsForRun(ctx context.Con
 func failureReasonLabel(nodeID, nodeClass, reasonCode string) string {
 	trimmedReasonCode := strings.ToLower(strings.TrimSpace(reasonCode))
 	switch trimmedReasonCode {
-	case "execution_review_rework", "invalid_execution_review_verdict":
+	case "execution_review_rework":
 		return "Rework Required"
-	case "validation_gate_rework", "invalid_validation_verdict":
+	case "validation_gate_rework":
 		return "Validation Rework"
-	case "provider_empty_output", "provider_incomplete_turn":
+	case "llm_invalid_response", "provider_empty_output", "provider_incomplete_turn":
 		if resolvedNodeClass(strings.TrimSpace(nodeID), strings.TrimSpace(nodeClass)) == workflow.NodeClassExecutionReview {
 			return "Rework Required"
 		}
@@ -819,7 +819,7 @@ func isOwnerFailureReasonCode(reasonCode string) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(reasonCode)) {
-	case "invalid_validation_verdict", "invalid_execution_review_verdict", "provider_empty_output", "provider_incomplete_turn", "execution_not_started":
+	case "llm_invalid_response", "provider_empty_output", "provider_incomplete_turn":
 		return true
 	default:
 		return false
@@ -843,7 +843,7 @@ func formatFailureContextResponse(nodeID, nodeClass, reasonCode, response string
 	if trimmedResponse != "" {
 		return trimmedResponse
 	}
-	if trimmedReasonCode == "provider_empty_output" || trimmedReasonCode == "provider_incomplete_turn" || trimmedReasonCode == "invalid_validation_verdict" || trimmedReasonCode == "invalid_execution_review_verdict" || trimmedReasonCode == "execution_not_started" {
+	if trimmedReasonCode == "llm_invalid_response" || trimmedReasonCode == "provider_empty_output" || trimmedReasonCode == "provider_incomplete_turn" {
 		classID := resolvedNodeClass(strings.TrimSpace(nodeID), strings.TrimSpace(nodeClass))
 		if classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
 			return "(empty response)"

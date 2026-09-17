@@ -142,9 +142,6 @@ func canonicalPlanningFailureEvidenceCode(raw string, code errorcatalog.Code) st
 // reason codes. Provider prose is not reliable retry authority.
 func canonicalPlanningRetryCode(raw string, metadata ProviderExecutionMetadata) errorcatalog.Code {
 	code := errorcatalog.Code(strings.TrimSpace(raw))
-	if code == "provider_timeout" {
-		code = errorcatalog.CodeTimeout
-	}
 	if _, known := errorcatalog.Lookup(code); known {
 		// A generic internal_error is produced by local wrapper failures too.
 		// Only an explicit structured provider code can make it retry authority.

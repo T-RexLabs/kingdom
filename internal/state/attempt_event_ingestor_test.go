@@ -303,9 +303,9 @@ func TestAttemptEventIngestorProjectsRunActivityButNotCollectionsForRetryEvents(
 
 	retry := baseAttemptEventIngestionRequest()
 	retry.EventID = "evt_attempt_retry_projected"
-	retry.EventType = "attempt.retrying"
+	retry.EventType = "attempt.retry_scheduled"
 	retry.Seq = 1
-	retry.PayloadJSON = `{"node_id":"kickoff","node_run_id":"nr_1","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}`
+	retry.PayloadJSON = `{"node_id":"kickoff","node_run_id":"nr_1","recovery_trigger":"automatic_retry","recovery_phase":"scheduled","error_code":"provider_empty_output","retry_index":2,"retry_max":3,"scheduled_at":"2026-03-01T12:10:00Z"}`
 	retry.CreatedAt = "2026-03-01T12:05:00Z"
 
 	if _, err := ingestor.Ingest(ctx, retry); err != nil {

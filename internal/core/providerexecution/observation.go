@@ -57,6 +57,12 @@ type InvocationStreamObservation struct {
 func CanonicalProviderErrorCode(code, category string, status int) errorcatalog.Code {
 	code = normalizeProviderErrorField(code)
 	category = normalizeProviderErrorField(category)
+	if providerErrorFieldContains(code, "quota", "usage", "credit", "billing", "hard_limit") || providerErrorFieldContains(category, "quota", "usage", "credit", "billing", "hard_limit") {
+		return errorcatalog.CodeLLMUsageLimitReached
+	}
+	if providerErrorFieldContains(code, "context", "window", "token_limit", "max_tokens", "too_many_tokens", "input_too_long") || providerErrorFieldContains(category, "context", "window", "token_limit", "max_tokens", "too_many_tokens", "input_too_long") {
+		return errorcatalog.CodeLLMContextOverflow
+	}
 	if status == 429 || providerErrorFieldContains(code, "rate_limit", "too_many_requests") || providerErrorFieldContains(category, "rate_limit", "too_many_requests") {
 		return errorcatalog.CodeLLMRateLimited
 	}

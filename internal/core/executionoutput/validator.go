@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
 )
@@ -42,18 +43,18 @@ func Validate(nodeID, nodeClass, finalText, structuredPayloadJSON string) (Resul
 
 	switch workflow.ResolveNodeClass(nodeID, nodeClass) {
 	case workflow.NodeClassExecutionReview:
-		if err := applyVerdict(&result, structured, canonicalText, "execution review", "invalid_execution_review_verdict", verdict.ReworkReasonCodeExecutionReview, "review requested rework"); err != nil {
+		if err := applyVerdict(&result, structured, canonicalText, "execution review", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeExecutionReview, "review requested rework"); err != nil {
 			return Result{}, err
 		}
 	case workflow.NodeClassValidationGates:
-		if err := applyVerdict(&result, structured, canonicalText, "validation", "invalid_validation_verdict", verdict.ReworkReasonCodeValidationGate, "validation requested rework"); err != nil {
+		if err := applyVerdict(&result, structured, canonicalText, "validation", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeValidationGate, "validation requested rework"); err != nil {
 			return Result{}, err
 		}
 	}
 
 	raw, err := json.Marshal(structured)
 	if err != nil {
-		return Result{}, &ValidationError{ReasonCode: "provider_invalid_response", message: fmt.Sprintf("canonicalize provider structured output: %v", err)}
+		return Result{}, &ValidationError{ReasonCode: string(errorcatalog.CodeLLMInvalidResponse), message: fmt.Sprintf("canonicalize provider structured output: %v", err)}
 	}
 	result.StructuredPayloadJSON = string(raw)
 	return result, nil
@@ -66,10 +67,10 @@ func decodeStructuredPayload(raw string) (map[string]any, error) {
 	}
 	var structured map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &structured); err != nil {
-		return nil, &ValidationError{ReasonCode: "provider_invalid_response", message: fmt.Sprintf("decode provider structured output: %v", err)}
+		return nil, &ValidationError{ReasonCode: string(errorcatalog.CodeLLMInvalidResponse), message: fmt.Sprintf("decode provider structured output: %v", err)}
 	}
 	if structured == nil {
-		return nil, &ValidationError{ReasonCode: "provider_invalid_response", message: "provider structured output must be an object"}
+		return nil, &ValidationError{ReasonCode: string(errorcatalog.CodeLLMInvalidResponse), message: "provider structured output must be an object"}
 	}
 	return structured, nil
 }

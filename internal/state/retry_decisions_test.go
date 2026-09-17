@@ -379,6 +379,13 @@ func TestTransitionServiceAllowsTheSixtiethAutomaticAttemptButNotTheSixtyFirst(t
 	if decision != string(RetryDecisionFailFast) || reason != "budget_exceeded" || runStatus != "failed" {
 		t.Fatalf("budget retry decision=%q reason=%q run=%q", decision, reason, runStatus)
 	}
+	var retryDispositionEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = 'source_attempt' AND event_type IN ('attempt.retry_scheduled', 'escalation.raised')`).Scan(&retryDispositionEvents); err != nil {
+		t.Fatal(err)
+	}
+	if retryDispositionEvents != 0 {
+		t.Fatalf("fail-fast retry emitted %d retry disposition events", retryDispositionEvents)
+	}
 	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1'`).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
@@ -446,5 +453,5 @@ func newAutomaticRetryTestService(t *testing.T) (*sql.DB, *TransitionService, ti
 }
 
 func automaticRetryRecord(now time.Time, decision RetryDecisionKind) AutomaticDecreeRetryRecordRequest {
-	return AutomaticDecreeRetryRecordRequest{Transition: TransitionRequest{TransitionID: "tr_failure", EventID: "evt_failure", RunID: "run_1", NodeRunID: sql.NullString{String: "nr_1", Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "failed", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "timeout", ReasonText: "timeout", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: "source_attempt", SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 2, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: "retry_source_attempt", SubjectKind: RetrySubjectKindDecreeAttempt, RunID: "run_1", NodeID: "decree_intake", NodeRunID: "nr_1", SourceAttemptID: "source_attempt", PolicyID: "policy", RetryClass: "transient_transport_provider_session", ErrorCode: "timeout", OperatorText: "retry", MeaningfulProgress: false, Decision: decision, RetryIndex: 1, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: now.Add(time.Minute), CreatedAt: now, EscalationTarget: "chancellor"}}
+	return AutomaticDecreeRetryRecordRequest{Transition: TransitionRequest{TransitionID: "tr_failure", EventID: "evt_failure", RunID: "run_1", NodeRunID: sql.NullString{String: "nr_1", Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "failed", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "timeout", ReasonText: "timeout", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: "source_attempt", SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 2, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: "retry_source_attempt", SubjectKind: RetrySubjectKindDecreeAttempt, RunID: "run_1", NodeID: "decree_intake", NodeRunID: "nr_1", SourceAttemptID: "source_attempt", PolicyID: "policy", RetryClass: "transient_transport", ErrorCode: "timeout", OperatorText: "retry", MeaningfulProgress: false, Decision: decision, RetryIndex: 1, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: now.Add(time.Minute), CreatedAt: now, EscalationTarget: "chancellor"}}
 }

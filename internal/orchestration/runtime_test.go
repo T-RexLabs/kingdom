@@ -850,14 +850,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -8477,7 +8469,7 @@ func TestValidationReworkWaveCountBeforeWaveIgnoresMixedWaveHardFailures(t *test
 		otherFailureCode  string
 		otherFailureText  string
 	}{
-		{name: "failed hard failure", otherNodeStatus: "failed", otherAttemptState: "committed_failure", otherFailureCode: "provider_timeout", otherFailureText: "provider timed out"},
+		{name: "failed hard failure", otherNodeStatus: "failed", otherAttemptState: "committed_failure", otherFailureCode: "timeout", otherFailureText: "provider timed out"},
 		{name: "cancelled validator", otherNodeStatus: "cancelled", otherAttemptState: "committed_cancelled", otherFailureCode: "provider_cancelled", otherFailureText: "validator cancelled"},
 		{name: "blocked validator", otherNodeStatus: "blocked", otherAttemptState: "committed_failure", otherFailureCode: "dependency_blocked", otherFailureText: "validator blocked"},
 	}
@@ -9390,8 +9382,8 @@ func TestLatestExecutionFailureContextsForRunUsesCompactEmptyResponseMarker(t *t
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_empty_marker_review', 'wfdef_empty_marker', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_empty_marker_validation_1', 'run_empty_marker', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_empty_marker_review_1', 'run_empty_marker', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer', 1, '%s', '%s')`, now, now))
-	seedCanonicalExecutionOutput(t, db, "run_empty_marker:validation_gates_qa_scout:1", "run_empty_marker", "nr_empty_marker_validation_1", "committed_failure", "invalid_validation_verdict", "invalid validation verdict", "invalid_validation_verdict", "", "2026-03-01T12:01:00Z")
-	seedCanonicalExecutionOutput(t, db, "run_empty_marker:execution_review_shieldmaiden:1", "run_empty_marker", "nr_empty_marker_review_1", "committed_failure", "invalid_execution_review_verdict", "invalid execution review verdict", "invalid_execution_review_verdict", "", "2026-03-01T12:02:00Z")
+	seedCanonicalExecutionOutput(t, db, "run_empty_marker:validation_gates_qa_scout:1", "run_empty_marker", "nr_empty_marker_validation_1", "committed_failure", "llm_invalid_response", "invalid validation verdict", "llm_invalid_response", "", "2026-03-01T12:01:00Z")
+	seedCanonicalExecutionOutput(t, db, "run_empty_marker:execution_review_shieldmaiden:1", "run_empty_marker", "nr_empty_marker_review_1", "committed_failure", "llm_invalid_response", "invalid execution review verdict", "llm_invalid_response", "", "2026-03-01T12:02:00Z")
 
 	loop := orchestrationLoop{db: db}
 	contexts := loop.latestExecutionFailureContextsForRun(context.Background(), "run_empty_marker")
@@ -9437,8 +9429,8 @@ func TestLatestExecutionFailureContextsForRunPreservesNonEmptyInvalidVerdictBody
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_invalid_body_review', 'wfdef_invalid_body', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_invalid_body_validation_1', 'run_invalid_body', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_invalid_body_review_1', 'run_invalid_body', 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer', 1, '%s', '%s')`, now, now))
-	seedCanonicalExecutionOutput(t, db, "run_invalid_body:validation_gates_qa_scout:1", "run_invalid_body", "nr_invalid_body_validation_1", "committed_failure", "invalid_validation_verdict", "invalid validation verdict", "invalid_validation_verdict", "Validator found missing screenshot evidence and stale checklist references.", "2026-03-01T12:01:00Z")
-	seedCanonicalExecutionOutput(t, db, "run_invalid_body:execution_review_shieldmaiden:1", "run_invalid_body", "nr_invalid_body_review_1", "committed_failure", "invalid_execution_review_verdict", "invalid execution review verdict", "invalid_execution_review_verdict", "Reviewer requires stronger test evidence and clearer remediation notes.", "2026-03-01T12:02:00Z")
+	seedCanonicalExecutionOutput(t, db, "run_invalid_body:validation_gates_qa_scout:1", "run_invalid_body", "nr_invalid_body_validation_1", "committed_failure", "llm_invalid_response", "invalid validation verdict", "llm_invalid_response", "Validator found missing screenshot evidence and stale checklist references.", "2026-03-01T12:01:00Z")
+	seedCanonicalExecutionOutput(t, db, "run_invalid_body:execution_review_shieldmaiden:1", "run_invalid_body", "nr_invalid_body_review_1", "committed_failure", "llm_invalid_response", "invalid execution review verdict", "llm_invalid_response", "Reviewer requires stronger test evidence and clearer remediation notes.", "2026-03-01T12:02:00Z")
 
 	loop := orchestrationLoop{db: db}
 	formatted := formatExecutionFailureContexts(loop.latestExecutionFailureContextsForRun(context.Background(), "run_invalid_body"))
@@ -13355,7 +13347,6 @@ func TestProviderPolicyAccessorReturnsDefensiveCopy(t *testing.T) {
 	first := rt.ProviderPolicy()
 	first.ModelPolicy.FallbackStrategy = "tampered"
 	first.Timeouts.NodeWallClock["decree_intake"] = "1ms"
-	first.RetryBoundaries.HardFailCodes[0] = "tampered"
 
 	second := rt.ProviderPolicy()
 	if second.ModelPolicy.FallbackStrategy == "tampered" {
@@ -13363,9 +13354,6 @@ func TestProviderPolicyAccessorReturnsDefensiveCopy(t *testing.T) {
 	}
 	if second.Timeouts.NodeWallClock["decree_intake"] == "1ms" {
 		t.Fatal("provider policy node_wall_clock should be immutable from accessor")
-	}
-	if second.RetryBoundaries.HardFailCodes[0] == "tampered" {
-		t.Fatal("provider policy hard_fail_codes should be immutable from accessor")
 	}
 }
 

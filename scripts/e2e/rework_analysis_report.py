@@ -658,8 +658,8 @@ def build_rework_analysis(
         bool(item.get("rework_wave_settled")) and not bool(item["has_builder_retry"])
         for item in validator_links
     )
-    invalid_validation_verdict_hit = any(
-        str(item.get("reason_code") or "") == "invalid_validation_verdict"
+    invalid_response_hit = any(
+        str(item.get("reason_code") or "") == "llm_invalid_response"
         for item in failure_reasons
     )
     node_wall_clock_timeout_hit = any(
@@ -698,8 +698,8 @@ def build_rework_analysis(
         failure_classification = "review_attempt_ceiling_hit"
     elif no_builder_retry_after_validator_rework:
         failure_classification = "no_builder_retry_after_validator_rework"
-    elif invalid_validation_verdict_hit:
-        failure_classification = "invalid_validation_verdict"
+    elif invalid_response_hit:
+        failure_classification = "invalid_response"
     elif timeout_failures:
         timeout_types = {str(item.get("timeout_type") or "") for item in timeout_failures}
         if timeout_types == {"first_event_timeout"}:
@@ -707,7 +707,7 @@ def build_rework_analysis(
         elif timeout_types == {"stream_inactivity_timeout"}:
             failure_classification = "provider_stream_inactivity_timeout"
         else:
-            failure_classification = "provider_timeout"
+            failure_classification = "timeout"
     elif node_wall_clock_timeout_hit:
         failure_classification = "node_wall_clock_timeout"
     elif any(str(item.get("reason_code") or "") == "validation_gate_rework" for item in failure_reasons):
@@ -777,7 +777,7 @@ def build_rework_analysis(
         "blockers": {
             "review_attempt_ceiling_hit": review_attempt_ceiling_hit,
             "no_builder_retry_after_validator_rework": no_builder_retry_after_validator_rework,
-            "invalid_validation_verdict": invalid_validation_verdict_hit,
+            "invalid_response": invalid_response_hit,
             "provider_stream_inactivity_timeout": False,
             "provider_first_event_timeout": False,
         },

@@ -111,7 +111,7 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 3. Choose a global model from the models OpenCode exposes.
 4. Start with `Planning Sessions` or issue a decree directly.
 5. Follow the run under `Runs`.
-6. Inspect the graph, timeline, agents, mailbox, and published output.
+6. Inspect the graph, Activity, agents, messages, and published output.
 
 > [!NOTE]
 > Every new run requires an explicit global model selection, even if OpenCode has defaults configured.
@@ -169,6 +169,7 @@ Important boundaries:
 - Publication is done into the project root or a git worktree if toggled on and in a Git repo.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
+- The builder alone receives a completion receipt capability. Other provider-backed nodes settle from the server-observed terminal response; output, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 

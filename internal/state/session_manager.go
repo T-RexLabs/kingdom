@@ -47,12 +47,11 @@ func (e *SessionLeaseStateConflictError) Error() string {
 }
 
 type SessionLeaseExpiredError struct {
-	Code      string
 	SessionID string
 }
 
 func (e *SessionLeaseExpiredError) Error() string {
-	return fmt.Sprintf("%s: session lease expired for %q", e.Code, e.SessionID)
+	return fmt.Sprintf("session lease expired for %q", e.SessionID)
 }
 
 type SessionLifecycleMetrics struct {
@@ -333,7 +332,7 @@ func (m *SessionManager) ExpireLease(ctx context.Context, req ExpireSessionLease
 	}
 
 	m.metrics.RecordExpired(req.ReasonClass)
-	return lease, &SessionLeaseExpiredError{Code: "session_lease_expired", SessionID: req.SessionID}
+	return lease, &SessionLeaseExpiredError{SessionID: req.SessionID}
 }
 
 func (m *SessionManager) CloseLease(ctx context.Context, req CloseSessionLeaseRequest) (SessionLease, error) {

@@ -283,6 +283,16 @@ func normalizeAndValidatePolicy(policy *Policy) error {
 		sort.Strings(missingCodes)
 		return fmt.Errorf("retry policy missing error_code_map entries: %s", strings.Join(missingCodes, ", "))
 	}
+	extraCodes := make([]string, 0)
+	for codeName := range policy.ErrorCodeMap {
+		if _, known := errorcatalog.Lookup(errorcatalog.Code(codeName)); !known {
+			extraCodes = append(extraCodes, codeName)
+		}
+	}
+	if len(extraCodes) > 0 {
+		sort.Strings(extraCodes)
+		return fmt.Errorf("retry policy has unknown error_code_map entries: %s", strings.Join(extraCodes, ", "))
+	}
 
 	return nil
 }

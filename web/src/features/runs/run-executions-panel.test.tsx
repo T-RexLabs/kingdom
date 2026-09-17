@@ -385,8 +385,8 @@ describe("run executions panel", () => {
 			status: "blocked",
 			output_status: "none",
 			output_text: undefined,
-			progress_event_type: "attempt.retry_exhausted",
-			progress_reason_code: undefined,
+			progress_event_type: "node.state_changed",
+			progress_reason_code: "blocked",
 			progress_at: "2026-03-06T10:02:00.000Z",
 		});
 
@@ -400,7 +400,7 @@ describe("run executions panel", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: /Outcome/i }));
-		expect(screen.getByText("Kingdom exhausted provider retries for this step.")).toBeInTheDocument();
+		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
 	});
 
 	it("exposes disclosure state to assistive tech", async () => {

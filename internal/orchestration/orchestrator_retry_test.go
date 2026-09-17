@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +28,28 @@ func (staleRetryChainPlanner) Plan(_ errorcatalog.Code, retriesAttempted int) (r
 		RetryClass:       "conditional_limited",
 		EscalationTarget: "chancellor",
 	}, nil
+}
+
+func TestClassifyExecutionReasonCodeUsesCanonicalTerminalCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "invalid validation response", err: &invalidValidationVerdictError{reason: "missing verdict"}, want: "llm_invalid_response"},
+		{name: "invalid review response", err: &invalidExecutionReviewVerdictError{reason: "missing verdict"}, want: "llm_invalid_response"},
+		{name: "pre-observation timeout", err: &executionNotStartedError{AttemptID: "attempt_1", NodeID: "node_1"}, want: "timeout"},
+		{name: "setup handoff failure", err: errors.New("provider terminal handoff failed"), want: "internal_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyExecutionReasonCode(tt.err); got != tt.want {
+				t.Fatalf("reason code=%q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestAutomaticDecreeRetryIsBlockedAfterMeaningfulProviderProgress(t *testing.T) {

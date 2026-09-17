@@ -23,6 +23,8 @@ The current control plane uses SQLite with explicit startup pragmas.
 - `provider_invocations`: runtime-owned invocation identity, completion capability lifecycle, provider session linkage, and supersession state for each provider-backed decree execution attempt dispatch.
 - `provider_completion_evidence`: append-only settlement evidence for provider-backed decree execution attempts, including accepted receipts and diagnostic observations.
 - `provider_completion_settlements`: canonical invocation-scoped settlement truth for provider-backed decree execution attempts (`success`, `failed`, or `cancelled`) with evidence linkage.
+- `provider_terminal_handoffs`: durable lease-fenced terminal observations for receipt-required builder invocations, written after terminal process observation and before receipt ingestion.
+- `provider_process_guards`: durable provider-command guardian ownership, lease lineage, and acknowledged/quiescent lifecycle. Quiescence evidence is file-backed under the runtime root before ingestion, then retained in SQLite for recovery.
 - `attempt_executions`: durable attempt lifecycle and latest execution projection consumed by orchestration and UI (`queued` -> `starting` -> `running` -> `terminal_observed` -> `committed_*`). For provider-backed decree execution attempts, it references the active invocation and canonical runtime settlement; it does not own settlement truth itself.
 - `attempt_event_log`: canonical per-attempt execution event stream with monotonic `seq`.
 - `attempt_outbox`: durable completion handoff queue consumed by orchestration for terminal projection.
@@ -31,6 +33,10 @@ The current control plane uses SQLite with explicit startup pragmas.
   - `failed`: dead-lettered after unrecoverable replay payload/invariant failure so poison rows stop blocking later completions.
 - `node_runs`: durable per-node retry lineage (`attempt`) plus explicit cross-node review/validation wave lineage (`wave`).
 - `workspaces`: execution workspace ownership and lifecycle (`active` and `released`) for each node run.
+- `attempt_cancel_outbox`: one durable provider-stop handoff per attempt, including requested reason, dispatch/awaiting-quiescence/workspace-restoration state, retry count, and completion publication.
+- `retry_decisions`: canonical automatic retry or fail-fast decision for a decree attempt or planning invocation, with policy identity, failure code, operator-safe text, meaningful-progress result, budget, provider hint, due time, source/target lineage, dispatch state, escalation target, and final resolution.
+
+For provider-backed decree execution, the atomic settlement boundary writes stream evidence, canonical settlement, terminal attempt state, token usage, and the completion outbox record. The outbox is a projection handoff, not independent settlement authority.
 
 ## Artifact Tables
 
@@ -77,3 +83,9 @@ Setup state is never a table. Manifest and shared finalization first stage and f
   - `SELECT outbox_id, attempt_id, run_id, status, publish_attempts, last_error, updated_at FROM attempt_outbox WHERE status='failed' ORDER BY updated_at ASC;`
 - Lease health snapshot:
   - `SELECT attempt_id, state, lease_owner, lease_expires_at, updated_at FROM attempt_executions WHERE state IN ('starting','running') ORDER BY updated_at ASC;`
+- Pending guardian quiescence:
+  - `SELECT guard_id, attempt_id, run_id, lifecycle, started_at, acknowledged_at, updated_at FROM provider_process_guards WHERE owner_kind='decree_attempt' AND lifecycle <> 'quiescent' ORDER BY updated_at ASC;`
+- Pending cancellation handoff:
+  - `SELECT cancel_outbox_id, attempt_id, run_id, reason_code, handoff_state, publish_attempts, last_error, updated_at FROM attempt_cancel_outbox WHERE status='pending' ORDER BY updated_at ASC;`
+- Retry decision state:
+  - `SELECT retry_decision_id, subject_kind, run_id, node_id, error_code, meaningful_progress, decision, retry_index, max_retries, due_at, dispatch_state, resolution FROM retry_decisions ORDER BY created_at DESC;`

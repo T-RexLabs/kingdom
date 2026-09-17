@@ -228,14 +228,18 @@ Important runtime behavior:
 
 - `decree_intake`, `execution_kickoff`, `king_plan_decision`, and `royal_closure` are runtime-owned and deterministic; they do not open OpenCode sessions.
 - execution is session-based via `opencode run --format json`
-- runtime creates a provider invocation record before dispatching every provider-backed decree execution attempt; only builder invocations receive a single-use completion capability
+- runtime creates a provider invocation record before dispatching every provider-backed decree execution attempt. Completion mode is a runtime-owned node-class contract, not workflow-authored configuration.
 - strict mode validates managed OpenCode assets, binary availability, and agent resolution
 - runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`
-- builder sessions must call `kingdom_complete_attempt` to request terminal success settlement; all other provider-backed nodes settle from the server-observed terminal response
-- runtime validates active attempt and invocation lineage for every settlement, plus the completion capability and required node-specific fields for builder receipts
+- builder execution is `receipt_required`: only the builder gets a single-use `kingdom_complete_attempt` capability and must publish an accepted receipt to request success.
+- advisor consultation, advisory synthesis, plan drafting, execution review, and validation are `server_response`: their success comes from the server-observed terminal response, not a receipt.
+- runtime-owned nodes are `not_applicable` and do not have provider completion authority.
+- runtime validates active attempt, invocation, lease, guardian, and node-contract lineage for every settlement. Builder receipt validation also requires the active completion capability.
 - canonical settled response text is invocation-owned and single-turn; runtime must not concatenate multiple final answers or competing receipts into one settled response body
-- durable decree execution state is stored in `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_executions`, `attempt_event_log`, and `attempt_outbox`
-- clean builder execution exit without a valid receipt is terminal failure; response-first nodes require a structurally valid terminal server response
+- builder receipts are written to the invocation-hashed spool under `<runtime workspace root>/provider-completion/receipts/`, not to the execution or publish root. Receipt-required terminal process observations first enter the orchestration-written handoff under `<runtime workspace root>/provider-completion/handoffs/`, then cross the durable lease-fenced handoff before receipt ingestion.
+- each provider command has a durable guardian. Its acknowledged ownership and file-backed quiescence evidence are ingested before receipt ingestion or terminal settlement; cleanup after ingestion is replayable evidence debt, not proof loss.
+- clean builder execution exit without a valid receipt is terminal failure. A response-first success requires all of: normalized terminal reason `stop`; final turn and step IDs; a positive final stream sequence; non-empty canonical terminal text; no pending or non-terminal tool calls; no events after the terminal response; clean process exit with both output streams drained; and no timeout, cancellation, provider error, malformed stream data, or conflicting terminal evidence.
+- settlement is atomic: it records canonical evidence and settlement, terminal attempt state, token usage, and the durable completion outbox handoff together. Later outbox projection advances the workflow but cannot alter settlement truth.
 - `opencode export` is diagnostic only for provider-backed decree execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
@@ -281,6 +285,22 @@ Kingdom exposes two important SSE channels:
 - `GET /api/v1/acp/runs/{runId}/events` for planner operation events
 
 Both are intended to support replay/resume with `Last-Event-ID`.
+
+## Activity and Attempt History
+
+`GET /runs/{id}/executions` returns one canonical logical projection for each workflow node. It is the list used by the run Activity surface, including the visible current execution, attempt count, latest activity, failure, and recovery state.
+
+`GET /runs/{id}/nodes/{nodeId}/attempts` returns paged durable physical attempt history for the selected node, newest first. Its response also identifies the current logical node run and attempt, even when that attempt is not on the requested page.
+
+When stale recovery has queued a replacement but the predecessor is `starting`, `running`, or `blocked`, both projections select that predecessor as current. This preserves the live cancellation/quiescence barrier until the replacement actually starts or runs.
+
+## Cancellation and Automatic Recovery
+
+Cancellation of a launched provider attempt is durable work, not a best-effort side effect. `attempt_cancel_outbox` records the requested stop and its handoff state. Kingdom dispatches a bounded stop through the attempt's guardian, waits for durable quiescence, restores the trusted workspace when the node owns one, then projects terminal state and releases a fenced stale retry.
+
+If quiescence cannot be proven, the node remains `blocked` and the cancellation handoff remains pending. Kingdom does not repeatedly send stops. **Retry Stop** is available only for an `agent_unresponsive` blocked attempt whose guardian remains addressable; it authorizes one additional bounded stop request. Explicit Retry and Rerun reopen failed runs, or cancelled runs only after cancellation, completion projection, attempt settlement, and session leases are quiescent.
+
+Automatic retry decisions are durable. Each `retry_decisions` record retains the failure code, operator-safe reason, meaningful-progress result, retry index and maximum, policy and provider delay, absolute due time, source/target lineage, dispatch state, and resolution. Restart recovery uses the persisted due time and lease-fenced dispatch; it does not recreate a decision or launch early.
 
 ## Terminal States
 

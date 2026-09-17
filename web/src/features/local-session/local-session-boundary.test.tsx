@@ -110,7 +110,7 @@ describe("LocalSessionBoundary", () => {
   it("shows a stable local-only state when bootstrap is forbidden", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "forbidden" } }), { status: 403, headers: { "Content-Type": "application/json" } })));
 
-    renderBoundary(<div>Kingdom application</div>);
+    renderBoundary(<div>Kingdom application</div>, undefined, true);
 
     expect(await screen.findByRole("heading", { name: "Open Kingdom on its host machine" })).toHaveFocus();
     expect(screen.getByText(/localhost or its loopback address/i)).toBeInTheDocument();

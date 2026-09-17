@@ -1453,7 +1453,7 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		switch invocation.CompletionMode {
 		case ProviderCompletionModeServerResponse:
 			if observation.ProviderSessionID == "" {
-				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_session_missing", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_unknown_failure", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 			}
 			if err := providerexecution.ValidateServerResponseSuccess(observation); err != nil {
 				return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invalid_stream_success", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)

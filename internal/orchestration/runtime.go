@@ -1534,7 +1534,6 @@ func (r *Runtime) ProviderPolicy() providerpolicy.Policy {
 	copy := r.providerPolicy
 	copy.AgentPolicy.RoleAgents = cloneStringMap(r.providerPolicy.AgentPolicy.RoleAgents)
 	copy.Timeouts.NodeWallClock = cloneStringMap(r.providerPolicy.Timeouts.NodeWallClock)
-	copy.RetryBoundaries.HardFailCodes = append([]string(nil), r.providerPolicy.RetryBoundaries.HardFailCodes...)
 	return copy
 }
 

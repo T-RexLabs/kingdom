@@ -73,7 +73,11 @@ func TestCanonicalProviderErrorCodeUsesOnlyStructuredMetadata(t *testing.T) {
 		status               int
 		want                 string
 	}{
-		{name: "rate limit status", status: 429, want: "llm_rate_limited"},
+		{name: "bare rate limit status", status: 429, want: "llm_rate_limited"},
+		{name: "quota identifier wins over rate limit status", code: "quota_exceeded", status: 429, want: "llm_usage_limit_reached"},
+		{name: "billing identifier wins over rate limit status", category: "billing_hard_limit", status: 429, want: "llm_usage_limit_reached"},
+		{name: "context identifier", code: "context_length_exceeded", want: "llm_context_overflow"},
+		{name: "token limit identifier", category: "token_limit_exceeded", want: "llm_context_overflow"},
 		{name: "model code", code: "model_not_found", want: "llm_model_unavailable"},
 		{name: "transport category", category: "network_error", want: "transient_transport"},
 		{name: "unknown fields", code: "unrecognized", category: "provider", status: 400, want: "provider_unknown_failure"},
@@ -127,6 +131,7 @@ func TestValidateServerResponseSuccess(t *testing.T) {
 		{name: "timeout", mutate: func(o *InvocationStreamObservation) { o.TimedOut = true }, reason: "timeout"},
 		{name: "cancelled", mutate: func(o *InvocationStreamObservation) { o.Cancelled = true }, reason: "provider_cancelled"},
 		{name: "unstructured provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "upstream failed" }, reason: "provider_unknown_failure"},
+		{name: "unstructured quota prose", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "quota exceeded" }, reason: "provider_unknown_failure"},
 		{name: "rate limited provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderErrorPresent = true; o.ProviderErrorStatus = 429 }, reason: "llm_rate_limited"},
 		{name: "malformed", mutate: func(o *InvocationStreamObservation) { o.MalformedProtocolCount = 1 }, reason: "provider_unknown_failure"},
 		{name: "conflict", mutate: func(o *InvocationStreamObservation) { o.ConflictingTerminalEvidence = true }, reason: "provider_incomplete_turn"},

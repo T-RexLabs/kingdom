@@ -4,14 +4,14 @@
     {
       "code": "transient_transport",
       "category": "core",
-      "retry_class": "transient_transport_provider_session",
+      "retry_class": "transient_transport",
       "retryable": true,
       "escalation_target": "chancellor"
     },
     {
       "code": "timeout",
       "category": "core",
-      "retry_class": "transient_transport_provider_session",
+      "retry_class": "transient_transport",
       "retryable": true,
       "escalation_target": "chancellor"
     },
@@ -60,15 +60,22 @@
     {
       "code": "llm_rate_limited",
       "category": "provider",
-      "retry_class": "transient_transport_provider_session",
+      "retry_class": "llm_rate_limit_or_model_unavailable",
       "retryable": true,
       "escalation_target": "chancellor"
     },
     {
       "code": "llm_model_unavailable",
       "category": "provider",
-      "retry_class": "transient_transport_provider_session",
+      "retry_class": "llm_rate_limit_or_model_unavailable",
       "retryable": true,
+      "escalation_target": "chancellor"
+    },
+    {
+      "code": "llm_usage_limit_reached",
+      "category": "provider",
+      "retry_class": "non_retryable",
+      "retryable": false,
       "escalation_target": "chancellor"
     },
     {
@@ -115,34 +122,6 @@
     },
     {
       "code": "agent_unresponsive",
-      "category": "runtime",
-      "retry_class": "conditional_limited",
-      "retryable": true,
-      "escalation_target": "chancellor"
-    },
-    {
-      "code": "session_lease_expired",
-      "category": "runtime",
-      "retry_class": "transient_transport_provider_session",
-      "retryable": true,
-      "escalation_target": "chancellor"
-    },
-    {
-      "code": "tool_execution_failed",
-      "category": "runtime",
-      "retry_class": "conditional_limited",
-      "retryable": true,
-      "escalation_target": "chancellor"
-    },
-    {
-      "code": "container_start_failed",
-      "category": "runtime",
-      "retry_class": "transient_transport_provider_session",
-      "retryable": true,
-      "escalation_target": "chancellor"
-    },
-    {
-      "code": "container_oom_killed",
       "category": "runtime",
       "retry_class": "conditional_limited",
       "retryable": true,

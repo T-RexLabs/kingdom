@@ -210,7 +210,6 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 	reasonText := "node attempt exceeded node wall-clock timeout"
 	errorText := "node timeout exceeded"
 	if executionNeverStarted(executionDiagnostics, cancelDiagnostics) {
-		reasonCode = "execution_not_started"
 		reasonText = "node execution never started before wall-clock timeout"
 		errorText = (&executionNotStartedError{
 			AttemptID: attemptID,

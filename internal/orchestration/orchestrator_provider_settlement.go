@@ -167,7 +167,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 		if result.completionMode == executionstore.ProviderCompletionModeServerResponse {
 			result.outputText = strings.TrimSpace(result.providerStreamObservation.CanonicalTerminalText)
 			if strings.TrimSpace(result.providerStreamObservation.ProviderSessionID) == "" {
-				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_session_missing", FailureText: "provider terminal response is missing session lineage", EvidenceSource: "stream"}
+				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_unknown_failure", FailureText: "provider terminal response is missing session lineage", EvidenceSource: "stream"}
 			} else if err := providerexecution.ValidateServerResponseSuccess(result.providerStreamObservation); err != nil {
 				var observationErr *providerexecution.InvalidServerResponseObservationError
 				reasonCode := "provider_incomplete_turn"
@@ -184,7 +184,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	if strings.TrimSpace(currentOutcome.State) == "success" {
 		validated, err := executionoutput.Validate(result.node.NodeID, result.node.NodeClass, result.outputText, result.completionStructuredPayloadJSON)
 		if err != nil {
-			reasonCode := "provider_invalid_response"
+			reasonCode := "llm_invalid_response"
 			var validationErr *executionoutput.ValidationError
 			if errors.As(err, &validationErr) {
 				reasonCode = validationErr.ReasonCode

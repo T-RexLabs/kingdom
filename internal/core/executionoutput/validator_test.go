@@ -36,11 +36,11 @@ func TestValidateReviewVerdicts(t *testing.T) {
 	}{
 		{name: "pass", text: "VERDICT: PASS\nLooks good.", structured: `{}`, failureCode: ""},
 		{name: "rework", text: "VERDICT: REWORK\nFix it.", structured: `{"verdict":"REWORK"}`, failureCode: verdict.ReworkReasonCodeExecutionReview},
-		{name: "missing", text: "Looks good.", errorCode: "invalid_execution_review_verdict"},
-		{name: "late", text: "Looks good.\nVERDICT: PASS", errorCode: "invalid_execution_review_verdict"},
-		{name: "duplicate", text: "VERDICT: PASS\nVERDICT: PASS", errorCode: "invalid_execution_review_verdict"},
-		{name: "conflicting", text: "VERDICT: PASS\nVERDICT: REWORK", errorCode: "invalid_execution_review_verdict"},
-		{name: "structured conflict", text: "VERDICT: PASS", structured: `{"verdict":"REWORK"}`, errorCode: "invalid_execution_review_verdict"},
+		{name: "missing", text: "Looks good.", errorCode: "llm_invalid_response"},
+		{name: "late", text: "Looks good.\nVERDICT: PASS", errorCode: "llm_invalid_response"},
+		{name: "duplicate", text: "VERDICT: PASS\nVERDICT: PASS", errorCode: "llm_invalid_response"},
+		{name: "conflicting", text: "VERDICT: PASS\nVERDICT: REWORK", errorCode: "llm_invalid_response"},
+		{name: "structured conflict", text: "VERDICT: PASS", structured: `{"verdict":"REWORK"}`, errorCode: "llm_invalid_response"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestValidateValidationVerdict(t *testing.T) {
 func TestValidateRejectsNonObjectStructuredOutput(t *testing.T) {
 	t.Parallel()
 	_, err := Validate("delegated_execution_berserker", workflow.NodeClassDelegatedExecution, "complete", `[]`)
-	assertValidationReason(t, err, "provider_invalid_response")
+	assertValidationReason(t, err, "llm_invalid_response")
 }
 
 func assertValidationReason(t *testing.T, err error, reason string) {

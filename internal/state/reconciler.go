@@ -276,9 +276,6 @@ func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Contex
 
 func canonicalRetryDecisionCode(raw string) errorcatalog.Code {
 	code := errorcatalog.Code(strings.TrimSpace(raw))
-	if code == "provider_timeout" {
-		code = errorcatalog.CodeTimeout
-	}
 	if _, ok := errorcatalog.Lookup(code); ok {
 		return code
 	}

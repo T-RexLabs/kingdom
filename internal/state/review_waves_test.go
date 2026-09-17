@@ -50,7 +50,7 @@ func TestCountReviewReworkWavesIgnoresMixedReviewWave(t *testing.T) {
 		otherFailureCode  string
 		otherFailureText  string
 	}{
-		{name: "failed hard failure", otherNodeStatus: "failed", otherAttemptState: "committed_failure", otherFailureCode: "provider_timeout", otherFailureText: "provider timed out"},
+		{name: "failed hard failure", otherNodeStatus: "failed", otherAttemptState: "committed_failure", otherFailureCode: "timeout", otherFailureText: "provider timed out"},
 		{name: "cancelled reviewer", otherNodeStatus: "cancelled", otherAttemptState: "committed_cancelled", otherFailureCode: "provider_cancelled", otherFailureText: "reviewer cancelled"},
 		{name: "blocked reviewer", otherNodeStatus: "blocked", otherAttemptState: "committed_failure", otherFailureCode: "dependency_blocked", otherFailureText: "reviewer blocked"},
 	}

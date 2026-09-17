@@ -49,14 +49,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -94,14 +86,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -140,14 +124,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -185,14 +161,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -227,14 +195,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -396,14 +356,6 @@ timeouts:
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king

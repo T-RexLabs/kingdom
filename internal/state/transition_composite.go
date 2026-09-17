@@ -310,12 +310,6 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 		if err != nil {
 			return err
 		}
-		eventType := "attempt.retry_exhausted"
-		if decision.Decision == RetryDecisionRetry {
-			eventType = "attempt.retry_scheduled"
-		} else if decision.Decision == RetryDecisionExhausted {
-			eventType = "escalation.raised"
-		}
 		targetAttemptID := ""
 		if scheduled {
 			targetAttemptID = composeAttemptID(decision.RunID, queued.NodeID, queued.Attempt)
@@ -343,12 +337,12 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 			if err := s.appendAutomaticRetryScheduledEventTx(ctx, tx, req.Transition, decision, fmt.Sprintf("evt_retry_scheduled_%s", decision.DecisionID), payload); err != nil {
 				return err
 			}
-		} else {
+		} else if decision.Decision == RetryDecisionExhausted {
 			seq, err := nextAttemptExecutionSeqTx(ctx, tx, decision.SourceAttemptID)
 			if err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, eventType, decision.ErrorCode, payload, req.Transition.OccurredAt); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, "escalation.raised", decision.ErrorCode, payload, req.Transition.OccurredAt); err != nil {
 				return fmt.Errorf("append automatic decree retry event: %w", err)
 			}
 		}
@@ -1731,10 +1725,6 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 		if err != nil {
 			return err
 		}
-		seq, err := nextAttemptExecutionSeqTx(ctx, tx, decision.SourceAttemptID)
-		if err != nil {
-			return err
-		}
 		targetAttemptID, err := attemptIDForNodeRunTx(ctx, tx, decision.RunID, decision.TargetNodeRunID)
 		if err != nil {
 			return err
@@ -1758,12 +1748,14 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 		if err != nil {
 			return fmt.Errorf("marshal direct execution retry event: %w", err)
 		}
-		eventType := "attempt.retry_exhausted"
 		if decision.Decision == RetryDecisionExhausted {
-			eventType = "escalation.raised"
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, eventType, decision.ErrorCode, payload, transition.OccurredAt); err != nil {
-			return fmt.Errorf("append direct execution retry disposition event: %w", err)
+			seq, err := nextAttemptExecutionSeqTx(ctx, tx, decision.SourceAttemptID)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, "escalation.raised", decision.ErrorCode, payload, transition.OccurredAt); err != nil {
+				return fmt.Errorf("append direct execution retry disposition event: %w", err)
+			}
 		}
 		if decision.Decision == RetryDecisionExhausted {
 			if err := s.deliverDecreeRetryExhaustionTx(ctx, tx, decision, req.EscalationFromAgentID); err != nil {
@@ -3648,7 +3640,7 @@ func (s *TransitionService) scheduleFencedStaleRetryOnce(ctx context.Context, re
 		OccurredAt:      occurredAt,
 		AttemptID:       req.CurrentAttemptID,
 		SchemaVersion:   "v1",
-		EventType:       "attempt.recovered",
+		EventType:       "node.state_changed",
 		EventSeq:        req.CurrentEventSeq,
 		PayloadJSON:     blockedPayload,
 	}); err != nil {

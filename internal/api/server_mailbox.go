@@ -409,7 +409,7 @@ func mailboxVerdictSummary(_ any, nodeID, reasonCode string) (string, string) {
 	}
 
 	switch strings.ToLower(strings.TrimSpace(reasonCode)) {
-	case "invalid_execution_review_verdict", "invalid_validation_verdict":
+	case "llm_invalid_response":
 		return typeLabel, "invalid"
 	case "execution_review_cap_auto_succeeded", "validation_gate_cap_auto_succeeded":
 		return typeLabel, "auto_succeeded"

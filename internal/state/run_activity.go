@@ -12,10 +12,7 @@ import (
 
 var runActivityAttemptEventTypes = map[string]struct{}{
 	"attempt.started":             {},
-	"attempt.retrying":            {},
-	"attempt.retry_recovered":     {},
-	"attempt.retry_exhausted":     {},
-	"attempt.recovered":           {},
+	"attempt.retry_scheduled":     {},
 	"attempt.retry_queued":        {},
 	"attempt.rerun_queued":        {},
 	"attempt.final_rework_queued": {},

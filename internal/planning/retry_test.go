@@ -24,7 +24,7 @@ func TestCanonicalPlanningRetryCodeRejectsTextOnlyProviderFailures(t *testing.T)
 		want errorcatalog.Code
 	}{
 		{name: "timeout", raw: "timeout", want: errorcatalog.CodeTimeout},
-		{name: "legacy timeout", raw: "provider_timeout", want: errorcatalog.CodeTimeout},
+		{name: "unrecognized provider code", raw: "unknown_provider_failure", want: errorcatalog.CodeProviderUnknownFailure},
 		{name: "incomplete", raw: "provider_incomplete_turn", want: errorcatalog.CodeProviderIncompleteTurn},
 		{name: "empty", raw: "provider_empty_output", want: errorcatalog.CodeProviderEmptyOutput},
 		{name: "invalid", raw: "llm_invalid_response", want: errorcatalog.CodeLLMInvalidResponse},

@@ -178,21 +178,6 @@ export function buildRawEventLabel(
     return { label: "Node failed", detail: detail || undefined };
   }
 
-  if (event.event_type === "attempt.retrying") {
-    const retryIndex = typeof payload.retry_index === "number" ? payload.retry_index : 0;
-    const retryMax = typeof payload.retry_max === "number" ? payload.retry_max : 0;
-    const delaySec = typeof payload.delay_seconds === "number" ? payload.delay_seconds : 0;
-    const suffix = retryIndex > 0 && retryMax > 0 ? ` (${retryIndex}/${retryMax})` : "";
-    return {
-      label: `${name || "Node"} retrying${suffix}`,
-      detail: delaySec > 0 ? `${delaySec}s delay` : undefined,
-    };
-  }
-
-	if (event.event_type === "attempt.retry_recovered") {
-		return { label: `${name || "Node"} recovered after retry` };
-  }
-
   if (event.event_type === "attempt.timeout_warning") {
     const elapsedMs = typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : 0;
     const timeoutMs = typeof payload.timeout_ms === "number" ? payload.timeout_ms : 0;
@@ -715,9 +700,6 @@ function latestBlockedRunEventSeq(events: TimelineEvent[]): number | undefined {
 		if (!event) {
 			continue;
 		}
-		if (event.event_type === "attempt.recovered" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
-			return event.run_event_seq;
-		}
 		if (event.event_type === "node.state_changed" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
 			return event.run_event_seq;
 		}
@@ -911,13 +893,6 @@ function latestNodeLifecycleState(events: TimelineEvent[], currentNodeRunID?: st
 				case "attempt.retry_queued":
 				case "attempt.rerun_queued":
 					return "ready";
-				case "attempt.recovered": {
-					const recoveredState = normalizedRunStatusTone(event.payload_json?.state);
-					if (recoveredState === "blocked") {
-						return "blocked";
-					}
-					break;
-				}
 				case "attempt.started":
 					return "running";
 				case "attempt.succeeded":

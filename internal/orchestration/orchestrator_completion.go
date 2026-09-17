@@ -391,9 +391,6 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) opencode.ExecutionOutcome {
 	outcome.State = strings.TrimSpace(outcome.State)
 	outcome.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(outcome.ReasonCode)
-	if outcome.ReasonCode == "provider_timeout" {
-		outcome.ReasonCode = "timeout"
-	}
 	outcome.FailureText = strings.TrimSpace(outcome.FailureText)
 	outcome.EvidenceSource = strings.TrimSpace(outcome.EvidenceSource)
 	if err == nil {
@@ -555,9 +552,6 @@ func (o *orchestrationLoop) planAutomaticDecreeRetry(ctx context.Context, result
 
 func canonicalAutomaticRetryCode(raw string) errorcatalog.Code {
 	code := errorcatalog.Code(strings.TrimSpace(raw))
-	if code == "provider_timeout" {
-		code = errorcatalog.CodeTimeout
-	}
 	if _, known := errorcatalog.Lookup(code); known {
 		return code
 	}
@@ -1355,7 +1349,7 @@ func classifyExecutionReasonCode(err error) string {
 	}
 	var neverStartedErr *executionNotStartedError
 	if errors.As(err, &neverStartedErr) {
-		return "execution_not_started"
+		return string(errorcatalog.CodeTimeout)
 	}
 	if providerlimits.IsResourceLimitError(err) {
 		return string(errorcatalog.CodeResourceLimitExceeded)
@@ -1370,11 +1364,11 @@ func classifyExecutionReasonCode(err error) string {
 	}
 	var invalidVerdictErr *invalidValidationVerdictError
 	if errors.As(err, &invalidVerdictErr) {
-		return "invalid_validation_verdict"
+		return string(errorcatalog.CodeLLMInvalidResponse)
 	}
 	var invalidReviewVerdictErr *invalidExecutionReviewVerdictError
 	if errors.As(err, &invalidReviewVerdictErr) {
-		return "invalid_execution_review_verdict"
+		return string(errorcatalog.CodeLLMInvalidResponse)
 	}
 	var emptyOutputErr *providerEmptyOutputError
 	if errors.As(err, &emptyOutputErr) {

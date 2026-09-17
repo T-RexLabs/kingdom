@@ -82,7 +82,11 @@ Capabilities:
 - regenerate assistant responses
 - generate a session title
 - view and activate variants
-- formalize the current plan into a draft
+- choose the planner model and thinking effort
+- attach or remove planning sources
+- generate and view a plan draft
+
+Planning context refresh is available through the API, but the web planner does not currently expose a dedicated refresh control.
 
 #### Issue mode
 
@@ -103,22 +107,25 @@ Capabilities:
 
 The run-detail surface currently exposes these tabs:
 
-- `graph`
-- `executions`
-- `timeline`
-- `agents`
-- `mailbox`
+- `DAG`
+- `Activity`
+- `Agents`
+- `Messages`
 
 The run surface is also where operators handle manual approvals when approvals are not autonomous.
 
-Execution tab semantics:
+Activity semantics:
 
-- the `executions` tab is the canonical operator surface for durable attempt state
+- Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
+- a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
-- execution detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
+- attempt detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
 - provisional output can be shown as observed output while settlement is still pending, but that detail never implies success by itself
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
-- runs remain blocked until invocation-scoped runtime settlement is durably recorded from an accepted `kingdom_complete_attempt` receipt; captured text alone does not advance the DAG
+- only builder attempts require and can be authorized by an accepted `kingdom_complete_attempt` receipt; response-first nodes settle from a valid server-observed terminal response
+- the Activity surface includes a collapsible event timeline rather than a separate Timeline tab
+
+When a stale provider process cannot be proven quiescent, Activity shows the attempt as paused and exposes **Retry Stop** only for its addressable guardian. That action requests one further bounded stop; it does not bypass quiescence, workspace restoration, or the cancellation handoff.
 
 Important limitation:
 
@@ -172,10 +179,11 @@ Use this section as a guide to the major API areas, not as a complete route inve
 
 - decree creation
 - workflow publishing
-- run creation, inspection, graph, timeline, and cancellation
+- run creation, inspection, graph, Activity, timeline events, and cancellation
 - retry and rerun-from controls
 - plan and final approval decisions
-- durable execution records
+- logical-node execution projections at `GET /runs/{id}/executions`
+- paged physical attempt history at `GET /runs/{id}/nodes/{nodeId}/attempts`
 
 ### Mailbox
 

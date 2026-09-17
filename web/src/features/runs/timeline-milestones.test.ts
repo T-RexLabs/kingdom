@@ -281,14 +281,14 @@ describe("timeline milestones", () => {
 			event_id: "evt-recovered-blocked",
 			run_event_seq: 1,
 			attempt_seq: 1,
-			event_type: "attempt.recovered",
+			event_type: "node.state_changed",
 			emitted_at: "2026-03-18T11:41:00Z",
 			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 		};
 
 		const lookups = buildTimelineLookups([recovered], nodes, executions);
 		expect(buildRawEventLabel(recovered, lookups)).toEqual({
-			label: "Delegated Execution Berserker blocked for retry",
+			label: "Delegated Execution Berserker blocked",
 			detail: undefined,
 		});
 
@@ -331,7 +331,7 @@ describe("timeline milestones", () => {
 			event_id: "evt-retry-paused",
 			run_event_seq: 1,
 			attempt_seq: 1,
-			event_type: "attempt.recovered",
+			event_type: "node.state_changed",
 			emitted_at: "2026-03-18T11:41:00Z",
 			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-paused", state: "blocked" },
 		};
@@ -383,7 +383,7 @@ describe("timeline milestones", () => {
 			event_id: "evt-retry-restore-paused",
 			run_event_seq: 1,
 			attempt_seq: 1,
-			event_type: "attempt.recovered",
+			event_type: "node.state_changed",
 			emitted_at: "2026-03-18T11:41:00Z",
 			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-restore", state: "blocked" },
 		};
@@ -426,7 +426,7 @@ describe("timeline milestones", () => {
 				event_id: "evt-recovered-blocked",
 				run_event_seq: 5,
 				attempt_seq: 3,
-				event_type: "attempt.recovered",
+				event_type: "node.state_changed",
 				emitted_at: "2026-03-18T11:41:00Z",
 				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 			},
@@ -470,7 +470,7 @@ describe("timeline milestones", () => {
 				event_id: "evt-recovered-blocked-live-only",
 				run_event_seq: 5,
 				attempt_seq: 3,
-				event_type: "attempt.recovered",
+				event_type: "node.state_changed",
 				emitted_at: "2026-03-18T11:41:00Z",
 				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 			},

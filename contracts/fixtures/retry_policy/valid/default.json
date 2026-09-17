@@ -5,7 +5,7 @@
     "jitter_mode": "full"
   },
   "classes": {
-    "transient_transport_provider_session": {
+    "transient_transport": {
       "max_retries": 3,
       "backoff": {
         "initial_delay": "1s",
@@ -26,7 +26,7 @@
     }
   },
   "error_code_map": {
-    "transient_transport": "transient_transport_provider_session",
+    "transient_transport": "transient_transport",
     "invalid_output_schema": "non_retryable"
   }
 }

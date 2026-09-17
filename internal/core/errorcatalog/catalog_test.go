@@ -61,16 +61,12 @@ func TestFixtureCoverageAndParity(t *testing.T) {
 func TestRetryMatrixClassifications(t *testing.T) {
 	t.Parallel()
 
-	expectClass(t, CodeTransientTransport, "transient_transport_provider_session", true)
-	expectClass(t, CodeTimeout, "transient_transport_provider_session", true)
-	expectClass(t, CodeLLMRateLimited, "transient_transport_provider_session", true)
-	expectClass(t, CodeLLMModelUnavailable, "transient_transport_provider_session", true)
-	expectClass(t, CodeSessionLeaseExpired, "transient_transport_provider_session", true)
-	expectClass(t, CodeContainerStartFailed, "transient_transport_provider_session", true)
+	expectClass(t, CodeTransientTransport, "transient_transport", true)
+	expectClass(t, CodeTimeout, "transient_transport", true)
+	expectClass(t, CodeLLMRateLimited, "llm_rate_limit_or_model_unavailable", true)
+	expectClass(t, CodeLLMModelUnavailable, "llm_rate_limit_or_model_unavailable", true)
 
 	expectClass(t, CodeAgentUnresponsive, "conditional_limited", true)
-	expectClass(t, CodeContainerOOMKilled, "conditional_limited", true)
-	expectClass(t, CodeToolExecutionFailed, "conditional_limited", true)
 
 	expectClass(t, CodeInvalidOutputSchema, "non_retryable", false)
 	expectClass(t, CodePolicyViolation, "non_retryable", false)
@@ -80,6 +76,7 @@ func TestRetryMatrixClassifications(t *testing.T) {
 	expectClass(t, CodeDependencyBlocked, "non_retryable", false)
 	expectClass(t, CodeResourceLimitExceeded, "non_retryable", false)
 	expectClass(t, CodeLLMInvalidResponse, "non_retryable", false)
+	expectClass(t, CodeLLMUsageLimitReached, "non_retryable", false)
 	expectClass(t, CodeProviderIncompleteTurn, "non_retryable", false)
 	expectClass(t, CodeProviderCancelled, "non_retryable", false)
 }

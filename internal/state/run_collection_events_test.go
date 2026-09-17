@@ -23,7 +23,7 @@ func TestShouldProjectRunCollectionEventWhitelist(t *testing.T) {
 		{name: "run retry reopened", eventType: "run.retry_reopened", want: true},
 		{name: "approval recorded", eventType: RunCollectionEventTypeApprovalRecorded, want: true},
 		{name: "attempt progress", eventType: "attempt.progress", want: false},
-		{name: "attempt retrying", eventType: "attempt.retrying", want: false},
+		{name: "attempt retry scheduled", eventType: "attempt.retry_scheduled", want: false},
 		{name: "node state changed", eventType: "node.state_changed", want: false},
 		{name: "mailbox message", eventType: "mailbox.message_recorded", want: false},
 		{name: "escalation", eventType: "escalation.raised", want: false},

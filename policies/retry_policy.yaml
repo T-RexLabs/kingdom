@@ -5,7 +5,17 @@ defaults:
   jitter_mode: full
 
 classes:
-  transient_transport_provider_session:
+  transient_transport:
+    max_retries: 1
+    backoff:
+      initial_delay: 1s
+      multiplier: 2.0
+      max_delay: 30s
+    escalation:
+      on_exhausted: dead_letter
+      target_role: chancellor
+
+  llm_rate_limit_or_model_unavailable:
     max_retries: 3
     backoff:
       initial_delay: 1s
@@ -42,16 +52,12 @@ classes:
       target_role: chancellor
 
 error_code_map:
-  transient_transport: transient_transport_provider_session
-  timeout: transient_transport_provider_session
-  llm_rate_limited: transient_transport_provider_session
-  llm_model_unavailable: transient_transport_provider_session
-  session_lease_expired: transient_transport_provider_session
-  container_start_failed: transient_transport_provider_session
+  transient_transport: transient_transport
+  timeout: transient_transport
+  llm_rate_limited: llm_rate_limit_or_model_unavailable
+  llm_model_unavailable: llm_rate_limit_or_model_unavailable
 
   agent_unresponsive: conditional_limited
-  container_oom_killed: conditional_limited
-  tool_execution_failed: conditional_limited
   idempotency_pending: conditional_limited
 
   invalid_output_schema: non_retryable
@@ -60,6 +66,7 @@ error_code_map:
   idempotency_key_expired: non_retryable
   dependency_blocked: non_retryable
   llm_invalid_response: non_retryable
+  llm_usage_limit_reached: non_retryable
   provider_incomplete_turn: non_retryable
   provider_empty_output: non_retryable
   provider_unknown_failure: non_retryable

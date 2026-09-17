@@ -18,22 +18,6 @@ import (
 	"kingdom/internal/state"
 )
 
-// legacyRunDetailSummary lets removal tests inspect that the retired wire key
-// is absent without retaining it in the generated public contract.
-type legacyRunDetailSummary struct {
-	gen.RunDetailSummary
-	RuntimeRetries []legacyRetryStatus
-}
-
-type legacyRetryStatus struct {
-	Phase           string
-	Status          string
-	ReasonCode      string
-	DueAt           time.Time
-	SourceNodeRunId string
-	TargetNodeRunId *string
-}
-
 func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
 	t.Parallel()
 
@@ -998,7 +982,7 @@ func TestServerGetRunUpdatedAtReflectsNodeTransitionActivity(t *testing.T) {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
 
-	var run legacyRunDetailSummary
+	var run gen.RunDetailSummary
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run summary: %v", err)
 	}
@@ -1039,7 +1023,7 @@ func TestServerGetRunIncludesTabCountsForRunDetailChrome(t *testing.T) {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
 
-	var run legacyRunDetailSummary
+	var run gen.RunDetailSummary
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run detail summary: %v", err)
 	}
@@ -1091,7 +1075,7 @@ func TestServerGetRunLastActivityReflectsMailboxMessage(t *testing.T) {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
 
-	var run legacyRunDetailSummary
+	var run gen.RunDetailSummary
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run detail summary: %v", err)
 	}
@@ -1103,7 +1087,7 @@ func TestServerGetRunLastActivityReflectsMailboxMessage(t *testing.T) {
 	}
 }
 
-func TestServerListRunsReturnsLastActivityFromAttemptRetryEvent(t *testing.T) {
+func TestServerListRunsReturnsLastActivityFromScheduledRetryEvent(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1122,19 +1106,19 @@ func TestServerListRunsReturnsLastActivityFromAttemptRetryEvent(t *testing.T) {
 		NodeRunID:       sql.NullString{String: "nr-list-last-activity", Valid: true},
 		AttemptID:       "attempt-list-last-activity",
 		SchemaVersion:   "v1",
-		EventType:       "attempt.retrying",
+		EventType:       "attempt.retry_scheduled",
 		Seq:             1,
-		PayloadJSON:     `{"node_id":"delegated_execution_berserker","node_run_id":"nr-list-last-activity","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}`,
+		PayloadJSON:     `{"node_id":"delegated_execution_berserker","node_run_id":"nr-list-last-activity","recovery_trigger":"automatic_retry","recovery_phase":"scheduled","error_code":"provider_empty_output","retry_index":2,"retry_max":3,"scheduled_at":"2026-03-06T10:08:10Z"}`,
 		ActorID:         "runtime_orchestrator",
 		RoleID:          "builder-berserker",
 		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_empty_output_retry",
-		ReasonText:      "retrying empty provider output after 10s",
+		ReasonCode:      "provider_empty_output",
+		ReasonText:      "automatic retry scheduled after empty provider output",
 		CorrelationID:   "corr-list-last-activity",
 		CausationID:     "caus-list-last-activity",
 		CreatedAt:       retryAt,
 	}); err != nil {
-		t.Fatalf("ingest retry event: %v", err)
+		t.Fatalf("ingest scheduled retry event: %v", err)
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1176,7 +1160,7 @@ func TestServerGetRunIncludesAuthoritativeStreamCursor(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-cursor', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-cursor', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-cursor', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-1', ?, 1, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.started', 1, '{"step":1}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-1', 'caus-run-cursor-1', 'prev-run-cursor-1', 'entry-run-cursor-1', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-2', ?, 2, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.retrying', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-2', 'caus-run-cursor-2', 'prev-run-cursor-2', 'entry-run-cursor-2', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-2', ?, 2, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.retry_scheduled', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-2', 'caus-run-cursor-2', 'prev-run-cursor-2', 'entry-run-cursor-2', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1186,7 +1170,7 @@ func TestServerGetRunIncludesAuthoritativeStreamCursor(t *testing.T) {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
 
-	var run legacyRunDetailSummary
+	var run gen.RunDetailSummary
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run detail summary: %v", err)
 	}
@@ -1198,291 +1182,6 @@ func TestServerGetRunIncludesAuthoritativeStreamCursor(t *testing.T) {
 	}
 	if run.StreamCursor.RunEventSeq != 2 {
 		t.Fatalf("expected run_event_seq=2, got %d", run.StreamCursor.RunEventSeq)
-	}
-}
-
-func TestServerGetRunIncludesActiveRuntimeRetries(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry', ?, 1, 'nr-run-retry', 'attempt-run-retry', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry', 'caus-run-retry', 'prev-run-retry', 'entry-run-retry', ?)`, runID, now)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("legacy retry events must not populate runtime retries: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunOmitsRecoveredRuntimeRetries(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-recovered', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-recovered', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry-recovered', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-recovered-1', ?, 1, 'nr-run-retry-recovered', 'attempt-run-retry-recovered', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-recovered","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry-recovered', 'caus-run-retry-recovered-1', 'prev-run-retry-recovered-1', 'entry-run-retry-recovered-1', '2026-03-06T10:01:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-recovered-2', ?, 2, 'nr-run-retry-recovered', 'attempt-run-retry-recovered', 'v1', 'attempt.retry_recovered', 2, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-recovered","retry_index":2,"retry_max":3,"reason_code":"provider_output_recovered"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_output_recovered', 'provider output recovered after empty-output retry', 'corr-run-retry-recovered', 'caus-run-retry-recovered-2', 'prev-run-retry-recovered-2', 'entry-run-retry-recovered-2', '2026-03-06T10:02:00Z')`, runID)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("expected recovered retry to be omitted, got %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunUsesCanonicalSeqForRuntimeRetrySelection(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-seq', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-seq', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry-seq', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-seq-recovered', ?, 1, 'nr-run-retry-seq', 'attempt-run-retry-seq', 'v1', 'attempt.retry_recovered', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-seq","retry_index":1,"retry_max":3,"reason_code":"provider_output_recovered"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_output_recovered', 'provider output recovered', 'corr-run-retry-seq', 'caus-run-retry-seq-1', 'prev-run-retry-seq-1', 'entry-run-retry-seq-1', '2026-03-06T10:03:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-seq-active', ?, 2, 'nr-run-retry-seq', 'attempt-run-retry-seq', 'v1', 'attempt.retrying', 2, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-seq","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry-seq', 'caus-run-retry-seq-2', 'prev-run-retry-seq-2', 'entry-run-retry-seq-2', '2026-03-06T10:02:00Z')`, runID)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("legacy event ordering must not populate runtime retries: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunIncludesConcurrentRuntimeRetries(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-builder', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-validator', 'intelligence-qa-scout', 'Validator', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-builder', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry-builder', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-validator', ?, 'validation_gates_qa_scout', 1,1, 'running', 'intelligence-qa-scout', 'agent-run-retry-validator', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-builder', ?, 1, 'nr-run-retry-builder', 'attempt-run-retry-builder', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-builder","retry_index":1,"retry_max":3,"delay_seconds":5,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 5s', 'corr-run-retry', 'caus-run-retry-builder', 'prev-run-retry-builder', 'entry-run-retry-builder', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-validator', ?, 2, 'nr-run-retry-validator', 'attempt-run-retry-validator', 'v1', 'attempt.retrying', 1, '{"node_id":"validation_gates_qa_scout","node_run_id":"nr-run-retry-validator","retry_index":2,"retry_max":4,"delay_seconds":8,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'intelligence-qa-scout', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 8s', 'corr-run-retry', 'caus-run-retry-validator', 'prev-run-retry-validator', 'entry-run-retry-validator', ?)`, runID, now)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("legacy retry events must not populate runtime retries: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunIgnoresLaterMailboxEventsWhenRetryIsStillActive(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-mailbox', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-mailbox', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry-mailbox', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-mailbox-active', ?, 1, 'nr-run-retry-mailbox', 'attempt-run-retry-mailbox', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-mailbox","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry-mailbox', 'caus-run-retry-mailbox-1', 'prev-run-retry-mailbox-1', 'entry-run-retry-mailbox-1', '2026-03-06T10:01:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-mailbox-message', ?, 2, 'nr-run-retry-mailbox', 'run:mailbox', 'v1', 'mailbox.message_recorded', 1, '{"message_id":"msg-mailbox","node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-mailbox","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent-run-retry-mailbox', 'builder-berserker', 'state.mailbox', 'execution_completed', 'mailbox message recorded', 'corr-run-retry-mailbox-2', 'caus-run-retry-mailbox-2', 'prev-run-retry-mailbox-2', 'entry-run-retry-mailbox-2', '2026-03-06T10:02:00Z')`, runID)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("legacy retry events must not populate runtime retries: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunIgnoresMalformedRuntimeRetryPayload(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-retry-malformed', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-retry-malformed', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-retry-malformed', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-malformed', ?, 1, 'nr-run-retry-malformed', 'attempt-run-retry-malformed', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-malformed","retry_index":2,"retry_max":3}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output', 'corr-run-retry-malformed', 'caus-run-retry-malformed', 'prev-run-retry-malformed', 'entry-run-retry-malformed', ?)`, runID, now)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID,
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatalf("decode run detail summary: %v", err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("expected malformed runtime retry payload to be ignored, got %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunProjectsRetryDecisionsWithoutEventJSON(t *testing.T) {
-	t.Parallel()
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-retry-projection', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
-	tests := []struct {
-		name, decision, dispatch, resolution, phase, status string
-		hasTarget                                           bool
-	}{
-		{"pending", "retry", "pending", "pending", "scheduled", "pending", true},
-		{"dispatched", "retry", "dispatched", "pending", "dispatched", "dispatched", true},
-		{"recovered", "retry", "dispatched", "recovered", "recovered", "recovered", true},
-		{"failed", "retry", "dispatched", "failed", "failed", "failed", true},
-		{"cancelled", "retry", "not_applicable", "cancelled", "cancelled", "cancelled", true},
-		{"exhausted", "exhausted", "not_applicable", "escalated", "exhausted", "escalated", false},
-	}
-	for index, test := range tests {
-		source := fmt.Sprintf("nr-retry-projection-source-%d", index)
-		attempt := fmt.Sprintf("attempt-retry-projection-%d", index)
-		nodeID := fmt.Sprintf("retry-projection-%d", index)
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 1, 1, 'failed', 'builder-berserker', 'agent-retry-projection', 1, ?, ?)`, source, runID, nodeID, now, now)
-		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, attempt, runID, source, now, now)
-		target := any(nil)
-		if test.hasTarget {
-			targetID := fmt.Sprintf("nr-retry-projection-target-%d", index)
-			mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 2, 1, 'pending', 'builder-berserker', 'agent-retry-projection', 1, NULL, NULL)`, targetID, runID, nodeID)
-			target = targetID
-		}
-		dispatchedAt, resolvedAt := any(nil), any(nil)
-		if test.dispatch == "dispatched" {
-			dispatchedAt = now
-		}
-		if test.resolution != "pending" && test.resolution != "not_applicable" {
-			resolvedAt = now
-		}
-		if test.resolution == "escalated" {
-			resolvedAt = now
-		}
-		mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at) VALUES (?, 'decree_attempt', ?, ?, ?, ?, ?, 'retry-policy', 'transient_transport_provider_session', 'timeout', 'operator-safe reason', 0, ?, 1, 3, 10000000000, '2026-03-06T10:01:10Z', ?, ?, 'chancellor', ?, ?, ?)`, "retry-projection-"+test.name, runID, nodeID, source, attempt, target, test.decision, test.dispatch, dispatchedAt, test.resolution, resolvedAt, now)
-	}
-
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatal(err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("retired retry summary leaked into run detail: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunProjectsProviderExtendedRetryDeadline(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	const createdAt = "2026-03-06T10:00:00.000000000Z"
-	const dueAt = "2026-03-06T10:02:00.000000000Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-provider-hint', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-provider-hint-source', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-provider-hint', 1)`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-provider-hint-target', ?, 'delegated_execution_berserker', 2, 1, 'pending', 'builder-berserker', 'agent-provider-hint', 1)`, runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('attempt-provider-hint', ?, 'nr-provider-hint-source', 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, runID, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, provider_retry_at, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-provider-hint', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-provider-hint-source', 'attempt-provider-hint', 'nr-provider-hint-target', 'retry-policy', 'transient_transport_provider_session', 'llm_rate_limited', 'retry', 0, 'retry', 1, 3, 10000000000, ?, ?, 'pending', 'chancellor', 'pending', ?)`, runID, dueAt, dueAt, createdAt)
-
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatal(err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("retired retry summary leaked into run detail: %#v", run.RuntimeRetries)
-	}
-}
-
-func TestServerGetRunProjectsSupersededPendingRetryAsCancelled(t *testing.T) {
-	t.Parallel()
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	const now = "2026-03-06T10:01:00Z"
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'approved' WHERE run_id = ?`, runID)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-retry-supersession', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-retry-supersession-source', ?, 'delegated_execution_berserker', 1, 1, 'succeeded', 'builder-berserker', 'agent-retry-supersession', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-retry-supersession-target', ?, 'delegated_execution_berserker', 2, 1, 'pending', 'builder-berserker', 'agent-retry-supersession', 1, NULL, NULL)`, runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, terminal_observed_at, committed_at) VALUES (?, ?, 'nr-retry-supersession-source', 'committed_success', 'provider_backed', 'server_response', ?, ?, ?, ?)`, runID+":delegated_execution_berserker:1", runID, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, 'nr-retry-supersession-target', 'queued', 'provider_backed', 'server_response', ?, ?)`, runID+":delegated_execution_berserker:2", runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-supersession', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-retry-supersession-source', ?, 'nr-retry-supersession-target', 'retry-policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 1000000000, '2026-03-06T10:01:01Z', 'pending', 'chancellor', 'pending', ?)`, runID, runID+":delegated_execution_berserker:1", now)
-
-	if _, err := state.NewTransitionService(db, nil).SupersedeQueuedAttemptsBeforeLaunch(context.Background(), state.SupersedeQueuedAttemptsRequest{RunID: runID, NodeID: "delegated_execution_berserker", KeepAttempt: 1, OccurredAt: now, ActorID: "runtime_orchestrator"}); err != nil {
-		t.Fatalf("supersede pending retry: %v", err)
-	}
-
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-	var run legacyRunDetailSummary
-	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
-		t.Fatal(err)
-	}
-	if len(run.RuntimeRetries) != 0 {
-		t.Fatalf("retired retry summary leaked into run detail: %#v", run.RuntimeRetries)
 	}
 }
 
@@ -1752,7 +1451,7 @@ func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
 	// rework earns the softer state.
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-invalid-verdict', ?, 'nr-invalid-verdict', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-invalid-verdict', 'ses-invalid-verdict', ?, ?, ?, 'invalid_execution_review_verdict', 'execution review response missing required verdict line', ?, ?)`, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-invalid-verdict', ?, 'nr-invalid-verdict', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-invalid-verdict', 'ses-invalid-verdict', ?, ?, ?, 'llm_invalid_response', 'execution review response missing required verdict line', ?, ?)`, runID, now, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -3028,7 +2727,7 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 	if blocked.Recovery == nil || blocked.Recovery.Phase != gen.RunRecoveryStatePhasePaused || blocked.Recovery.TargetAttemptId == nil || *blocked.Recovery.TargetAttemptId != targetAttemptID {
 		t.Fatalf("paused recovery association lost queued target: %#v", blocked.Recovery)
 	}
-	if blocked.Failure == nil || blocked.Failure.Code != "timeout" || blocked.Failure.Classification != "transient_transport_provider_session" || blocked.Failure.Category != "core" || !blocked.Failure.Retryable {
+	if blocked.Failure == nil || blocked.Failure.Code != "timeout" || blocked.Failure.Classification != "transient_transport" || blocked.Failure.Category != "core" || !blocked.Failure.Retryable {
 		t.Fatalf("typed failure mismatch: %#v", blocked.Failure)
 	}
 	attemptsRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})

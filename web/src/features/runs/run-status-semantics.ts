@@ -212,17 +212,12 @@ export function liveExecutionLabel(
 				}
 		case "attempt.retry_queued":
 			return "Retry queued";
+		case "attempt.retry_scheduled":
+			return "Retry scheduled";
 		case "attempt.rerun_queued":
 			return "Rerun queued";
 		case "attempt.final_rework_queued":
 			return "Final Governance Rework Queued";
-		case "attempt.retry_exhausted":
-			return "Retry exhausted";
-		case "attempt.recovered":
-			if ((nodeState ?? "").trim() === "blocked") {
-				return "Blocked for retry";
-			}
-			return "Recovered for retry";
 		case "attempt.failed":
 			return "Execution failed";
 		case "attempt.succeeded":
@@ -244,18 +239,15 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 			case "attempt.started":
 				return "play";
 		case "attempt.succeeded":
-		case "attempt.retry_recovered":
 			return "check";
 		case "attempt.failed":
 		case "attempt.cancelled":
 			return "x";
-		case "attempt.retrying":
+		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
 		case "attempt.final_rework_queued":
-		case "attempt.recovered":
 			return "rotate";
-			case "attempt.retry_exhausted":
 			case "attempt.timeout_warning":
 				return "alert";
 			case "attempt.progress":
@@ -284,20 +276,14 @@ export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type
 			return "failed";
 		case "attempt.cancelled":
 			return "cancelled";
-		case "attempt.retrying":
-			return "retrying";
-		case "attempt.retry_recovered":
-			return "recovered after retry";
+		case "attempt.retry_scheduled":
+			return "retry scheduled";
 		case "attempt.retry_queued":
 			return "retry queued";
 		case "attempt.rerun_queued":
 			return "rerun queued";
 		case "attempt.final_rework_queued":
 			return "final governance rework queued";
-		case "attempt.retry_exhausted":
-			return "retry exhausted";
-		case "attempt.recovered":
-			return liveLabel ? liveLabel.toLowerCase() : "recovered for retry";
 		case "attempt.progress":
 			return liveLabel ?? "execution update";
 		case "attempt.timeout_warning":
