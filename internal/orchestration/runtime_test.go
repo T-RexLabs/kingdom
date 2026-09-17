@@ -3086,7 +3086,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 				RunID: runID, AnchorNodeID: nodeID, TargetNodeIDs: []string{nodeID}, Reason: "operator confirmed recovery",
 				ActorID: "local-operator", RoleID: "allfather", AuthoritySource: "api." + replay.name,
 				RunEventType: replay.runEventType, RunReasonCode: replay.runReasonCode, NodeEventType: replay.nodeEventType,
-				NodeReasonCode: "internal_error", EventPrefix: replay.eventPrefix, OccurredAt: quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano),
+				EventPrefix: replay.eventPrefix, OccurredAt: quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano),
 				GenerateID: func(prefix string) string {
 					idCounter++
 					return fmt.Sprintf("%s_manual_%s_%d", prefix, replay.name, idCounter)

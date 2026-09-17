@@ -36,7 +36,6 @@ type ReplayTerminalRunRequest struct {
 	RunEventType    string
 	RunReasonCode   string
 	NodeEventType   string
-	NodeReasonCode  string
 	EventPrefix     string
 	OccurredAt      string
 	GenerateID      func(string) string
@@ -311,19 +310,47 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 		if err != nil {
 			return err
 		}
-		seq, err := nextAttemptExecutionSeqTx(ctx, tx, decision.SourceAttemptID)
-		if err != nil {
-			return err
-		}
 		eventType := "attempt.retry_exhausted"
 		if decision.Decision == RetryDecisionRetry {
 			eventType = "attempt.retry_scheduled"
 		} else if decision.Decision == RetryDecisionExhausted {
 			eventType = "escalation.raised"
 		}
-		payload := fmt.Sprintf(`{"retry_decision_id":%q,"decision":%q,"retry_index":%d,"max_retries":%d,"due_at":%q,"target_node_run_id":%q}`, decision.DecisionID, decision.Decision, decision.RetryIndex, decision.MaxRetries, retryTimeString(decision.DueAt), decision.TargetNodeRunID)
-		if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, eventType, decision.ErrorCode, payload, req.Transition.OccurredAt); err != nil {
-			return fmt.Errorf("append automatic decree retry event: %w", err)
+		targetAttemptID := ""
+		if scheduled {
+			targetAttemptID = composeAttemptID(decision.RunID, queued.NodeID, queued.Attempt)
+		}
+		payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+			NodeID:          decision.NodeID,
+			NodeRunID:       decision.NodeRunID,
+			RetryDecisionID: decision.DecisionID,
+			Decision:        string(decision.Decision),
+			RecoveryTrigger: "automatic_retry",
+			RecoveryPhase:   retryRecoveryPhase(decision),
+			ErrorCode:       decision.ErrorCode,
+			SourceAttemptID: decision.SourceAttemptID,
+			SourceNodeRunID: decision.NodeRunID,
+			TargetAttemptID: targetAttemptID,
+			TargetNodeRunID: decision.TargetNodeRunID,
+			RetryIndex:      decision.RetryIndex,
+			RetryMax:        decision.MaxRetries,
+			ScheduledAt:     retryTimeString(decision.DueAt),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal automatic decree retry event: %w", err)
+		}
+		if decision.Decision == RetryDecisionRetry {
+			if err := s.appendAutomaticRetryScheduledEventTx(ctx, tx, req.Transition, decision, fmt.Sprintf("evt_retry_scheduled_%s", decision.DecisionID), payload); err != nil {
+				return err
+			}
+		} else {
+			seq, err := nextAttemptExecutionSeqTx(ctx, tx, decision.SourceAttemptID)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("attempt_event:%s:%d", decision.SourceAttemptID, seq), decision.SourceAttemptID, decision.RunID, decision.NodeRunID, seq, eventType, decision.ErrorCode, payload, req.Transition.OccurredAt); err != nil {
+				return fmt.Errorf("append automatic decree retry event: %w", err)
+			}
 		}
 		if decision.Decision == RetryDecisionExhausted {
 			if err := s.deliverDecreeRetryExhaustionTx(ctx, tx, decision, source.AgentID); err != nil {
@@ -459,7 +486,7 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 				_ = tx.Rollback()
 			}
 		}()
-		rows, err := tx.QueryContext(ctx, `SELECT rd.retry_decision_id, rd.due_at, rd.target_node_run_id, nr.node_id, nr.attempt, nr.wave, nr.required_role, nr.agent_id, COALESCE(nr.handoff_source_attempt_id, '')
+		rows, err := tx.QueryContext(ctx, `SELECT rd.retry_decision_id, rd.due_at, rd.error_code, rd.source_attempt_id, rd.node_run_id, rd.retry_index, rd.max_retries, rd.target_node_run_id, nr.node_id, nr.attempt, nr.wave, nr.required_role, nr.agent_id, COALESCE(nr.handoff_source_attempt_id, '')
 			FROM retry_decisions rd
 			JOIN node_runs nr ON nr.node_run_id = rd.target_node_run_id AND nr.run_id = rd.run_id
 			WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ? AND rd.decision = 'retry' AND rd.dispatch_state = 'pending' AND nr.node_status = 'pending'
@@ -468,20 +495,30 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 			return fmt.Errorf("list due decree retries: %w", err)
 		}
 		var candidates []struct {
-			DecisionID string
-			DueAt      time.Time
+			DecisionID      string
+			DueAt           time.Time
+			ErrorCode       string
+			SourceAttemptID string
+			SourceNodeRunID string
+			RetryIndex      int
+			RetryMax        int
 			QueuedNodeAttempt
 			HandoffSourceAttemptID string
 		}
 		for rows.Next() {
 			var candidate struct {
-				DecisionID string
-				DueAt      time.Time
+				DecisionID      string
+				DueAt           time.Time
+				ErrorCode       string
+				SourceAttemptID string
+				SourceNodeRunID string
+				RetryIndex      int
+				RetryMax        int
 				QueuedNodeAttempt
 				HandoffSourceAttemptID string
 			}
 			var dueAt string
-			if err := rows.Scan(&candidate.DecisionID, &dueAt, &candidate.NodeRunID, &candidate.NodeID, &candidate.Attempt, &candidate.Wave, &candidate.RequiredRole, &candidate.AgentID, &candidate.HandoffSourceAttemptID); err != nil {
+			if err := rows.Scan(&candidate.DecisionID, &dueAt, &candidate.ErrorCode, &candidate.SourceAttemptID, &candidate.SourceNodeRunID, &candidate.RetryIndex, &candidate.RetryMax, &candidate.NodeRunID, &candidate.NodeID, &candidate.Attempt, &candidate.Wave, &candidate.RequiredRole, &candidate.AgentID, &candidate.HandoffSourceAttemptID); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan due decree retry: %w", err)
 			}
@@ -533,7 +570,22 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 			if changed != 1 {
 				continue
 			}
-			payload, err := marshalQueuedNodeAttemptEventPayload(runID, candidate.QueuedNodeAttempt, "ready", nil)
+			payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+				NodeID:          candidate.NodeID,
+				NodeRunID:       candidate.NodeRunID,
+				RetryDecisionID: candidate.DecisionID,
+				Decision:        string(RetryDecisionRetry),
+				RecoveryTrigger: "automatic_retry",
+				RecoveryPhase:   "scheduled",
+				ErrorCode:       candidate.ErrorCode,
+				SourceAttemptID: candidate.SourceAttemptID,
+				SourceNodeRunID: candidate.SourceNodeRunID,
+				TargetAttemptID: composeAttemptID(runID, candidate.NodeID, candidate.Attempt),
+				TargetNodeRunID: candidate.NodeRunID,
+				RetryIndex:      candidate.RetryIndex,
+				RetryMax:        candidate.RetryMax,
+				ScheduledAt:     retryTimeString(candidate.DueAt),
+			})
 			if err != nil {
 				return err
 			}
@@ -918,8 +970,8 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	if occurredAt == "" {
 		occurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if strings.TrimSpace(req.RunReasonCode) == "" {
-		return nil, fmt.Errorf("run reason code is required")
+	if strings.TrimSpace(req.RunReasonCode) != "manual_retry_requested" && strings.TrimSpace(req.RunReasonCode) != "manual_rerun_requested" {
+		return nil, fmt.Errorf("manual retry or rerun run reason code is required")
 	}
 	if strings.TrimSpace(req.RunEventType) == "" || strings.TrimSpace(req.NodeEventType) == "" {
 		return nil, fmt.Errorf("run and node event types are required")
@@ -963,18 +1015,33 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 		reasonText = "manual replay requested"
 	}
 
+	anchorNodeRunID, err := latestNodeRunIDForRunNodeTx(ctx, tx, req.RunID, req.AnchorNodeID)
+	if err != nil {
+		return nil, err
+	}
 	runAttemptID := fmt.Sprintf("run:%s:%s:%s", req.RunID, req.AnchorNodeID, req.RunReasonCode)
 	runEventSeq, err := nextEventSeqTx(ctx, tx, runAttemptID)
 	if err != nil {
 		return nil, err
 	}
-	runPayload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"reason":%q,"source_status":%q,"recorded_at":%q}`,
-		req.RunID,
-		req.AnchorNodeID,
-		strings.TrimSpace(req.Reason),
-		runStatus,
-		occurredAt,
-	)
+	trigger := "operator_retry"
+	if strings.TrimSpace(req.RunReasonCode) == "manual_rerun_requested" {
+		trigger = "operator_rerun"
+	}
+	runPayload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+		NodeID:          req.AnchorNodeID,
+		NodeRunID:       anchorNodeRunID,
+		RecoveryTrigger: trigger,
+		RecoveryPhase:   "scheduled",
+		ErrorCode:       req.RunReasonCode,
+		RetryIndex:      0,
+		RetryMax:        0,
+		ScheduledAt:     occurredAt,
+		Reason:          strings.TrimSpace(req.Reason),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal manual recovery run event: %w", err)
+	}
 	if err := s.applyTx(ctx, tx, TransitionRequest{
 		TransitionID:    generateID(req.GenerateID, "transition"),
 		EventID:         generateID(req.GenerateID, "evt"),
@@ -1013,15 +1080,14 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 		if err != nil {
 			return nil, err
 		}
+		sourceNodeRunID := ""
 		if sourceAttemptID != "" {
-			trigger := "operator_retry"
-			if strings.TrimSpace(req.RunReasonCode) == "manual_rerun_requested" {
-				trigger = "operator_rerun"
+			if err := tx.QueryRowContext(ctx, `SELECT node_run_id FROM attempt_executions WHERE run_id = ? AND attempt_id = ?`, req.RunID, sourceAttemptID).Scan(&sourceNodeRunID); err != nil {
+				return nil, fmt.Errorf("load manual recovery source lineage: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO node_attempt_recoveries
 				(target_node_run_id, run_id, node_id, source_attempt_id, source_node_run_id, trigger, reason_code, scheduled_at)
-				SELECT ?, ?, ?, ?, ae.node_run_id, ?, ?, ? FROM attempt_executions ae
-				WHERE ae.run_id = ? AND ae.attempt_id = ?`, queuedAttempt.NodeRunID, req.RunID, nodeID, sourceAttemptID, trigger, strings.TrimSpace(req.RunReasonCode), occurredAt, req.RunID, sourceAttemptID); err != nil {
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, queuedAttempt.NodeRunID, req.RunID, nodeID, sourceAttemptID, sourceNodeRunID, trigger, strings.TrimSpace(req.RunReasonCode), occurredAt); err != nil {
 				return nil, fmt.Errorf("persist manual recovery provenance: %w", err)
 			}
 		}
@@ -1030,11 +1096,24 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 			continue
 		}
 
-		payload := fmt.Sprintf(`{"reason":%q,"node_id":%q,"attempt":%d}`,
-			strings.TrimSpace(req.Reason),
-			nodeID,
-			queuedAttempt.Attempt,
-		)
+		payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+			NodeID:          queuedAttempt.NodeID,
+			NodeRunID:       queuedAttempt.NodeRunID,
+			RecoveryTrigger: trigger,
+			RecoveryPhase:   "scheduled",
+			ErrorCode:       req.RunReasonCode,
+			SourceAttemptID: sourceAttemptID,
+			SourceNodeRunID: sourceNodeRunID,
+			TargetAttemptID: composeAttemptID(req.RunID, queuedAttempt.NodeID, queuedAttempt.Attempt),
+			TargetNodeRunID: queuedAttempt.NodeRunID,
+			RetryIndex:      0,
+			RetryMax:        0,
+			ScheduledAt:     occurredAt,
+			Reason:          strings.TrimSpace(req.Reason),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal manual recovery node event: %w", err)
+		}
 		if err := s.applyTx(ctx, tx, TransitionRequest{
 			TransitionID:    generateID(req.GenerateID, "transition"),
 			EventID:         generateID(req.GenerateID, "evt"),
@@ -1046,7 +1125,7 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 			ActorID:         req.ActorID,
 			RoleID:          req.RoleID,
 			AuthoritySource: req.AuthoritySource,
-			ReasonCode:      firstNonEmptyTrimmed(req.NodeReasonCode, "internal_error"),
+			ReasonCode:      req.RunReasonCode,
 			ReasonText:      reasonText,
 			CorrelationID:   "corr_" + req.EventPrefix + "_" + req.RunID + "_" + nodeID,
 			CausationID:     "caus_" + req.EventPrefix + "_" + req.RunID + "_" + nodeID,
@@ -1083,6 +1162,22 @@ func latestPhysicalAttemptIDForRunNodeTx(ctx context.Context, tx *sql.Tx, runID,
 		return "", fmt.Errorf("load prior physical attempt for manual recovery: %w", err)
 	}
 	return strings.TrimSpace(attemptID.String), nil
+}
+
+func latestNodeRunIDForRunNodeTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, error) {
+	var nodeRunID string
+	err := tx.QueryRowContext(ctx, `SELECT node_run_id
+		FROM node_runs
+		WHERE run_id = ? AND node_id = ?
+		ORDER BY attempt DESC, node_run_id DESC
+		LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeID)).Scan(&nodeRunID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load manual recovery anchor node lineage: %w", err)
+	}
+	return strings.TrimSpace(nodeRunID), nil
 }
 
 func cancelledRunReplayBlockersTx(ctx context.Context, tx *sql.Tx, runID string) ([]string, error) {
@@ -1203,7 +1298,7 @@ func (s *TransitionService) RecordFinalRework(ctx context.Context, req FinalRewo
 	if len(queued) != len(req.TargetNodeIDs) {
 		return &ReplayWaveActiveError{RunID: req.RunTransition.RunID, Scope: "final rework replay"}
 	}
-	if err := s.activateFirstQueuedAttemptTx(ctx, tx, req.RunTransition, queued[0], req.GenerateID, "attempt.rerun_queued"); err != nil {
+	if err := s.activateFirstFinalReworkAttemptTx(ctx, tx, req.RunTransition, req.ApprovalID, queued[0], req.GenerateID); err != nil {
 		return err
 	}
 
@@ -1268,12 +1363,10 @@ func validateFinalReworkRecordRequest(req FinalReworkRecordRequest) error {
 	return validateRunFinalReviewCreate(req.FinalReview)
 }
 
-func (s *TransitionService) activateFirstQueuedAttemptTx(ctx context.Context, tx *sql.Tx, transition TransitionRequest, firstQueued QueuedNodeAttempt, generate func(string) string, eventType string) error {
-	payload, err := marshalQueuedNodeAttemptEventPayload(transition.RunID, firstQueued, "ready", map[string]any{
-		"reason": strings.TrimSpace(transition.ReasonText),
-	})
+func (s *TransitionService) activateFirstFinalReworkAttemptTx(ctx context.Context, tx *sql.Tx, transition TransitionRequest, approvalID string, firstQueued QueuedNodeAttempt, generate func(string) string) error {
+	payload, err := marshalFinalReworkQueuedEventPayload(transition.RunID, approvalID, firstQueued, transition.OccurredAt)
 	if err != nil {
-		return fmt.Errorf("marshal queued node attempt payload: %w", err)
+		return fmt.Errorf("marshal final rework queued payload: %w", err)
 	}
 	err = s.applyTx(ctx, tx, TransitionRequest{
 		TransitionID:    generateID(generate, "transition"),
@@ -1293,33 +1386,139 @@ func (s *TransitionService) activateFirstQueuedAttemptTx(ctx context.Context, tx
 		OccurredAt:      transition.OccurredAt,
 		AttemptID:       fmt.Sprintf("%s:%s:%d", transition.RunID, firstQueued.NodeID, firstQueued.Attempt),
 		SchemaVersion:   "v1",
-		EventType:       eventType,
+		EventType:       "attempt.final_rework_queued",
 		EventSeq:        1,
 		PayloadJSON:     payload,
 	})
 	return err
 }
 
-func marshalQueuedNodeAttemptEventPayload(runID string, queued QueuedNodeAttempt, state string, extra map[string]any) (string, error) {
-	payload := map[string]any{
-		"run_id":         strings.TrimSpace(runID),
-		"node_id":        strings.TrimSpace(queued.NodeID),
-		"node_run_id":    strings.TrimSpace(queued.NodeRunID),
-		"attempt_id":     composeAttemptID(runID, queued.NodeID, queued.Attempt),
-		"attempt":        queued.Attempt,
-		"agent_id":       strings.TrimSpace(queued.AgentID),
-		"required_role":  strings.TrimSpace(queued.RequiredRole),
-		"execution_mode": string(workflow.BehaviorForNode(queued.NodeID, "").ExecutionOwnership),
-		"state":          strings.TrimSpace(state),
+type finalReworkQueuedEventPayload struct {
+	RunID            string `json:"run_id"`
+	ApprovalID       string `json:"approval_id"`
+	GovernanceRework string `json:"governance_rework"`
+	NodeID           string `json:"node_id"`
+	NodeRunID        string `json:"node_run_id"`
+	AttemptID        string `json:"attempt_id"`
+	Attempt          int    `json:"attempt"`
+	AgentID          string `json:"agent_id"`
+	RequiredRole     string `json:"required_role"`
+	ExecutionMode    string `json:"execution_mode"`
+	State            string `json:"state"`
+	QueuedAt         string `json:"queued_at"`
+}
+
+func marshalFinalReworkQueuedEventPayload(runID, approvalID string, queued QueuedNodeAttempt, queuedAt string) (string, error) {
+	raw, err := json.Marshal(finalReworkQueuedEventPayload{
+		RunID:            strings.TrimSpace(runID),
+		ApprovalID:       strings.TrimSpace(approvalID),
+		GovernanceRework: "final",
+		NodeID:           strings.TrimSpace(queued.NodeID),
+		NodeRunID:        strings.TrimSpace(queued.NodeRunID),
+		AttemptID:        composeAttemptID(runID, queued.NodeID, queued.Attempt),
+		Attempt:          queued.Attempt,
+		AgentID:          strings.TrimSpace(queued.AgentID),
+		RequiredRole:     strings.TrimSpace(queued.RequiredRole),
+		ExecutionMode:    string(workflow.BehaviorForNode(queued.NodeID, "").ExecutionOwnership),
+		State:            "ready",
+		QueuedAt:         strings.TrimSpace(queuedAt),
+	})
+	if err != nil {
+		return "", err
 	}
-	for key, value := range extra {
-		payload[key] = value
-	}
+	return string(raw), nil
+}
+
+type retryRecoveryEventPayload struct {
+	NodeID          string `json:"node_id,omitempty"`
+	NodeRunID       string `json:"node_run_id,omitempty"`
+	RetryDecisionID string `json:"retry_decision_id,omitempty"`
+	Decision        string `json:"decision,omitempty"`
+	RecoveryTrigger string `json:"recovery_trigger"`
+	RecoveryPhase   string `json:"recovery_phase"`
+	ErrorCode       string `json:"error_code"`
+	SourceAttemptID string `json:"source_attempt_id,omitempty"`
+	SourceNodeRunID string `json:"source_node_run_id,omitempty"`
+	TargetAttemptID string `json:"target_attempt_id,omitempty"`
+	TargetNodeRunID string `json:"target_node_run_id,omitempty"`
+	RetryIndex      int    `json:"retry_index"`
+	RetryMax        int    `json:"retry_max"`
+	ScheduledAt     string `json:"scheduled_at"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+func marshalRetryRecoveryEventPayload(payload retryRecoveryEventPayload) (string, error) {
+	payload.NodeID = strings.TrimSpace(payload.NodeID)
+	payload.NodeRunID = strings.TrimSpace(payload.NodeRunID)
+	payload.RecoveryTrigger = strings.TrimSpace(payload.RecoveryTrigger)
+	payload.RecoveryPhase = strings.TrimSpace(payload.RecoveryPhase)
+	payload.ErrorCode = strings.TrimSpace(payload.ErrorCode)
+	payload.SourceAttemptID = strings.TrimSpace(payload.SourceAttemptID)
+	payload.SourceNodeRunID = strings.TrimSpace(payload.SourceNodeRunID)
+	payload.TargetAttemptID = strings.TrimSpace(payload.TargetAttemptID)
+	payload.TargetNodeRunID = strings.TrimSpace(payload.TargetNodeRunID)
+	payload.ScheduledAt = strings.TrimSpace(payload.ScheduledAt)
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// appendAutomaticRetryScheduledEventTx records the public scheduling boundary
+// and the attempt audit projection together with the retry decision.
+func (s *TransitionService) appendAutomaticRetryScheduledEventTx(ctx context.Context, tx *sql.Tx, source TransitionRequest, decision RetryDecision, eventID, payload string) error {
+	seq, err := nextEventSeqTx(ctx, tx, decision.SourceAttemptID)
+	if err != nil {
+		return err
+	}
+	if err := appendAttemptEventTx(ctx, tx, s.eventSchemas, s.roleCommunicationPolicy, AttemptEventIngestionRequest{
+		EventID:         strings.TrimSpace(eventID),
+		RunID:           decision.RunID,
+		NodeRunID:       sql.NullString{String: decision.NodeRunID, Valid: true},
+		AttemptID:       decision.SourceAttemptID,
+		SchemaVersion:   "v1",
+		EventType:       "attempt.retry_scheduled",
+		Seq:             seq,
+		PayloadJSON:     payload,
+		ActorID:         source.ActorID,
+		RoleID:          source.RoleID,
+		AuthoritySource: source.AuthoritySource,
+		ReasonCode:      decision.ErrorCode,
+		ReasonText:      decision.OperatorText,
+		CorrelationID:   source.CorrelationID,
+		CausationID:     "caus_retry_scheduled_" + decision.DecisionID,
+		CreatedAt:       source.OccurredAt,
+	}, attemptEventAppendOptions{mirrorToMailbox: true}); err != nil {
+		return fmt.Errorf("append automatic decree retry scheduled event: %w", err)
+	}
+	return nil
+}
+
+func retryRecoveryPhase(decision RetryDecision) string {
+	if decision.Decision == RetryDecisionExhausted || decision.Decision == RetryDecisionFailFast || decision.Resolution == RetryDecisionResolutionEscalated {
+		return "exhausted"
+	}
+	if decision.Resolution == RetryDecisionResolutionRecovered {
+		return "recovered"
+	}
+	return "scheduled"
+}
+
+func attemptIDForNodeRunTx(ctx context.Context, tx *sql.Tx, runID, nodeRunID string) (string, error) {
+	if strings.TrimSpace(nodeRunID) == "" {
+		return "", nil
+	}
+	var nodeID string
+	var attempt int
+	err := tx.QueryRowContext(ctx, `SELECT node_id, attempt FROM node_runs WHERE run_id = ? AND node_run_id = ?`, runID, nodeRunID).Scan(&nodeID, &attempt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load retry target attempt lineage: %w", err)
+	}
+	return composeAttemptID(runID, nodeID, attempt), nil
 }
 
 func (s *TransitionService) RecordPlanDecision(ctx context.Context, req PlanDecisionRecordRequest) (PlanDecisionRecordResult, error) {
@@ -1536,7 +1735,29 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 		if err != nil {
 			return err
 		}
-		payload := fmt.Sprintf(`{"retry_decision_id":%q,"decision":%q,"retry_index":%d,"max_retries":%d,"due_at":%q,"target_node_run_id":%q}`, decision.DecisionID, decision.Decision, decision.RetryIndex, decision.MaxRetries, retryTimeString(decision.DueAt), decision.TargetNodeRunID)
+		targetAttemptID, err := attemptIDForNodeRunTx(ctx, tx, decision.RunID, decision.TargetNodeRunID)
+		if err != nil {
+			return err
+		}
+		payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+			NodeID:          decision.NodeID,
+			NodeRunID:       decision.NodeRunID,
+			RetryDecisionID: decision.DecisionID,
+			Decision:        string(decision.Decision),
+			RecoveryTrigger: "automatic_retry",
+			RecoveryPhase:   retryRecoveryPhase(decision),
+			ErrorCode:       decision.ErrorCode,
+			SourceAttemptID: decision.SourceAttemptID,
+			SourceNodeRunID: decision.NodeRunID,
+			TargetAttemptID: targetAttemptID,
+			TargetNodeRunID: decision.TargetNodeRunID,
+			RetryIndex:      decision.RetryIndex,
+			RetryMax:        decision.MaxRetries,
+			ScheduledAt:     retryTimeString(decision.DueAt),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal direct execution retry event: %w", err)
+		}
 		eventType := "attempt.retry_exhausted"
 		if decision.Decision == RetryDecisionExhausted {
 			eventType = "escalation.raised"
@@ -3500,32 +3721,51 @@ func (s *TransitionService) scheduleFencedStaleRetryOnce(ctx context.Context, re
 		RequiredRole: attempt.RequiredRole,
 		AgentID:      req.ReplacementAgentID,
 	}
+	retryDecisionID := ""
+	retryIndex, retryMax := 0, 0
+	scheduledAt := occurredAt
 	if decisionReq != nil {
 		decision := *decisionReq
 		decision.TargetNodeRunID = retryNodeRunID
-		if _, err := insertRetryDecisionTx(ctx, tx, decision); err != nil {
+		persistedDecision, err := insertRetryDecisionTx(ctx, tx, decision)
+		if err != nil {
 			return QueuedNodeAttempt{}, err
 		}
+		retryDecisionID = persistedDecision.DecisionID
+		retryIndex, retryMax = persistedDecision.RetryIndex, persistedDecision.MaxRetries
+		scheduledAt = retryTimeString(persistedDecision.DueAt)
 	}
-	retryPayload, err := marshalQueuedNodeAttemptEventPayload(attempt.RunID, queuedAttempt, "pending", nil)
+	retryPayload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+		NodeID:          attempt.NodeID,
+		NodeRunID:       current.NodeRunID,
+		RetryDecisionID: retryDecisionID,
+		Decision:        string(RetryDecisionRetry),
+		RecoveryTrigger: "automatic_retry",
+		RecoveryPhase:   "scheduled",
+		ErrorCode:       "agent_unresponsive",
+		SourceAttemptID: current.AttemptID,
+		SourceNodeRunID: current.NodeRunID,
+		TargetAttemptID: composeAttemptID(attempt.RunID, queuedAttempt.NodeID, queuedAttempt.Attempt),
+		TargetNodeRunID: queuedAttempt.NodeRunID,
+		RetryIndex:      retryIndex,
+		RetryMax:        retryMax,
+		ScheduledAt:     scheduledAt,
+	})
 	if err != nil {
 		return QueuedNodeAttempt{}, fmt.Errorf("marshal fenced stale retry payload: %w", err)
 	}
-	retrySeq, err := nextAttemptExecutionSeqTx(ctx, tx, current.AttemptID)
-	if err != nil {
-		return QueuedNodeAttempt{}, err
+	eventID := fmt.Sprintf("evt_retry_scheduled_%s", queuedAttempt.NodeRunID)
+	if retryDecisionID != "" {
+		eventID = fmt.Sprintf("evt_retry_scheduled_%s", retryDecisionID)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_event_log (attempt_event_id, attempt_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at)
-		VALUES (?, ?, ?, ?, ?, 'attempt.retry_scheduled', 'agent_unresponsive', ?, ?)`,
-		fmt.Sprintf("attempt_event:%s:%d", current.AttemptID, retrySeq),
-		current.AttemptID,
-		current.RunID,
-		current.NodeRunID,
-		retrySeq,
-		retryPayload,
-		occurredAt,
-	); err != nil {
-		return QueuedNodeAttempt{}, fmt.Errorf("append fenced stale retry event: %w", err)
+	if err := s.appendAutomaticRetryScheduledEventTx(ctx, tx, TransitionRequest{
+		ActorID: "reconciler", RoleID: attempt.RequiredRole, AuthoritySource: "system.reconciler",
+		CorrelationID: fmt.Sprintf("corr_reconcile_%s", attempt.RunID), OccurredAt: occurredAt,
+	}, RetryDecision{
+		DecisionID: retryDecisionID, RunID: current.RunID, NodeID: current.NodeID, NodeRunID: current.NodeRunID,
+		SourceAttemptID: current.AttemptID, ErrorCode: "agent_unresponsive", OperatorText: "stale attempt scheduled for automatic retry",
+	}, eventID, retryPayload); err != nil {
+		return QueuedNodeAttempt{}, err
 	}
 	if current.ExecutionMode != executionstore.ExecutionModeProviderBacked || !attemptCancelDispatchRequired(current) {
 		if err := s.releaseFencedStaleRetryTx(ctx, tx, current.AttemptID, occurredAt); err != nil {
@@ -3589,8 +3829,11 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 }
 
 func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *sql.Tx, sourceAttemptID, occurredAt string) error {
-	var successor QueuedNodeAttempt
-	err := tx.QueryRowContext(ctx, `SELECT node_id, node_run_id, attempt, wave, required_role, agent_id
+	var successor struct {
+		QueuedNodeAttempt
+		HandoffSourceAttemptID string
+	}
+	err := tx.QueryRowContext(ctx, `SELECT node_id, node_run_id, attempt, wave, required_role, agent_id, handoff_source_attempt_id
 		FROM node_runs
 		WHERE handoff_source_attempt_id = ? AND node_status = 'pending'
 		ORDER BY attempt ASC, node_run_id ASC
@@ -3601,6 +3844,7 @@ func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *s
 		&successor.Wave,
 		&successor.RequiredRole,
 		&successor.AgentID,
+		&successor.HandoffSourceAttemptID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -3619,7 +3863,24 @@ func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *s
 	if err := tx.QueryRowContext(ctx, `SELECT run_id FROM node_runs WHERE node_run_id = ?`, successor.NodeRunID).Scan(&runID); err != nil {
 		return fmt.Errorf("load fenced stale retry run: %w", err)
 	}
-	payload, err := marshalQueuedNodeAttemptEventPayload(runID, successor, "ready", nil)
+	var sourceNodeRunID string
+	if err := tx.QueryRowContext(ctx, `SELECT node_run_id FROM attempt_executions WHERE run_id = ? AND attempt_id = ?`, runID, successor.HandoffSourceAttemptID).Scan(&sourceNodeRunID); err != nil {
+		return fmt.Errorf("load released stale retry source lineage: %w", err)
+	}
+	payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+		NodeID:          successor.NodeID,
+		NodeRunID:       successor.NodeRunID,
+		RecoveryTrigger: "automatic_retry",
+		RecoveryPhase:   "scheduled",
+		ErrorCode:       "agent_unresponsive",
+		SourceAttemptID: successor.HandoffSourceAttemptID,
+		SourceNodeRunID: sourceNodeRunID,
+		TargetAttemptID: composeAttemptID(runID, successor.NodeID, successor.Attempt),
+		TargetNodeRunID: successor.NodeRunID,
+		RetryIndex:      0,
+		RetryMax:        0,
+		ScheduledAt:     occurredAt,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal released stale retry payload: %w", err)
 	}

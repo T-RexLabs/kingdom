@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PopoverListbox } from "./popover-listbox";
 
 describe("popover listbox", () => {
@@ -40,5 +40,31 @@ describe("popover listbox", () => {
 		expect(panel).toHaveAttribute("data-popover-placement", "bottom-start");
 		await waitFor(() => expect(panel).toHaveStyle({ minWidth: "160px" }));
 		expect(panel?.style.maxWidth).toBe("");
+	});
+
+	it("selects the immediately highlighted enabled option after opening from a plain button", async () => {
+		const user = userEvent.setup();
+		const onSelect = vi.fn();
+		render(
+			<PopoverListbox
+				triggerId="step-selector"
+				triggerRole="button"
+				triggerContent="Select a step"
+				items={[
+					{ id: "unavailable", label: "Unavailable", disabled: true, group: "Unavailable" },
+					{ id: "plan", label: "Plan", group: "Available" },
+					{ id: "build", label: "Build", group: "Available" },
+				]}
+				selectedId={null}
+				onSelect={onSelect}
+				groupBy
+			/>,
+		);
+
+		await user.click(screen.getByRole("button", { name: "Select a step" }));
+		await user.keyboard("{Home}{ArrowDown}{ArrowDown}{Enter}");
+
+		expect(onSelect).toHaveBeenCalledOnce();
+		expect(onSelect).toHaveBeenCalledWith("build");
 	});
 });

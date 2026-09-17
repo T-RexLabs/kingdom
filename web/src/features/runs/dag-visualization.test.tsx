@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { DAGVisualization } from "./dag-visualization";
-import type { RunGraphNode } from "@/api/hooks";
+import type { RunGraphNode, RunNodeExecution } from "@/api/hooks";
 
 type NodeState = RunGraphNode["state"];
 
@@ -11,6 +11,16 @@ function providerNode(node_id: string, required_role: string, state: NodeState) 
 
 function runtimeNode(node_id: string, required_role: string, state: NodeState) {
   return { node_id, required_role, execution_ownership: "runtime_owned" as const, state };
+}
+
+function logicalNode(node_id: string, required_role: string, status: RunNodeExecution["status"]): RunNodeExecution {
+  return {
+    node_id,
+    required_role,
+    execution_ownership: "provider_backed",
+    status,
+    attempt_count: 1,
+  };
 }
 
 beforeAll(() => {
@@ -33,6 +43,55 @@ beforeAll(() => {
 });
 
 describe("dag visualization", () => {
+  it("uses the shared logical-node cards as the mobile fallback and opens the selected node in Activity", () => {
+    const onViewActivity = vi.fn();
+    render(
+      <DAGVisualization
+        graph={{
+          run_id: "run-1",
+          nodes: [providerNode("execution_kickoff", "council-member", "ready")],
+          edges: [],
+        }}
+        nodes={[logicalNode("execution_kickoff", "council-member", "ready")]}
+        onViewActivity={onViewActivity}
+      />,
+    );
+
+    const action = screen.getByRole("button", { name: "View Execution Kickoff in Activity" });
+
+    expect(action).toHaveClass("min-h-11");
+    expect(screen.getByTestId("dag-visualization-root").querySelector(".lg\\:hidden")).toBeInTheDocument();
+    expect(screen.getByTestId("dag-visualization-root").querySelector(".hidden.lg\\:block")).toBeInTheDocument();
+
+    fireEvent.click(action);
+
+    expect(onViewActivity).toHaveBeenCalledWith("execution_kickoff");
+  });
+
+	it("reports unavailable execution steps in the mobile fallback without claiming the graph is empty", () => {
+		const onRetryExecutions = vi.fn();
+		render(
+			<DAGVisualization
+				graph={{
+					run_id: "run-1",
+					nodes: [providerNode("execution_kickoff", "council-member", "ready")],
+					edges: [],
+				}}
+				nodes={[]}
+				executionsErrorMessage="The execution steps could not be loaded right now."
+				onRetryExecutions={onRetryExecutions}
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("Execution Step List Unavailable");
+		expect(screen.getByRole("alert")).toHaveTextContent("The execution steps could not be loaded right now.");
+		expect(screen.queryByText("No execution steps have been recorded yet.")).not.toBeInTheDocument();
+		expect(screen.getByRole("img", { name: "Run execution DAG" })).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Retry Step List" }));
+		expect(onRetryExecutions).toHaveBeenCalledTimes(1);
+	});
+
   it("labels the graph and supports keyboard node selection", () => {
     render(
       <DAGVisualization

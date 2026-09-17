@@ -279,6 +279,24 @@ func TestServerFinalApprovalReworkReopensRunThroughPlanDrafting(t *testing.T) {
 	if !queuedPlanAttempt.Valid || queuedPlanAttempt.Int64 != 1 {
 		t.Fatalf("expected queued_plan_attempt=1, got %#v", queuedPlanAttempt)
 	}
+
+	var eventType, payloadJSON string
+	if err := db.QueryRow(`SELECT event_type, payload_json FROM events WHERE run_id = ? AND node_run_id = (SELECT node_run_id FROM node_runs WHERE run_id = ? AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1)`, runID, runID).Scan(&eventType, &payloadJSON); err != nil {
+		t.Fatalf("query final rework queued event: %v", err)
+	}
+	if eventType != "attempt.final_rework_queued" {
+		t.Fatalf("expected final rework queued event, got %q", eventType)
+	}
+	var queuedPayload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &queuedPayload); err != nil {
+		t.Fatalf("decode final rework queued payload: %v", err)
+	}
+	if queuedPayload["governance_rework"] != "final" || queuedPayload["state"] != "ready" {
+		t.Fatalf("expected final governance rework payload, got %#v", queuedPayload)
+	}
+	if _, isRecoveryPayload := queuedPayload["recovery_trigger"]; isRecoveryPayload {
+		t.Fatalf("final governance rework must not use a retry recovery payload, got %#v", queuedPayload)
+	}
 }
 
 func TestServerFinalApprovalReworkProjectsSingleCanonicalCollectionEvent(t *testing.T) {

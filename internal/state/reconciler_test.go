@@ -21,6 +21,20 @@ func (alwaysRetryPlanner) Plan(errorcatalog.Code, int) (retryengine.PlanResult, 
 	return retryengine.PlanResult{ShouldRetry: true, MaxRetries: 1}, nil
 }
 
+type fixedDelayRetryPlanner struct {
+	delay time.Duration
+}
+
+func (p fixedDelayRetryPlanner) Plan(errorcatalog.Code, int) (retryengine.PlanResult, error) {
+	return retryengine.PlanResult{
+		ShouldRetry:      true,
+		RetryClass:       "conditional_limited",
+		EscalationTarget: "chancellor",
+		MaxRetries:       1,
+		NextDelay:        p.delay,
+	}, nil
+}
+
 func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	t.Parallel()
 
@@ -35,8 +49,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_idle', 'agent_king_backup', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 
-	engine := loadRetryEngine(t)
-	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), fixedDelayRetryPlanner{delay: 2 * time.Second}, nil)
 	if reconciler.db != db {
 		t.Fatal("expected reconciler db pointer to match seeded db")
 	}
@@ -73,6 +86,23 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 
 	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_king_backup" {
 		t.Fatalf("unexpected retry assignment agent: got %q", got)
+	}
+	var dueAt, payloadJSON string
+	if err := db.QueryRow(`SELECT due_at FROM retry_decisions WHERE run_id = 'run_1' AND node_run_id = 'nr_1'`).Scan(&dueAt); err != nil {
+		t.Fatalf("load stale retry decision due time: %v", err)
+	}
+	if dueAt != "2026-03-01T12:05:32Z" {
+		t.Fatalf("expected fixed stale retry delay to persist due_at, got %q", dueAt)
+	}
+	if err := db.QueryRow(`SELECT payload_json FROM attempt_event_log WHERE run_id = 'run_1' AND node_run_id = 'nr_1' AND event_type = 'attempt.retry_scheduled'`).Scan(&payloadJSON); err != nil {
+		t.Fatalf("load stale retry scheduled event: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode stale retry scheduled event: %v", err)
+	}
+	if payload["scheduled_at"] != dueAt {
+		t.Fatalf("stale retry scheduled_at=%#v, want persisted due_at=%q", payload["scheduled_at"], dueAt)
 	}
 
 	if got := querySessionStatus(t, db, "session_busy"); got != "closed" {

@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -107,8 +107,10 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		SELECT rd.node_id,
 		       CASE
 		         WHEN rd.decision IN ('exhausted', 'fail_fast') OR rd.resolution = 'escalated' THEN 'exhausted'
+		         WHEN rd.resolution = 'failed' THEN 'exhausted'
 		         WHEN rd.resolution = 'recovered' THEN 'recovered'
-		         WHEN rd.dispatch_state = 'dispatched' AND rd.resolution = 'pending' THEN 'running'
+		         WHEN target_nr.node_status = 'running' THEN 'running'
+		         WHEN rd.dispatch_state = 'dispatched' AND rd.resolution = 'pending' THEN 'scheduled'
 		         WHEN source_nr.node_status = 'blocked' THEN 'paused'
 		         ELSE 'scheduled'
 		       END AS phase,
@@ -129,12 +131,13 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		       ) AS recovery_rank
 		FROM retry_decisions rd
 		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
+		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
 		LEFT JOIN attempt_executions target_ae ON target_ae.run_id = rd.run_id AND target_ae.node_run_id = rd.target_node_run_id
 		WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ?
 	), manual_recovery_candidates AS (
 		SELECT nr.node_id,
 		       CASE
-		         WHEN nr.node_status IN ('starting', 'running') THEN 'running'
+		         WHEN nr.node_status = 'running' THEN 'running'
 		         WHEN nr.node_status IN ('succeeded', 'skipped') THEN 'recovered'
 		         WHEN nr.node_status IN ('failed', 'cancelled') THEN 'exhausted'
 		         ELSE 'scheduled'
@@ -251,37 +254,6 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 	return records, nil
 }
 
-// CurrentRunNodeExecution returns only the currently visible physical lineage
-// for one logical node. It uses the same visible-node selector as the complete
-// logical projection without loading the rest of the workflow.
-func (s *Store) CurrentRunNodeExecution(ctx context.Context, runID, nodeID string) (sql.NullString, sql.NullString, error) {
-	if s == nil || s.db == nil {
-		return sql.NullString{}, sql.NullString{}, fmt.Errorf("store database is required")
-	}
-	runID = strings.TrimSpace(runID)
-	nodeID = strings.TrimSpace(nodeID)
-	if runID == "" || nodeID == "" {
-		return sql.NullString{}, sql.NullString{}, fmt.Errorf("run_id and node_id are required")
-	}
-
-	query := fmt.Sprintf(`SELECT nr.node_run_id, ae.attempt_id
-		FROM node_runs nr
-		LEFT JOIN attempt_executions ae ON ae.run_id = nr.run_id AND ae.node_run_id = nr.node_run_id
-		WHERE nr.run_id = ? AND nr.node_id = ?
-		ORDER BY %s
-		LIMIT 1`, nodeattempt.VisibleNodeAttemptOrderSQL("nr"))
-	var nodeRunID sql.NullString
-	var attemptID sql.NullString
-	err := s.db.QueryRowContext(ctx, query, runID, nodeID).Scan(&nodeRunID, &attemptID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return sql.NullString{}, sql.NullString{}, nil
-	}
-	if err != nil {
-		return sql.NullString{}, sql.NullString{}, fmt.Errorf("get current node execution for run=%q node=%q: %w", runID, nodeID, err)
-	}
-	return nodeRunID, attemptID, nil
-}
-
 func executionOwnershipForNode(nodeID, nodeClass string) ExecutionMode {
 	if coreworkflow.BehaviorForNode(nodeID, nodeClass).ExecutionOwnership == coreworkflow.NodeExecutionOwnershipRuntimeOwned {
 		return ExecutionModeRuntimeOwned
@@ -290,7 +262,9 @@ func executionOwnershipForNode(nodeID, nodeClass string) ExecutionMode {
 }
 
 type RunNodeAttemptsPage struct {
-	Items []RunExecutionRecord
+	CurrentNodeRunID sql.NullString
+	CurrentAttemptID sql.NullString
+	Items            []RunNodeAttemptHistoryRecord
 }
 
 // ListRunNodeAttemptsPage returns bounded physical execution history in the
@@ -305,11 +279,93 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 	if beforeAttempt < 0 {
 		return RunNodeAttemptsPage{}, fmt.Errorf("cursor attempt must be non-negative")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, nr.node_id, nr.attempt, nr.node_status,
-		nr.required_role, nr.agent_id, ae.state, ae.execution_mode, NULLIF(TRIM(ae.session_ref), ''),
-		NULLIF(TRIM(ae.provider_session_id), ''), ae.created_at, COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at),
+	rows, err := s.db.QueryContext(ctx, `WITH selected_attempts AS (
+		SELECT ae.attempt_id
+		FROM attempt_executions ae
+		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		WHERE ae.run_id = ? AND nr.node_id = ?
+		  AND (? = 0 OR nr.attempt < ? OR (nr.attempt = ? AND nr.node_run_id < ?))
+		ORDER BY nr.attempt DESC, nr.node_run_id DESC
+		LIMIT ?
+	), current_attempt AS (
+		SELECT nr.node_run_id, ae.attempt_id
+		FROM node_runs nr
+		LEFT JOIN attempt_executions ae ON ae.run_id = nr.run_id AND ae.node_run_id = nr.node_run_id
+		WHERE nr.run_id = ? AND nr.node_id = ?
+		ORDER BY `+nodeattempt.VisibleNodeAttemptOrderSQL("nr")+`
+		LIMIT 1
+	), current_metadata AS (
+		SELECT (SELECT node_run_id FROM current_attempt) AS node_run_id,
+		       (SELECT attempt_id FROM current_attempt) AS attempt_id
+	), retry_relationships AS (
+		SELECT selected.attempt_id, 'source' AS direction,
+		       CASE WHEN rd.decision IN ('exhausted', 'fail_fast') OR rd.resolution = 'escalated' THEN 'exhausted'
+		            WHEN rd.resolution = 'failed' THEN 'exhausted'
+		            WHEN rd.resolution = 'recovered' THEN 'recovered'
+		            WHEN target_nr.node_status = 'running' THEN 'running'
+		            WHEN rd.dispatch_state = 'dispatched' AND rd.resolution = 'pending' THEN 'scheduled'
+		            WHEN source_nr.node_status = 'blocked' THEN 'paused' ELSE 'scheduled' END AS phase,
+		       'automatic_retry' AS trigger, rd.error_code AS reason_code, rd.source_attempt_id, rd.node_run_id AS source_node_run_id,
+		       target_ae.attempt_id AS target_attempt_id, rd.target_node_run_id, rd.retry_index, rd.max_retries AS retry_max,
+		       rd.due_at AS scheduled_at, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at) AS last_updated_at
+		FROM selected_attempts selected
+		JOIN retry_decisions rd ON rd.subject_kind = 'decree_attempt' AND rd.source_attempt_id = selected.attempt_id
+		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
+		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
+		LEFT JOIN attempt_executions target_ae ON target_ae.run_id = rd.run_id AND target_ae.node_run_id = rd.target_node_run_id
+		UNION ALL
+		SELECT selected.attempt_id, 'target',
+		       CASE WHEN rd.decision IN ('exhausted', 'fail_fast') OR rd.resolution = 'escalated' THEN 'exhausted'
+		            WHEN rd.resolution = 'failed' THEN 'exhausted'
+		            WHEN rd.resolution = 'recovered' THEN 'recovered'
+		            WHEN target_nr.node_status = 'running' THEN 'running'
+		            WHEN rd.dispatch_state = 'dispatched' AND rd.resolution = 'pending' THEN 'scheduled'
+		            WHEN source_nr.node_status = 'blocked' THEN 'paused' ELSE 'scheduled' END,
+		       'automatic_retry', rd.error_code, rd.source_attempt_id, rd.node_run_id,
+		       target_ae.attempt_id, rd.target_node_run_id, rd.retry_index, rd.max_retries,
+		       rd.due_at, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at)
+		FROM selected_attempts selected
+		JOIN attempt_executions target_ae ON target_ae.attempt_id = selected.attempt_id
+		JOIN retry_decisions rd ON rd.subject_kind = 'decree_attempt' AND rd.run_id = target_ae.run_id AND rd.target_node_run_id = target_ae.node_run_id
+		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
+		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
+		UNION ALL
+		SELECT selected.attempt_id, 'source',
+		       CASE WHEN target_nr.node_status = 'running' THEN 'running'
+		            WHEN target_nr.node_status IN ('succeeded', 'skipped') THEN 'recovered'
+		            WHEN target_nr.node_status IN ('failed', 'cancelled') THEN 'exhausted' ELSE 'scheduled' END,
+		       recovery.trigger, recovery.reason_code, recovery.source_attempt_id, recovery.source_node_run_id,
+		       target_ae.attempt_id, recovery.target_node_run_id, 0, 0, recovery.scheduled_at, recovery.scheduled_at
+		FROM selected_attempts selected
+		JOIN node_attempt_recoveries recovery ON recovery.source_attempt_id = selected.attempt_id
+		JOIN node_runs target_nr ON target_nr.run_id = recovery.run_id AND target_nr.node_run_id = recovery.target_node_run_id
+		LEFT JOIN attempt_executions target_ae ON target_ae.run_id = recovery.run_id AND target_ae.node_run_id = recovery.target_node_run_id
+		UNION ALL
+		SELECT selected.attempt_id, 'target',
+		       CASE WHEN target_nr.node_status = 'running' THEN 'running'
+		            WHEN target_nr.node_status IN ('succeeded', 'skipped') THEN 'recovered'
+		            WHEN target_nr.node_status IN ('failed', 'cancelled') THEN 'exhausted' ELSE 'scheduled' END,
+		       recovery.trigger, recovery.reason_code, recovery.source_attempt_id, recovery.source_node_run_id,
+		       target_ae.attempt_id, recovery.target_node_run_id, 0, 0, recovery.scheduled_at, recovery.scheduled_at
+		FROM selected_attempts selected
+		JOIN attempt_executions target_ae ON target_ae.attempt_id = selected.attempt_id
+		JOIN node_attempt_recoveries recovery ON recovery.run_id = target_ae.run_id AND recovery.target_node_run_id = target_ae.node_run_id
+		JOIN node_runs target_nr ON target_nr.run_id = recovery.run_id AND target_nr.node_run_id = recovery.target_node_run_id
+	), token_usage_totals AS (
+		SELECT usage.attempt_id, COUNT(*) AS usage_count,
+		       SUM(usage.input_tokens) AS input_tokens, SUM(usage.output_tokens) AS output_tokens,
+		       SUM(usage.total_tokens) AS total_tokens, SUM(usage.reasoning_tokens) AS reasoning_tokens,
+		       SUM(usage.cache_read_tokens) AS cache_read_tokens, SUM(usage.cache_write_tokens) AS cache_write_tokens
+		FROM token_usage usage
+		JOIN selected_attempts selected ON selected.attempt_id = usage.attempt_id
+		GROUP BY usage.attempt_id
+	)
+	SELECT current_metadata_row.node_run_id, current_metadata_row.attempt_id,
+		ae.attempt_id, COALESCE(ae.run_id, ''), COALESCE(ae.node_run_id, ''), COALESCE(nr.node_id, ''), COALESCE(nr.attempt, 0), COALESCE(nr.node_status, ''),
+		COALESCE(nr.required_role, ''), COALESCE(nr.agent_id, ''), COALESCE(ae.state, ''), COALESCE(ae.execution_mode, ''), NULLIF(TRIM(ae.session_ref), ''),
+		NULLIF(TRIM(ae.provider_session_id), ''), COALESCE(ae.created_at, ''), COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at, ''),
 		NULLIF(TRIM(ae.progress_event_type), ''), NULLIF(TRIM(ae.progress_reason_code), ''), ae.progress_at, ae.launch_started_at,
-		ae.started_at, ae.updated_at, ae.terminal_observed_at, ae.committed_at, NULLIF(TRIM(ae.failure_code), ''),
+		ae.started_at, COALESCE(ae.updated_at, ''), ae.terminal_observed_at, ae.committed_at, NULLIF(TRIM(ae.failure_code), ''),
 		NULLIF(TRIM(ae.failure_text), ''), COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')),
 		EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 		(SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
@@ -318,32 +374,66 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
 			WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
 			  AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
-		) THEN 1 ELSE 0 END
-		FROM attempt_executions ae
-		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		) THEN 1 ELSE 0 END,
+		nr.superseded_at, COALESCE(NULLIF(TRIM(pcs.provider_invocation_id), ''), NULLIF(TRIM(ae.active_provider_invocation_id), '')),
+		COALESCE(usage.usage_count, 0), COALESCE(usage.input_tokens, 0), COALESCE(usage.output_tokens, 0), COALESCE(usage.total_tokens, 0),
+		COALESCE(usage.reasoning_tokens, 0), COALESCE(usage.cache_read_tokens, 0), COALESCE(usage.cache_write_tokens, 0),
+		COALESCE((SELECT json_group_array(json_object(
+			'direction', relationship.direction, 'phase', relationship.phase, 'trigger', relationship.trigger, 'reason_code', relationship.reason_code,
+			'source_attempt_id', relationship.source_attempt_id, 'source_node_run_id', relationship.source_node_run_id,
+			'target_attempt_id', relationship.target_attempt_id, 'target_node_run_id', relationship.target_node_run_id,
+			'retry_index', relationship.retry_index, 'retry_max', relationship.retry_max,
+			'scheduled_at', relationship.scheduled_at, 'last_updated_at', relationship.last_updated_at
+		)) FROM (
+			SELECT *
+			FROM retry_relationships relationship
+			WHERE relationship.attempt_id = ae.attempt_id
+			ORDER BY relationship.retry_index ASC, relationship.source_node_run_id ASC, relationship.source_attempt_id ASC,
+				COALESCE(relationship.target_node_run_id, '') ASC, COALESCE(relationship.target_attempt_id, '') ASC,
+				relationship.direction ASC
+		) relationship), '[]')
+		FROM current_metadata current_metadata_row
+		LEFT JOIN selected_attempts selected ON 1 = 1
+		LEFT JOIN attempt_executions ae ON ae.attempt_id = selected.attempt_id
+		LEFT JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
 		LEFT JOIN provider_invocations api ON api.provider_invocation_id = ae.active_provider_invocation_id
 		LEFT JOIN provider_invocations cpi ON cpi.provider_invocation_id = pcs.provider_invocation_id
-		WHERE ae.run_id = ? AND nr.node_id = ?
-		  AND (? = 0 OR nr.attempt < ? OR (nr.attempt = ? AND nr.node_run_id < ?))
+		LEFT JOIN token_usage_totals usage ON usage.attempt_id = ae.attempt_id
 		ORDER BY nr.attempt DESC, nr.node_run_id DESC
-		LIMIT ?`, strings.TrimSpace(runID), strings.TrimSpace(nodeID), beforeAttempt, beforeAttempt, beforeAttempt, strings.TrimSpace(beforeNodeRunID), limit)
+		`, strings.TrimSpace(runID), strings.TrimSpace(nodeID), beforeAttempt, beforeAttempt, beforeAttempt, strings.TrimSpace(beforeNodeRunID), limit, strings.TrimSpace(runID), strings.TrimSpace(nodeID))
 	if err != nil {
 		return RunNodeAttemptsPage{}, fmt.Errorf("list node attempts for run=%q node=%q: %w", runID, nodeID, err)
 	}
 	defer rows.Close()
-	page := RunNodeAttemptsPage{Items: make([]RunExecutionRecord, 0, limit)}
+	page := RunNodeAttemptsPage{Items: make([]RunNodeAttemptHistoryRecord, 0, limit)}
 	for rows.Next() {
-		var record RunExecutionRecord
+		var record RunNodeAttemptHistoryRecord
+		var attemptID sql.NullString
 		var executionMode string
-		if err := rows.Scan(&record.AttemptID, &record.RunID, &record.NodeRunID, &record.NodeID, &record.Attempt, &record.NodeStatus,
+		var usageCount int
+		var usage RunAttemptTokenUsage
+		var relationshipsJSON string
+		if err := rows.Scan(&page.CurrentNodeRunID, &page.CurrentAttemptID,
+			&attemptID, &record.RunID, &record.NodeRunID, &record.NodeID, &record.Attempt, &record.NodeStatus,
 			&record.RequiredRole, &record.AgentID, &record.State, &executionMode, &record.LogicalSessionID, &record.ProviderSessionID,
 			&record.QueuedAt, &record.ActivityAt, &record.ProgressEventType, &record.ProgressReasonCode, &record.ProgressAt, &record.LaunchStartedAt,
 			&record.StartedAt, &record.UpdatedAt, &record.TerminalObservedAt, &record.CommittedAt, &record.FailureCode, &record.FailureText,
-			&record.CompletionInvalidReason, &record.CancellationPending, &record.CancellationHandoffState, &record.StopRetryAvailable); err != nil {
+			&record.CompletionInvalidReason, &record.CancellationPending, &record.CancellationHandoffState, &record.StopRetryAvailable,
+			&record.SupersededAt, &record.ProviderInvocationID, &usageCount, &usage.InputTokens, &usage.OutputTokens, &usage.TotalTokens, &usage.ReasoningTokens, &usage.CacheReadTokens, &usage.CacheWriteTokens, &relationshipsJSON); err != nil {
 			return RunNodeAttemptsPage{}, fmt.Errorf("scan node attempt for run=%q node=%q: %w", runID, nodeID, err)
 		}
+		if !attemptID.Valid {
+			continue
+		}
+		record.AttemptID = attemptID.String
 		record.ExecutionMode = NormalizeExecutionMode(executionMode)
+		if usageCount > 0 {
+			record.TokenUsage = &usage
+		}
+		if err := json.Unmarshal([]byte(relationshipsJSON), &record.RetryRelationships); err != nil {
+			return RunNodeAttemptsPage{}, fmt.Errorf("decode retry relationships for node attempt %q: %w", record.AttemptID, err)
+		}
 		page.Items = append(page.Items, record)
 	}
 	if err := rows.Err(); err != nil {

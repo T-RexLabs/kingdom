@@ -98,15 +98,33 @@ export function PopoverListbox({
   renderItem,
 }: PopoverListboxProps) {
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const activeIndexRef = useRef<number | null>(null);
 
   const listboxId = useId();
   const triggerLabelId = useId();
   const triggerContentId = useId();
   const listRef = useRef<Array<HTMLElement | null>>([]);
-  const selectedIndex = items.findIndex((item) => item.id === selectedId);
+  const selectedIndex = items.findIndex((item) => item.id === selectedId && !item.disabled);
+  const disabledIndices = items.flatMap((item, index) => (item.disabled ? [index] : []));
 
-  const clearActiveIndex = useCallback(() => setActiveIndex(null), []);
-  const { open, handleOpenChange } = usePopoverOpenState(onOpenChange, clearActiveIndex);
+  const setActiveItemIndex = useCallback((nextActiveIndex: number | null) => {
+    activeIndexRef.current = nextActiveIndex;
+    setActiveIndex(nextActiveIndex);
+  }, []);
+  const clearActiveIndex = useCallback(() => setActiveItemIndex(null), [setActiveItemIndex]);
+  const { open, handleOpenChange: setOpen } = usePopoverOpenState(onOpenChange, clearActiveIndex);
+  const handleOpenChange = useCallback((nextOpen: boolean) => {
+    if (nextOpen && triggerRole === "button") {
+      // Floating UI's open callback runs during trigger activation, before its
+      // navigation effect can update React state for an immediate keypress.
+      const initialActiveIndex = resolveInitialActiveIndex(items, selectedId);
+      activeIndexRef.current = initialActiveIndex;
+      if (selectedIndex >= 0) {
+        setActiveItemIndex(initialActiveIndex);
+      }
+    }
+    setOpen(nextOpen);
+  }, [items, selectedId, selectedIndex, setActiveItemIndex, setOpen, triggerRole]);
 
   const {
     context: floatingContext,
@@ -129,7 +147,8 @@ export function PopoverListbox({
     listRef,
     activeIndex,
     selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
-    onNavigate: setActiveIndex,
+    disabledIndices,
+    onNavigate: setActiveItemIndex,
     loop: true,
     virtual: triggerRole === "combobox", // search input keeps real focus.
   });
@@ -139,7 +158,7 @@ export function PopoverListbox({
     listRef: { current: items.map((item) => item.label) },
     activeIndex,
     selectedIndex,
-    onMatch: setActiveIndex,
+    onMatch: setActiveItemIndex,
     enabled: open && !search,
   });
 
@@ -159,13 +178,69 @@ export function PopoverListbox({
   );
 
   const handleKeyboardSelect = useCallback(() => {
-    const selection = resolveKeyboardSelectionItem(items, activeIndex, selectedId);
+    const selection = resolveKeyboardSelectionItem(items, activeIndexRef.current, selectedId);
     if (!selection) {
       return false;
     }
     handleSelect(selection);
     return true;
-  }, [activeIndex, handleSelect, items, selectedId]);
+  }, [handleSelect, items, selectedId]);
+
+  const handleTriggerKeyDownCapture = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (triggerRole !== "button" || !open) {
+      return;
+    }
+
+    let nextActiveIndex: number | null;
+    switch (event.key) {
+      case "Home":
+        nextActiveIndex = firstEnabledIndex(items);
+        if (activeIndex === null) {
+          activeIndexRef.current = nextActiveIndex;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        break;
+      case "End":
+        nextActiveIndex = lastEnabledIndex(items);
+        if (activeIndex === null) {
+          activeIndexRef.current = nextActiveIndex;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        break;
+      case "ArrowDown":
+        nextActiveIndex = activeIndex === null
+          ? firstEnabledIndex(items)
+          : adjacentEnabledIndex(items, activeIndexRef.current, 1);
+        break;
+      case "ArrowUp":
+        nextActiveIndex = activeIndex === null
+          ? lastEnabledIndex(items)
+          : adjacentEnabledIndex(items, activeIndexRef.current, -1);
+        break;
+      case "Enter":
+        if (!handleKeyboardSelect()) {
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      default:
+        return;
+    }
+
+    if (nextActiveIndex === null) {
+      return;
+    }
+    // A pointer-opened popover can keep focus on its reference. Handle listbox
+    // keys there before Floating UI's reference handler sees them.
+    setActiveItemIndex(nextActiveIndex);
+    event.preventDefault();
+    event.stopPropagation();
+  }, [activeIndex, handleKeyboardSelect, items, open, setActiveItemIndex, triggerRole]);
 
   const groupedItems = useMemo(() => buildGroupedItems(items, groupBy), [items, groupBy]);
 
@@ -210,7 +285,7 @@ export function PopoverListbox({
 
   return (
     <>
-      <button ref={setReference} {...triggerProps} className={triggerClassName}>
+      <button ref={setReference} {...triggerProps} onKeyDownCapture={handleTriggerKeyDownCapture} className={triggerClassName}>
 				{triggerAriaLabel ? <span id={triggerLabelId} className="sr-only">{triggerAriaLabel}</span> : null}
 				<span id={triggerContentId} className="contents">{triggerContent}</span>
       </button>
@@ -361,6 +436,46 @@ function buildGroupedItems(items: PopoverListboxItem[], groupBy: boolean): Group
     result.push({ kind: "item", item, flatIndex });
   });
   return result;
+}
+
+function resolveInitialActiveIndex(items: PopoverListboxItem[], selectedId: string | null): number | null {
+  const selectedIndex = items.findIndex((item) => item.id === selectedId && !item.disabled);
+  if (selectedIndex >= 0) {
+    return selectedIndex;
+  }
+
+  return firstEnabledIndex(items);
+}
+
+function firstEnabledIndex(items: PopoverListboxItem[]): number | null {
+  const index = items.findIndex((item) => !item.disabled);
+  return index >= 0 ? index : null;
+}
+
+function lastEnabledIndex(items: PopoverListboxItem[]): number | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (!items[index]?.disabled) {
+      return index;
+    }
+  }
+  return null;
+}
+
+function adjacentEnabledIndex(
+  items: PopoverListboxItem[],
+  activeIndex: number | null,
+  direction: -1 | 1,
+): number | null {
+  const enabledIndices = items.flatMap((item, index) => (item.disabled ? [] : [index]));
+  if (enabledIndices.length === 0) {
+    return null;
+  }
+
+  const activePosition = activeIndex === null ? -1 : enabledIndices.indexOf(activeIndex);
+  if (activePosition < 0) {
+    return direction === 1 ? enabledIndices[0] : enabledIndices.at(-1) ?? null;
+  }
+  return enabledIndices[(activePosition + direction + enabledIndices.length) % enabledIndices.length] ?? null;
 }
 
 function resolveKeyboardSelectionItem(

@@ -720,7 +720,7 @@ func (s *Server) handleRefreshExternalSourceLink(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, response)
 }
 func (s *Server) handleAdoptExternalSourceLink(w http.ResponseWriter, r *http.Request) {
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	now := formatFixedUTCTimestamp(s.now())
 	if err := s.externalStore.AdoptLatest(r.Context(), r.PathValue("id"), s.idGenerator("external_adoption"), authenticatedActorID(r.Context()), now, s.idGenerator("external_audit")); err != nil {
 		writeExternalError(w, err, "api.adopt_external_link")
 		return
@@ -733,7 +733,7 @@ func (s *Server) handleDetachExternalSourceLink(w http.ResponseWriter, r *http.R
 		LinkID:       r.PathValue("id"),
 		ChangeID:     s.idGenerator("external_attachment_change"),
 		ActorID:      authenticatedActorID(r.Context()),
-		DetachedAt:   s.now().UTC().Format(time.RFC3339Nano),
+		DetachedAt:   formatFixedUTCTimestamp(s.now()),
 		AuditEventID: s.idGenerator("external_audit"),
 	})
 	switch {

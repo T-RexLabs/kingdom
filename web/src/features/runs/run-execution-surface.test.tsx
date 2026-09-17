@@ -1,484 +1,92 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { RunDetailSummary, RunExecution, RunExecutionDetail, RunNodeExecution } from "@/api/hooks";
-import type { ReactNode } from "react";
+import type { RunDetailSummary, RunExecution, RunNodeAttemptHistoryItem, RunNodeExecution } from "@/api/hooks";
 import { RunExecutionSurface } from "./run-execution-surface";
 
-vi.mock("@/components/ui/popover-listbox", () => ({
-	PopoverListbox: ({
-		triggerId,
-		triggerAriaLabel,
-		triggerClassName,
-		items,
-		triggerContent,
-	}: {
-		triggerId: string;
-		triggerAriaLabel?: string;
-		triggerClassName?: string;
-		items?: Array<{ id: string; label: string }>;
-		triggerContent: ReactNode;
-	}) => (
-		<div>
-			<button type="button" aria-label={triggerAriaLabel ?? triggerId} className={triggerClassName}>{triggerContent}</button>
-			<ol data-testid={`${(triggerAriaLabel ?? triggerId).toLowerCase().replace(/\s+/g, "-")}-options`}>
-				{items?.map((item) => <li key={item.id}>{item.label}</li>)}
-			</ol>
-		</div>
-	),
-}));
+vi.mock("@/components/ui/relative-time", () => ({ RelativeTime: ({ iso }: { iso: string }) => <span>{iso}</span> }));
+vi.mock("./run-executions-panel", () => ({ RunExecutionsPanel: () => <div data-testid="run-executions-panel" /> }));
+vi.mock("./timeline-panel", () => ({ TimelinePanel: () => <div data-testid="timeline-panel" /> }));
+vi.mock("./run-execution-activity", () => ({ RunExecutionActivity: () => <div data-testid="run-execution-activity" /> }));
 
-vi.mock("@/components/ui/relative-time", () => ({
-	RelativeTime: ({ iso }: { iso: string }) => <span>{iso}</span>,
-}));
+function execution(overrides: Partial<RunExecution> = {}): RunExecution {
+	return { attempt_id: "attempt-current", node_run_id: "node-current", node_id: "delegated_execution_berserker", attempt: 2, agent_id: "agent-1", required_role: "builder-berserker", execution_mode: "provider_backed", status: "running", queued_at: "2026-03-01T10:00:00Z", activity_at: "2026-03-01T10:01:00Z", updated_at: "2026-03-01T10:01:00Z", stop_retry_available: false, ...overrides };
+}
 
-vi.mock("./run-executions-panel", () => ({
-	RunExecutionsPanel: () => <div data-testid="run-executions-panel" />,
-}));
+const run = { run_id: "run-1", decree_id: "decree-1", decree_title: "Phase 9", workflow_id: "royal-decree-v1", status: "running", display_state: "running", plan_state: "approved", created_at: "2026-03-01T10:00:00Z", updated_at: "2026-03-01T10:01:00Z", last_activity_at: "2026-03-01T10:01:00Z", autonomous_approvals: true, run_until_all_approve: false, publish_mode: "direct", model_selection: { global: { model: "model" }, role_overrides: {} }, tab_counts: { dag_nodes: 1, agents: 1, activity_events: 1, executions: 1, messages: 1 } } as RunDetailSummary;
 
-vi.mock("./timeline-panel", () => ({
-	TimelinePanel: () => <div data-testid="timeline-panel" />,
-}));
+function node(overrides: Partial<RunNodeExecution> = {}): RunNodeExecution {
+	return { node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "running", attempt_count: 2, current_execution: execution(), ...overrides };
+}
 
-vi.mock("./run-execution-activity", () => ({
-	RunExecutionActivity: () => <div data-testid="run-execution-activity" />,
-}));
+function historyAttempt(overrides: Partial<RunNodeAttemptHistoryItem> = {}): RunNodeAttemptHistoryItem {
+	return { ...execution({ attempt_id: "attempt-old", node_run_id: "node-old", attempt: 1, status: "failed", failure_text: "provider error" }), superseded: true, failure: { code: "llm_rate_limited", classification: "retryable", category: "provider", retryable: true, operator_text: "The provider rate limit was reached." }, retry_relationships: [{ direction: "source", phase: "scheduled", trigger: "automatic_retry", reason_code: "llm_rate_limited", source_attempt_id: "attempt-old", source_node_run_id: "node-old", target_attempt_id: "attempt-current", target_node_run_id: "node-current", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:02:00Z", last_updated_at: "2026-03-01T10:02:00Z" }], token_usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30, reasoning_tokens: 4, cache_read_tokens: 2, cache_write_tokens: 1 }, provider_invocation_id: "inv-old", ...overrides };
+}
 
-vi.mock("./run-activity-lanes", () => ({
-	RunActivityLanes: () => <div data-testid="run-activity-lanes" />,
-}));
-
-vi.mock("./use-node-activity-recency", () => ({
-	useNodeActivityRecency: () => undefined,
-}));
-
-function makeRun(overrides: Partial<RunDetailSummary> = {}): RunDetailSummary {
-	return {
-		run_id: "run-1",
-		decree_id: "decree-1",
-		decree_title: "Fix Activity Hero",
-		workflow_id: "royal-decree-v1",
-		status: "running",
-		display_state: "running",
-		plan_state: "approved",
-		created_at: "2026-03-01T10:00:00Z",
-		updated_at: "2026-03-01T10:10:00Z",
-		last_activity_at: "2026-03-01T10:10:00Z",
-		autonomous_approvals: true,
-		run_until_all_approve: false,
-		publish_mode: "direct",
-		model_selection: {
-			global_model: "gpt-5.4-mini",
-			role_overrides: [],
-		},
-		tab_counts: { dag_nodes: 14, agents: 11, activity_events: 15, executions: 4, messages: 15 },
+function renderSurface(overrides: Partial<Parameters<typeof RunExecutionSurface>[0]> = {}) {
+	const props: Parameters<typeof RunExecutionSurface>[0] = {
+		run, nodes: [node()], attempts: [historyAttempt()], executionsErrorMessage: null, showPrimaryExecutionError: false, isSummaryLoading: false, onRetryExecutions: vi.fn(), selectedNodeId: "delegated_execution_berserker", selectedAttemptId: null, onSelectStep: vi.fn(), onSelectAttempt: vi.fn(), onSelectCurrentAttempt: vi.fn(), historyOpen: false, onToggleHistory: vi.fn(), hasMoreAttempts: false, onLoadMoreAttempts: vi.fn(), isLoadingMoreAttempts: false, isHistoryLoading: false, detail: null, isDetailLoading: false, detailErrorMessage: null, onRetryDetail: vi.fn(), onRetryStop: vi.fn(), isStopRetryPending: false, stopRetryErrorMessage: null, events: [], hasMoreEvents: false, onLoadMoreEvents: vi.fn(), isLoadingMoreEvents: false,
 		...overrides,
-	} as RunDetailSummary;
-}
-
-function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
-	return {
-		attempt_id: "attempt-1",
-		node_run_id: "nr-1",
-		node_id: "advisor_consultation_peasant",
-		attempt: 1,
-		agent_id: "agent-1",
-		required_role: "peasant-delegate",
-		execution_mode: "provider_backed",
-		status: "succeeded",
-		queued_at: "2026-03-01T10:08:00Z",
-		activity_at: "2026-03-01T10:09:00Z",
-		updated_at: "2026-03-01T10:09:00Z",
-		committed_at: "2026-03-01T10:09:00Z",
-		...overrides,
-		stop_retry_available: overrides.stop_retry_available ?? false,
 	};
-}
-
-type PresentedExecutionDetail = RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } };
-
-function nodeForExecution(execution: RunExecution): RunNodeExecution {
-	return {
-		node_id: execution.node_id,
-		required_role: execution.required_role,
-		execution_ownership: execution.execution_mode,
-		status: execution.status === "queued" ? "ready" : execution.status === "paused" ? "blocked" : execution.status === "verifying" ? "running" : execution.status as RunNodeExecution["status"],
-		attempt_count: 1,
-		current_execution: execution,
-	};
-}
-
-function nodesForExecutions(executions: RunExecution[]): RunNodeExecution[] {
-	const nodes = new Map<string, RunNodeExecution>();
-	for (const execution of executions) {
-		if (!nodes.has(execution.node_id)) {
-			nodes.set(execution.node_id, nodeForExecution(execution));
-		}
-	}
-	return [...nodes.values()];
-}
-
-function renderSurface({
-	run = makeRun(),
-	executions = [makeExecution()],
-	nodes = nodesForExecutions(executions),
-	executionsErrorMessage = null,
-	showPrimaryExecutionError = false,
-	selectedAttemptId = executions[0]?.attempt_id ?? null,
-	selectedAttemptSource = "auto" as const,
-	selectedNodeId = executions[0]?.node_id ?? null,
-	detail = null,
-	onRetryStop = () => {},
-	isStopRetryPending = false,
-	stopRetryErrorMessage = null,
-}: {
-	run?: RunDetailSummary;
-	executions?: RunExecution[];
-	nodes?: RunNodeExecution[];
-	executionsErrorMessage?: string | null;
-	showPrimaryExecutionError?: boolean;
-	selectedAttemptId?: string | null;
-	selectedAttemptSource?: "auto" | "manual" | null;
-	selectedNodeId?: string | null;
-	detail?: PresentedExecutionDetail | null;
-	onRetryStop?: (attemptID: string) => void;
-	isStopRetryPending?: boolean;
-	stopRetryErrorMessage?: string | null;
-} = {}) {
-	render(
-		<RunExecutionSurface
-			run={run}
-			nodes={nodes}
-			attempts={executions}
-			executionsErrorMessage={executionsErrorMessage}
-			showPrimaryExecutionError={showPrimaryExecutionError}
-			isSummaryLoading={false}
-			onRetryExecutions={() => {}}
-			selectedNodeId={selectedNodeId}
-			selectedAttemptId={selectedAttemptId}
-			selectedAttemptSource={selectedAttemptSource}
-			onSelectStep={() => {}}
-			onSelectAttempt={() => {}}
-			hasMoreAttempts={false}
-			onLoadMoreAttempts={() => {}}
-			isLoadingMoreAttempts={false}
-			detail={detail}
-			isDetailLoading={false}
-			detailErrorMessage={null}
-			onRetryDetail={() => {}}
-			onRetryStop={onRetryStop}
-			isStopRetryPending={isStopRetryPending}
-			stopRetryErrorMessage={stopRetryErrorMessage}
-			events={[]}
-			hasMoreEvents={false}
-			onLoadMoreEvents={() => {}}
-			isLoadingMoreEvents={false}
-		/>,
-	);
+	render(<RunExecutionSurface {...props} />);
+	return props;
 }
 
 describe("run execution surface", () => {
-	it("offers Retry Stop only for a paused attempt awaiting process quiescence", async () => {
+	it("renders one logical node card while showing current failure and automatic recovery before history", () => {
+		renderSurface({ nodes: [node({ status: "blocked", recovery: { phase: "scheduled", trigger: "automatic_retry", reason_code: "llm_rate_limited", source_attempt_id: "attempt-current", source_node_run_id: "node-current", target_attempt_id: "attempt-next", target_node_run_id: "node-next", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:02:00Z", last_updated_at: "2026-03-01T10:02:00Z" } })] });
+		const workflowNodes = screen.getByRole("region", { name: "Workflow nodes" });
+		expect(within(workflowNodes).getAllByRole("button")).toHaveLength(1);
+		expect(within(workflowNodes).getByRole("button")).toHaveClass("min-h-11");
+		expect(screen.getByText("Retry Scheduled")).toBeInTheDocument();
+		expect(screen.getByText(/The provider rate limit was reached/)).toBeInTheDocument();
+		expect(screen.getByText("Automatic Recovery · Automatic retry 1 of 3")).toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+	});
+
+	it("keeps attempt history collapsed until the page-owned disclosure is opened", () => {
+		renderSurface();
+		const history = screen.getByRole("button", { name: "Attempt History (2)" });
+		expect(history).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByText("Provider Invocation ID:")).not.toBeInTheDocument();
+	});
+
+	it("shows historical evidence, technical provider data, and preserves the return action", async () => {
+		const user = userEvent.setup();
+		renderSurface({ historyOpen: true, selectedAttemptId: "attempt-old" });
+		expect(screen.getAllByText("Historical Attempt 1")).toHaveLength(2);
+		expect(screen.getByText("Superseded")).toBeInTheDocument();
+		expect(screen.getByText(/Token Usage: 30 total/)).toBeInTheDocument();
+		await user.click(screen.getByText("Technical Details"));
+		expect(screen.getByText(/Provider Invocation ID:/)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Return to Current Attempt" }));
+		expect(document.activeElement).toHaveTextContent("Current Attempt 2");
+	});
+
+	it("keeps the historical attempt identified after its list evidence refreshes away", () => {
+		renderSurface({ attempts: [], selectedAttemptId: "attempt-old", detail: { ...historyAttempt(), provider_session_id: "session-old", settlement_status: "failed", output_status: "unavailable" } });
+		expect(screen.getByText("Historical Attempt 1")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Return to Current Attempt" })).toBeInTheDocument();
+	});
+
+	it("offers Retry Stop only for the current paused attempt", async () => {
 		const user = userEvent.setup();
 		const onRetryStop = vi.fn();
-		renderSurface({
-			executions: [makeExecution({ status: "paused", handoff_state: "awaiting_quiescence", stop_retry_available: true })],
-			onRetryStop,
-		});
-
+		renderSurface({ nodes: [node({ status: "blocked", current_execution: execution({ status: "paused", stop_retry_available: true }) })], onRetryStop });
 		await user.click(screen.getByRole("button", { name: "Retry Stop" }));
-		expect(onRetryStop).toHaveBeenCalledWith("attempt-1");
+		expect(onRetryStop).toHaveBeenCalledWith("attempt-current");
 	});
 
-	it("shows Latest Completed Step with a single step-status pill for auto-selected terminal work", () => {
-		renderSurface();
-
-		expect(screen.getByText("Latest Completed Step")).toBeInTheDocument();
-		expect(screen.getByText("Succeeded")).toBeInTheDocument();
-		expect(screen.queryByText("Current Activity")).not.toBeInTheDocument();
-		expect(screen.queryByText("Active")).not.toBeInTheDocument();
-	});
-
-	it("shows Current Activity for in-flight selected work", () => {
+	it("keeps the retryable execution load error without an empty-state claim", () => {
 		renderSurface({
-			executions: [makeExecution({ status: "running", started_at: "2026-03-01T10:08:00Z", committed_at: undefined })],
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Active")).toBeInTheDocument();
-		expect(screen.queryByText("Latest Completed Step")).not.toBeInTheDocument();
-	});
-
-	it("uses launching copy while the selected step is still starting", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "starting", launch_started_at: "2026-03-01T10:07:30Z", started_at: undefined, committed_at: undefined })],
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Launching")).toBeInTheDocument();
-		expect(screen.getByText("This step is launching now.")).toBeInTheDocument();
-	});
-
-	it("keeps the hero in verifying while settlement is still pending", () => {
-		renderSurface({
-			detail: {
-				...makeExecution(),
-				provider_session_id: "ses-1",
-				provider_invocation_id: "inv-1",
-				settlement_status: "pending",
-				output_status: "observed",
-				output_text: "Observed output",
-			},
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Verifying")).toBeInTheDocument();
-		expect(screen.getByText("Kingdom is still confirming the final result for this step.")).toBeInTheDocument();
-		expect(screen.queryByText("Latest Completed Step")).not.toBeInTheDocument();
-	});
-
-	it("shows finishing copy when runtime completion has been observed live", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "running", committed_at: undefined, started_at: "2026-03-01T10:08:00Z" })],
-			detail: {
-				...makeExecution({ status: "running", committed_at: undefined, started_at: "2026-03-01T10:08:00Z" }),
-				provider_session_id: "ses-1",
-				provider_invocation_id: "inv-1",
-				settlement_status: "pending",
-				output_status: "none",
-				live_signal: {
-					activity_at: "2026-03-01T10:08:05Z",
-					live_label: "Completion observed",
-				},
-			} as PresentedExecutionDetail,
-		});
-
-		expect(screen.getByText("This step is finishing up.")).toBeInTheDocument();
-	});
-
-	it("uses durable progress metadata when no live signal is present", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "verifying", committed_at: undefined, terminal_observed_at: "2026-03-01T10:08:05Z" })],
-			detail: {
-				...makeExecution({ status: "verifying", committed_at: undefined, terminal_observed_at: "2026-03-01T10:08:05Z" }),
-				provider_session_id: "ses-1",
-				provider_invocation_id: "inv-1",
-				settlement_status: "pending",
-				output_status: "none",
-				progress_event_type: "attempt.progress",
-				progress_reason_code: "runtime_completion_observation",
-				progress_at: "2026-03-01T10:08:05Z",
-			} as PresentedExecutionDetail,
-		});
-
-		expect(screen.getByText("This step is finishing up.")).toBeInTheDocument();
-	});
-
-	it("keeps queued work in the current activity lane without claiming it completed", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "queued", committed_at: undefined, started_at: undefined, terminal_observed_at: undefined })],
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Queued")).toBeInTheDocument();
-		expect(screen.getByText("This step is queued to start.")).toBeInTheDocument();
-		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
-	});
-
-	it("keeps blocked work in the current activity lane without claiming it completed", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "blocked", committed_at: undefined, started_at: "2026-03-01T10:08:00Z", terminal_observed_at: "2026-03-01T10:08:30Z" })],
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("Blocked")).toBeInTheDocument();
-		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
-		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
-	});
-
-	it("renders the server-selected blocked predecessor instead of a queued recovery target", () => {
-		renderSurface({
-			executions: [makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked" })],
-			nodes: [{
-				node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "blocked", attempt_count: 2,
-				current_execution: makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked" }),
-				recovery: { phase: "scheduled", trigger: "automatic_retry", reason_code: "timeout", source_attempt_id: "attempt-blocked", source_node_run_id: "nr-blocked", target_attempt_id: "attempt-queued", target_node_run_id: "nr-queued", retry_index: 1, retry_max: 3, scheduled_at: "2026-03-01T10:09:00Z", last_updated_at: "2026-03-01T10:09:00Z" },
-			}],
-		});
-
-		expect(screen.getByText("Recovery is scheduled after timeout.")).toBeInTheDocument();
-		expect(screen.queryByText("Queued")).not.toBeInTheDocument();
-	});
-
-	it("uses the server-selected running replacement as the current execution", () => {
-		const blocked = makeExecution({ attempt_id: "attempt-blocked", node_run_id: "nr-blocked", node_id: "delegated_execution_berserker", status: "blocked", activity_at: "2026-03-01T10:10:00Z" });
-		const running = makeExecution({ attempt_id: "attempt-running", node_run_id: "nr-running", node_id: "delegated_execution_berserker", attempt: 2, status: "running", activity_at: "2026-03-01T10:09:00Z" });
-		renderSurface({
-			executions: [blocked, running],
-			nodes: [{ node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "running", attempt_count: 2, current_execution: running }],
-			selectedAttemptId: null,
-		});
-
-		expect(screen.getByText("Current Activity")).toBeInTheDocument();
-		expect(screen.getByText("This step is still running.")).toBeInTheDocument();
-		expect(screen.getAllByText("Attempt 2")).toHaveLength(2);
-	});
-
-	it("uses typed logical failure text instead of event-derived failure copy", () => {
-		const failed = makeExecution({ node_id: "delegated_execution_berserker", status: "failed", failure_code: "provider_unknown_failure" });
-		renderSurface({
-			executions: [failed],
-			nodes: [{
-				node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", status: "failed", attempt_count: 1,
-				current_execution: failed,
-				failure: { code: "provider_unknown_failure", classification: "non_retryable", category: "provider", retryable: false, operator_text: "The provider ended without a recoverable result." },
-			}],
-		});
-
-		expect(screen.getByText("The provider ended without a recoverable result.")).toBeInTheDocument();
-	});
-
-	it("keeps rework summary copy aligned with the rework pill when detail is unavailable", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "failed", failure_code: "execution_review_rework" })],
-			detail: null,
-		});
-
-		expect(screen.getByText("Rework")).toBeInTheDocument();
-		expect(screen.getByText("Changes were requested for this step.")).toBeInTheDocument();
-		expect(screen.queryByText("This step failed.")).not.toBeInTheDocument();
-	});
-
-	it("shows receipt conflict copy for failed provider incomplete turn details", () => {
-		renderSurface({
-			executions: [makeExecution({ status: "failed", failure_code: "provider_incomplete_turn" })],
-			detail: {
-				...makeExecution({ status: "failed", failure_code: "provider_incomplete_turn" }),
-				provider_session_id: "ses-1",
-				provider_invocation_id: "inv-1",
-				settlement_status: "failed",
-				output_status: "none",
-				failure_text: "conflicting receipt invalidated the invocation",
-				completion_invalid_reason: "completion_receipt_conflict",
-			} as PresentedExecutionDetail,
-		});
-
-		expect(screen.getByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).toBeInTheDocument();
-		expect(screen.queryByText("Kingdom could not confirm a clean finish for this step.")).not.toBeInTheDocument();
-	});
-
-	it("shows receipt conflict copy from the selected execution while detail is unavailable", () => {
-		renderSurface({
-			executions: [makeExecution({
-				status: "failed",
-				failure_code: "provider_incomplete_turn",
-				failure_text: "conflicting receipt invalidated the invocation",
-				completion_invalid_reason: "completion_receipt_conflict",
-			})],
-			detail: null,
-		});
-
-		expect(screen.getByText("Kingdom detected conflicting completion receipts for this step and could not safely accept the result.")).toBeInTheDocument();
-		expect(screen.queryByText("This step failed.")).not.toBeInTheDocument();
-	});
-
-	it("shows Selected Step when the operator manually picks a terminal step", () => {
-		renderSurface({ selectedAttemptSource: "manual" });
-
-		expect(screen.getByText("Selected Step")).toBeInTheDocument();
-		expect(screen.getByText("Succeeded")).toBeInTheDocument();
-		expect(screen.queryByText("Current Activity")).not.toBeInTheDocument();
-	});
-
-	it("keeps logical-node selector order supplied by the server", () => {
-		renderSurface({
-			executions: [
-				makeExecution({ attempt_id: "attempt-1", node_id: "plan_drafting", activity_at: "2026-03-01T10:08:00Z" }),
-				makeExecution({ attempt_id: "attempt-2", node_id: "advisor_consultation_noble", activity_at: "2026-03-01T10:10:00Z" }),
-				makeExecution({ attempt_id: "attempt-3", node_id: "execution_kickoff", activity_at: "2026-03-01T10:09:00Z" }),
-			],
-			selectedAttemptId: "attempt-2",
-		});
-
-		expect(screen.getByTestId("current-step-options")).toHaveTextContent("Plan DraftingAdvisor Consultation NobleExecution Kickoff");
-	});
-
-	it("shows a dedicated attempt selector only when the selected step has multiple attempts", () => {
-		renderSurface({
-			executions: [
-				makeExecution({ attempt_id: "attempt-1", node_id: "execution_review_shieldmaiden", attempt: 1, activity_at: "2026-03-01T10:08:00Z" }),
-				makeExecution({ attempt_id: "attempt-2", node_id: "execution_review_shieldmaiden", attempt: 2, activity_at: "2026-03-01T10:10:00Z" }),
-			],
-			selectedNodeId: "execution_review_shieldmaiden",
-			selectedAttemptId: "attempt-2",
-		});
-
-		expect(screen.queryByText(/^Attempt$/)).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: /selected attempt/i })).toHaveClass("px-2.5", "py-1.5", "text-xs");
-		expect(screen.getByTestId("current-step-options")).toHaveTextContent("Execution Review Shieldmaiden");
-		expect(screen.getByTestId("selected-attempt-options")).toHaveTextContent("Attempt 1Attempt 2");
-	});
-
-	it("keeps the timeline collapsed by default until the operator opens it", async () => {
-		const user = userEvent.setup();
-		renderSurface();
-
-		const timelineToggle = screen.getByRole("button", { name: /^timeline/i });
-		expect(timelineToggle).toHaveAttribute("aria-expanded", "false");
-		expect(screen.queryByTestId("timeline-panel")).not.toBeInTheDocument();
-
-		await user.click(timelineToggle);
-
-		expect(timelineToggle).toHaveAttribute("aria-expanded", "true");
-		expect(screen.getByTestId("timeline-panel")).toBeInTheDocument();
-	});
-
-	it("shows a primary execution error state instead of waiting copy when the execution list fails", () => {
-		renderSurface({
-			executions: [],
+			nodes: [],
 			executionsErrorMessage: "Execution inspector unavailable",
 			showPrimaryExecutionError: true,
 		});
 
 		expect(screen.getByText("The execution step list could not be loaded.")).toBeInTheDocument();
-		expect(screen.getByText("Execution steps unavailable")).toBeInTheDocument();
 		expect(screen.getByText("Execution inspector unavailable")).toBeInTheDocument();
-		expect(screen.queryByText("Waiting to start")).not.toBeInTheDocument();
-	});
-
-	it("shows loading copy when activity exists but the execution summary is still loading", () => {
-		render(
-			<RunExecutionSurface
-				run={makeRun()}
-				nodes={[]}
-				attempts={[]}
-				executionsErrorMessage={null}
-				showPrimaryExecutionError={false}
-				isSummaryLoading
-				onRetryExecutions={() => {}}
-				selectedNodeId={null}
-				selectedAttemptId={null}
-				selectedAttemptSource={null}
-				onSelectStep={() => {}}
-				onSelectAttempt={() => {}}
-				hasMoreAttempts={false}
-				onLoadMoreAttempts={() => {}}
-				isLoadingMoreAttempts={false}
-				detail={null}
-				isDetailLoading={false}
-				detailErrorMessage={null}
-				onRetryDetail={() => {}}
-				onRetryStop={() => {}}
-				isStopRetryPending={false}
-				stopRetryErrorMessage={null}
-				events={[]}
-				hasMoreEvents={false}
-				onLoadMoreEvents={() => {}}
-				isLoadingMoreEvents={false}
-			/>,
-		);
-
-		expect(screen.getByText("Loading current step")).toBeInTheDocument();
-		expect(screen.queryByText("Waiting to start")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Retry Step List" })).toBeInTheDocument();
+		expect(screen.queryByText("No execution steps have been recorded yet.")).not.toBeInTheDocument();
 	});
 });

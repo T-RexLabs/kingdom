@@ -164,6 +164,44 @@ type RunExecutionRecord struct {
 	StopRetryAvailable       bool
 }
 
+// RunAttemptTokenUsage is the aggregate token evidence recorded for one
+// physical attempt across its provider invocations.
+type RunAttemptTokenUsage struct {
+	InputTokens      int64
+	OutputTokens     int64
+	TotalTokens      int64
+	ReasoningTokens  int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+}
+
+// RunAttemptRetryRelationship is durable retry lineage involving one physical
+// attempt. Direction identifies whether this attempt is the source or target.
+type RunAttemptRetryRelationship struct {
+	Direction       string  `json:"direction"`
+	Phase           string  `json:"phase"`
+	Trigger         string  `json:"trigger"`
+	ReasonCode      string  `json:"reason_code"`
+	SourceAttemptID string  `json:"source_attempt_id"`
+	SourceNodeRunID string  `json:"source_node_run_id"`
+	TargetAttemptID *string `json:"target_attempt_id"`
+	TargetNodeRunID *string `json:"target_node_run_id"`
+	RetryIndex      int     `json:"retry_index"`
+	RetryMax        int     `json:"retry_max"`
+	ScheduledAt     string  `json:"scheduled_at"`
+	LastUpdatedAt   string  `json:"last_updated_at"`
+}
+
+// RunNodeAttemptHistoryRecord is the canonical enriched history projection for
+// one physical node execution.
+type RunNodeAttemptHistoryRecord struct {
+	RunExecutionRecord
+	SupersededAt         sql.NullString
+	ProviderInvocationID sql.NullString
+	TokenUsage           *RunAttemptTokenUsage
+	RetryRelationships   []RunAttemptRetryRelationship
+}
+
 type RunExecutionDetailRecord struct {
 	RunExecutionRecord
 	ProviderInvocationID           sql.NullString

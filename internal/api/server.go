@@ -43,6 +43,9 @@ const (
 	defaultAPIBasePath   = "/api/v1"
 	defaultTimelineLimit = 50
 	maxTimelineLimit     = 200
+	// fixedUTCTimestampLayout preserves chronological order when SQLite compares
+	// provenance timestamps as text.
+	fixedUTCTimestampLayout = "2006-01-02T15:04:05.000000000Z"
 )
 
 var generatedIDCounter uint64
@@ -975,6 +978,10 @@ func mustParseRFC3339(value string) time.Time {
 		return time.Unix(0, 0).UTC()
 	}
 	return parsed.UTC()
+}
+
+func formatFixedUTCTimestamp(value time.Time) string {
+	return value.UTC().Format(fixedUTCTimestampLayout)
 }
 
 func parseLimitQuery(raw string, fallback int) (int, error) {

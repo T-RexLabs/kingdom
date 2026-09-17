@@ -200,6 +200,71 @@ func TestServerTimelinePreservesRunEventOrderingAcrossAttempts(t *testing.T) {
 	}
 }
 
+func TestServerTimelineIncludesAutomaticRetryWhenItIsScheduled(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	const (
+		sourceNodeRunID = "timeline_retry_source"
+		sourceAttemptID = "timeline_retry_source_attempt"
+	)
+	now := time.Date(2026, 3, 12, 14, 30, 0, 0, time.UTC)
+	dueAt := now.Add(5 * time.Minute)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_timeline_retry', 'council-member', 'Council', 'busy', NULL, 0, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES (?, ?, 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_timeline_retry', 1, ?)`, sourceNodeRunID, runID, now.Format(time.RFC3339Nano))
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, sourceAttemptID, runID, sourceNodeRunID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+
+	queued, scheduled, err := state.NewTransitionService(db, nil).RecordAutomaticDecreeRetry(context.Background(), state.AutomaticDecreeRetryRecordRequest{
+		Transition: state.TransitionRequest{
+			TransitionID: "tr_timeline_retry_failure", EventID: "evt_timeline_retry_failure", RunID: runID,
+			NodeRunID: sql.NullString{String: sourceNodeRunID, Valid: true}, Entity: state.EntityTypeNode, FromState: "running", ToState: "failed",
+			ActorID: "runtime_orchestrator", RoleID: "council-member", AuthoritySource: "runtime.orchestrator", ReasonCode: "timeout", ReasonText: "provider timed out",
+			CorrelationID: "corr_timeline_retry", CausationID: "caus_timeline_retry", OccurredAt: now.Format(time.RFC3339Nano), AttemptID: sourceAttemptID,
+			SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 1, PayloadJSON: `{}`,
+		},
+		Decision: state.RetryDecisionCreateRequest{
+			DecisionID: "retry_timeline_source", SubjectKind: state.RetrySubjectKindDecreeAttempt, RunID: runID, NodeID: "plan_drafting", NodeRunID: sourceNodeRunID,
+			SourceAttemptID: sourceAttemptID, PolicyID: "retry-policy-mvp-v1", RetryClass: "transient_transport_provider_session", ErrorCode: "timeout",
+			OperatorText: "The provider timed out and will retry automatically.", Decision: state.RetryDecisionRetry, RetryIndex: 1, MaxRetries: 3,
+			PolicyDelay: 5 * time.Minute, DueAt: dueAt, CreatedAt: now, EscalationTarget: "chancellor",
+		},
+	})
+	if err != nil || !scheduled {
+		t.Fatalf("schedule automatic retry: queued=%#v scheduled=%t err=%v", queued, scheduled, err)
+	}
+	var targetStatus string
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = ?`, queued.NodeRunID).Scan(&targetStatus); err != nil {
+		t.Fatalf("load queued retry target: %v", err)
+	}
+	if targetStatus != "pending" {
+		t.Fatalf("retry target status = %q, want pending before due release", targetStatus)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=50",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("timeline status = %d, want 200 (%s)", res.Code, res.Body.String())
+	}
+	var timeline gen.RunTimelineResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &timeline); err != nil {
+		t.Fatalf("decode timeline: %v", err)
+	}
+	for _, item := range timeline.Items {
+		if item.EventType != "attempt.retry_scheduled" {
+			continue
+		}
+		if item.ReasonCode == nil || *item.ReasonCode != "timeout" || item.AttemptSeq != 2 || item.PayloadJson["node_id"] != "plan_drafting" || item.PayloadJson["node_run_id"] != sourceNodeRunID || item.PayloadJson["retry_decision_id"] != "retry_timeline_source" || item.PayloadJson["decision"] != "retry" || item.PayloadJson["recovery_trigger"] != "automatic_retry" || item.PayloadJson["recovery_phase"] != "scheduled" || item.PayloadJson["error_code"] != "timeout" || item.PayloadJson["source_attempt_id"] != sourceAttemptID || item.PayloadJson["source_node_run_id"] != sourceNodeRunID || item.PayloadJson["target_node_run_id"] != queued.NodeRunID || item.PayloadJson["target_attempt_id"] != runID+":plan_drafting:2" || item.PayloadJson["retry_index"] != float64(1) || item.PayloadJson["retry_max"] != float64(3) || item.PayloadJson["scheduled_at"] != dueAt.Format(time.RFC3339Nano) {
+			t.Fatalf("unexpected scheduled retry timeline item: %#v", item)
+		}
+		return
+	}
+	t.Fatalf("scheduled retry was absent from timeline: %#v", timeline.Items)
+}
+
 func TestServerTimelineIncludesMailboxRevisionsForSameLogicalMessage(t *testing.T) {
 	t.Parallel()
 
@@ -2921,6 +2986,30 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 		t.Fatal("missing builder logical node")
 		return gen.RunNodeExecution{}
 	}
+	assertAttemptRelationshipPhase := func(want string) {
+		t.Helper()
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+		var payload gen.RunNodeAttemptsResponse
+		if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &payload) != nil {
+			t.Fatalf("list retry relationships: %d %s", res.Code, res.Body.String())
+		}
+		for _, attemptID := range []string{sourceAttemptID, targetAttemptID} {
+			found := false
+			for _, item := range payload.Items {
+				if item.AttemptId != attemptID {
+					continue
+				}
+				found = true
+				if len(item.RetryRelationships) != 1 || string(item.RetryRelationships[0].Phase) != want {
+					t.Fatalf("retry relationships for %q = %#v, want phase %q", attemptID, item.RetryRelationships, want)
+				}
+				break
+			}
+			if !found {
+				t.Fatalf("attempt %q missing from retry relationships %#v", attemptID, payload.Items)
+			}
+		}
+	}
 
 	blocked := getNode()
 	if blocked.CurrentExecution == nil || blocked.CurrentExecution.AttemptId != sourceAttemptID || blocked.AttemptCount != 2 {
@@ -2955,9 +3044,16 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 	mustExecSQL(t, db, `UPDATE node_runs SET node_status = 'starting' WHERE node_run_id = 'nr-visible-target'`)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'starting' WHERE attempt_id = ?`, targetAttemptID)
 	mustExecSQL(t, db, `UPDATE retry_decisions SET dispatch_state = 'dispatched', dispatched_at = ? WHERE retry_decision_id = 'retry-visible'`, now)
-	if running := getNode(); running.CurrentExecution == nil || running.CurrentExecution.AttemptId != targetAttemptID || running.Recovery == nil || running.Recovery.Phase != gen.RunRecoveryStatePhaseRunning {
-		t.Fatalf("started replacement must become current: %#v", running)
+	if starting := getNode(); starting.CurrentExecution == nil || starting.CurrentExecution.AttemptId != targetAttemptID || starting.Recovery == nil || starting.Recovery.Phase != gen.RunRecoveryStatePhaseScheduled {
+		t.Fatalf("starting replacement must remain scheduled: %#v", starting)
 	}
+	assertAttemptRelationshipPhase("scheduled")
+	mustExecSQL(t, db, `UPDATE node_runs SET node_status = 'running' WHERE node_run_id = 'nr-visible-target'`)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = ?`, targetAttemptID)
+	if running := getNode(); running.CurrentExecution == nil || running.CurrentExecution.AttemptId != targetAttemptID || running.Recovery == nil || running.Recovery.Phase != gen.RunRecoveryStatePhaseRunning {
+		t.Fatalf("running replacement must project running: %#v", running)
+	}
+	assertAttemptRelationshipPhase("running")
 	mustExecSQL(t, db, `UPDATE retry_decisions SET resolution = 'recovered', resolved_at = ? WHERE retry_decision_id = 'retry-visible'`, "2026-03-06T10:03:00Z")
 	if recovered := getNode(); recovered.Recovery == nil || recovered.Recovery.Phase != gen.RunRecoveryStatePhaseRecovered {
 		t.Fatalf("expected recovered state, got %#v", recovered.Recovery)
@@ -2983,7 +3079,7 @@ func TestServerListRunExecutionsProjectsExhaustedRecovery(t *testing.T) {
 	}
 	for _, node := range payload.Items {
 		if node.NodeId == "plan_drafting" {
-			if node.Recovery == nil || node.Recovery.Phase != gen.RunRecoveryStatePhaseExhausted || node.Recovery.Trigger != gen.AutomaticRetry {
+			if node.Recovery == nil || node.Recovery.Phase != gen.RunRecoveryStatePhaseExhausted || node.Recovery.Trigger != gen.RunRecoveryStateTriggerAutomaticRetry {
 				t.Fatalf("expected exhausted automatic recovery, got %#v", node.Recovery)
 			}
 			return
@@ -3003,11 +3099,32 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 		attempt                      int
 	}{{"nr-history-1", "attempt-history-1", "failed", 1}, {"nr-history-2", "attempt-history-2", "succeeded", 2}} {
 		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, superseded_at) VALUES (?, ?, 'delegated_execution_berserker', ?, 1, ?, 'builder-berserker', 'agent-attempt-history', 1, ?)`, row.nodeRunID, runID, row.attempt, row.status, map[bool]any{true: now, false: nil}[row.attempt == 1])
-		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, row.attemptID, runID, row.nodeRunID, now, now)
+		failureCode, failureText := "", ""
+		if row.attempt == 1 {
+			failureCode, failureText = "timeout", "Timed out while waiting for the provider."
+		}
+		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?, ?, ?)`, row.attemptID, runID, row.nodeRunID, failureCode, failureText, now, now)
 	}
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('invocation-history-2a', 'attempt-history-2', ?, 'nr-history-2', 'superseded', 'server_response', ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('invocation-history-2', 'attempt-history-2', ?, 'nr-history-2', 'settled_success', 'server_response', ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'invocation-history-2' WHERE attempt_id = 'attempt-history-2'`)
+	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2a', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2a', 'builder-berserker', 2, 3, 5, 1, 1, 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2', 'builder-berserker', 11, 13, 24, 7, 3, 5, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-1', 'attempt-history-1', 'nr-history-2', 'policy', 'transient_transport_provider_session', 'timeout', 'Timed out while waiting for the provider.', 0, 'retry', 1, 3, 0, '2026-03-06T10:02:00Z', 'pending', 'chancellor', 'pending', ?)`, runID, now)
 	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=1"})
 	if first.Code != http.StatusOK {
 		t.Fatalf("list first history page: %d %s", first.Code, first.Body.String())
+	}
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatalf("load OpenAPI schema: %v", err)
+	}
+	var rawFirstPage any
+	if err := json.Unmarshal(first.Body.Bytes(), &rawFirstPage); err != nil {
+		t.Fatalf("decode raw history page: %v", err)
+	}
+	if err := swagger.Components.Schemas["RunNodeAttemptsResponse"].Value.VisitJSON(rawFirstPage); err != nil {
+		t.Fatalf("history API response must satisfy its OpenAPI schema: %v", err)
 	}
 	var firstPage gen.RunNodeAttemptsResponse
 	if err := json.Unmarshal(first.Body.Bytes(), &firstPage); err != nil {
@@ -3016,10 +3133,24 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	if len(firstPage.Items) != 1 || firstPage.Items[0].AttemptId != "attempt-history-2" || firstPage.NextCursor == nil {
 		t.Fatalf("unexpected first history page: %#v", firstPage)
 	}
+	firstItem := firstPage.Items[0]
+	if firstItem.Superseded || firstItem.ProviderInvocationId == nil || *firstItem.ProviderInvocationId != "invocation-history-2" || firstItem.TokenUsage == nil || firstItem.TokenUsage.InputTokens != 13 || firstItem.TokenUsage.OutputTokens != 16 || firstItem.TokenUsage.TotalTokens != 29 || firstItem.TokenUsage.ReasoningTokens != 8 || firstItem.TokenUsage.CacheReadTokens != 4 || firstItem.TokenUsage.CacheWriteTokens != 6 {
+		t.Fatalf("enriched current history evidence mismatch: %#v", firstItem)
+	}
+	if len(firstItem.RetryRelationships) != 1 || firstItem.RetryRelationships[0].Direction != gen.Target || firstItem.RetryRelationships[0].Trigger != gen.RunAttemptRetryRelationshipTriggerAutomaticRetry || firstItem.RetryRelationships[0].SourceAttemptId != "attempt-history-1" || firstItem.RetryRelationships[0].TargetAttemptId == nil || *firstItem.RetryRelationships[0].TargetAttemptId != "attempt-history-2" || firstItem.RetryRelationships[0].ReasonCode != "timeout" {
+		t.Fatalf("enriched target retry lineage mismatch: %#v", firstItem.RetryRelationships)
+	}
 	second := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=1&cursor=" + *firstPage.NextCursor})
 	var secondPage gen.RunNodeAttemptsResponse
 	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &secondPage) != nil || len(secondPage.Items) != 1 || secondPage.Items[0].AttemptId != "attempt-history-1" {
 		t.Fatalf("unexpected second history page: %d %s", second.Code, second.Body.String())
+	}
+	secondItem := secondPage.Items[0]
+	if !secondItem.Superseded || secondItem.SupersededAt == nil || secondItem.Failure == nil || secondItem.Failure.Code != "timeout" || secondItem.Failure.Category != gen.RunExecutionFailureCategoryCore || !secondItem.Failure.Retryable {
+		t.Fatalf("enriched superseded failure evidence mismatch: %#v", secondItem)
+	}
+	if len(secondItem.RetryRelationships) != 1 || secondItem.RetryRelationships[0].Direction != gen.Source || secondItem.RetryRelationships[0].TargetNodeRunId == nil || *secondItem.RetryRelationships[0].TargetNodeRunId != "nr-history-2" {
+		t.Fatalf("enriched source retry lineage mismatch: %#v", secondItem.RetryRelationships)
 	}
 	wrongScope := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/plan_drafting/attempts?cursor=" + *firstPage.NextCursor})
 	if wrongScope.Code != http.StatusBadRequest {
@@ -3036,6 +3167,63 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	unknownRun := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/missing/nodes/delegated_execution_berserker/attempts"})
 	if unknownRun.Code != http.StatusNotFound {
 		t.Fatalf("expected unknown run 404, got %d", unknownRun.Code)
+	}
+}
+
+func TestServerListRunNodeAttemptsOrdersRetryRelationshipsAndPreservesCurrentLineageForEmptyPage(t *testing.T) {
+	t.Parallel()
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	const now = "2026-03-06T10:01:00Z"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-history-lineage', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	for _, row := range []struct {
+		nodeRunID, attemptID, status, state string
+		attempt                             int
+	}{
+		{"nr-history-lineage-1", "attempt-history-lineage-1", "failed", "committed_failure", 1},
+		{"nr-history-lineage-2", "attempt-history-lineage-2", "failed", "committed_failure", 2},
+		{"nr-history-lineage-3", "attempt-history-lineage-3", "ready", "queued", 3},
+	} {
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, ?, 'delegated_execution_berserker', ?, 1, ?, 'builder-berserker', 'agent-history-lineage', 1)`, row.nodeRunID, runID, row.attempt, row.status)
+		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', 'server_response', ?, ?)`, row.attemptID, runID, row.nodeRunID, row.state, now, now)
+	}
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-history-lineage-1', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-lineage-1', 'attempt-history-lineage-1', 'nr-history-lineage-2', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 0, ?, 'dispatched', ?, 'chancellor', 'failed', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history-lineage-2', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-lineage-2', 'attempt-history-lineage-2', 'nr-history-lineage-3', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 2, 3, 0, ?, 'pending', 'chancellor', 'pending', ?)`, runID, now, now)
+
+	pageResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=3"})
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("list attempt history: %d %s", pageResponse.Code, pageResponse.Body.String())
+	}
+	var page gen.RunNodeAttemptsResponse
+	if err := json.Unmarshal(pageResponse.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode attempt history: %v", err)
+	}
+	var middle gen.RunNodeAttemptHistoryItem
+	for _, item := range page.Items {
+		if item.AttemptId == "attempt-history-lineage-2" {
+			middle = item
+			break
+		}
+	}
+	if got := middle.RetryRelationships; len(got) != 2 || got[0].Direction != gen.Target || got[0].RetryIndex != 1 || got[1].Direction != gen.Source || got[1].RetryIndex != 2 {
+		t.Fatalf("retry relationships = %#v, want incoming then outgoing canonical lineage", got)
+	}
+
+	server, ok := handler.(*Server)
+	if !ok {
+		t.Fatal("test handler is not a server")
+	}
+	cursor := server.encodeRunNodeAttemptsCursor(runID, "delegated_execution_berserker", runNodeAttemptsCursor{Attempt: 1, NodeRunID: "nr-history-lineage-1"})
+	emptyResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?cursor=" + cursor})
+	if emptyResponse.Code != http.StatusOK {
+		t.Fatalf("list empty attempt history: %d %s", emptyResponse.Code, emptyResponse.Body.String())
+	}
+	var empty gen.RunNodeAttemptsResponse
+	if err := json.Unmarshal(emptyResponse.Body.Bytes(), &empty); err != nil {
+		t.Fatalf("decode empty attempt history: %v", err)
+	}
+	if len(empty.Items) != 0 || empty.CurrentNodeRunId == nil || *empty.CurrentNodeRunId != "nr-history-lineage-3" || empty.CurrentAttemptId == nil || *empty.CurrentAttemptId != "attempt-history-lineage-3" {
+		t.Fatalf("empty history page lost current lineage: %#v", empty)
 	}
 }
 

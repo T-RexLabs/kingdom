@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1556,6 +1557,121 @@ func TestStoreListRunNodeExecutionsOrdersLogicalNodesByCurrentActivity(t *testin
 	want := []string{"decree_intake", "active_running", "active_starting", "blocked_node", "ready_node", "pending_node", "royal_closure"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected current-activity order %v, got %v", want, got)
+	}
+}
+
+func TestStoreProjectsAutomaticRetryRunningOnlyAfterTargetRuns(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	const (
+		sourceAttemptID = "run_1:decree_intake:1"
+		targetAttemptID = "run_1:decree_intake:2"
+		targetNodeRunID = "nr_retry"
+		now             = "2026-03-01T12:00:00Z"
+	)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('`+targetNodeRunID+`', 'run_1', 'decree_intake', 2, 1, 'ready', 'king', 'agent_king', 1)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+sourceAttemptID+`', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+targetAttemptID+`', 'run_1', '`+targetNodeRunID+`', 'queued', 'provider_backed', 'server_response', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, created_at) VALUES ('retry_1', 'decree_attempt', 'run_1', 'decree_intake', 'nr_1', '`+sourceAttemptID+`', '`+targetNodeRunID+`', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 0, '`+now+`', 'dispatched', '`+now+`', 'chancellor', 'pending', '`+now+`')`)
+
+	assertRecoveryPhase := func(want string) {
+		t.Helper()
+		records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+		if err != nil {
+			t.Fatalf("list logical node executions: %v", err)
+		}
+		var logical *RunNodeExecutionRecord
+		for idx := range records {
+			if records[idx].NodeID == "decree_intake" {
+				logical = &records[idx]
+				break
+			}
+		}
+		if logical == nil || logical.Recovery == nil || logical.Recovery.Phase != want {
+			t.Fatalf("logical recovery = %#v, want phase %q", logical, want)
+		}
+		history, err := New(db).ListRunNodeAttemptsPage(context.Background(), "run_1", "decree_intake", 0, "", 10)
+		if err != nil {
+			t.Fatalf("list retry history: %v", err)
+		}
+		for _, attemptID := range []string{sourceAttemptID, targetAttemptID} {
+			found := false
+			for _, attempt := range history.Items {
+				if attempt.AttemptID != attemptID {
+					continue
+				}
+				found = true
+				if len(attempt.RetryRelationships) != 1 || attempt.RetryRelationships[0].Phase != want {
+					t.Fatalf("retry history for %q = %#v, want phase %q", attemptID, attempt.RetryRelationships, want)
+				}
+				break
+			}
+			if !found {
+				t.Fatalf("attempt %q missing from retry history %#v", attemptID, history.Items)
+			}
+		}
+	}
+
+	assertRecoveryPhase("scheduled")
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = '`+now+`' WHERE node_run_id = '`+targetNodeRunID+`'`)
+	assertRecoveryPhase("scheduled")
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`' WHERE node_run_id = '`+targetNodeRunID+`'`)
+	assertRecoveryPhase("running")
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+now+`' WHERE node_run_id = '`+targetNodeRunID+`'`)
+	mustExec(t, db, `UPDATE retry_decisions SET resolution = 'failed', resolved_at = '`+now+`' WHERE retry_decision_id = 'retry_1'`)
+	assertRecoveryPhase("exhausted")
+}
+
+func TestStoreListRunNodeAttemptsPageOrdersRetryRelationshipsAndPreservesCurrentLineageForEmptyPage(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	const now = "2026-03-01T12:00:00Z"
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
+	for _, row := range []struct {
+		nodeRunID, attemptID, status, state string
+		attempt                             int
+	}{
+		{"nr_1", "attempt-history-1", "failed", "committed_failure", 1},
+		{"nr-history-2", "attempt-history-2", "failed", "committed_failure", 2},
+		{"nr-history-3", "attempt-history-3", "ready", "queued", 3},
+	} {
+		if row.nodeRunID != "nr_1" {
+			mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('`+row.nodeRunID+`', 'run_1', 'decree_intake', `+strconv.Itoa(row.attempt)+`, 1, '`+row.status+`', 'king', 'agent_king', 1)`)
+		}
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+row.attemptID+`', 'run_1', '`+row.nodeRunID+`', '`+row.state+`', 'provider_backed', 'server_response', '`+now+`', '`+now+`')`)
+	}
+	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-history-1', 'decree_attempt', 'run_1', 'decree_intake', 'nr_1', 'attempt-history-1', 'nr-history-2', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 0, '`+now+`', 'dispatched', '`+now+`', 'chancellor', 'failed', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history-2', 'decree_attempt', 'run_1', 'decree_intake', 'nr-history-2', 'attempt-history-2', 'nr-history-3', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 2, 3, 0, '`+now+`', 'pending', 'chancellor', 'pending', '`+now+`')`)
+
+	page, err := New(db).ListRunNodeAttemptsPage(context.Background(), "run_1", "decree_intake", 0, "", 10)
+	if err != nil {
+		t.Fatalf("list attempt history: %v", err)
+	}
+	if len(page.Items) != 3 {
+		t.Fatalf("history item count = %d, want 3", len(page.Items))
+	}
+	var middle RunNodeAttemptHistoryRecord
+	for _, item := range page.Items {
+		if item.AttemptID == "attempt-history-2" {
+			middle = item
+			break
+		}
+	}
+	if got := middle.RetryRelationships; len(got) != 2 || got[0].Direction != "target" || got[0].RetryIndex != 1 || got[1].Direction != "source" || got[1].RetryIndex != 2 {
+		t.Fatalf("retry relationships = %#v, want incoming then outgoing canonical lineage", got)
+	}
+
+	empty, err := New(db).ListRunNodeAttemptsPage(context.Background(), "run_1", "decree_intake", 1, "nr_1", 10)
+	if err != nil {
+		t.Fatalf("list empty attempt history page: %v", err)
+	}
+	if len(empty.Items) != 0 || !empty.CurrentNodeRunID.Valid || empty.CurrentNodeRunID.String != "nr-history-3" || !empty.CurrentAttemptID.Valid || empty.CurrentAttemptID.String != "attempt-history-3" {
+		t.Fatalf("empty history page lost current lineage: %#v", empty)
 	}
 }
 

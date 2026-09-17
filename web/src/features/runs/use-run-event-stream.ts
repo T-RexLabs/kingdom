@@ -270,6 +270,7 @@ function applyRunStreamSideEffects(
 		case "attempt.recovered":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
+		case "attempt.final_rework_queued":
 			case "attempt.failed":
 			case "attempt.succeeded":
 			case "attempt.cancelled":
@@ -414,6 +415,7 @@ function patchExecutionLiveProjection(
 			}
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
+		case "attempt.final_rework_queued":
 			return "queued";
 		case "attempt.succeeded":
 			return "succeeded";

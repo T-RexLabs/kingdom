@@ -3,6 +3,154 @@ import type { RunExecution, RunGraphNode, TimelineEvent } from "@/api/hooks-type
 import { buildRawEventLabel, buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
 
 describe("timeline milestones", () => {
+	it.each([
+		["run.retry_reopened", "operator_retry", "Manual Retry Scheduled - Attempt 1"],
+		["run.rerun_reopened", "operator_rerun", "Manual Rerun Scheduled - Attempt 1"],
+	] as const)("creates one recovery milestone for %s", (eventType, trigger, label) => {
+		const event: TimelineEvent = {
+			event_id: `evt-${eventType}`,
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: eventType,
+			reason_code: eventType === "run.retry_reopened" ? "manual_retry_requested" : "manual_rerun_requested",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: eventType === "run.retry_reopened" ? "manual_retry_requested" : "manual_rerun_requested",
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: "2026-03-18T11:40:00Z",
+			},
+		};
+
+		const milestones = synthesizeMilestones([event], [], [], buildTimelineLookups([event], []));
+
+		expect(milestones).toEqual([
+			expect.objectContaining({ id: `recovery-${event.event_id}`, label, status: "ready" }),
+		]);
+	});
+
+	it.each([
+		["retry", "run.retry_reopened", "attempt.retry_queued", "operator_retry", "manual_retry_requested", "Manual Retry Scheduled - Attempt 1"],
+		["rerun", "run.rerun_reopened", "attempt.rerun_queued", "operator_rerun", "manual_rerun_requested", "Manual Rerun Scheduled - Attempt 1"],
+	] as const)("deduplicates producer-shaped manual %s recovery events", (_action, runEventType, attemptEventType, trigger, code, label) => {
+		const scheduledAt = "2026-03-18T11:40:00Z";
+		const runEvent: TimelineEvent = {
+			event_id: `evt-${runEventType}`,
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: runEventType,
+			reason_code: code,
+			emitted_at: scheduledAt,
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-source",
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: code,
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: scheduledAt,
+			},
+		};
+		const attemptEvent: TimelineEvent = {
+			event_id: `evt-${attemptEventType}`,
+			run_event_seq: 2,
+			attempt_seq: 1,
+			event_type: attemptEventType,
+			reason_code: code,
+			emitted_at: scheduledAt,
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-target",
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: code,
+				source_attempt_id: "run-1:delegated_execution_berserker:1",
+				source_node_run_id: "nr-builder-source",
+				target_attempt_id: "run-1:delegated_execution_berserker:2",
+				target_node_run_id: "nr-builder-target",
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: scheduledAt,
+			},
+		};
+
+		const events = [runEvent, attemptEvent];
+		const milestones = synthesizeMilestones(events, [], [], buildTimelineLookups(events, []));
+		const recoveryMilestones = milestones.filter((milestone) => milestone.id.startsWith("recovery-"));
+
+		expect(recoveryMilestones).toEqual([
+			expect.objectContaining({
+				id: `recovery-${attemptEvent.event_id}`,
+				label,
+				detail: "Delegated Execution Berserker",
+				status: "ready",
+				events: [runEvent, attemptEvent],
+			}),
+		]);
+	});
+
+	it("shows node detail from a producer-shaped recovery payload", () => {
+		const events: TimelineEvent[] = [{
+			event_id: "retry-scheduled", run_event_seq: 1, attempt_seq: 1, event_type: "attempt.retry_scheduled", reason_code: "llm_rate_limited", emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-source",
+				retry_decision_id: "retry-builder-1",
+				decision: "retry",
+				recovery_trigger: "automatic_retry",
+				recovery_phase: "scheduled",
+				error_code: "llm_rate_limited",
+				source_attempt_id: "run-1:delegated_execution_berserker:1",
+				source_node_run_id: "nr-builder-source",
+				target_attempt_id: "run-1:delegated_execution_berserker:2",
+				target_node_run_id: "nr-builder-target",
+				retry_index: 1,
+				retry_max: 3,
+				scheduled_at: "2026-03-18T11:41:00Z",
+			},
+		}];
+		const nodes: RunGraphNode[] = [{ node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", state: "blocked" }];
+		const lookups = buildTimelineLookups(events, nodes);
+		expect(buildRawEventLabel(events[0], lookups)).toEqual({ label: "Retry Scheduled - Rate Limit", detail: "Delegated Execution Berserker" });
+		expect(synthesizeMilestones(events, nodes, [], lookups)).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Retry Scheduled - Rate Limit", status: "ready" })]));
+	});
+
+	it("presents final governance rework separately from Manual Rerun", () => {
+		const event: TimelineEvent = {
+			event_id: "final-rework-queued",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.final_rework_queued",
+			reason_code: "rework_requested",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				node_id: "plan_drafting",
+				node_run_id: "nr-plan-rework",
+				attempt_id: "run-1:plan_drafting:2",
+				attempt: 2,
+				governance_rework: "final",
+				state: "ready",
+			},
+		};
+		const nodes: RunGraphNode[] = [{
+			node_id: "plan_drafting",
+			required_role: "council-member",
+			execution_ownership: "provider_backed",
+			state: "ready",
+		}];
+		const lookups = buildTimelineLookups([event], nodes);
+		const milestones = synthesizeMilestones([event], nodes, [], lookups);
+
+		expect(buildRawEventLabel(event, lookups)).toEqual({ label: "Plan Drafting final governance rework queued" });
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({ label: "Plan Drafting", detail: "Final Governance Rework Queued", status: "ready" }),
+		]));
+		expect(JSON.stringify(milestones)).not.toContain("Manual Rerun");
+	});
+
 	it("describes runtime-owned raw events without default execution metadata", () => {
     const nodes: RunGraphNode[] = [{
       node_id: "king_plan_decision",

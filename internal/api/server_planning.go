@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 	gen "kingdom/internal/apigen"
@@ -216,7 +215,7 @@ func (s *Server) handleAttachPlanningExternalSource(w http.ResponseWriter, r *ht
 		writeExternalError(w, err, "api.attach_planning_external_source")
 		return
 	}
-	at := s.now().UTC().Format(time.RFC3339Nano)
+	at := formatFixedUTCTimestamp(s.now())
 	link, err := s.externalStore.AttachPlanningExternalSource(r.Context(), state.AttachPlanningExternalSourceRequest{
 		PlanningSessionID: planningSessionID,
 		Capture:           capture,

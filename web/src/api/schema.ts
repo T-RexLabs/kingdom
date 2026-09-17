@@ -2899,8 +2899,80 @@ export interface components {
             node_id: string;
             current_node_run_id?: string;
             current_attempt_id?: string;
-            items: components["schemas"]["RunExecution"][];
+            items: components["schemas"]["RunNodeAttemptHistoryItem"][];
             next_cursor?: string;
+        };
+        RunAttemptTokenUsage: {
+            input_tokens: number;
+            output_tokens: number;
+            total_tokens: number;
+            reasoning_tokens: number;
+            cache_read_tokens: number;
+            cache_write_tokens: number;
+        };
+        RunAttemptRetryRelationship: {
+            /** @enum {string} */
+            direction: "source" | "target";
+            /** @enum {string} */
+            phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
+            /** @enum {string} */
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            reason_code: string;
+            source_attempt_id: string;
+            source_node_run_id: string;
+            target_attempt_id?: string;
+            target_node_run_id?: string;
+            retry_index: number;
+            retry_max: number;
+            /** Format: date-time */
+            scheduled_at: string;
+            /** Format: date-time */
+            last_updated_at: string;
+        };
+        RunNodeAttemptHistoryItem: {
+            attempt_id: string;
+            node_run_id: string;
+            node_id: string;
+            attempt: number;
+            agent_id: string;
+            required_role: string;
+            /** @enum {string} */
+            execution_mode: "provider_backed" | "runtime_owned";
+            /** @enum {string} */
+            status: "queued" | "starting" | "running" | "blocked" | "paused" | "verifying" | "succeeded" | "failed" | "cancelled";
+            logical_session_id?: string;
+            provider_session_id?: string;
+            /** Format: date-time */
+            queued_at: string;
+            /** Format: date-time */
+            activity_at: string;
+            progress_event_type?: string;
+            progress_reason_code?: string;
+            /** Format: date-time */
+            progress_at?: string;
+            /** Format: date-time */
+            launch_started_at?: string;
+            /** Format: date-time */
+            started_at?: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            terminal_observed_at?: string;
+            /** Format: date-time */
+            committed_at?: string;
+            failure_code?: string;
+            failure_text?: string;
+            completion_invalid_reason?: string;
+            /** @enum {string} */
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            stop_retry_available: boolean;
+            superseded: boolean;
+            /** Format: date-time */
+            superseded_at?: string;
+            failure?: components["schemas"]["RunExecutionFailure"];
+            provider_invocation_id?: string;
+            token_usage?: components["schemas"]["RunAttemptTokenUsage"];
+            retry_relationships: components["schemas"]["RunAttemptRetryRelationship"][];
         };
         RunAgentsResponse: {
             run_id: string;

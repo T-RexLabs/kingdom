@@ -38,7 +38,7 @@ export function RunExecutionsPanel({
 				<button
 					type="button"
 					onClick={onRetryDetail}
-					className="rounded-md border border-status-failed/30 px-3 py-1.5 text-xs font-medium text-status-failed hover:bg-status-failed/10"
+					className="min-h-11 rounded-md border border-status-failed/30 px-3 py-1.5 text-xs font-medium text-status-failed hover:bg-status-failed/10"
 				>
 					Retry
 				</button>
@@ -126,7 +126,7 @@ function DisclosureSection({
 				onClick={onToggle}
 				aria-expanded={open}
 				aria-controls={panelId}
-				className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+				className="flex min-h-11 w-full items-center justify-between gap-3 px-4 py-3 text-left"
 			>
 				<div className="text-xs font-medium uppercase tracking-[0.16em] text-foreground-muted">{label}</div>
 				{open ? <ChevronDown className="h-4 w-4 text-foreground-subtle" /> : <ChevronRight className="h-4 w-4 text-foreground-subtle" />}

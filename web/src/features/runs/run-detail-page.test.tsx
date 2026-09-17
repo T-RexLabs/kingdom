@@ -35,6 +35,7 @@ const timelineRefetchMock = vi.fn();
 const navigateMock = vi.fn();
 const useRunGraphMock = vi.fn();
 const useRunExecutionsMock = vi.fn();
+const dagVisualizationPropsMock = vi.fn();
 const useInfiniteRunNodeAttemptsMock = vi.fn();
 const useRunExecutionMock = vi.fn();
 const useTimelineMock = vi.fn();
@@ -149,7 +150,20 @@ vi.mock("./use-run-event-stream", () => ({
 }));
 
 vi.mock("./dag-visualization", () => ({
-  DAGVisualization: () => <div>graph</div>,
+	DAGVisualization: (props: {
+		nodes: RunNodeExecution[];
+		onViewActivity?: (nodeId: string) => void;
+	}) => {
+		dagVisualizationPropsMock(props);
+		return (
+			<div>
+				<div>graph</div>
+				<button type="button" onClick={() => props.onViewActivity?.("delegated_execution_berserker")}>
+					View Delegated Execution Berserker in Activity
+				</button>
+			</div>
+		);
+	},
 }));
 
 vi.mock("./agent-detail-panel", () => ({
@@ -168,6 +182,7 @@ vi.mock("./run-execution-surface", () => ({
 		selectedAttemptId?: string | null;
 		onSelectStep?: (nodeId: string) => void;
 		onSelectAttempt?: (attemptId: string) => void;
+		onToggleHistory?: () => void;
 		detail?: RunExecutionDetail | null;
 		onRetryExecutions?: () => void;
 		detailPlaceholderMessage?: string | null;
@@ -242,6 +257,7 @@ describe("run detail page", () => {
   beforeEach(() => {
     useRunEventStreamMock.mockReset();
     useRunEventStreamMock.mockReturnValue(undefined);
+		dagVisualizationPropsMock.mockReset();
     timelinePanelPropsMock.mockReset();
 		executionSurfacePropsMock.mockReset();
     governanceActionsPropsMock.mockReset();
@@ -393,7 +409,7 @@ describe("run detail page", () => {
 
 	it("subscribes the run-detail page to the canonical run SSE hook", () => {
 	  render(<RunDetailPage />);
-	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["executions", "timeline", "agents", "mailbox"]);
+	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["timeline", "agents", "mailbox"]);
 	});
 
 	it("marks the full recovery scope stale while the run stream is retrying", async () => {
@@ -411,12 +427,12 @@ describe("run detail page", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "plan"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "governance-summary"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "governance-decisions", "history"], exact: true, refetchType: "active" });
-		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "executions"], exact: false, refetchType: "active" });
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "nodes"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "graph"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "agents"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "mailbox"], exact: false, refetchType: "active" });
-		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["executions", "timeline", "agents", "mailbox"] });
+		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["timeline", "agents", "mailbox"] });
 	});
 
 	it("bootstrap-refetches the run-detail recovery scope when reopening from stale cache without a resume cursor", async () => {
@@ -447,7 +463,7 @@ describe("run detail page", () => {
 	it("keeps executions lazy while hiding non-active timeline, agent, and mailbox queries on the default graph tab", () => {
 	  render(<RunDetailPage />);
 
-	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: false });
+	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
 	  expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
 	  expect(useRunExecutionMock).toHaveBeenCalledWith("run-1", "attempt-1", { enabled: false });
 	  expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
@@ -455,6 +471,32 @@ describe("run detail page", () => {
 	  expect(useRunAgentsMock).toHaveBeenCalledWith("run-1", { enabled: false });
 	  expect(useMailboxMock).toHaveBeenCalledWith("run-1", {}, { enabled: false });
 	  expect(useMailboxMessageMock).toHaveBeenCalledWith("run-1", null, { enabled: false });
+	});
+
+	it("supplies logical nodes to the graph fallback and opens its node in Activity", async () => {
+		const user = userEvent.setup();
+		navigateMock.mockImplementation(({ search }: { search: { tab: string } }) => {
+			mockSearch.tab = search.tab;
+		});
+		const { rerender } = render(<RunDetailPage />);
+
+		expect(dagVisualizationPropsMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({ nodes: mockExecutions }),
+		);
+
+		await user.click(screen.getByRole("button", { name: "View Delegated Execution Berserker in Activity" }));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/runs/$runId",
+			params: { runId: "run-1" },
+			search: { tab: "execution" },
+			replace: true,
+		});
+
+		rerender(<RunDetailPage />);
+		const activityProps = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedNodeId: string | null;
+		};
+		expect(activityProps.selectedNodeId).toBe("delegated_execution_berserker");
 	});
 
 	it("enables only the active agents tab query for a running run", () => {
@@ -475,8 +517,18 @@ describe("run detail page", () => {
 
 		expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
 		expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
-		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "delegated_execution_berserker", { enabled: true });
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
 		expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: true });
+	});
+
+	it("loads node attempts only after the selected node history disclosure opens", async () => {
+		mockSearch.tab = "execution";
+		const { rerender } = render(<RunDetailPage />);
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenLastCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
+		const props = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as { onToggleHistory: () => void };
+		await act(async () => props.onToggleHistory());
+		rerender(<RunDetailPage />);
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenLastCalledWith("run-1", "delegated_execution_berserker", { enabled: true });
 	});
 
   it("uses failed-node summaries while still fetching graph context for activity", () => {
@@ -1310,7 +1362,7 @@ describe("run detail page", () => {
 	      .toBeInTheDocument();
 	    expect(screen.getByRole("link", { name: "Back to runs" })).toBeInTheDocument();
 	    expect(screen.queryByText("Loading run...")).not.toBeInTheDocument();
-	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["executions", "timeline", "agents", "mailbox"]);
+	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["timeline", "agents", "mailbox"]);
   });
 
 	it("transitions from pending to loaded without violating hook order", () => {
@@ -1799,14 +1851,15 @@ describe("run detail page", () => {
 		expect(screen.queryByText(/Response Captured, Verifying:/)).not.toBeInTheDocument();
 	});
 
-  it("uses a managed non-scrolling tab panel for the DAG tab", () => {
-    render(<RunDetailPage />);
+	it("uses one tab-panel scroll owner for the mobile DAG fallback", () => {
+		render(<RunDetailPage />);
 
-    const panel = screen.getByRole("tabpanel");
-    expect(panel).toHaveClass("overflow-hidden");
-    expect(panel).toHaveClass("flex");
-    expect(panel).not.toHaveClass("overflow-auto");
-  });
+		const panel = screen.getByRole("tabpanel");
+		expect(panel).toHaveClass("overflow-y-auto");
+		expect(panel).toHaveClass("lg:overflow-hidden");
+		expect(panel).toHaveClass("lg:flex");
+		expect(panel).not.toHaveClass("overflow-auto");
+	});
 
   it("keeps the mailbox tab on the managed non-scrolling panel layout", () => {
     mockSearch.tab = "mailbox";

@@ -898,17 +898,12 @@ func (s *Server) handleListRunNodeAttempts(w http.ResponseWriter, r *http.Reques
 		s.writeInternalError(w, "list run node attempts failed")
 		return
 	}
-	response := gen.RunNodeAttemptsResponse{RunId: runID, NodeId: nodeID, Items: make([]gen.RunExecution, 0, min(limit, len(page.Items)))}
-	currentNodeRunID, currentAttemptID, err := store.CurrentRunNodeExecution(r.Context(), runID, nodeID)
-	if err != nil {
-		s.writeInternalError(w, "fetch current run node attempt failed")
-		return
+	response := gen.RunNodeAttemptsResponse{RunId: runID, NodeId: nodeID, Items: make([]gen.RunNodeAttemptHistoryItem, 0, min(limit, len(page.Items)))}
+	if page.CurrentNodeRunID.Valid {
+		response.CurrentNodeRunId = &page.CurrentNodeRunID.String
 	}
-	if currentNodeRunID.Valid {
-		response.CurrentNodeRunId = &currentNodeRunID.String
-	}
-	if currentAttemptID.Valid {
-		response.CurrentAttemptId = &currentAttemptID.String
+	if page.CurrentAttemptID.Valid {
+		response.CurrentAttemptId = &page.CurrentAttemptID.String
 	}
 	if len(page.Items) > limit {
 		last := page.Items[limit-1]
@@ -917,7 +912,7 @@ func (s *Server) handleListRunNodeAttempts(w http.ResponseWriter, r *http.Reques
 		page.Items = page.Items[:limit]
 	}
 	for _, record := range page.Items {
-		response.Items = append(response.Items, buildGeneratedRunExecution(record))
+		response.Items = append(response.Items, buildRunNodeAttemptHistoryItem(record))
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -1190,6 +1185,110 @@ func buildGeneratedRunExecution(record executionstore.RunExecutionRecord) gen.Ru
 	return item
 }
 
+func buildRunNodeAttemptHistoryItem(record executionstore.RunNodeAttemptHistoryRecord) gen.RunNodeAttemptHistoryItem {
+	item := gen.RunNodeAttemptHistoryItem{
+		AttemptId:          record.AttemptID,
+		NodeRunId:          record.NodeRunID,
+		NodeId:             record.NodeID,
+		Attempt:            record.Attempt,
+		AgentId:            record.AgentID,
+		RequiredRole:       record.RequiredRole,
+		ExecutionMode:      gen.RunNodeAttemptHistoryItemExecutionMode(record.ExecutionMode),
+		Status:             gen.RunNodeAttemptHistoryItemStatus(runExecutionStatus(record.RunExecutionRecord)),
+		QueuedAt:           mustParseRFC3339(record.QueuedAt),
+		ActivityAt:         mustParseRFC3339(record.ActivityAt),
+		UpdatedAt:          mustParseRFC3339(record.UpdatedAt),
+		StopRetryAvailable: record.StopRetryAvailable,
+		Superseded:         record.SupersededAt.Valid,
+		RetryRelationships: make([]gen.RunAttemptRetryRelationship, 0, len(record.RetryRelationships)),
+	}
+	if value := nullableString(record.LogicalSessionID); value != nil {
+		item.LogicalSessionId = value
+	}
+	if value := nullableString(record.ProviderSessionID); value != nil {
+		item.ProviderSessionId = value
+	}
+	if value := nullableString(record.ProgressEventType); value != nil {
+		item.ProgressEventType = value
+	}
+	if value := nullableString(record.ProgressReasonCode); value != nil {
+		item.ProgressReasonCode = value
+	}
+	if record.ProgressAt.Valid {
+		value := mustParseRFC3339(record.ProgressAt.String)
+		item.ProgressAt = &value
+	}
+	if record.LaunchStartedAt.Valid {
+		value := mustParseRFC3339(record.LaunchStartedAt.String)
+		item.LaunchStartedAt = &value
+	}
+	if record.StartedAt.Valid {
+		value := mustParseRFC3339(record.StartedAt.String)
+		item.StartedAt = &value
+	}
+	if record.TerminalObservedAt.Valid {
+		value := mustParseRFC3339(record.TerminalObservedAt.String)
+		item.TerminalObservedAt = &value
+	}
+	if record.CommittedAt.Valid {
+		value := mustParseRFC3339(record.CommittedAt.String)
+		item.CommittedAt = &value
+	}
+	if value := nullableString(record.FailureCode); value != nil {
+		item.FailureCode = value
+	}
+	if value := nullableString(record.FailureText); value != nil {
+		item.FailureText = value
+	}
+	if value := nullableString(record.CompletionInvalidReason); value != nil {
+		item.CompletionInvalidReason = value
+	}
+	if value := nullableString(record.CancellationHandoffState); value != nil {
+		handoff := gen.RunNodeAttemptHistoryItemHandoffState(*value)
+		item.HandoffState = &handoff
+	}
+	if record.SupersededAt.Valid {
+		value := mustParseRFC3339(record.SupersededAt.String)
+		item.SupersededAt = &value
+	}
+	if value := nullableString(record.ProviderInvocationID); value != nil {
+		item.ProviderInvocationId = value
+	}
+	if record.TokenUsage != nil {
+		item.TokenUsage = &gen.RunAttemptTokenUsage{
+			InputTokens:      int(record.TokenUsage.InputTokens),
+			OutputTokens:     int(record.TokenUsage.OutputTokens),
+			TotalTokens:      int(record.TokenUsage.TotalTokens),
+			ReasoningTokens:  int(record.TokenUsage.ReasoningTokens),
+			CacheReadTokens:  int(record.TokenUsage.CacheReadTokens),
+			CacheWriteTokens: int(record.TokenUsage.CacheWriteTokens),
+		}
+	}
+	item.Failure = buildRunExecutionFailureFor(record.FailureCode, record.FailureText)
+	for _, relationship := range record.RetryRelationships {
+		value := gen.RunAttemptRetryRelationship{
+			Direction:       gen.RunAttemptRetryRelationshipDirection(relationship.Direction),
+			Phase:           gen.RunAttemptRetryRelationshipPhase(relationship.Phase),
+			Trigger:         gen.RunAttemptRetryRelationshipTrigger(relationship.Trigger),
+			ReasonCode:      relationship.ReasonCode,
+			SourceAttemptId: relationship.SourceAttemptID,
+			SourceNodeRunId: relationship.SourceNodeRunID,
+			RetryIndex:      relationship.RetryIndex,
+			RetryMax:        relationship.RetryMax,
+			ScheduledAt:     mustParseRFC3339(relationship.ScheduledAt),
+			LastUpdatedAt:   mustParseRFC3339(relationship.LastUpdatedAt),
+		}
+		if relationship.TargetAttemptID != nil {
+			value.TargetAttemptId = relationship.TargetAttemptID
+		}
+		if relationship.TargetNodeRunID != nil {
+			value.TargetNodeRunId = relationship.TargetNodeRunID
+		}
+		item.RetryRelationships = append(item.RetryRelationships, value)
+	}
+	return item
+}
+
 func buildRunNodeExecution(record executionstore.RunNodeExecutionRecord) gen.RunNodeExecution {
 	item := gen.RunNodeExecution{
 		NodeId:             record.NodeID,
@@ -1227,14 +1326,18 @@ func buildRunExecutionFailure(record executionstore.RunNodeExecutionRecord) *gen
 	if text == "" && record.Recovery != nil {
 		text = strings.TrimSpace(record.Recovery.OperatorText.String)
 	}
-	if code == "" || text == "" {
+	return buildRunExecutionFailureFor(sql.NullString{String: code, Valid: code != ""}, sql.NullString{String: text, Valid: text != ""})
+}
+
+func buildRunExecutionFailureFor(code, text sql.NullString) *gen.RunExecutionFailure {
+	if !code.Valid || !text.Valid || strings.TrimSpace(code.String) == "" || strings.TrimSpace(text.String) == "" {
 		return nil
 	}
-	profile, known := errorcatalog.Lookup(errorcatalog.Code(code))
+	profile, known := errorcatalog.Lookup(errorcatalog.Code(code.String))
 	if !known {
-		return &gen.RunExecutionFailure{Code: code, Classification: "non_retryable", Category: gen.RunExecutionFailureCategory("runtime"), Retryable: false, OperatorText: text}
+		return &gen.RunExecutionFailure{Code: code.String, Classification: "non_retryable", Category: gen.RunExecutionFailureCategory("runtime"), Retryable: false, OperatorText: text.String}
 	}
-	return &gen.RunExecutionFailure{Code: code, Classification: profile.RetryClass, Category: gen.RunExecutionFailureCategory(profile.Category), Retryable: profile.Retryable, OperatorText: text}
+	return &gen.RunExecutionFailure{Code: code.String, Classification: profile.RetryClass, Category: gen.RunExecutionFailureCategory(profile.Category), Retryable: profile.Retryable, OperatorText: text.String}
 }
 
 func buildRunRecoveryState(record executionstore.RunRecoveryRecord) *gen.RunRecoveryState {

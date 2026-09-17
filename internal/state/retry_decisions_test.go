@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
+	svc = NewTransitionService(db, loadStateTestSchemas(t))
 	queued, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil || !scheduled {
 		t.Fatalf("record automatic retry: scheduled=%t err=%v", scheduled, err)
@@ -27,12 +29,63 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if sourceState != "failed" || targetState != "pending" || dispatchState != "pending" || dueAt != now.Add(time.Minute).UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("atomic retry state source=%q target=%q dispatch=%q due=%q", sourceState, targetState, dispatchState, dueAt)
 	}
+	var payloadJSON string
+	if err := db.QueryRow(`SELECT payload_json FROM attempt_event_log WHERE event_type = 'attempt.retry_scheduled'`).Scan(&payloadJSON); err != nil {
+		t.Fatalf("load automatic retry payload: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode automatic retry payload: %v", err)
+	}
+	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != "nr_1" || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
+		t.Fatalf("unexpected automatic retry payload: %#v", payload)
+	}
+	var publicScheduledEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE event_type = 'attempt.retry_scheduled' AND attempt_id = 'source_attempt'`).Scan(&publicScheduledEvents); err != nil {
+		t.Fatalf("count public scheduled retry events: %v", err)
+	}
+	if publicScheduledEvents != 1 {
+		t.Fatalf("public scheduled retry events = %d, want 1", publicScheduledEvents)
+	}
+	if _, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err == nil {
+		t.Fatal("expected retry decision replay to conflict after source settlement")
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE event_type = 'attempt.retry_scheduled' AND attempt_id = 'source_attempt'`).Scan(&publicScheduledEvents); err != nil {
+		t.Fatalf("count replayed public scheduled retry events: %v", err)
+	}
+	if publicScheduledEvents != 1 {
+		t.Fatalf("replayed public scheduled retry events = %d, want 1", publicScheduledEvents)
+	}
 	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("early release = %#v, %v", released, err)
 	}
 	restarted := NewTransitionService(db, nil)
 	if released, err := restarted.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != queued.NodeRunID {
 		t.Fatalf("due release = %#v, %v", released, err)
+	}
+	if err := db.QueryRow(`SELECT payload_json FROM events WHERE event_type = 'attempt.retry_queued'`).Scan(&payloadJSON); err != nil {
+		t.Fatalf("load released retry payload: %v", err)
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode released retry payload: %v", err)
+	}
+	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
+		t.Fatalf("unexpected released retry payload: %#v", payload)
+	}
+	started := retryTargetStartTransition(queued.NodeRunID, composeAttemptID("run_1", "decree_intake", queued.Attempt), now.Add(90*time.Second), 2)
+	started.PayloadJSON = `{"attempt":2,"existing":"preserved"}`
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+started.AttemptID+`', 'run_1', '`+queued.NodeRunID+`', 'queued', 'provider_backed', 'server_response', '`+now.Format(time.RFC3339Nano)+`', '`+now.Format(time.RFC3339Nano)+`')`)
+	if err := restarted.RecordExecutionStart(context.Background(), ExecutionStartRecordRequest{Transition: started}); err != nil {
+		t.Fatalf("observe retry target start: %v", err)
+	}
+	if err := db.QueryRow(`SELECT payload_json FROM events WHERE event_id = 'evt_start_` + queued.NodeRunID + `'`).Scan(&payloadJSON); err != nil {
+		t.Fatalf("load observed retry start payload: %v", err)
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode observed retry start payload: %v", err)
+	}
+	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "running" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["existing"] != "preserved" || payload["attempt"] != float64(2) {
+		t.Fatalf("unexpected observed retry start payload: %#v", payload)
 	}
 }
 

@@ -971,6 +971,24 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	if scheduledEvents != 1 {
 		t.Fatalf("expected one fenced retry-scheduled event, got %d", scheduledEvents)
 	}
+	var publicScheduledEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'att_1' AND event_type = 'attempt.retry_scheduled'`).Scan(&publicScheduledEvents); err != nil {
+		t.Fatalf("count public fenced retry events: %v", err)
+	}
+	if publicScheduledEvents != 1 {
+		t.Fatalf("expected one public fenced retry-scheduled event, got %d", publicScheduledEvents)
+	}
+	var retryPayloadJSON string
+	if err := db.QueryRow(`SELECT payload_json FROM attempt_event_log WHERE attempt_id = 'att_1' AND event_type = 'attempt.retry_scheduled'`).Scan(&retryPayloadJSON); err != nil {
+		t.Fatalf("load fenced retry payload: %v", err)
+	}
+	var retryPayload map[string]any
+	if err := json.Unmarshal([]byte(retryPayloadJSON), &retryPayload); err != nil {
+		t.Fatalf("decode fenced retry payload: %v", err)
+	}
+	if retryPayload["node_id"] != "decree_intake" || retryPayload["node_run_id"] != "nr_1" || retryPayload["recovery_trigger"] != "automatic_retry" || retryPayload["recovery_phase"] != "scheduled" || retryPayload["error_code"] != "agent_unresponsive" || retryPayload["source_attempt_id"] != "att_1" || retryPayload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || retryPayload["scheduled_at"] != "2026-03-01T12:10:00Z" {
+		t.Fatalf("unexpected fenced retry payload: %#v", retryPayload)
+	}
 
 	var projectedCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM run_participants WHERE run_id = 'run_1' AND agent_id = 'agent_king_backup'`).Scan(&projectedCount); err != nil {
@@ -987,6 +1005,46 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	}
 	if len(agents) != 2 {
 		t.Fatalf("expected both original and replacement agents in run projection, got %#v", agents)
+	}
+}
+
+func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPayload(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	const now = "2026-03-01T12:10:00Z"
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES ('att_1', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', 'timeout', 'Timed out while waiting for the provider.', %q, %q)`, now, now))
+
+	svc := NewTransitionService(db, nil)
+	generated := 0
+	if _, err := svc.ReplayTerminalRun(context.Background(), ReplayTerminalRunRequest{
+		RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"}, Reason: "Try the provider again.",
+		ActorID: "local-operator", RoleID: "king", AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened",
+		RunReasonCode: "manual_retry_requested", NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now,
+		GenerateID: func(prefix string) string {
+			generated++
+			return fmt.Sprintf("%s_manual_recovery_%d", prefix, generated)
+		},
+	}); err != nil {
+		t.Fatalf("replay terminal run: %v", err)
+	}
+
+	var reasonCode, payloadJSON string
+	if err := db.QueryRow(`SELECT reason_code, payload_json FROM events WHERE event_type = 'attempt.retry_queued'`).Scan(&reasonCode, &payloadJSON); err != nil {
+		t.Fatalf("load manual recovery event: %v", err)
+	}
+	if reasonCode != "manual_retry_requested" {
+		t.Fatalf("manual recovery reason code = %q", reasonCode)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode manual recovery payload: %v", err)
+	}
+	if payload["node_id"] != "decree_intake" || payload["node_run_id"] == "" || payload["recovery_trigger"] != "operator_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "manual_retry_requested" || payload["source_attempt_id"] != "att_1" || payload["source_node_run_id"] != "nr_1" || payload["target_attempt_id"] != "run_1:decree_intake:2" || payload["retry_index"] != float64(0) || payload["retry_max"] != float64(0) || payload["scheduled_at"] != now {
+		t.Fatalf("unexpected manual recovery payload: %#v", payload)
 	}
 }
 

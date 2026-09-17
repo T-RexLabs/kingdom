@@ -74,7 +74,6 @@ type SelectedExecutionState = {
 	runId: string;
 	nodeId: string;
 	attemptId: string | null;
-	source: "auto" | "manual";
 };
 
 const tabs: { id: RunDetailTab; label: string; icon: typeof GitBranch }[] = [
@@ -96,7 +95,7 @@ export function RunDetailPage() {
 	const executionVisible = activeTab === "execution";
 	const graphVisible = activeTab === "graph" || executionVisible || run?.status === "cancelled";
 	const timelineVisible = executionVisible;
-	const executionsQueryActive = executionVisible;
+	const executionsQueryActive = graphVisible;
 	const agentsVisible = activeTab === "agents";
 	const mailboxVisible = activeTab === "mailbox";
 	const hiddenRunQuerySurfaces = useMemo(
@@ -132,48 +131,23 @@ export function RunDetailPage() {
 	const agentsAreFetching = agentsQuery.isFetching;
 	const refetchAgents = agentsQuery.refetch;
 	const [selectedExecution, setSelectedExecution] = useState<SelectedExecutionState | null>(null);
+	const [attemptHistoryDisclosure, setAttemptHistoryDisclosure] = useState<Record<string, boolean>>({});
 	const storedSelectedExecution = selectedExecution?.runId === runId ? selectedExecution : null;
 	const storedSelectedNode = presentedNodes.find((node) => node.node_id === storedSelectedExecution?.nodeId) ?? null;
-	const selectedNodeBeforeValidation = storedSelectedNode ?? presentedNodes[0] ?? null;
-	const nodeAttemptsQuery = useInfiniteRunNodeAttempts(runId, selectedNodeBeforeValidation?.node_id, { enabled: runReady && executionVisible && !!selectedNodeBeforeValidation });
+	const selectedNode = storedSelectedNode ?? presentedNodes[0] ?? null;
+	const selectedExecutionNodeId = selectedNode?.node_id ?? null;
+	const attemptHistoryKey = selectedExecutionNodeId ? `${runId}:${selectedExecutionNodeId}` : "";
+	const attemptHistoryOpen = !!attemptHistoryKey && attemptHistoryDisclosure[attemptHistoryKey] === true;
+	const nodeAttemptsQuery = useInfiniteRunNodeAttempts(runId, selectedExecutionNodeId, { enabled: runReady && executionVisible && attemptHistoryOpen && !!selectedExecutionNodeId });
 	const nodeAttempts = useMemo(
 		() => nodeAttemptsQuery.data?.pages.flatMap((page) => page.items) ?? [],
 		[nodeAttemptsQuery.data?.pages],
 	);
-	const manualSelectionNeedsValidation = !!storedSelectedExecution
-		&& storedSelectedExecution.source === "manual"
-		&& !!storedSelectedExecution.attemptId
-		&& nodeAttemptsQuery.isSuccess
-		&& !!storedSelectedNode
-		&& storedSelectedNode.current_execution?.attempt_id !== storedSelectedExecution.attemptId
-		&& !nodeAttempts.some((item) => item.attempt_id === storedSelectedExecution.attemptId);
-	const manualSelectionValidationQuery = useRunExecution(
-		runId,
-		manualSelectionNeedsValidation ? storedSelectedExecution?.attemptId : null,
-		{ enabled: runReady && executionVisible && manualSelectionNeedsValidation },
-	);
-	const manualSelectionIsUnsupported = manualSelectionNeedsValidation && (
-		manualSelectionValidationQuery.isError
-		|| (manualSelectionValidationQuery.isSuccess && manualSelectionValidationQuery.data?.attempt_id !== storedSelectedExecution?.attemptId)
-	);
-	const selectedExecutionState = storedSelectedNode && !manualSelectionIsUnsupported ? storedSelectedExecution : null;
-	const selectedExecutionNodeId = selectedExecutionState?.nodeId ?? presentedNodes[0]?.node_id ?? null;
-	const selectedNode = presentedNodes.find((node) => node.node_id === selectedExecutionNodeId) ?? null;
-	const selectedExecutionId = selectedExecutionState?.attemptId ?? selectedNode?.current_execution?.attempt_id ?? null;
-	const selectedExecutionIsLoaded = !!selectedExecutionId && (
-		selectedNode?.current_execution?.attempt_id === selectedExecutionId
-		|| nodeAttempts.some((item) => item.attempt_id === selectedExecutionId)
-		|| manualSelectionValidationQuery.data?.attempt_id === selectedExecutionId
-	);
+	const selectedExecutionId = storedSelectedExecution?.attemptId ?? selectedNode?.current_execution?.attempt_id ?? null;
 	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, {
-		enabled: runReady
-			&& executionVisible
-			&& selectedExecutionIsLoaded
-			&& selectedExecutionId !== manualSelectionValidationQuery.data?.attempt_id,
+		enabled: runReady && executionVisible && !!selectedExecutionId,
 	});
-	const selectedExecutionDetailQuery = manualSelectionValidationQuery.data?.attempt_id === selectedExecutionId
-		? manualSelectionValidationQuery
-		: executionDetailQuery;
+	const selectedExecutionDetailQuery = executionDetailQuery;
 	const executionDetailIsFetching = selectedExecutionDetailQuery.isFetching;
 	const refetchExecutionDetail = selectedExecutionDetailQuery.refetch;
 	const presentedExecutionDetail = useMemo(
@@ -182,9 +156,7 @@ export function RunDetailPage() {
 			: null,
 		[liveExecutionProjection, selectedExecutionDetailQuery.data, selectedExecutionId],
 	);
-	const detailPlaceholderMessage = selectedExecutionId && !selectedExecutionIsLoaded && !executionDetailIsFetching
-		? "The selected attempt is no longer in loaded history."
-		: null;
+	const detailPlaceholderMessage = selectedExecutionId && !executionDetailIsFetching ? "The selected attempt could not be loaded." : null;
 	const { data: roles } = useRoles();
 	const [mailboxFilters, setMailboxFilters] = useState<MailboxFilters>({});
 	const mailboxQuery = useMailbox(runId, mailboxFilters, { enabled: runReady && mailboxVisible });
@@ -578,19 +550,42 @@ export function RunDetailPage() {
 		if (!node) {
 			return;
 		}
-		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: node.current_execution?.attempt_id ?? null, source: "manual" });
+		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: null });
 	}, [presentedNodes, runId]);
+
+	const handleViewNodeActivity = useCallback((nodeId: string) => {
+		const node = presentedNodes.find((item) => item.node_id === nodeId);
+		if (!node) {
+			return;
+		}
+		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: null });
+		setActiveTab("execution");
+	}, [presentedNodes, runId, setActiveTab]);
 
 	const handleSelectExecutionAttempt = useCallback((attemptId: string) => {
 		const nodeId = selectedExecutionNodeId;
 		if (!nodeId) {
 			return;
 		}
-		if (!nodeAttempts.some((item) => item.attempt_id === attemptId) && selectedNode?.current_execution?.attempt_id !== attemptId) {
+		if (!nodeAttempts.some((item) => item.attempt_id === attemptId)) {
 			return;
 		}
-		setSelectedExecution({ runId, nodeId, attemptId, source: "manual" });
-	}, [nodeAttempts, runId, selectedExecutionNodeId, selectedNode?.current_execution?.attempt_id]);
+		setSelectedExecution({ runId, nodeId, attemptId });
+	}, [nodeAttempts, runId, selectedExecutionNodeId]);
+
+	const handleSelectCurrentExecutionAttempt = useCallback(() => {
+		if (!selectedExecutionNodeId) {
+			return;
+		}
+		setSelectedExecution({ runId, nodeId: selectedExecutionNodeId, attemptId: null });
+	}, [runId, selectedExecutionNodeId]);
+
+	const toggleAttemptHistory = useCallback(() => {
+		if (!attemptHistoryKey) {
+			return;
+		}
+		setAttemptHistoryDisclosure((current) => ({ ...current, [attemptHistoryKey]: !current[attemptHistoryKey] }));
+	}, [attemptHistoryKey]);
 
   const handleSelectMessage = useCallback((messageId: string | null) => {
     if (!messageId) {
@@ -716,9 +711,11 @@ export function RunDetailPage() {
 	// `relative` for the same reason PageContent carries it: a scroll viewport
 	// must be the containing block for its absolutely positioned descendants,
 	// or they escape the clip and grow the document instead.
-	const managedTabPanelClass = activeTab === "graph" || activeTab === "mailbox"
-		? "flex flex-col overflow-hidden"
-		: "relative overflow-auto";
+	const managedTabPanelClass = activeTab === "graph"
+		? "min-h-0 overflow-y-auto lg:flex lg:flex-col lg:overflow-hidden"
+		: activeTab === "mailbox"
+			? "flex flex-col overflow-hidden"
+			: "relative overflow-auto";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -933,7 +930,17 @@ export function RunDetailPage() {
 					managedTabPanelClass,
 				)}
 			>
-	              {activeTab === "graph" && graph && <DAGVisualization graph={graph} />}
+	              {activeTab === "graph" && graph && (
+					<DAGVisualization
+						graph={graph}
+						nodes={presentedNodes}
+						onViewActivity={handleViewNodeActivity}
+						executionsErrorMessage={executionsErrorMessage}
+						onRetryExecutions={() => {
+							void executionsQuery.refetch();
+						}}
+					/>
+				)}
 	              {activeTab === "graph" && graphQuery.isPending && !graph && <TabLoading />}
 	              {activeTab === "graph" && graphQuery.isError && !graph && (
 	                <TabError
@@ -981,14 +988,17 @@ export function RunDetailPage() {
 						}}
 						selectedNodeId={selectedExecutionNodeId}
 						selectedAttemptId={selectedExecutionId}
-						selectedAttemptSource={selectedExecutionState?.source ?? (selectedExecutionNodeId ? "auto" : null)}
 						onSelectStep={handleSelectExecutionStep}
 						onSelectAttempt={handleSelectExecutionAttempt}
+						onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
+						historyOpen={attemptHistoryOpen}
+						onToggleHistory={toggleAttemptHistory}
 						hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
 						onLoadMoreAttempts={() => {
 							void nodeAttemptsQuery.fetchNextPage();
 						}}
 						isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
+						isHistoryLoading={nodeAttemptsQuery.isPending && !nodeAttemptsQuery.data}
 						detail={presentedExecutionDetail}
 						isDetailLoading={executionDetailIsFetching && !selectedExecutionDetailQuery.data}
 						detailErrorMessage={selectedExecutionDetailQuery.isError ? queryErrorMessage(selectedExecutionDetailQuery.error, "The execution detail could not be loaded right now.") : null}

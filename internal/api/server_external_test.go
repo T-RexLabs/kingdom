@@ -665,6 +665,140 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 	}
 }
 
+func TestPlanningExternalProvenanceTimestampsPreserveNanosecondReattachmentOrder(t *testing.T) {
+	base := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	now := base
+	adapter := &externalAPITestAdapter{result: external.IssueResult{
+		NativeID:     "issue-fixed-timestamp",
+		RepositoryID: "200",
+		Issue: state.NormalizedExternalIssue{
+			Title: "Initial", Body: "initial body", State: "open", Repository: "owner/repo", IssueNumber: 7,
+			CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: base.Format(fixedUTCTimestampLayout), UpdatedAt: base.Format(fixedUTCTimestampLayout),
+		},
+		Profile: state.ExternalImportProfile{},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter, Now: func() time.Time { return now }})
+
+	connectionResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections", idempotencyKey: "fixed-timestamp-connection", body: map[string]any{"provider": "github", "credential_strategy": "app_private_key", "display_name": "Fixed Timestamp", "app_id": "1", "client_id": "Iv1", "app_slug": "app", "installation_id": "2"}})
+	if connectionResponse.Code != http.StatusCreated {
+		t.Fatalf("create connection status=%d body=%s", connectionResponse.Code, connectionResponse.Body.String())
+	}
+	var connection gen.Connection
+	if err := json.Unmarshal(connectionResponse.Body.Bytes(), &connection); err != nil {
+		t.Fatal(err)
+	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-fixed-timestamp-credential", base.Format(fixedUTCTimestampLayout))
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionId + "/health-checks", idempotencyKey: "fixed-timestamp-health"}); response.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	sessionResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "fixed-timestamp-session", body: map[string]any{"title": "Fixed Timestamp"}})
+	if sessionResponse.Code != http.StatusCreated {
+		t.Fatalf("create planning session status=%d body=%s", sessionResponse.Code, sessionResponse.Body.String())
+	}
+	var session gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(sessionResponse.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+
+	intake := map[string]any{"connection_id": connection.ConnectionId, "repository_id": "200", "issue_number": 7, "include_comments": false}
+	attached := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId + "/external-sources", idempotencyKey: "fixed-timestamp-attach", body: intake})
+	if attached.Code != http.StatusCreated {
+		t.Fatalf("initial attach status=%d body=%s", attached.Code, attached.Body.String())
+	}
+	var initial gen.ExternalProvenanceSummary
+	if err := json.Unmarshal(attached.Body.Bytes(), &initial); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter.mu.Lock()
+	adapter.result.Issue.Title = "Reattached"
+	adapter.result.Issue.Body = "reattached body"
+	adapter.result.Issue.UpdatedAt = base.Add(time.Minute).Format(fixedUTCTimestampLayout)
+	adapter.mu.Unlock()
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/refreshes", idempotencyKey: "fixed-timestamp-refresh"}); response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/adoptions", idempotencyKey: "fixed-timestamp-adopt"}); response.Code != http.StatusCreated {
+		t.Fatalf("adopt status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/detachments", idempotencyKey: "fixed-timestamp-detach"}); response.Code != http.StatusCreated {
+		t.Fatalf("detach status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	now = base.Add(time.Nanosecond)
+	reattached := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId + "/external-sources", idempotencyKey: "fixed-timestamp-reattach", body: intake})
+	if reattached.Code != http.StatusCreated {
+		t.Fatalf("reattach status=%d body=%s", reattached.Code, reattached.Body.String())
+	}
+	var fresh gen.ExternalProvenanceSummary
+	if err := json.Unmarshal(reattached.Body.Bytes(), &fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	wantExactSecond := base.Format(fixedUTCTimestampLayout)
+	wantNanosecondLater := now.Format(fixedUTCTimestampLayout)
+	assertProvenanceTimestamp := func(table, column string) {
+		t.Helper()
+		rows, err := db.Query(`SELECT `+column+` FROM `+table+` WHERE link_id=?`, initial.LinkId)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		found := map[string]bool{}
+		for rows.Next() {
+			var value string
+			if err := rows.Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			found[value] = true
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if !found[wantExactSecond] || !found[wantNanosecondLater] {
+			t.Fatalf("%s.%s timestamps=%v, want both %q and %q", table, column, found, wantExactSecond, wantNanosecondLater)
+		}
+	}
+	assertProvenanceTimestamp("planning_external_source_adoptions", "adopted_at")
+	assertProvenanceTimestamp("external_source_link_attachment_changes", "changed_at")
+
+	detail := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId})
+	if detail.Code != http.StatusOK {
+		t.Fatalf("planning detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var planningDetail gen.PlanningSessionDetail
+	if err := json.Unmarshal(detail.Body.Bytes(), &planningDetail); err != nil {
+		t.Fatal(err)
+	}
+	activeSnapshotID := ""
+	latestSnapshotID := ""
+	for _, source := range planningDetail.ExternalSources {
+		if source.LinkId == initial.LinkId {
+			latestSnapshotID = source.LatestSnapshotId
+			if source.ActiveSnapshotId != nil {
+				activeSnapshotID = *source.ActiveSnapshotId
+			}
+		}
+	}
+	if activeSnapshotID != fresh.LatestSnapshotId || latestSnapshotID != fresh.LatestSnapshotId {
+		t.Fatalf("latest active snapshot was not reattached: active=%q latest=%q fresh=%q", activeSnapshotID, latestSnapshotID, fresh.LatestSnapshotId)
+	}
+
+	operation := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/acp/runs", idempotencyKey: "fixed-timestamp-operation", body: map[string]any{"agent_name": "planner-formalize", "planning_session_id": session.Session.PlanningSessionId}})
+	if operation.Code != http.StatusCreated {
+		t.Fatalf("create ACP run status=%d body=%s", operation.Code, operation.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(operation.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	awaitAcpRun(t, handler, run.RunId.String(), 2*time.Second)
+	if bindings := planningBindingIDsForAcpRun(t, db, run.RunId.String()); len(bindings) != 1 || bindings[0] != fresh.LatestSnapshotId {
+		t.Fatalf("next planning operation bound stale snapshot: bindings=%v fresh=%q", bindings, fresh.LatestSnapshotId)
+	}
+}
+
 func planningBindingIDsForAcpRun(t *testing.T, db *sql.DB, runID string) []string {
 	t.Helper()
 	rows, err := db.Query(`SELECT binding.snapshot_id FROM planning_operation_external_snapshots binding JOIN planning_operations operation ON operation.operation_id=binding.operation_id WHERE operation.acp_run_id=? ORDER BY binding.snapshot_id`, runID)

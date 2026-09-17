@@ -3,6 +3,7 @@ import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
 import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
+import { presentRecoveryTimeline, type RecoveryLike } from "./run-execution-presentation";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
 
 const SPECIAL_REASON_LABELS: Record<string, string> = {
@@ -20,6 +21,7 @@ const NOISE_REASON_CODES = new Set(["orchestration_progress"]);
 
 const NODE_LIFECYCLE_EVENT_TYPES = new Set(["node.state_changed"]);
 const RECOVERY_QUEUE_EVENT_TYPES = new Set(["attempt.retry_queued", "attempt.rerun_queued"]);
+const RECOVERY_RUN_REOPEN_EVENT_TYPES = new Set(["run.retry_reopened", "run.rerun_reopened"]);
 
 interface FanOutGroup {
   parentNodeId: string;
@@ -104,6 +106,10 @@ export function buildRawEventLabel(
   }
 
   const name = resolvedNodeId ? nodeLabel(resolvedNodeId) : "";
+	const recoveryTimeline = recoveryTimelineFromEvent(event);
+	if (recoveryTimeline) {
+		return { label: recoveryTimeline.label, detail: name || undefined };
+	}
 
 	if (event.event_type === "node.state_changed") {
 		const state = typeof payload.state === "string" ? payload.state : "";
@@ -265,15 +271,23 @@ export function synthesizeMilestones(
   lookups: TimelineLookups,
 ): Milestone[] {
   const nodeEvents = new Map<string, TimelineEvent[]>();
-  const runEvents: TimelineEvent[] = [];
-  const orphanedAttempts: TimelineEvent[] = [];
+   const runEvents: TimelineEvent[] = [];
+   const orphanedAttempts: TimelineEvent[] = [];
 	const suppressedResponseMilestoneEventIDs = buildSuppressedResponseMilestoneEventIDs(events);
+	const recoveryMilestones: Array<{ event: TimelineEvent; label: string; status: Milestone["status"] }> = [];
 
-  for (const event of events) {
-    if (suppressedResponseMilestoneEventIDs.has(event.event_id)) {
-      continue;
-    }
-    const payload = event.payload_json ?? {};
+	  for (const event of events) {
+	    if (suppressedResponseMilestoneEventIDs.has(event.event_id)) {
+	      continue;
+	    }
+		const recoveryTimeline = recoveryTimelineFromEvent(event);
+		if (recoveryTimeline) {
+			recoveryMilestones.push({ event, label: recoveryTimeline.label, status: recoveryTimeline.status });
+			if (RECOVERY_RUN_REOPEN_EVENT_TYPES.has(event.event_type)) {
+				continue;
+			}
+		}
+	    const payload = event.payload_json ?? {};
     let nodeId = typeof payload.node_id === "string" ? payload.node_id : "";
     if (!nodeId) {
       const nodeRunID = typeof payload.node_run_id === "string" ? payload.node_run_id : "";
@@ -386,8 +400,10 @@ export function synthesizeMilestones(
 					? "Verifying settlement"
 					: "In progress";
 			detailText = lead;
-    } else if (kind === "node_queued") {
-		  const lead = effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
+	} else if (kind === "node_queued") {
+		  const lead = latestNodeLifecycleEvent(sorted, "attempt.final_rework_queued")
+			? "Final Governance Rework Queued"
+			: effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
 		  detailText = lead;
 	} else if (kind === "node_blocked") {
 		  detailText = status === "paused"
@@ -553,6 +569,18 @@ export function synthesizeMilestones(
     });
   }
 
+	for (const recovery of deduplicateRecoveryMilestones(recoveryMilestones, lookups)) {
+		milestones.push({
+			id: `recovery-${recovery.event.event_id}`,
+			kind: "run_event",
+			label: recovery.label,
+			detail: nodeLabelForEvent(recovery.event, lookups),
+			status: recovery.status,
+			timestamp: recovery.event.emitted_at,
+			events: recovery.events,
+		});
+	}
+
   if (orphanedAttempts.length > 0) {
     const specialOrphans: TimelineEvent[] = [];
     const plainOrphans: TimelineEvent[] = [];
@@ -700,6 +728,98 @@ function latestBlockedRunEventSeq(events: TimelineEvent[]): number | undefined {
 function eventNodeRunID(event: TimelineEvent): string {
   const nodeRunID = event.payload_json?.node_run_id;
   return typeof nodeRunID === "string" ? nodeRunID.trim() : "";
+}
+
+// Timeline events remain generic JSON at the API boundary. Decode only the
+// durable recovery payload here, then delegate all operator wording to the mapper.
+function recoveryTimelineFromEvent(event: TimelineEvent) {
+	const payload = event.payload_json;
+	if (!payload || typeof payload !== "object") {
+		return undefined;
+	}
+	const fields = payload as Record<string, unknown>;
+	const phase = fields.recovery_phase;
+	const trigger = fields.recovery_trigger;
+	const reasonCode = fields.error_code ?? event.reason_code;
+	const scheduledAt = fields.scheduled_at;
+	const retryIndex = fields.retry_index;
+	const retryMax = fields.retry_max;
+	if (!isRecoveryPhase(phase) || !isRecoveryTrigger(trigger) || typeof reasonCode !== "string" || typeof scheduledAt !== "string" || typeof retryIndex !== "number" || typeof retryMax !== "number") {
+		return undefined;
+	}
+	return presentRecoveryTimeline({ phase, trigger, reason_code: reasonCode, scheduled_at: scheduledAt, retry_index: retryIndex, retry_max: retryMax } satisfies RecoveryLike);
+}
+
+function nodeLabelForEvent(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const nodeID = recoveryLogicalNodeID(event, lookups);
+	return nodeID ? nodeLabel(nodeID) : undefined;
+}
+
+function deduplicateRecoveryMilestones(
+	recoveryMilestones: Array<{ event: TimelineEvent; label: string; status: Milestone["status"] }>,
+	lookups: TimelineLookups,
+): Array<{ event: TimelineEvent; label: string; status: Milestone["status"]; events: TimelineEvent[] }> {
+	const deduplicated = new Map<string, { event: TimelineEvent; label: string; status: Milestone["status"]; events: TimelineEvent[] }>();
+	for (const recovery of recoveryMilestones) {
+		const identity = recoveryMilestoneIdentity(recovery.event, lookups) ?? `event:${recovery.event.event_id}`;
+		const existing = deduplicated.get(identity);
+		if (!existing || shouldPreferRecoveryEvent(recovery.event, existing.event)) {
+			deduplicated.set(identity, {
+				...recovery,
+				events: existing ? [...existing.events, recovery.event].sort(compareTimelineEventSequence) : [recovery.event],
+			});
+			continue;
+		}
+		existing.events.push(recovery.event);
+		existing.events.sort(compareTimelineEventSequence);
+	}
+	return [...deduplicated.values()];
+}
+
+function recoveryMilestoneIdentity(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const payload = event.payload_json;
+	if (!payload || typeof payload !== "object") {
+		return undefined;
+	}
+	const fields = payload as Record<string, unknown>;
+	const trigger = fields.recovery_trigger;
+	const phase = fields.recovery_phase;
+	const code = fields.error_code ?? event.reason_code;
+	const retryIndex = fields.retry_index;
+	const scheduledAt = fields.scheduled_at;
+	const logicalNodeID = recoveryLogicalNodeID(event, lookups);
+	if (
+		typeof trigger !== "string"
+		|| typeof phase !== "string"
+		|| typeof code !== "string"
+		|| typeof retryIndex !== "number"
+		|| typeof scheduledAt !== "string"
+		|| !logicalNodeID
+	) {
+		return undefined;
+	}
+	return JSON.stringify([trigger, phase, code, logicalNodeID, retryIndex, scheduledAt]);
+}
+
+function recoveryLogicalNodeID(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const nodeID = event.payload_json?.node_id;
+	if (typeof nodeID === "string" && nodeID.trim() !== "") {
+		return nodeID.trim();
+	}
+	const nodeRunID = eventNodeRunID(event);
+	return nodeRunID ? lookups.nridToNodeId.get(nodeRunID) : undefined;
+}
+
+function shouldPreferRecoveryEvent(candidate: TimelineEvent, current: TimelineEvent): boolean {
+	return RECOVERY_QUEUE_EVENT_TYPES.has(candidate.event_type) && !RECOVERY_QUEUE_EVENT_TYPES.has(current.event_type);
+}
+
+function isRecoveryPhase(value: unknown): value is RecoveryLike["phase"] {
+	return value === "scheduled" || value === "paused" || value === "running" || value === "recovered" || value === "exhausted";
+}
+
+function isRecoveryTrigger(value: unknown): value is RecoveryLike["trigger"] {
+	return value === "automatic_retry" || value === "operator_retry" || value === "operator_rerun";
 }
 
 function executionForEvent(event: TimelineEvent, lookups: TimelineLookups): RunExecution | undefined {

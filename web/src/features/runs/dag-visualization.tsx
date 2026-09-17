@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import * as d3 from "d3";
-import type { RunGraphResponse, RunGraphNode } from "@/api/hooks";
+import type { RunGraphResponse, RunGraphNode, RunNodeExecution } from "@/api/hooks";
 import { nodeExecutionSemantics, nodeLabel } from "@/lib/utils";
 import { statusLabel } from "@/lib/status-system";
 import { RUN_DETAIL_NEUTRAL_HEX, RUN_ROLE_ACCENT_HEX, RUN_STATUS_HEX } from "./run-detail-tones";
+import { WorkflowNodeCards } from "./workflow-node-cards";
 
 type NodeState = RunGraphNode["state"];
 type ViewTransform = { x: number; y: number; k: number };
@@ -676,7 +677,19 @@ function applyTextLengthConstraint(el: SVGTextElement, maxWidth: number) {
 // Component
 // ---------------------------------------------------------------------------
 
-export function DAGVisualization({ graph }: { graph: RunGraphResponse }) {
+export function DAGVisualization({
+  graph,
+  nodes = [],
+  onViewActivity,
+	 executionsErrorMessage,
+	 onRetryExecutions,
+}: {
+  graph: RunGraphResponse;
+  nodes?: RunNodeExecution[];
+  onViewActivity?: (nodeId: string) => void;
+	 executionsErrorMessage?: string | null;
+	 onRetryExecutions?: () => void;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const gRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null);
@@ -933,46 +946,62 @@ export function DAGVisualization({ graph }: { graph: RunGraphResponse }) {
   // -----------------------------------------------------------------------
 
   return (
-    <div data-testid="dag-visualization-root" className="flex h-full min-h-0 w-full flex-col">
-      {/* SVG container */}
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#0a0e17]">
-        <DAGLegend statuses={legendStatusesForNodes(graph.nodes)} />
-        <svg
-          ref={svgRef}
-          className="h-full w-full"
-          role="img"
-          aria-label="Run execution DAG"
-        />
+    <div data-testid="dag-visualization-root" className="h-full min-h-0 w-full">
+      <div className="lg:hidden">
+         <WorkflowNodeCards
+           nodes={nodes}
+           action={onViewActivity ? {
+             label: (node) => `View ${nodeLabel(node.node_id)} in Activity`,
+             onClick: onViewActivity,
+           } : undefined}
+			 unavailableNotice={executionsErrorMessage ? {
+				 message: executionsErrorMessage,
+				 onRetry: onRetryExecutions,
+			 } : undefined}
+			 emptyMessage={executionsErrorMessage ? undefined : "No execution steps have been recorded yet."}
+         />
       </div>
+      <div className="hidden h-full min-h-0 lg:block">
+        <div className="flex h-full min-h-0 w-full flex-col">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-[#0a0e17]">
+            <DAGLegend statuses={legendStatusesForNodes(graph.nodes)} />
+            <svg
+              ref={svgRef}
+              className="h-full w-full"
+              role="img"
+              aria-label="Run execution DAG"
+            />
+          </div>
 
-      {/* Zoom controls */}
-      <div className="mt-2 flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          onClick={zoomIn}
-          className="rounded border border-border bg-surface px-3 py-1 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
-        >
-          Zoom In
-        </button>
-        <button
-          type="button"
-          onClick={zoomOut}
-          className="rounded border border-border bg-surface px-3 py-1 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
-        >
-          Zoom Out
-        </button>
-        <button
-          type="button"
-          onClick={zoomReset}
-          className="rounded border border-border bg-surface px-3 py-1 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
-        >
-          Reset
-        </button>
-        {selectedNode && (
-          <span className="ml-auto text-xs text-muted">
-            Selected: <span className="text-[#c9a84c]">{selectedNode}</span>
-          </span>
-        )}
+          <div className="mt-2 flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={zoomIn}
+              className="min-h-11 rounded border border-border bg-surface px-3 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
+            >
+              Zoom In
+            </button>
+            <button
+              type="button"
+              onClick={zoomOut}
+              className="min-h-11 rounded border border-border bg-surface px-3 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
+            >
+              Zoom Out
+            </button>
+            <button
+              type="button"
+              onClick={zoomReset}
+              className="min-h-11 rounded border border-border bg-surface px-3 text-xs text-muted transition-colors hover:border-[#c9a84c] hover:text-[#e8e6e1]"
+            >
+              Reset
+            </button>
+            {selectedNode ? (
+              <span className="ml-auto text-xs text-muted">
+                Selected: <span className="text-[#c9a84c]">{selectedNode}</span>
+              </span>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );
