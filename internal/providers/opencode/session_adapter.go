@@ -2425,6 +2425,20 @@ func promptWithProviderInvocationMetadata(prompt, attemptID, invocationID string
 	return trimmedPrompt + "\n\n" + metadataBlock
 }
 
+// PromptContentByteLimit reserves the exact invocation metadata appended by
+// SessionAdapter so callers can bound prompt content before provider dispatch.
+func PromptContentByteLimit(attemptID, invocationID string) int {
+	metadataBytes := len(promptWithProviderInvocationMetadata("", attemptID, invocationID))
+	if metadataBytes == 0 {
+		return providerlimits.PromptBytes
+	}
+	limit := providerlimits.PromptBytes - metadataBytes - len("\n\n")
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
 func isExecutionCancelled(err error) bool {
 	return err != nil && errors.Is(err, context.Canceled)
 }

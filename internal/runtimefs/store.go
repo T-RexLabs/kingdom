@@ -522,13 +522,13 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 		return fmt.Errorf("open restore root: %w", err)
 	}
 	defer secureRoot.Close()
-	currentFiles, err := trackedfs.WalkTrackedFilesRoot(secureRoot)
+	currentEntries, err := trackedfs.WalkTrackedEntriesRoot(secureRoot)
 	if err != nil {
 		return err
 	}
-	current := make(map[string]struct{}, len(currentFiles))
-	for _, file := range currentFiles {
-		current[file.RelativePath] = struct{}{}
+	current := make(map[string]trackedfs.TrackedEntry, len(currentEntries))
+	for _, entry := range currentEntries {
+		current[entry.RelativePath] = entry
 	}
 	manifestPaths := make([]string, 0, len(manifest))
 	manifestParents := make(map[string]struct{})
@@ -545,7 +545,7 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 		if err != nil {
 			return err
 		}
-		_, listed := current[path]
+		listed := current[path].Type == securefs.EntryTypeRegular
 		if listed {
 			blobID, metadata, digestErr := digestTrackedFile(secureRoot, path)
 			if digestErr == nil && sameSnapshotContentAndMode(entry, blobID, metadata) {
@@ -578,7 +578,8 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 		if requiredFile || requiredParent {
 			continue
 		}
-		if err := secureRoot.RemoveEntry(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		entry := current[path]
+		if err := secureRoot.RemoveEntryIfIdentity(path, entry.Type, entry.Identity); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove restored file %q: %w", path, err)
 		}
 	}

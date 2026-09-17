@@ -379,7 +379,7 @@ func TestValidateBindsAppClientInstallationAndAccountIdentity(t *testing.T) {
 			}))
 			defer server.Close()
 			client, _ := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
-			validation, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", CredentialGeneration: 1, AppID: "1", ClientID: "Iv1", Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: tc.savedAccountID, AccountLogin: tc.savedAccountLogin}}})
+			validation, err := client.Validate(context.Background(), state.ExternalConnection{ConnectionID: "conn-1", CredentialStrategy: "app_private_key", CredentialGeneration: 1, AppID: "1", ClientID: "Iv1", Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: tc.savedAccountID, AccountLogin: tc.savedAccountLogin}}})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Validate() error=%v wantErr=%v", err, tc.wantErr)
 			}

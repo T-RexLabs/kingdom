@@ -300,6 +300,86 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutStreamObservatio
 	}
 }
 
+func TestFinalizePlanningProviderSettlementRejectsSuccessWithInvalidTerminalStreamObservation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, operation := newPlanningProviderSettlementTestStore(t)
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	request.PrimaryEvidencePayloadJSON = `{"state":"success","stream_observation":{"normalized_finish_reason":"stop"}}`
+	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
+	if err == nil {
+		t.Fatal("expected invalid terminal stream observation to fail")
+	}
+	var settlementErr *planningProviderSettlementError
+	if !errors.As(err, &settlementErr) {
+		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
+	}
+	if settlementErr.Reason != "invalid_stream_success" {
+		t.Fatalf("expected invalid_stream_success, got %q", settlementErr.Reason)
+	}
+}
+
+func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutOpenActiveInvocation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, operation := newPlanningProviderSettlementTestStore(t)
+	if _, err := store.db.Exec(`UPDATE planning_provider_invocations SET invocation_state = 'issued', opened_at = NULL WHERE planning_provider_invocation_id = 'ppinv_test_1'`); err != nil {
+		t.Fatalf("close planning provider invocation: %v", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, streamObservationSuccessSettlementRequest("Planner settled output.", `{}`))
+	if err == nil {
+		t.Fatal("expected success settlement without open active invocation to fail")
+	}
+	var settlementErr *planningProviderSettlementError
+	if !errors.As(err, &settlementErr) {
+		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
+	}
+	if settlementErr.Reason != "success_requires_open_active_invocation" {
+		t.Fatalf("expected success_requires_open_active_invocation, got %q", settlementErr.Reason)
+	}
+}
+
+func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutActiveInvocation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, operation := newPlanningProviderSettlementTestStore(t)
+	if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id = NULL WHERE operation_id = ?`, operation.OperationID); err != nil {
+		t.Fatalf("clear active planning provider invocation: %v", err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, streamObservationSuccessSettlementRequest("Planner settled output.", `{}`))
+	if err == nil {
+		t.Fatal("expected success settlement without active invocation to fail")
+	}
+	var settlementErr *planningProviderSettlementError
+	if !errors.As(err, &settlementErr) {
+		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
+	}
+	if settlementErr.Reason != "success_requires_open_active_invocation" {
+		t.Fatalf("expected success_requires_open_active_invocation, got %q", settlementErr.Reason)
+	}
+}
+
 func TestFinalizePlanningProviderSettlementAllowsFailureRetryWhenOnlySettledAtDiffers(t *testing.T) {
 	t.Parallel()
 
@@ -610,7 +690,7 @@ func streamObservationSuccessSettlementRequest(finalText, structuredPayloadJSON 
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PrimaryEvidenceID:            "evidence_success_ppinv_test_1",
 		PrimaryEvidenceKind:          PlanningProviderCompletionEvidenceKindStreamObservation,
-		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}"}`,
+		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}","stream_observation":{"provider_session_id":"ses_planning_receipt","final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"` + finalText + `","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`,
 		PrimaryEvidenceCreatedAt:     "2026-04-21T16:02:05Z",
 		Outcome:                      PlanningProviderCompletionOutcomeSuccess,
 		FinalText:                    finalText,

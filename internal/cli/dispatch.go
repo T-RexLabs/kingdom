@@ -453,6 +453,8 @@ type bearerTransport struct {
 	base          http.RoundTripper
 }
 
+const maxBufferedMutationResponseBytes = 1 << 20
+
 type ambiguousMutationError struct {
 	Key   string
 	Cause error
@@ -535,10 +537,13 @@ func bufferHTTPResponseBody(response *http.Response) error {
 		return nil
 	}
 	original := response.Body
-	body, err := io.ReadAll(original)
+	body, err := io.ReadAll(io.LimitReader(original, maxBufferedMutationResponseBytes+1))
 	_ = original.Close()
 	if err != nil {
 		return fmt.Errorf("read idempotent mutation response: %w", err)
+	}
+	if len(body) > maxBufferedMutationResponseBytes {
+		return fmt.Errorf("idempotent mutation response exceeds %d-byte limit", maxBufferedMutationResponseBytes)
 	}
 	response.Body = io.NopCloser(bytes.NewReader(body))
 	return nil
@@ -549,10 +554,13 @@ func responseHasCanonicalErrorCode(response *http.Response, code errorcatalog.Co
 		return false, nil
 	}
 	original := response.Body
-	body, err := io.ReadAll(original)
+	body, err := io.ReadAll(io.LimitReader(original, maxBufferedMutationResponseBytes+1))
 	_ = original.Close()
 	if err != nil {
 		return false, fmt.Errorf("read idempotency response: %w", err)
+	}
+	if len(body) > maxBufferedMutationResponseBytes {
+		return false, fmt.Errorf("idempotency response exceeds %d-byte limit", maxBufferedMutationResponseBytes)
 	}
 	response.Body = io.NopCloser(bytes.NewReader(body))
 	return canonicalErrorCode(body) == string(code), nil
@@ -575,7 +583,11 @@ func (r *Runtime) authenticatedHTTPClient(timeout time.Duration) (*http.Client, 
 	if err := validateCLIAPIAuthentication(r.config); err != nil {
 		return nil, err
 	}
-	token, err := localauth.ReadCredential(credentialFile)
+	readCredential := localauth.ReadCredential
+	if r.config.CredentialExplicit {
+		readCredential = localauth.ReadCredentialFile
+	}
+	token, err := readCredential(credentialFile)
 	if err != nil {
 		return nil, err
 	}
@@ -1552,7 +1564,7 @@ func applyInstallModeDefaults(cfg *Config) {
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(cfg.CredentialFile) == "" && localCredentialMayAuthenticate(cfg.ServerAddress) {
+	if !cfg.ServerExplicit && strings.TrimSpace(cfg.CredentialFile) == "" && localCredentialMayAuthenticate(cfg.ServerAddress) {
 		candidate := localauth.CredentialPath(installCfg.KingdomHome)
 		if _, err := os.Stat(candidate); err == nil {
 			cfg.CredentialFile = candidate

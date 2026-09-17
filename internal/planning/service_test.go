@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
@@ -96,7 +97,25 @@ func testSuccessMetadata(input AgentContext, finalText string) (ProviderExecutio
 		ProviderSessionID:               "provider-session-1",
 		OutcomeState:                    "success",
 		CompletionStructuredPayloadJSON: "{}",
+		StreamObservation:               terminalPlannerStreamObservation(finalText, "provider-session-1"),
 	}, nil
+}
+
+func terminalPlannerStreamObservation(finalText, providerSessionID string) providerexecution.InvocationStreamObservation {
+	exitCode := 0
+	return providerexecution.InvocationStreamObservation{
+		ProviderSessionID:      providerSessionID,
+		FinalTurnID:            "turn_test",
+		FinalStepID:            "step_test",
+		FinalSequence:          1,
+		RawFinishReason:        "stop",
+		NormalizedFinishReason: "stop",
+		CanonicalTerminalText:  finalText,
+		ProcessExited:          true,
+		ProcessExitCode:        &exitCode,
+		StdoutDrained:          true,
+		StderrDrained:          true,
+	}
 }
 
 func (m *mockAgent) OpeningTurn(_ context.Context, input AgentContext) (AgentTurn, error) {
@@ -282,6 +301,7 @@ func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input Age
 			ProviderSessionID:               providerSessionID,
 			OutcomeState:                    "success",
 			CompletionStructuredPayloadJSON: "{}",
+			StreamObservation:               terminalPlannerStreamObservation(defaultPlanningServiceTestScript.ContinueContent, providerSessionID),
 		},
 	}, nil
 }
@@ -2388,63 +2408,6 @@ func TestRecoveryFailStuckTitleWhileForegroundOpActive(t *testing.T) {
 	}
 	if session.ConversationState != state.PlanningSessionConversationStateProcessing {
 		t.Fatalf("expected conversation_state preserved as processing, got %q", session.ConversationState)
-	}
-}
-
-// Sessions left snapshot-less by the removed asynchronous bootstrap can never
-// enqueue a planner operation — every reply, title, and formalize attempt is
-// rejected at bind time. Recovery must repair them so an existing session is
-// not bricked for good.
-func TestRecoveryBackfillsSessionsMissingContextSnapshot(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T11:00:00Z" }, deterministicID())
-	t.Cleanup(func() { _ = service.Close(context.Background()) })
-
-	ctx := context.Background()
-	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_bricked",
-		Title:              "bricked",
-		TitleState:         "custom",
-		LifecycleState:     state.PlanningSessionLifecycleStateActive,
-		ConversationState:  state.PlanningSessionConversationStateReady,
-		ProjectRoot:        projectRoot,
-		ModelSelectionJSON: `{"model":"test-model"}`,
-		CreatedAt:          "2026-04-26T08:00:00Z",
-		UpdatedAt:          "2026-04-26T08:00:00Z",
-	}); err != nil {
-		t.Fatalf("seed snapshot-less session: %v", err)
-	}
-
-	// Precondition: the session cannot enqueue work in this state.
-	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
-		OperationID: "po_bricked", PlanningSessionID: "ps_bricked", Type: state.PlanningOperationTypeGenerateTitle,
-		Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: "2026-04-26T08:00:01Z",
-	}); !errors.Is(err, state.ErrPlanningContextSnapshotUnavailable) {
-		t.Fatalf("expected a snapshot-less session to reject operations, got %v", err)
-	}
-
-	if err := service.RecoverOperations(ctx); err != nil {
-		t.Fatalf("recover operations: %v", err)
-	}
-
-	repaired, ok, err := store.GetSession(ctx, "ps_bricked")
-	if err != nil || !ok {
-		t.Fatalf("get repaired session: ok=%v err=%v", ok, err)
-	}
-	if repaired.ContextSnapshotID == nil || strings.TrimSpace(*repaired.ContextSnapshotID) == "" {
-		t.Fatal("expected recovery to publish a context snapshot for the session")
-	}
-	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
-		OperationID: "po_repaired", PlanningSessionID: "ps_bricked", Type: state.PlanningOperationTypeGenerateTitle,
-		Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: "2026-04-26T11:00:01Z",
-	}); err != nil {
-		t.Fatalf("repaired session still cannot enqueue work: %v", err)
 	}
 }
 

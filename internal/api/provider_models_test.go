@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -12,7 +13,40 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 )
+
+type modelCatalogTestHandle struct {
+	stdout    io.ReadCloser
+	stderr    io.ReadCloser
+	cancelled bool
+}
+
+func (h *modelCatalogTestHandle) GuardID() string       { return "guard-models" }
+func (h *modelCatalogTestHandle) Stdout() io.ReadCloser { return h.stdout }
+func (h *modelCatalogTestHandle) Stderr() io.ReadCloser { return h.stderr }
+func (h *modelCatalogTestHandle) Cancel(context.Context) error {
+	h.cancelled = true
+	return nil
+}
+func (*modelCatalogTestHandle) Wait(context.Context) (processguardian.Result, error) {
+	return processguardian.Result{Quiescent: true}, nil
+}
+
+func TestCollectOpenCodeVerboseModelOutputBoundsProviderStreams(t *testing.T) {
+	handle := &modelCatalogTestHandle{
+		stdout: io.NopCloser(strings.NewReader(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes)+1))),
+		stderr: io.NopCloser(strings.NewReader("diagnostics")),
+	}
+	_, err := collectOpenCodeVerboseModelOutput(context.Background(), handle)
+	if !providerlimits.IsResourceLimitError(err) {
+		t.Fatalf("error=%v, want resource limit", err)
+	}
+	if !handle.cancelled {
+		t.Fatal("oversized model catalog stream did not cancel its process")
+	}
+}
 
 func TestParseOpenCodeVerboseModels(t *testing.T) {
 	t.Parallel()
@@ -43,6 +77,39 @@ opencode/claude-sonnet-4.6
 	}
 	if items[0].ModelName == "" || items[1].ModelName == "" {
 		t.Fatalf("expected model names to be populated, got %#v", items)
+	}
+}
+
+func TestParseOpenCodeVerboseModelsHandlesBracesInStringFields(t *testing.T) {
+	t.Parallel()
+
+	items, err := parseOpenCodeVerboseModels([]byte(`provider catalog refreshed
+{
+  "id": "gpt-5.4-mini",
+  "providerID": "github-copilot",
+  "name": "GPT-5.4 Mini {Preview}",
+  "variants": {
+    "low": {"reasoningEffort": "low"}
+  }
+}
+diagnostic noise
+{
+  "id": "claude-sonnet-4.6",
+  "providerID": "github-copilot",
+  "name": "Claude Sonnet 4.6 } Stable"
+}
+`))
+	if err != nil {
+		t.Fatalf("parse models with braces in strings: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(items))
+	}
+	if items[1].ModelName != "GPT-5.4 Mini {Preview}" {
+		t.Fatalf("expected brace-containing model name, got %#v", items)
+	}
+	if len(items[1].ThinkingEffortOptions) != 1 || items[1].ThinkingEffortOptions[0].Value != "low" {
+		t.Fatalf("expected parsed variants, got %#v", items[1].ThinkingEffortOptions)
 	}
 }
 
@@ -271,6 +338,45 @@ func TestOpenCodeProviderModelCatalogSnapshotBlocksOnlyOnAnEmptyCache(t *testing
 	}
 	if snapshot.Status != ProviderModelCatalogStatusFresh || len(snapshot.Items) != 1 {
 		t.Fatalf("expected the first read to fill the cache synchronously, got %#v", snapshot)
+	}
+}
+
+func TestOpenCodeProviderModelCatalogSnapshotKeepsAnEmptySuccessfulCache(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+	catalog := &openCodeProviderModelCatalog{
+		binaryPath:   "opencode",
+		now:          func() time.Time { return now.Add(2 * time.Minute) },
+		ttl:          60 * time.Second,
+		fetchTimeout: 25 * time.Millisecond,
+		cachedAt:     now,
+		cachedRows:   []gen.ProviderModel{},
+		refreshed:    make(chan struct{}, 1),
+		execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	snapshot, err := catalog.Snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("snapshot empty provider model cache: %v", err)
+	}
+	if snapshot.Status != ProviderModelCatalogStatusFresh || len(snapshot.Items) != 0 {
+		t.Fatalf("expected the empty cache to be served, got %#v", snapshot)
+	}
+	awaitBackgroundRefresh(t, catalog)
+
+	snapshot, err = catalog.Snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("snapshot empty provider model cache after failed revalidation: %v", err)
+	}
+	if snapshot.Status != ProviderModelCatalogStatusStale || snapshot.FailureReason != ProviderModelCatalogFailureReasonTimeout {
+		t.Fatalf("expected stale empty cache after failed revalidation, got %#v", snapshot)
+	}
+	if len(snapshot.Items) != 0 {
+		t.Fatalf("expected no cached models, got %#v", snapshot.Items)
 	}
 }
 

@@ -42,10 +42,13 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 		return nil, fmt.Errorf("invalid secure directory component")
 	}
 	info, statErr := parent.Lstat(component.Name)
+	created := false
 	if errors.Is(statErr, fs.ErrNotExist) && component.Create {
-		if err := parent.Mkdir(component.Name, component.Mode.Perm()); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, err
+		mkdirErr := parent.Mkdir(component.Name, component.Mode.Perm())
+		if mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+			return nil, mkdirErr
 		}
+		created = mkdirErr == nil
 		info, statErr = parent.Lstat(component.Name)
 	}
 	if statErr != nil {
@@ -54,11 +57,8 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, fmt.Errorf("secure path component %q must be a non-symlink directory", component.Name)
 	}
-	if component.ExactMode && info.Mode().Perm() != component.Mode.Perm() {
+	if component.ExactMode && EnforcesPOSIXMode() && info.Mode().Perm() != component.Mode.Perm() {
 		return nil, fmt.Errorf("secure directory %q must have mode %04o", component.Name, component.Mode.Perm())
-	}
-	if err := CurrentUserOwns(info); err != nil {
-		return nil, fmt.Errorf("secure directory %q: %w", component.Name, err)
 	}
 	child, err := parent.OpenRoot(component.Name)
 	if err != nil {
@@ -68,6 +68,30 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 	if err != nil || !os.SameFile(info, openedInfo) {
 		_ = child.Close()
 		return nil, fmt.Errorf("secure path component %q changed while opening", component.Name)
+	}
+	if component.ExactMode && created {
+		if err := ProtectCurrentUserOnlyPath(child.Name()); err != nil {
+			_ = child.Close()
+			return nil, fmt.Errorf("protect secure directory %q: %w", component.Name, err)
+		}
+	}
+	directory, err := child.Open(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	validateErr := ValidateCurrentUserOwnership(directory)
+	if validateErr == nil && component.ExactMode {
+		validateErr = ValidateCurrentUserOnly(directory)
+	}
+	closeErr := directory.Close()
+	if validateErr != nil {
+		_ = child.Close()
+		return nil, fmt.Errorf("secure directory %q: %w", component.Name, validateErr)
+	}
+	if closeErr != nil {
+		_ = child.Close()
+		return nil, closeErr
 	}
 	return child, nil
 }

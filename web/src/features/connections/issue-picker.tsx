@@ -281,7 +281,7 @@ export function IssuePicker({
           include_comments: includeComments,
         },
       });
-      setOpened(false);
+		setOpened(false);
     } catch (cause) {
       setError({ ...requestError(cause), scope: "select" });
     } finally {

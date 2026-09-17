@@ -425,7 +425,10 @@ func (a *retrySequenceAgent) ContinueTurnStream(_ context.Context, input AgentCo
 		metadata := ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timed out", ProviderDiagnosticsJSON: diagnostics, StreamObservation: opencode.InvocationStreamObservation{MeaningfulProgress: meaningful}}
 		return AgentTurn{}, executionError(metadata, errors.New("timed out"))
 	}
-	metadata := ProviderExecutionMetadata{OutcomeState: "success", FinalText: "Recovered response", CompletionStructuredPayloadJSON: `{}`}
+	metadata, err := testSuccessMetadata(input, "Recovered response")
+	if err != nil {
+		return AgentTurn{}, err
+	}
 	return AgentTurn{ContentMarkdown: "Recovered response", Metadata: metadata}, nil
 }
 

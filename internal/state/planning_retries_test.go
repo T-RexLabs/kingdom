@@ -402,6 +402,9 @@ func createPlanningRetryInvocation(t *testing.T, store *PlanningStore, operation
 	if _, err := store.CreatePlanningProviderInvocation(context.Background(), CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: id, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: now.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion}); err != nil {
 		t.Fatalf("create invocation %s: %v", id, err)
 	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), MarkPlanningProviderInvocationOpenRequest{PlanningProviderInvocationID: id, PlanningOperationID: operation.OperationID, ProviderSessionID: "session_" + id, OpenedAt: now.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion}); err != nil {
+		t.Fatalf("open invocation %s: %v", id, err)
+	}
 	return id
 }
 
@@ -410,7 +413,7 @@ func planningRetryFailureRequest(operation, claimed PlanningOperation, invocatio
 }
 
 func planningRetrySuccessSettlement(invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {
-	return &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"success"}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeSuccess, FinalText: "Recovered plan", StructuredPayloadJSON: `{}`, SettledAt: now.Format(time.RFC3339)}
+	return &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"success","stream_observation":{"final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"Recovered plan","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeSuccess, FinalText: "Recovered plan", StructuredPayloadJSON: `{}`, SettledAt: now.Format(time.RFC3339)}
 }
 
 func planningRetryCancelledSettlement(invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {

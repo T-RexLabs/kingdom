@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -184,14 +183,6 @@ func (s *PlanningStore) ReplayPlanningProcessGuardEvidence(ctx context.Context, 
 			cursor = item.id
 			result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(runtimeRoot, item.id)
 			if err != nil {
-				treeID, _ := strconv.Atoi(item.treeID)
-				if item.lifecycle == "acknowledged" && processguardian.ManagedProcessAbsent(item.childPID, treeID, item.childIdentity, item.treeIdentity) {
-					payload := `{"source":"runtime_process_absence"}`
-					observedAt := time.Now().UTC().Format(time.RFC3339Nano)
-					if _, recoverErr := s.db.ExecContext(ctx, `UPDATE provider_process_guards SET lifecycle='quiescent', quiescent_at=?, exit_code=-1, exit_signal=0, termination_forced=1, failure_code='guardian_evidence_lost', failure_text='The managed provider process group is absent, but guardian evidence was lost.', quiescence_evidence_sha256=?, quiescence_evidence_json=?, evidence_cleaned_at=?, updated_at=? WHERE guard_id=? AND lifecycle='acknowledged'`, observedAt, sha256HexPlanningGuard(payload), payload, observedAt, observedAt, item.id); recoverErr != nil {
-						return recoverErr
-					}
-				}
 				continue
 			}
 			if item.lifecycle == "quiescent" {

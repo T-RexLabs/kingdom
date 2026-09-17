@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/core/providerexecution"
 )
 
 type PlanningProviderInvocationState string
@@ -407,6 +409,28 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if invocation.PlanningOperationID != strings.TrimSpace(operationID) || invocation.PlanningSessionID != strings.TrimSpace(sessionID) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, operationID, string(invocation.InvocationState))
 	}
+	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
+		if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		if normalized.FinalText == "" {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		var activeInvocationID string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(active_provider_invocation_id, '') FROM planning_operations WHERE operation_id = ? AND planning_session_id = ? AND status = 'running'`, invocation.PlanningOperationID, invocation.PlanningSessionID).Scan(&activeInvocationID); err != nil {
+			if err == sql.ErrNoRows {
+				return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+			}
+			return "", err
+		}
+		if strings.TrimSpace(activeInvocationID) != invocation.PlanningProviderInvocationID {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		observation, err := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
+		if err != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || strings.TrimSpace(observation.CanonicalTerminalText) != normalized.FinalText {
+			return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+	}
 	var invocationGuardRequired bool
 	if err := tx.QueryRowContext(ctx, `SELECT process_guard_required FROM planning_provider_invocations WHERE planning_provider_invocation_id = ?`, invocation.PlanningProviderInvocationID).Scan(&invocationGuardRequired); err != nil {
 		return "", err
@@ -547,6 +571,19 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		return "", fmt.Errorf("link planning operation %q canonical settlement: %w", invocation.PlanningOperationID, err)
 	}
 	return settlement.SettlementID, nil
+}
+
+func planningProviderTerminalStreamObservation(payloadJSON string) (providerexecution.InvocationStreamObservation, error) {
+	var payload struct {
+		StreamObservation *providerexecution.InvocationStreamObservation `json:"stream_observation"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return providerexecution.InvocationStreamObservation{}, err
+	}
+	if payload.StreamObservation == nil {
+		return providerexecution.InvocationStreamObservation{}, fmt.Errorf("stream observation is required")
+	}
+	return *payload.StreamObservation, nil
 }
 
 func planningProviderError(operation, reason, invocationID, operationID, state string) error {

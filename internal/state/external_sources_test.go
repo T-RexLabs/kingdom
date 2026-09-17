@@ -613,7 +613,7 @@ func TestPlanningOperationExternalContextOmitsUnsafeFrameButKeepsBinding(t *test
 	if len(snapshotIDs) != 2 || snapshotIDs[0] != firstID || snapshotIDs[1] != secondID {
 		t.Fatal("omitted frame changed immutable snapshot bindings")
 	}
-	if strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE") != 1 || len(contextText) > MaxPlannerExternalBytes {
+	if strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE") != 0 || len(contextText) > MaxPlannerExternalBytes {
 		t.Fatalf("unexpected emitted context bytes=%d", len(contextText))
 	}
 	var omittedDigest string
@@ -950,6 +950,27 @@ func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.
 	}
 	published, err := store.GetCredentialPublication(context.Background(), connection.ConnectionID)
 	if err != nil || published.CredentialStrategy != "user_access_token" || published.CredentialGeneration != 2 {
+		t.Fatalf("published generation=%#v err=%v", published, err)
+	}
+}
+
+func TestFinalizeConnectionCommitAmbiguityReturnsTargetProjection(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ambiguous := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return ambiguous
+	}
+	projected, err := store.FinalizeConnection(context.Background(), FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{ConnectionID: "conn-initial-ambiguous", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom", Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-initial-ambiguous", ActorID: "local-operator", CreatedAt: "2026-08-24T13:00:00Z", AuditEventID: "audit-initial-ambiguous"}})
+	if !errors.Is(err, ambiguous) || projected.ConnectionID != "conn-initial-ambiguous" || projected.CredentialGeneration != 1 || projected.LastSuccessAt == nil {
+		t.Fatalf("ambiguous result projection=%#v err=%v", projected, err)
+	}
+	published, err := store.GetCredentialPublication(context.Background(), projected.ConnectionID)
+	if err != nil || published.CredentialStrategy != "app_private_key" || published.CredentialGeneration != 1 {
 		t.Fatalf("published generation=%#v err=%v", published, err)
 	}
 }

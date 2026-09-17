@@ -16,3 +16,20 @@ func CurrentUserOwns(info fs.FileInfo) error {
 	}
 	return nil
 }
+
+func ValidateCurrentUserOwnership(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	return CurrentUserOwns(info)
+}
+
+func ValidateCurrentUserOnly(file *os.File) error {
+	return ValidateCurrentUserOwnership(file)
+}
+
+func ProtectCurrentUserOnlyPath(string) error { return nil }
+
+// EnforcesPOSIXMode reports whether FileMode permission bits are authoritative.
+func EnforcesPOSIXMode() bool { return true }

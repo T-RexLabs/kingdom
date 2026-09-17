@@ -231,7 +231,7 @@ func (c *Client) Validate(ctx context.Context, conn state.ExternalConnection) (e
 	if conn.CredentialStrategy == "user_access_token" {
 		return c.validateSharedInstallations(ctx, conn)
 	}
-	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
+	if conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	return c.validateAppKeyInstallations(ctx, conn)
@@ -1445,7 +1445,7 @@ func (c *Client) ListInstallations(ctx context.Context, conn state.ExternalConne
 		}
 		return out, nil
 	}
-	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
+	if conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return nil, &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	key, _, err := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)

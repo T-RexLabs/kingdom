@@ -22,6 +22,7 @@ var (
 	errManifestFlowNotFound = errors.New("github manifest flow not found")
 	errManifestFlowStage    = errors.New("github manifest flow is not in the required stage")
 	errManifestFlowCapacity = errors.New("too many active github manifest flows")
+	errManifestFlowInFlight = errors.New("github manifest flow is in flight")
 )
 
 type manifestFlowStage string
@@ -135,6 +136,9 @@ func (m *manifestFlowManager) Current(sessionID, origin string) (manifestFlowSta
 	m.pruneLocked()
 	var selected *githubManifestFlow
 	for _, flow := range m.flows {
+		if flow.Stage == manifestStageFinalized || flow.Stage == manifestStageFailed {
+			continue
+		}
 		if flow.SessionID == sessionID && flow.Origin == origin && (selected == nil || flow.CreatedAt.After(selected.CreatedAt)) {
 			selected = flow
 		}
@@ -331,6 +335,9 @@ func (m *manifestFlowManager) Discard(flowID, sessionID, origin string) error {
 	flow, err := m.boundFlowLocked(flowID, sessionID, origin)
 	if err != nil {
 		return err
+	}
+	if flow.Stage == manifestStageConverting || flow.Stage == manifestStageFinalizing {
+		return errManifestFlowInFlight
 	}
 	flow.zeroSecrets()
 	m.removeStatesLocked(flow)

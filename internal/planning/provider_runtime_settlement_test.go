@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -68,6 +69,32 @@ func TestProviderSettlementDiagnosticsDegradeToEmptyObject(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			assertProviderDiagnostics(t, tt.settlement, map[string]any{})
 		})
+	}
+}
+
+func TestProviderSuccessSettlementEmbedsTerminalStreamObservation(t *testing.T) {
+	t.Parallel()
+
+	exitCode := 0
+	settlement := providerSettlementForSuccess("ppinv_success", ProviderExecutionMetadata{
+		FinalText: "settled response",
+		StreamObservation: providerexecution.InvocationStreamObservation{
+			FinalTurnID: "turn_1", FinalStepID: "step_1", FinalSequence: 1,
+			RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalText: "settled response",
+			ProcessExited: true, ProcessExitCode: &exitCode, StdoutDrained: true, StderrDrained: true,
+		},
+	}, "2026-05-22T08:41:20Z")
+	if settlement == nil {
+		t.Fatal("expected settlement")
+	}
+	var payload struct {
+		StreamObservation providerexecution.InvocationStreamObservation `json:"stream_observation"`
+	}
+	if err := json.Unmarshal([]byte(settlement.PrimaryEvidencePayloadJSON), &payload); err != nil {
+		t.Fatalf("decode primary evidence payload: %v", err)
+	}
+	if err := providerexecution.ValidateServerResponseSuccess(payload.StreamObservation); err != nil {
+		t.Fatalf("expected valid terminal stream observation, got %v", err)
 	}
 }
 

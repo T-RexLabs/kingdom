@@ -35,6 +35,9 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	}); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
+	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return rollbackPlanningTx(tx, "finalize generate title", err)
+	}
 
 	opUpdate := newUpdateBuilder("planning_operations").
 		Set("status", string(PlanningOperationStatusSucceeded)).
@@ -89,9 +92,6 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
 
-	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
-		return rollbackPlanningTx(tx, "finalize generate title", err)
-	}
 	if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}

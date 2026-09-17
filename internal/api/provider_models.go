@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 
 	gen "kingdom/internal/apigen"
 
@@ -168,7 +168,7 @@ func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh boo
 // cache could answer at all.
 func (c *openCodeProviderModelCatalog) cachedSnapshot() (ProviderModelCatalogSnapshot, bool) {
 	c.mu.Lock()
-	if len(c.cachedRows) == 0 {
+	if c.cachedAt.IsZero() {
 		c.mu.Unlock()
 		return ProviderModelCatalogSnapshot{}, false
 	}
@@ -232,7 +232,7 @@ func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refres
 		rows, fetchErr := c.fetch(ctx, refresh)
 		if fetchErr != nil {
 			unavailableErr := classifyProviderModelCatalogError(fetchErr)
-			servingCachedModels := len(cachedRows) > 0 && !cachedAt.IsZero()
+			servingCachedModels := !cachedAt.IsZero()
 			if servingCachedModels {
 				c.mu.Lock()
 				c.lastFailure = unavailableErr
@@ -363,63 +363,75 @@ func executeOpenCodeVerboseModels(ctx context.Context, binaryPath string, refres
 	if err != nil {
 		return nil, err
 	}
-	stdoutDone := make(chan []byte, 1)
-	stderrDone := make(chan []byte, 1)
+	return collectOpenCodeVerboseModelOutput(ctx, handle)
+}
+
+func collectOpenCodeVerboseModelOutput(ctx context.Context, handle processguardian.Handle) ([]byte, error) {
+	if handle == nil {
+		return nil, fmt.Errorf("model catalog process handle is required")
+	}
+	type streamResult struct {
+		raw []byte
+		err error
+	}
+	stdoutDone := make(chan streamResult, 1)
+	stderrDone := make(chan streamResult, 1)
 	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
-	go func() { defer stdoutStream.Close(); raw, _ := io.ReadAll(stdoutStream); stdoutDone <- raw }()
-	go func() { defer stderrStream.Close(); raw, _ := io.ReadAll(stderrStream); stderrDone <- raw }()
+	var cancelOnce sync.Once
+	cancel := func() { cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) }) }
+	go func() {
+		defer stdoutStream.Close()
+		raw, err := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "model catalog stdout", cancel)
+		stdoutDone <- streamResult{raw: raw, err: err}
+	}()
+	go func() {
+		defer stderrStream.Close()
+		raw, err := providerlimits.ReadBoundedOnLimit(stderrStream, providerlimits.GuardedCommandStreamBytes, "model catalog stderr", cancel)
+		stderrDone <- streamResult{raw: raw, err: err}
+	}()
 	cancelDone := make(chan struct{})
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = handle.Cancel(context.Background())
+			cancel()
 		case <-cancelDone:
 		}
 	}()
 	result, waitErr := handle.Wait(context.Background())
 	close(cancelDone)
 	stdout, stderr := <-stdoutDone, <-stderrDone
+	if stdout.err != nil {
+		return stdout.raw, stdout.err
+	}
+	if stderr.err != nil {
+		return stdout.raw, stderr.err
+	}
 	if waitErr != nil {
-		return stdout, waitErr
+		return stdout.raw, waitErr
 	}
 	if !result.Quiescent || result.ExitCode != 0 || result.ExitSignal != 0 || result.FailureCode != "" {
-		return stdout, fmt.Errorf("guarded model catalog command failed: %s", strings.TrimSpace(string(stderr)))
+		return stdout.raw, fmt.Errorf("guarded model catalog command failed: %s", strings.TrimSpace(string(stderr.raw)))
 	}
-	return stdout, nil
+	return stdout.raw, nil
 }
 
 func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
 	models := make([]gen.ProviderModel, 0)
 	seen := make(map[string]struct{})
-	rawOutput := strings.TrimSpace(string(output))
-	lines := strings.Split(string(output), "\n")
-	var (
-		collecting bool
-		depth      int
-		builder    strings.Builder
-	)
-	for _, line := range lines {
+	outputText := string(output)
+	rawOutput := strings.TrimSpace(outputText)
+	for lineStart := 0; lineStart < len(outputText); {
+		lineEnd := len(outputText)
+		if newline := strings.IndexByte(outputText[lineStart:], '\n'); newline >= 0 {
+			lineEnd = lineStart + newline
+		}
+		line := outputText[lineStart:lineEnd]
 		trimmedLine := strings.TrimSpace(line)
-		if !collecting {
-			if !strings.HasPrefix(trimmedLine, "{") {
-				continue
-			}
-			collecting = true
-			depth = 0
-			builder.Reset()
-		}
-		builder.WriteString(line)
-		builder.WriteByte('\n')
-		depth += strings.Count(line, "{")
-		depth -= strings.Count(line, "}")
-		if collecting && depth > 0 {
+		if !strings.HasPrefix(trimmedLine, "{") {
+			lineStart = lineEnd + 1
 			continue
 		}
-		collecting = false
-		trimmed := strings.TrimSpace(builder.String())
-		if trimmed == "" {
-			continue
-		}
+		objectStart := lineStart + strings.Index(line, trimmedLine)
 		var row struct {
 			ID         string `json:"id"`
 			ProviderID string `json:"providerID"`
@@ -428,9 +440,19 @@ func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
 				ReasoningEffort string `json:"reasoningEffort"`
 			} `json:"variants"`
 		}
-		if err := json.Unmarshal([]byte(trimmed), &row); err != nil {
+		decoder := json.NewDecoder(strings.NewReader(outputText[objectStart:]))
+		if err := decoder.Decode(&row); err != nil {
 			return nil, fmt.Errorf("decode provider model row: %w", err)
 		}
+		objectEnd := objectStart + int(decoder.InputOffset())
+		objectLineEnd := len(outputText)
+		if newline := strings.IndexByte(outputText[objectEnd:], '\n'); newline >= 0 {
+			objectLineEnd = objectEnd + newline
+		}
+		if strings.TrimSpace(outputText[objectEnd:objectLineEnd]) != "" {
+			return nil, fmt.Errorf("decode provider model row: invalid content after json object")
+		}
+		lineStart = objectLineEnd + 1
 		providerID := strings.TrimSpace(row.ProviderID)
 		modelID := strings.TrimSpace(row.ID)
 		if providerID == "" || modelID == "" {
@@ -462,9 +484,6 @@ func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
 		return left < right
 	})
 
-	if collecting || depth != 0 {
-		return nil, fmt.Errorf("decode provider model row: incomplete json object")
-	}
 	if rawOutput != "" && len(models) == 0 {
 		return nil, fmt.Errorf("decode provider model rows: non-empty output did not yield any valid rows")
 	}

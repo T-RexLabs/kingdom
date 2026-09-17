@@ -24,6 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/idempotency"
@@ -47,7 +48,25 @@ func apiTestReceiptMetadata(input planning.AgentContext, finalText string) (plan
 		ProviderSessionID:               "provider-session-1",
 		OutcomeState:                    "success",
 		CompletionStructuredPayloadJSON: "{}",
+		StreamObservation:               apiTestTerminalStreamObservation(finalText),
 	}, nil
+}
+
+func apiTestTerminalStreamObservation(finalText string) providerexecution.InvocationStreamObservation {
+	exitCode := 0
+	return providerexecution.InvocationStreamObservation{
+		ProviderSessionID:      "provider-session-1",
+		FinalTurnID:            "turn_api_test",
+		FinalStepID:            "step_api_test",
+		FinalSequence:          1,
+		RawFinishReason:        "stop",
+		NormalizedFinishReason: "stop",
+		CanonicalTerminalText:  finalText,
+		ProcessExited:          true,
+		ProcessExitCode:        &exitCode,
+		StdoutDrained:          true,
+		StderrDrained:          true,
+	}
 }
 
 var defaultPlannerAPITestScript = planningfixture.DefaultAPIScript()

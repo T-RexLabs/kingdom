@@ -283,22 +283,6 @@ func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID str
 	return pending == 0, nil
 }
 
-func (s *Store) RecoverProviderProcessGuardAbsent(ctx context.Context, guardID, observedAt string) error {
-	payload := `{"source":"runtime_process_absence"}`
-	result, err := s.db.ExecContext(ctx, `UPDATE provider_process_guards SET lifecycle = 'quiescent', quiescent_at = ?, exit_code = -1, exit_signal = 0, termination_forced = 1, failure_code = 'guardian_evidence_lost', failure_text = 'The managed provider process group is absent, but guardian evidence was lost.', quiescence_evidence_sha256 = ?, quiescence_evidence_json = ?, evidence_cleaned_at = ?, updated_at = ? WHERE guard_id = ? AND lifecycle = 'acknowledged'`, observedAt, sha256Hex(payload), payload, observedAt, observedAt, strings.TrimSpace(guardID))
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return fmt.Errorf("provider process guard absence recovery conflict")
-	}
-	return nil
-}
-
 func (s *Store) IngestProviderProcessGuardQuiescence(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
 	var result IngestProviderProcessGuardQuiescenceResult
 	_, err := sqlitex.Retry(ctx, func() error {

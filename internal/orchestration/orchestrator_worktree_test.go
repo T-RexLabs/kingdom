@@ -520,9 +520,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if removals != 0 || adds != 0 {
 		t.Fatalf("pre-quiescence recovery touched managed worktree: removals=%d adds=%d", removals, adds)
 	}
-	if err := execStore.RecoverProviderProcessGuardAbsent(context.Background(), "guard_worktree_quiescence", quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("record provider quiescence: %v", err)
-	}
+	mustExec(t, db, `UPDATE provider_process_guards SET lifecycle='quiescent', quiescent_at='`+quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)+`', quiescence_evidence_sha256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', quiescence_evidence_json='{}' WHERE guard_id='guard_worktree_quiescence'`)
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("recover managed worktree after explicit retry: %v", err)
 	}

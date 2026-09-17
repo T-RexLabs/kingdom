@@ -332,6 +332,13 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 			}
 			var finalizeErr error
 			connection, finalizeErr = s.externalStore.FinalizeConnection(finalizeCtx, state.FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "user_access_token", DisplayName: input.DisplayName, AppID: selected[0].AppID, ClientID: selected[0].ClientID, AppSlug: selected[0].AppSlug, Installations: installationsFromCandidates(selected), CredentialHandle: githubexternal.UserCredentialHandle(connectionID), ActorID: actorID, CreatedAt: at, AuditEventID: s.idGenerator("external_audit")}})
+			if finalizeErr == nil {
+				return nil
+			}
+			published, publicationErr := s.connectionCredentialPublished(finalizeCtx, connectionID, "user_access_token", 1)
+			if publicationErr == nil && published {
+				return nil
+			}
 			return finalizeErr
 		})
 	}
@@ -355,11 +362,15 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) sharedReauthorizationPublished(ctx context.Context, connectionID string, targetGeneration int) (bool, error) {
+	return s.connectionCredentialPublished(ctx, connectionID, "user_access_token", targetGeneration)
+}
+
+func (s *Server) connectionCredentialPublished(ctx context.Context, connectionID, strategy string, targetGeneration int) (bool, error) {
 	publication, err := s.externalStore.GetCredentialPublication(ctx, connectionID)
 	if err != nil {
 		return false, err
 	}
-	return publication.CredentialStrategy == "user_access_token" && publication.CredentialGeneration == targetGeneration, nil
+	return publication.CredentialStrategy == strategy && publication.CredentialGeneration == targetGeneration, nil
 }
 
 func installationSetDifference(expected, actual []string) (missing, extra []string) {

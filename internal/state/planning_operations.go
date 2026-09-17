@@ -538,6 +538,11 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 	if err := validateFinalizeOperationProviderContract(operation, req); err != nil {
 		return rollbackPlanningTx(tx, "finalize planning operation", err)
 	}
+	// Success settlement validates the still-open active invocation before this
+	// finalizer clears it from the operation row.
+	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return rollbackPlanningTx(tx, "finalize planning operation", err)
+	}
 
 	var terminalStatus PlanningOperationStatus
 	switch req.Kind {
@@ -671,9 +676,6 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		}
 	}
 
-	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
-		return rollbackPlanningTx(tx, "finalize planning operation", err)
-	}
 	if req.Kind == FinalizeCancel {
 		if err := resolveCancelledPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)

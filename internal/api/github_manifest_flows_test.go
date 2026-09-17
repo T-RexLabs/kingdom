@@ -331,6 +331,35 @@ func TestManifestFlowDiscardIsSessionBoundAndZeroesSecrets(t *testing.T) {
 	}
 }
 
+func TestManifestFlowDiscardRejectsInFlightWork(t *testing.T) {
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	manager := newManifestFlowManager(func() time.Time { return now })
+	flow, err := manager.Create("session-a", "https://kingdom.example", now.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RecordManifestCode(flow.ManifestState, "manifest-code"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.BeginConversion(flow.ID, flow.SessionID, flow.Origin); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Discard(flow.ID, flow.SessionID, flow.Origin); !errors.Is(err, errManifestFlowInFlight) {
+		t.Fatalf("discard converting flow error=%v", err)
+	}
+	if err := manager.CompleteConversion(flow.ID, githubexternal.ManifestConversion{}); err != nil {
+		t.Fatalf("complete conversion after rejected discard: %v", err)
+	}
+
+	manager.flows[flow.ID].Stage = manifestStageFinalizing
+	if err := manager.Discard(flow.ID, flow.SessionID, flow.Origin); !errors.Is(err, errManifestFlowInFlight) {
+		t.Fatalf("discard finalizing flow error=%v", err)
+	}
+	if err := manager.Finalize(flow.ID, "connection-1", "account-1", "octocat"); err != nil {
+		t.Fatalf("finalize after rejected discard: %v", err)
+	}
+}
+
 func TestDiscardGitHubManifestFlowEndpointAbandonsResumableSetup(t *testing.T) {
 	handler, _ := newAPIServerForTest(t)
 	server := handler.(*Server)
@@ -374,6 +403,11 @@ func TestDiscardGitHubManifestFlowEndpointAbandonsResumableSetup(t *testing.T) {
 	if response := discard("manifest-discard-anonymous", false); response.Code == http.StatusNoContent {
 		t.Fatalf("discard without a browser session succeeded: %d", response.Code)
 	}
+	server.manifestFlows.flows[started.FlowID].Stage = manifestStageConverting
+	if response := discard("manifest-discard-in-flight", true); response.Code != http.StatusConflict {
+		t.Fatalf("in-flight discard status=%d body=%s", response.Code, response.Body.String())
+	}
+	server.manifestFlows.flows[started.FlowID].Stage = manifestStageAwaitingManifest
 	if response := discard("manifest-discard", true); response.Code != http.StatusNoContent {
 		t.Fatalf("discard status=%d body=%s", response.Code, response.Body.String())
 	}

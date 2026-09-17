@@ -444,6 +444,34 @@ func TestRestoreSnapshotDeletionUnlinksSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+func TestRestoreSnapshotRemovesExtraSymlinkWithoutFollowingIt(t *testing.T) {
+	t.Parallel()
+
+	store, snapshotID := captureRestoreSecurityFixture(t, "run_extra_symlink", "snap_extra_symlink", "file.txt")
+	restoreRoot := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside guard: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(restoreRoot, "escape")); err != nil {
+		t.Fatalf("create extra symlink: %v", err)
+	}
+
+	if err := store.RestoreSnapshot(context.Background(), snapshotID, restoreRoot); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(restoreRoot, "escape")); !os.IsNotExist(err) {
+		t.Fatalf("extra symlink remains: %v", err)
+	}
+	raw, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside guard: %v", err)
+	}
+	if string(raw) != "outside" {
+		t.Fatalf("outside bytes changed to %q", raw)
+	}
+}
+
 func TestRestoreSnapshotDeletionDoesNotFollowSymlinkParent(t *testing.T) {
 	t.Parallel()
 

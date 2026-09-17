@@ -18,8 +18,11 @@ const (
 	MaxExternalComments      = 100
 	MaxExternalCommentBytes  = 32 * 1024
 	MaxExternalCommentsBytes = 128 * 1024
-	MaxPlannerCommentBytes   = 64 * 1024
-	MaxPlannerExternalBytes  = 128 * 1024
+	// External evidence shares the bounded provider prompt with conversation
+	// history and planner instructions, so its rendered form stays within this
+	// per-prompt allocation.
+	MaxPlannerCommentBytes   = 4 * 1024
+	MaxPlannerExternalBytes  = 6 * 1024
 	ExternalAssemblerVersion = "external-context-v2"
 )
 
@@ -573,6 +576,8 @@ func (s *ExternalStore) FinalizeConnection(ctx context.Context, req FinalizeExte
 		Installations: installations,
 		CreatedAt:     base.CreatedAt, UpdatedAt: base.CreatedAt,
 	}
+	checked := row.CreatedAt
+	row.LastCheckedAt, row.LastSuccessAt = &checked, &checked
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ExternalConnection{}, err
@@ -597,12 +602,13 @@ func (s *ExternalStore) FinalizeConnection(ctx context.Context, req FinalizeExte
 	if err = appendExternalAudit(ctx, tx, base.AuditEventID, row.ConnectionID, "", eventType, base.ActorID, map[string]any{"provider": "github", "credential_strategy": row.CredentialStrategy, "app_slug": row.AppSlug, "installations": installationAuditPayload(installations)}, row.CreatedAt); err != nil {
 		return ExternalConnection{}, err
 	}
-	if err = tx.Commit(); err != nil {
-		return ExternalConnection{}, err
+	if err = s.commitTx(tx); err != nil {
+		// Commit failures can be outcome-ambiguous. Return the exact projection
+		// attempted by this transaction so the caller can verify its durable
+		// credential publication while the staged generation remains locked.
+		return row, err
 	}
 	committed = true
-	checked := row.CreatedAt
-	row.LastCheckedAt, row.LastSuccessAt = &checked, &checked
 	return row, nil
 }
 

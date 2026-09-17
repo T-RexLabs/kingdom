@@ -230,46 +230,6 @@ func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]Planning
 	return items, nil
 }
 
-// ListSessionsMissingContextSnapshotPage returns sessions whose adopted
-// context snapshot does not resolve. Sessions are now created with their
-// snapshot in one transaction, so this only ever finds rows left behind by
-// the removed asynchronous bootstrap: they can never enqueue a planner
-// operation until a snapshot is published for them.
-func (s *PlanningStore) ListSessionsMissingContextSnapshotPage(ctx context.Context, afterPlanningSessionID string, limit int) ([]PlanningSession, error) {
-	if limit <= 0 {
-		limit = DefaultPlanningOperationListLimit
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.planning_session_id, s.title, s.title_state, s.lifecycle_state, s.conversation_state,
-		        s.active_leaf_message_id, s.current_operation_id, s.current_title_operation_id,
-		        s.current_draft_id, s.context_snapshot_id,
-		        s.project_root, s.model_selection_json, s.created_at, s.updated_at
-		 FROM planning_sessions s
-		 LEFT JOIN planning_context_snapshots snapshot
-		   ON snapshot.planning_context_snapshot_id = s.context_snapshot_id
-		  AND snapshot.planning_session_id = s.planning_session_id
-		 WHERE s.planning_session_id > ?
-		   AND snapshot.planning_context_snapshot_id IS NULL
-		 ORDER BY s.planning_session_id ASC
-		 LIMIT ?`,
-		strings.TrimSpace(afterPlanningSessionID),
-		limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list planning sessions missing context snapshot: %w", err)
-	}
-	defer rows.Close()
-	out := make([]PlanningSession, 0, limit)
-	for rows.Next() {
-		var row PlanningSession
-		if err := scanPlanningSession(rows, &row); err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
-}
-
 func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, afterPlanningSessionID string, limit int, userMessageThreshold int) ([]PlanningSession, error) {
 	if limit <= 0 {
 		limit = DefaultPlanningOperationListLimit

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -172,6 +173,37 @@ func TestAuthenticatedHTTPClientFailsBeforeNetworkWithoutCredential(t *testing.T
 	runtime := &Runtime{config: Config{ServerAddress: "http://127.0.0.1:1/api/v1"}}
 	if _, err := runtime.authenticatedHTTPClient(time.Second); err == nil {
 		t.Fatal("expected missing operator credential to fail before creating an HTTP client")
+	}
+}
+
+func TestAuthenticatedHTTPClientReadsExplicitExternalCredential(t *testing.T) {
+	t.Parallel()
+
+	kingdomHome := filepath.Join(t.TempDir(), ".kingdom")
+	credentialPath, err := localauth.EnsureCredential(kingdomHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalDirectory := filepath.Join(t.TempDir(), "credentials")
+	if err := os.Mkdir(externalDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	externalCredential := filepath.Join(externalDirectory, "operator-token")
+	if err := os.WriteFile(externalCredential, credential, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &Runtime{config: Config{
+		ServerAddress:      "https://example.test/api/v1",
+		CredentialFile:     externalCredential,
+		CredentialExplicit: true,
+	}}
+	if _, err := runtime.authenticatedHTTPClient(time.Second); err != nil {
+		t.Fatalf("create authenticated client with explicit credential: %v", err)
 	}
 }
 

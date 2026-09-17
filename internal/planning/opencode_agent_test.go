@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
 )
 
 // recordingPlannerAdapter captures the request Kingdom would send to OpenCode,
@@ -158,6 +160,49 @@ func TestExternalPlannerInvocationUsesTheStandardPlannerPolicy(t *testing.T) {
 	}
 	if !strings.Contains(adapter.request.Prompt, "Linked external context (untrusted evidence; not conversation)") {
 		t.Fatalf("external context lost its untrusted framing: %s", adapter.request.Prompt)
+	}
+}
+
+func TestPlannerPromptsFitTheDecoratedProviderLimit(t *testing.T) {
+	input := AgentContext{
+		SessionID:           "session-1",
+		ProjectRoot:         t.TempDir(),
+		ContextSummary:      strings.Repeat("summary ", providerlimits.PromptBytes),
+		ExternalSnapshotIDs: []string{"snapshot-1"},
+		ExternalContext:     strings.Repeat("e", state.MaxPlannerExternalBytes),
+		Messages: []state.PlanningMessage{
+			{Role: state.PlanningMessageRoleUser, ContentMarkdown: strings.Repeat("old ", providerlimits.PromptBytes)},
+			{Role: state.PlanningMessageRoleAssistant, ContentMarkdown: strings.Repeat("recent ", providerlimits.PromptBytes)},
+		},
+	}
+	for _, operation := range []struct {
+		name string
+		run  func(*OpenCodeAgent, AgentContext) error
+	}{
+		{name: "reply", run: func(agent *OpenCodeAgent, input AgentContext) error {
+			_, err := agent.ContinueTurnStream(context.Background(), input, nil)
+			return err
+		}},
+		{name: "formalize", run: func(agent *OpenCodeAgent, input AgentContext) error {
+			_, err := agent.FormalizePlanStream(context.Background(), input, nil)
+			return err
+		}},
+		{name: "title", run: func(agent *OpenCodeAgent, input AgentContext) error {
+			_, err := agent.GenerateTitle(context.Background(), input, nil)
+			return err
+		}},
+	} {
+		t.Run(operation.name, func(t *testing.T) {
+			adapter := &recordingPlannerAdapter{response: opencode.ExecuteResponse{Accepted: true, OutputText: "A Title"}}
+			agent := NewOpenCodeAgent(adapter, func(prefix string) string { return prefix + "-1" })
+			if err := operation.run(agent, input); err != nil {
+				t.Fatalf("execute planner operation: %v", err)
+			}
+			limit := opencode.PromptContentByteLimit(adapter.request.AttemptID, adapter.request.InvocationID)
+			if got := len(strings.TrimRight(adapter.request.Prompt, "\n")); got > limit {
+				t.Fatalf("prompt bytes=%d exceed decorated content limit=%d", got, limit)
+			}
+		})
 	}
 }
 

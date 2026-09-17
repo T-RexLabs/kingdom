@@ -387,7 +387,7 @@ func TestExecuteAPICommandDiscoversWorkspaceCredentialWithExplicitLoopbackServer
 	}))
 	defer server.Close()
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
-	if exit := Execute(context.Background(), stdout, stderr, []string{"--server", server.URL + "/api/v1", "run", "status", "--run-id", "run-1"}); exit != ExitSuccess {
+	if exit := Execute(context.Background(), stdout, stderr, []string{"--server", server.URL + "/api/v1", "--credential-file", credentialPath, "run", "status", "--run-id", "run-1"}); exit != ExitSuccess {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "run-1") {

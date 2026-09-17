@@ -3,7 +3,9 @@ package planning
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -100,6 +102,12 @@ func requirePlannerTurnSettled(metadata ProviderExecutionMetadata) error {
 	}
 	if metadata.FinalText == "" {
 		return fmt.Errorf("planner provider execution missing settled final text")
+	}
+	if err := providerexecution.ValidateServerResponseSuccess(metadata.StreamObservation); err != nil {
+		return fmt.Errorf("planner provider execution has invalid terminal stream observation: %w", err)
+	}
+	if strings.TrimSpace(metadata.StreamObservation.CanonicalTerminalText) != strings.TrimSpace(metadata.FinalText) {
+		return fmt.Errorf("planner provider execution terminal stream output does not match settled final text")
 	}
 	return nil
 }

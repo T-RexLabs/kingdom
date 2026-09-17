@@ -132,6 +132,10 @@ func (s *Server) handleDiscardGitHubManifestFlow(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := s.manifestFlows.Discard(r.PathValue("id"), sessionID, origin); err != nil {
+		if errors.Is(err, errManifestFlowInFlight) {
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "GitHub setup is still completing. Wait for it to finish before discarding it.", "api.github_manifest.discard", nil)
+			return
+		}
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "GitHub setup flow is unavailable", "api.github_manifest.discard", nil)
 		return
 	}
@@ -150,7 +154,7 @@ func (s *Server) handleConvertGitHubManifestFlow(w http.ResponseWriter, r *http.
 		return
 	}
 	defer zeroSecret(lease.Code)
-	conversionCtx, cancel := contextWithFlowDeadline(r.Context(), s.now, lease.ExpiresAt)
+	conversionCtx, cancel := contextWithFlowDeadline(s.lifecycleCtx, s.now, lease.ExpiresAt)
 	defer cancel()
 	converted, err := s.githubSetup.ConvertManifest(conversionCtx, string(lease.Code))
 	if err != nil {
@@ -226,7 +230,7 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 		zeroSecret(completion.OAuthCode)
 		zeroSecret(completion.OAuthVerifier)
 	}()
-	completionCtx, cancel := contextWithFlowDeadline(r.Context(), s.now, completion.ExpiresAt)
+	completionCtx, cancel := contextWithFlowDeadline(s.lifecycleCtx, s.now, completion.ExpiresAt)
 	defer cancel()
 	callback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
 	userToken, err := s.githubSetup.ExchangeOAuthCode(completionCtx, completion.ClientID, completion.ClientSecret, completion.OAuthCode, completion.OAuthVerifier, callback)
@@ -259,6 +263,12 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 			// through PUT /connections/{id}/installations.
 			CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: completion.AppName, AppID: completion.AppID, ClientID: completion.ClientID, AppSlug: completion.AppSlug, Installations: []state.ConnectionInstallation{{InstallationID: completion.InstallationID, AccountID: proved.AccountID, AccountLogin: proved.AccountLogin}}, CredentialHandle: githubexternal.CredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")},
 		})
+		if finalizeErr != nil {
+			published, publicationErr := s.connectionCredentialPublished(completionCtx, connectionID, "app_private_key", 1)
+			if publicationErr == nil && published {
+				return nil
+			}
+		}
 		return finalizeErr
 	})
 	if err != nil {

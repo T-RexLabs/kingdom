@@ -77,17 +77,13 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 	for _, guard := range guards {
 		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
 		if err != nil {
-			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged {
-				if o.pendingProviderProcessGuardAbsent(guard) {
-					if recoverErr := o.executionStore.RecoverProviderProcessGuardAbsent(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); recoverErr != nil {
-						return pass, recoverErr
-					}
-				} else if blockOnLiveGuard {
+			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged && !o.pendingProviderProcessGuardAbsent(guard) {
+				if blockOnLiveGuard {
 					return providerProcessGuardPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
 				}
 			}
-			// An acknowledged live process has no terminal evidence to ingest yet.
-			// Normal completion processing skips it without treating it as settled.
+			// Missing or invalid evidence never proves quiescence. The durable guard
+			// remains pending until the guardian publishes a valid record.
 			pass.NextCursor = guard.GuardID
 			pass.Visited++
 			continue

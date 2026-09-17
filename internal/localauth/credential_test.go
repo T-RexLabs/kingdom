@@ -1,3 +1,5 @@
+//go:build !windows
+
 package localauth
 
 import (
@@ -116,5 +118,45 @@ func TestReadCredentialRejectsSymlinkedKingdomAncestor(t *testing.T) {
 	}
 	if _, err := ReadCredential(filepath.Join(project, ".kingdom", "secrets", filepath.Base(path))); err == nil {
 		t.Fatal("expected symlinked kingdom ancestor rejection")
+	}
+	if _, err := ReadCredentialFile(filepath.Join(project, ".kingdom", "secrets", filepath.Base(path))); err == nil {
+		t.Fatal("expected explicit credential to reject symlinked kingdom ancestor")
+	}
+}
+
+func TestReadCredentialFileReadsProtectedExternalCredential(t *testing.T) {
+	t.Parallel()
+
+	home := filepath.Join(t.TempDir(), ".kingdom")
+	credentialPath, err := EnsureCredential(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(t.TempDir(), "credentials")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(directory, "operator-token")
+	if err := os.WriteFile(externalPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	credential, err := ReadCredentialFile(externalPath)
+	if err != nil {
+		t.Fatalf("read protected external credential: %v", err)
+	}
+	if string(credential) != string(raw[:len(raw)-1]) {
+		t.Fatalf("credential=%q want=%q", credential, raw[:len(raw)-1])
+	}
+	link := filepath.Join(t.TempDir(), "credentials-link")
+	if err := os.Symlink(directory, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadCredentialFile(filepath.Join(link, "operator-token")); err == nil {
+		t.Fatal("expected symlinked external credential directory rejection")
 	}
 }

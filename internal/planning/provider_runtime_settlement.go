@@ -161,6 +161,7 @@ func providerSettlementForSuccess(invocationID string, metadata ProviderExecutio
 		"structured_payload_json": structuredPayloadJSON,
 		"output_text":             finalText,
 		"provider_session":        strings.TrimSpace(metadata.ProviderSessionID),
+		"stream_observation":      metadata.StreamObservation,
 		"provider_diagnostics":    providerDiagnosticsObject(metadata.ProviderDiagnosticsJSON),
 	})
 	return &state.FinalizePlanningProviderSettlementRequest{

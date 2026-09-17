@@ -46,6 +46,11 @@ func EnsureCredential(kingdomHome string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create local operator credential: %w", err)
 	}
+	if err := securefs.ProtectCurrentUserOnlyPath(path); err != nil {
+		_ = file.Close()
+		_ = secrets.Remove(CredentialFileName)
+		return "", fmt.Errorf("protect local operator credential: %w", err)
+	}
 	writeErr := error(nil)
 	if _, err := file.WriteString(token); err != nil {
 		writeErr = err
@@ -85,6 +90,29 @@ func ReadCredential(path string) ([]byte, error) {
 	return readCredentialNamed(secrets, filepath.Base(path))
 }
 
+// ReadCredentialFile reads an explicitly supplied credential from a protected
+// external directory without treating that directory as a Kingdom workspace.
+func ReadCredentialFile(path string) ([]byte, error) {
+	absPath, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return nil, fmt.Errorf("resolve explicit local operator credential: %w", err)
+	}
+	directory := filepath.Dir(absPath)
+	if filepath.Base(directory) == "secrets" && filepath.Base(filepath.Dir(directory)) == ".kingdom" {
+		return ReadCredential(absPath)
+	}
+	parent := filepath.Dir(directory)
+	if directory == parent {
+		return nil, fmt.Errorf("explicit local operator credential must be in a protected directory")
+	}
+	root, err := securefs.OpenDirChain(parent, securefs.Directory{Name: filepath.Base(directory), Mode: 0o700, ExactMode: true})
+	if err != nil {
+		return nil, fmt.Errorf("open protected explicit credential directory: %w", err)
+	}
+	defer root.Close()
+	return readCredentialNamed(root, filepath.Base(absPath))
+}
+
 func openSecretsRoot(kingdomHome string, create bool) (*os.Root, error) {
 	home := filepath.Clean(kingdomHome)
 	return securefs.OpenDirChain(filepath.Dir(home),
@@ -107,10 +135,10 @@ func readCredentialNamed(secrets *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect local operator credential: %w", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if securefs.EnforcesPOSIXMode() && info.Mode().Perm() != 0o600 {
 		return nil, fmt.Errorf("local operator credential must have mode 0600")
 	}
-	if err := securefs.CurrentUserOwns(info); err != nil {
+	if err := securefs.ValidateCurrentUserOnly(file); err != nil {
 		return nil, err
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, 1024))
