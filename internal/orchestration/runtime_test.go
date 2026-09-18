@@ -1641,6 +1641,8 @@ func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(
 		ProviderSessionID:    "ses_lost_handoff",
 		CreatedAt:            "2026-03-01T12:00:02Z",
 		OpenedAt:             "2026-03-01T12:00:02Z",
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
@@ -2948,7 +2950,7 @@ func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testi
 	}
 	providerInvocationID := "pinv_workspace_limit"
 	providerSessionID := "ses_workspace_limit"
-	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", LogicalSessionID: sessionIDForAttempt(attemptID), ProviderSessionID: providerSessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: now, CreatedAt: now, OpenedAt: now}); err != nil {
+	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", LogicalSessionID: sessionIDForAttempt(attemptID), ProviderSessionID: providerSessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: now, CreatedAt: now, OpenedAt: now, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	attachQuiescentProviderProcessGuard(t, execStore, providerInvocationID, attemptID, "run_workspace_limit", "nr_workspace_limit_1", claim.LeaseOwner, claim.LeaseVersion, now)
@@ -3793,6 +3795,7 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_setup', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_setup', 'Receipt setup', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_setup', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_receipt_setup_1', 'wfdef_receipt_setup', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_setup', NULL, 'decree_receipt_setup', 'wfdef_receipt_setup', 'running', 'approved', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_setup_1', 'run_receipt_setup', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_setup', 1, '%s', NULL)`, now))
 	store := executionstore.New(db)
@@ -3809,6 +3812,15 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
+	claim, acquired, err := store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "receipt-setup-worker",
+		LeaseUntil: "2026-03-01T12:01:00Z",
+		ClaimedAt:  now,
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
 	runtimeRoot := t.TempDir()
 	fsStore, err := runtimefs.NewStore(db, runtimeRoot)
 	if err != nil {
@@ -3817,7 +3829,7 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	loop := orchestrationLoop{executionStore: store, fsStore: fsStore, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	workspaceRoot := t.TempDir()
 
-	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1"}, attemptID, "session_receipt_setup", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
+	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_receipt_setup", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
@@ -5869,7 +5881,7 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
 	providerSessionID := "ses_test_" + sanitizeFileToken(invocationID)
-	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: providerSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: providerSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
@@ -11575,6 +11587,8 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		CreatedAt:            createdAt,
 		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		OpenedAt:             createdAt,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
 	}); err != nil {
 		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
 	}
@@ -14723,6 +14737,8 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 		IssuedAt:             createdAt,
 		CreatedAt:            createdAt,
 		OpenedAt:             startedAt,
+		ExpectedLeaseOwner:   "runtime_orchestrator",
+		ExpectedLeaseVersion: 1,
 	}); err != nil {
 		t.Fatalf("activate timeout diagnostic provider invocation: %v", err)
 	}

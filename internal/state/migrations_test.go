@@ -896,7 +896,7 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 			t.Fatalf("external_connections.%s survived the move to the installations table", column)
 		}
 	}
-	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages"} {
+	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages", "created_at_unix_nano"} {
 		if !columnExists(t, db, "external_source_snapshots", column) {
 			t.Fatalf("external_source_snapshots.%s is missing", column)
 		}

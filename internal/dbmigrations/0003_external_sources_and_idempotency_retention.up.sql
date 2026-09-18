@@ -124,12 +124,13 @@ CREATE TABLE external_source_snapshots (
   comments_truncated INTEGER NOT NULL DEFAULT 0 CHECK (comments_truncated IN (0, 1)),
   truncation_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(truncation_json)),
   created_at TEXT NOT NULL,
+  created_at_unix_nano INTEGER NOT NULL,
   FOREIGN KEY (source_id) REFERENCES external_sources(source_id),
   FOREIGN KEY (predecessor_snapshot_id) REFERENCES external_source_snapshots(snapshot_id)
 );
 
-CREATE INDEX idx_external_snapshots_source_created
-ON external_source_snapshots (source_id, created_at DESC, snapshot_id);
+CREATE INDEX idx_external_snapshots_source_created_unix_nano
+ON external_source_snapshots (source_id, created_at_unix_nano DESC, snapshot_id);
 CREATE UNIQUE INDEX idx_external_snapshots_version_fence
 ON external_source_snapshots (source_id, COALESCE(predecessor_snapshot_id, ''), import_profile_digest, content_digest);
 

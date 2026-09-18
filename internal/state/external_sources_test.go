@@ -485,6 +485,49 @@ func TestPlanningOperationExternalContextBindsLatestAdoptionPerLink(t *testing.T
 	}
 }
 
+func TestPlanningOperationExternalContextCapsBindingsToRecentActiveSources(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "source-cap")
+	for i := 0; i < MaxPlanningOperationExternalSources+2; i++ {
+		snapshot := fixture.capture(t,
+			fmt.Sprintf("source-%02d", i),
+			fmt.Sprintf("snapshot-%02d", i),
+			fmt.Sprintf("%d", 100+i),
+			fmt.Sprintf("Source %02d", i),
+			fmt.Sprintf("body %02d", i),
+			nil,
+			fmt.Sprintf("2026-08-12T10:%02d:00Z", i),
+		)
+		fixture.link(t, fmt.Sprintf("link-%02d", i), snapshot, fmt.Sprintf("adopt-%02d", i), fmt.Sprintf("2026-08-12T10:%02d:00Z", i))
+	}
+	fixture.createOperation(t, "operation-source-cap")
+
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := make([]string, 0, MaxPlanningOperationExternalSources)
+	for i := 2; i < MaxPlanningOperationExternalSources+2; i++ {
+		wantIDs = append(wantIDs, fmt.Sprintf("snapshot-%02d", i))
+		if !strings.Contains(contextText, fmt.Sprintf("Source %02d", i)) {
+			t.Fatalf("bound context is missing recent source %d: %s", i, contextText)
+		}
+	}
+	if got, want := strings.Join(snapshotIDs, ","), strings.Join(wantIDs, ","); got != want {
+		t.Fatalf("bound snapshots=%q, want %q", got, want)
+	}
+	for _, i := range []int{0, 1} {
+		if strings.Contains(contextText, fmt.Sprintf("Source %02d", i)) {
+			t.Fatalf("bound context unexpectedly contains older source %d: %s", i, contextText)
+		}
+	}
+
+	// Immutable bindings are never silently truncated on recovery.
+	mustExecArgs(t, fixture.db, `INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES (?,?,?,?,?,?,?)`, "operation-source-cap", "snapshot-00", ExternalAssemblerVersion, digest(nil), 0, 0, fixture.at)
+	if _, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap"); err == nil || !strings.Contains(err.Error(), "bindings exceed") {
+		t.Fatalf("unbounded stored bindings were accepted: %v", err)
+	}
+}
+
 func TestPlanningOperationExternalContextUsesAggregateBudgets(t *testing.T) {
 	t.Run("comment budget", func(t *testing.T) {
 		fixture := newPlanningExternalBindingFixture(t, "comment-budget")
@@ -1100,6 +1143,93 @@ func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
 	if _, err := store.LinkHistory(ctx, "link-detached"); err != nil {
 		t.Fatalf("detached link history is unreadable: %v", err)
 	}
+}
+
+func TestLinkHistoryOrdersRFC3339NanoInstantsExactlyAcrossPages(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-12T10:00:00Z"
+
+	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-history-order", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-history-order", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-history-order"}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(snapshotID, predecessor, fetchedAt string) ExternalSourceSnapshot {
+		t.Helper()
+		snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{
+			SourceID:              "source-history-order",
+			SnapshotID:            snapshotID,
+			ConnectionID:          "conn-history-order",
+			ProviderNativeID:      "100",
+			RepositoryNativeID:    "200",
+			PredecessorSnapshotID: predecessor,
+			Issue:                 NormalizedExternalIssue{Title: snapshotID, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: fetchedAt},
+			Profile:               ExternalImportProfile{},
+			ProviderUpdatedAt:     fetchedAt,
+			FetchedAt:             fetchedAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snapshot
+	}
+	oldest := capture("snapshot-zero", "", at)
+	middle := capture("snapshot-zulu", oldest.SnapshotID, "2026-08-12T10:00:00.000000001Z")
+	newest := capture("snapshot-alpha", middle.SnapshotID, "2026-08-12T12:00:00.000000002+02:00")
+	var gotUnixNano int64
+	if err := db.QueryRow(`SELECT created_at_unix_nano FROM external_source_snapshots WHERE snapshot_id=?`, newest.SnapshotID).Scan(&gotUnixNano); err != nil {
+		t.Fatal(err)
+	}
+	wantUnixNano, err := rfc3339NanoUnixNano("2026-08-12T12:00:00.000000002+02:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUnixNano != wantUnixNano {
+		t.Fatalf("stored nanosecond sort key=%d, want %d", gotUnixNano, wantUnixNano)
+	}
+
+	mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-history-order','Issue','custom','active','ready','/tmp','{}',?,?)`, at, at)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "link-history-order", "planning_session", "session-history-order", oldest.SourceID, oldest.SnapshotID, "local-operator", "adoption-history-order", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertIDs := func(got []ExternalHistoryEntry, want ...string) {
+		t.Helper()
+		ids := make([]string, 0, len(got))
+		for _, entry := range got {
+			ids = append(ids, entry.SnapshotID)
+		}
+		if actual := strings.Join(ids, ","); actual != strings.Join(want, ",") {
+			t.Fatalf("history order=%q, want %q", actual, strings.Join(want, ","))
+		}
+	}
+
+	history, err := store.LinkHistory(ctx, "link-history-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIDs(history, newest.SnapshotID, middle.SnapshotID, oldest.SnapshotID)
+
+	var paged []ExternalHistoryEntry
+	for offset := 0; ; offset++ {
+		page, hasMore, err := store.LinkHistoryPage(ctx, "link-history-order", offset, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, page...)
+		if !hasMore {
+			break
+		}
+	}
+	assertIDs(paged, newest.SnapshotID, middle.SnapshotID, oldest.SnapshotID)
 }
 
 // A removed connection stays in SQLite so provenance links keep resolving and

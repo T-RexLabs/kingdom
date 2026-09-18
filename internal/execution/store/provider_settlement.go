@@ -149,6 +149,8 @@ type ActivateProviderInvocationRequest struct {
 	CreatedAt                    string
 	OpenedAt                     string
 	ReplacesProviderInvocationID string
+	ExpectedLeaseOwner           string
+	ExpectedLeaseVersion         int64
 }
 
 type AppendProviderCompletionEvidenceRequest struct {
@@ -771,7 +773,7 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 	if s == nil || s.db == nil {
 		return ProviderInvocation{}, fmt.Errorf("store database is required")
 	}
-	createReq, capabilityHash, openReq, replacementID, err := normalizeActivateProviderInvocationRequest(req)
+	createReq, capabilityHash, openReq, replacementID, expectedLeaseOwner, expectedLeaseVersion, err := normalizeActivateProviderInvocationRequest(req)
 	if err != nil {
 		return ProviderInvocation{}, err
 	}
@@ -782,7 +784,7 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		if bodyErr != nil {
 			return bodyErr
 		}
-		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, replacementID); bodyErr != nil {
+		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, replacementID, expectedLeaseOwner, expectedLeaseVersion); bodyErr != nil {
 			return bodyErr
 		}
 		var found bool
@@ -1888,7 +1890,25 @@ func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProvi
 	return invocation, nil
 }
 
-func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, openReq MarkProviderInvocationOpenRequest, replacementID string) error {
+func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, openReq MarkProviderInvocationOpenRequest, replacementID, expectedLeaseOwner string, expectedLeaseVersion int64) error {
+	authority, foundAttempt, err := loadProviderSettlementAttemptAuthorityTx(ctx, tx, invocation.AttemptID)
+	if err != nil {
+		return err
+	}
+	if !foundAttempt {
+		return providerSettlementError("activate_provider_invocation", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	if authority.ExecutionMode != ExecutionModeProviderBacked {
+		return providerSettlementError("activate_provider_invocation", "attempt_not_provider_backed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	if authority.LeaseOwner != expectedLeaseOwner || authority.LeaseVersion != expectedLeaseVersion {
+		return providerSettlementError("activate_provider_invocation", "lease_lineage_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
+	leaseExpiresAt, parseErr := time.Parse(time.RFC3339Nano, authority.LeaseExpiresAt)
+	openedAt, openedAtErr := time.Parse(time.RFC3339Nano, openReq.OpenedAt)
+	if parseErr != nil || openedAtErr != nil || !openedAt.Before(leaseExpiresAt) {
+		return providerSettlementError("activate_provider_invocation", "lease_expired", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+	}
 	activeInvocationID, _, foundAttempt, err := loadAttemptInvocationRefsTx(ctx, tx, invocation.AttemptID)
 	if err != nil {
 		return err
@@ -1964,11 +1984,16 @@ func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation Pr
 		SET active_provider_invocation_id = ?,
 		    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END
 		WHERE attempt_id = ?
+		  AND execution_mode = 'provider_backed'
+		  AND lease_owner = ?
+		  AND lease_version = ?
 		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ? OR active_provider_invocation_id = ?)`,
 		invocation.ProviderInvocationID,
 		openReq.ProviderSessionID,
 		openReq.ProviderSessionID,
 		invocation.AttemptID,
+		expectedLeaseOwner,
+		expectedLeaseVersion,
 		replacementID,
 		invocation.ProviderInvocationID,
 	)
@@ -2641,7 +2666,14 @@ func normalizeMarkProviderInvocationOpenRequest(req MarkProviderInvocationOpenRe
 	return req, nil
 }
 
-func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRequest) (CreateProviderInvocationRequest, string, MarkProviderInvocationOpenRequest, string, error) {
+func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRequest) (CreateProviderInvocationRequest, string, MarkProviderInvocationOpenRequest, string, string, int64, error) {
+	req.ExpectedLeaseOwner = strings.TrimSpace(req.ExpectedLeaseOwner)
+	if req.ExpectedLeaseOwner == "" {
+		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", "", 0, fmt.Errorf("expected_lease_owner is required")
+	}
+	if req.ExpectedLeaseVersion <= 0 {
+		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", "", 0, fmt.Errorf("expected_lease_version must be positive")
+	}
 	createReq, capabilityHash, err := normalizeCreateProviderInvocationRequest(CreateProviderInvocationRequest{
 		ProviderInvocationID: req.ProviderInvocationID,
 		AttemptID:            req.AttemptID,
@@ -2655,7 +2687,7 @@ func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRe
 		CreatedAt:            req.CreatedAt,
 	})
 	if err != nil {
-		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", err
+		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", "", 0, err
 	}
 	openReq, err := normalizeMarkProviderInvocationOpenRequest(MarkProviderInvocationOpenRequest{
 		ProviderInvocationID: createReq.ProviderInvocationID,
@@ -2669,9 +2701,9 @@ func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRe
 		}(),
 	})
 	if err != nil {
-		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", err
+		return CreateProviderInvocationRequest{}, "", MarkProviderInvocationOpenRequest{}, "", "", 0, err
 	}
-	return createReq, capabilityHash, openReq, strings.TrimSpace(req.ReplacesProviderInvocationID), nil
+	return createReq, capabilityHash, openReq, strings.TrimSpace(req.ReplacesProviderInvocationID), req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, nil
 }
 
 func normalizeAppendProviderCompletionEvidenceRequest(req AppendProviderCompletionEvidenceRequest) (AppendProviderCompletionEvidenceRequest, error) {

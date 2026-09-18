@@ -1492,6 +1492,8 @@ func TestTransferredIssueRejectsOutsideGrantAndChangedIdentity(t *testing.T) {
 						t.Errorf("destination issue used %q", r.Header.Get("Authorization"))
 					}
 					_, _ = w.Write([]byte(test.destinationBody))
+				case "/repos/outsider/private":
+					w.WriteHeader(http.StatusNotFound)
 				default:
 					t.Errorf("unexpected request %s", r.URL.String())
 					w.WriteHeader(http.StatusNotFound)
@@ -1728,6 +1730,185 @@ func TestRepositoryListingWalksEveryInstallationExactlyOnce(t *testing.T) {
 	// Each installation is authenticated for in its own right.
 	if len(minted) < 2 || minted[0] != "10" || minted[len(minted)-1] != "11" {
 		t.Fatalf("minted tokens for %v, want one per installation", minted)
+	}
+}
+
+func TestRepositoryListingContinuesBeyondOneHundredProviderPages(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	const providerPages = 101
+	var requests []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/installation/repositories":
+			page, err := strconv.Atoi(r.URL.Query().Get("page"))
+			if err != nil || page < 1 || page > providerPages {
+				t.Errorf("unexpected provider page %q", r.URL.Query().Get("page"))
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			requests = append(requests, page)
+			if page < providerPages {
+				w.Header().Set("Link", `<x>; rel="next"`)
+			}
+			_, _ = w.Write([]byte(`{"repositories":[`))
+			for item := 1; item <= repositoryPageSize; item++ {
+				if item > 1 {
+					_, _ = w.Write([]byte(","))
+				}
+				id := (page-1)*repositoryPageSize + item
+				_, _ = fmt.Fprintf(w, `{"id":%d,"full_name":"owner/repository-%d","html_url":"https://github.com/owner/repository-%d","owner":{"id":1}}`, id, id, id)
+			}
+			_, _ = w.Write([]byte(`]}`))
+		case "/repos/owner/repository-10100/issues":
+			_, _ = w.Write([]byte(`[{"id":900,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/repository-10100/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":0,"repository_url":"https://api.github.com/repos/owner/repository-10100"}]`))
+		case "/repos/owner/repository-10100/issues/7":
+			_, _ = w.Write([]byte(`{"id":900,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/repository-10100/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":0,"repository_url":"https://api.github.com/repos/owner/repository-10100"}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	conn := state.ExternalConnection{ConnectionID: "conn-1", RowVersion: 1, CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	cursor := ""
+	for expected := 1; expected <= providerPages; expected++ {
+		result, err := client.ListRepositories(context.Background(), conn, "", cursor)
+		if err != nil {
+			t.Fatalf("provider page %d: %v", expected, err)
+		}
+		firstID := (expected-1)*repositoryPageSize + 1
+		lastID := expected * repositoryPageSize
+		if len(result.Items) != repositoryPageSize || result.Items[0].ID != strconv.Itoa(firstID) || result.Items[len(result.Items)-1].ID != strconv.Itoa(lastID) {
+			t.Fatalf("provider page %d returned %#v", expected, result.Items)
+		}
+		if expected < providerPages && result.NextCursor == "" {
+			t.Fatalf("provider page %d did not continue", expected)
+		}
+		if expected == providerPages && result.NextCursor != "" {
+			t.Fatalf("final provider page continued with %q", result.NextCursor)
+		}
+		cursor = result.NextCursor
+	}
+	if len(requests) != providerPages {
+		t.Fatalf("provider requests=%d, want %d", len(requests), providerPages)
+	}
+	for index, page := range requests {
+		if page != index+1 {
+			t.Fatalf("provider request %d fetched page %d", index+1, page)
+		}
+	}
+	if issues, err := client.ListIssues(context.Background(), conn, "10100", "open", "", ""); err != nil || len(issues.Items) != 1 {
+		t.Fatalf("issue list for repository beyond cache cap: %#v err=%v", issues, err)
+	}
+	if preview, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: conn, RepositoryID: "10100", IssueNumber: 7}); err != nil || preview.NativeID != "900" {
+		t.Fatalf("issue preview for repository beyond cache cap: %#v err=%v", preview, err)
+	}
+}
+
+func TestIssueAndPreviewResolveRepositoryBeyondOneHundredPagesWithoutRestartingTheWalk(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	var listings, directLookups int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/installation/repositories":
+			listings++
+			page, err := strconv.Atoi(r.URL.Query().Get("page"))
+			if err != nil || page < 1 || page > repositoryRequestBudget {
+				t.Errorf("resolution walked to provider page %q", r.URL.Query().Get("page"))
+			}
+			w.Header().Set("Link", `<x>; rel="next"`)
+			_, _ = w.Write([]byte(`{"repositories":[{"id":1,"full_name":"owner/first","html_url":"https://github.com/owner/first","owner":{"id":1}}]}`))
+		case "/repositories/10101":
+			directLookups++
+			_, _ = w.Write([]byte(`{"id":10101,"full_name":"owner/page-101","html_url":"https://github.com/owner/page-101","owner":{"id":1}}`))
+		case "/repos/owner/page-101/issues":
+			_, _ = w.Write([]byte(`[{"id":900,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/page-101/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":0,"repository_url":"https://api.github.com/repos/owner/page-101"}]`))
+		case "/repos/owner/page-101/issues/7":
+			_, _ = w.Write([]byte(`{"id":900,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/page-101/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":0,"repository_url":"https://api.github.com/repos/owner/page-101"}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	conn := state.ExternalConnection{ConnectionID: "conn-1", RowVersion: 1, CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	if issues, err := client.ListIssues(context.Background(), conn, "10101", "open", "", ""); err != nil || len(issues.Items) != 1 {
+		t.Fatalf("issue list=%#v err=%v", issues, err)
+	}
+	client.repositoryIndexMu.Lock()
+	delete(client.repositoryIndex, conn.ConnectionID)
+	client.repositoryIndexMu.Unlock()
+	if preview, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: conn, RepositoryID: "10101", IssueNumber: 7}); err != nil || preview.NativeID != "900" {
+		t.Fatalf("issue preview=%#v err=%v", preview, err)
+	}
+	if listings != 2*repositoryRequestBudget || directLookups != 2 {
+		t.Fatalf("listing requests=%d direct lookups=%d, want two bounded resolutions", listings, directLookups)
+	}
+}
+
+func TestRepositoryListingStopsAtProviderRequestBudget(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	var requests []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/installation/repositories" {
+			t.Errorf("unexpected request %s", r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		if err != nil || page < 1 {
+			t.Errorf("unexpected provider page %q", r.URL.Query().Get("page"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, page)
+		w.Header().Set("Link", `<x>; rel="next"`)
+		_, _ = fmt.Fprintf(w, `{"repositories":[{"id":%d,"full_name":"owner/repository-%d","html_url":"https://github.com/owner/repository-%d","owner":{"id":1}}]}`, page, page, page)
+	}))
+	defer server.Close()
+
+	conn := state.ExternalConnection{ConnectionID: "conn-1", RowVersion: 1, CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	result, err := client.ListRepositories(context.Background(), conn, "no-match", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 0 {
+		t.Fatalf("filtered items=%#v, want none", result.Items)
+	}
+	installation, page := decodeRepositoryCursor(result.NextCursor)
+	if installation != 0 || page != repositoryRequestBudget+1 {
+		t.Fatalf("next cursor=(%d,%d), want (0,%d)", installation, page, repositoryRequestBudget+1)
+	}
+	if len(requests) != repositoryRequestBudget {
+		t.Fatalf("provider requests=%d, want budget %d", len(requests), repositoryRequestBudget)
+	}
+	for index, page := range requests {
+		if page != index+1 {
+			t.Fatalf("provider request %d fetched page %d", index+1, page)
+		}
 	}
 }
 

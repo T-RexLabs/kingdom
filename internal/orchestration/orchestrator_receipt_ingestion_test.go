@@ -127,6 +127,15 @@ func (h receiptIngestionHarness) addInvocation(t *testing.T, index int) (executi
 	}); err != nil {
 		t.Fatalf("enqueue receipt attempt %d: %v", index, err)
 	}
+	claim, acquired, err := h.store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: fmt.Sprintf("receipt-worker-%03d", index),
+		LeaseUntil: "2026-03-01T12:00:00.000000001Z",
+		ClaimedAt:  now,
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim receipt attempt %d: claim=%#v acquired=%t err=%v", index, claim, acquired, err)
+	}
 	invocation, err := h.store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID: invocationID,
 		AttemptID:            attemptID,
@@ -138,6 +147,8 @@ func (h receiptIngestionHarness) addInvocation(t *testing.T, index int) (executi
 		IssuedAt:             now,
 		CreatedAt:            now,
 		OpenedAt:             now,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
 	})
 	if err != nil {
 		t.Fatalf("activate receipt invocation %d: %v", index, err)
@@ -1239,7 +1250,7 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 func TestProviderInvocationActivationFailureRemovesOnlyEmptyInbox(t *testing.T) {
 	h := newReceiptIngestionHarness(t)
 	mustExec(t, h.db, `CREATE TRIGGER fail_provider_invocation_activation BEFORE INSERT ON provider_invocations BEGIN SELECT RAISE(FAIL, 'forced activation failure'); END`)
-	_, _, _, _, err := h.loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_ingestion"}, nodeAttempt{NodeRunID: "nr_missing"}, "attempt_activation_failure", "session_activation_failure", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
+	_, _, _, _, err := h.loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_ingestion"}, nodeAttempt{NodeRunID: "nr_missing", LeaseOwner: "missing-worker", LeaseVersion: 1}, "attempt_activation_failure", "session_activation_failure", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
 	if err == nil {
 		t.Fatal("expected provider invocation activation failure")
 	}

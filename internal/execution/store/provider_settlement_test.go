@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -687,7 +688,7 @@ func TestStoreListPendingProviderTerminalHandoffsUsesInvocationKeyset(t *testing
 			t.Fatalf("mark handoff fixture %q running: %v", invocationID, err)
 		}
 		sessionID := "session-" + invocationID
-		if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ProviderSessionID: sessionID, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-" + invocationID, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		if _, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ProviderSessionID: sessionID, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-" + invocationID, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 			t.Fatalf("activate handoff fixture %q: %v", invocationID, err)
 		}
 		zero := 0
@@ -1022,6 +1023,8 @@ func TestStoreSettleProviderCompletionAndTerminalRacesInvocationReplacement(t *t
 		CreatedAt:                    "2026-03-01T12:00:04Z",
 		OpenedAt:                     "2026-03-01T12:00:04Z",
 		ReplacesProviderInvocationID: completionReq.Settlement.ProviderInvocationID,
+		ExpectedLeaseOwner:           completionReq.ExpectedLeaseOwner,
+		ExpectedLeaseVersion:         completionReq.ExpectedLeaseVersion,
 	}
 
 	type raceResult struct {
@@ -1129,7 +1132,7 @@ func atomicProviderSettlementFixture(t *testing.T) (*Store, *sql.DB, SettleProvi
 	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:02Z' WHERE attempt_id = ?`, attemptID); err != nil {
 		t.Fatalf("mark fixture attempt running: %v", err)
 	}
-	if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_atomic_lease_rejection", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_atomic", CompletionMode: ProviderCompletionModeServerResponse, ProviderSessionID: "ses_atomic", IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+	if _, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_atomic_lease_rejection", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_atomic", CompletionMode: ProviderCompletionModeServerResponse, ProviderSessionID: "ses_atomic", IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("activate fixture invocation: %v", err)
 	}
 	acknowledgeQuiescentProviderProcessGuard(t, s, "invocation_atomic_lease_rejection", attemptID, "run_1", "nr_1", "worker-a", 1)
@@ -1175,7 +1178,7 @@ func phase2ProviderSettlementFixture(t *testing.T) (*Store, *sql.DB, SettleProvi
 	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:02Z' WHERE attempt_id = ?`, attemptID); err != nil {
 		t.Fatalf("mark phase 2 fixture attempt running: %v", err)
 	}
-	if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_phase2", CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-phase2", ProviderSessionID: "ses_phase2", IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+	if _, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_phase2", CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-phase2", ProviderSessionID: "ses_phase2", IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("activate phase 2 fixture invocation: %v", err)
 	}
 	receipt, err := s.IngestProviderCompletionReceipt(ctx, IngestProviderCompletionReceiptRequest{ProviderInvocationID: invocationID, EntryName: "receipt.json", WireByteCount: 64, WireSHA256: strings.Repeat("a", 64), EntryType: "regular", ProtocolVersion: "v1", ObservedAttemptID: attemptID, ObservedInvocationID: invocationID, CompletionCapability: "capability-phase2", ValidationSucceeded: true, FinalText: "canonical response", StructuredPayloadJSON: `{}`, Disposition: ProviderCompletionReceiptDispositionAccepted, ObservedAt: "2026-03-01T12:00:03Z"})
@@ -1474,7 +1477,7 @@ func TestStoreActivateProviderInvocationRejectsAttemptCompletionModeMismatch(t *
 		t.Fatalf("enqueue receipt-required attempt: %v", err)
 	}
 
-	_, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{
+	_, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{
 		ProviderInvocationID: "invocation_mismatched_mode",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
@@ -1765,7 +1768,7 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 		t.Fatalf("mark old provider invocation open: %v", err)
 	}
 
-	activated, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{
+	activated, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{
 		ProviderInvocationID:         "invocation_new",
 		AttemptID:                    attemptID,
 		RunID:                        "run_1",
@@ -1805,6 +1808,66 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 	}
 	if oldInvocation.InvocationState != ProviderInvocationStateSuperseded || oldInvocation.SupersededByInvocationID != "invocation_new" {
 		t.Fatalf("expected old invocation to be superseded by replacement, got %#v", oldInvocation)
+	}
+}
+
+func TestStoreActivateProviderInvocationFencesConcurrentLeaseGenerations(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	db.SetMaxOpenConns(1)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:activation_generation:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue activation attempt: %v", err)
+	}
+	first, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-first", LeaseUntil: "2026-03-01T12:00:00.000000001Z", ClaimedAt: "2026-03-01T12:00:00Z"})
+	if err != nil || !acquired {
+		t.Fatalf("claim first generation: claim=%#v acquired=%t err=%v", first, acquired, err)
+	}
+	second, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-second", LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00.000000001Z"})
+	if err != nil || !acquired || second.LeaseVersion != first.LeaseVersion+1 {
+		t.Fatalf("claim second generation: claim=%#v acquired=%t err=%v", second, acquired, err)
+	}
+
+	requests := []ActivateProviderInvocationRequest{
+		{ProviderInvocationID: "invocation_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00.000000001Z", OpenedAt: "2026-03-01T12:00:00.000000001Z", ExpectedLeaseOwner: first.LeaseOwner, ExpectedLeaseVersion: first.LeaseVersion},
+		{ProviderInvocationID: "invocation_current", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00.000000001Z", OpenedAt: "2026-03-01T12:00:00.000000001Z", ExpectedLeaseOwner: second.LeaseOwner, ExpectedLeaseVersion: second.LeaseVersion},
+	}
+	results := make(chan error, len(requests))
+	var ready sync.WaitGroup
+	ready.Add(len(requests))
+	start := make(chan struct{})
+	for _, request := range requests {
+		go func(request ActivateProviderInvocationRequest) {
+			ready.Done()
+			<-start
+			_, err := s.ActivateProviderInvocation(context.Background(), request)
+			results <- err
+		}(request)
+	}
+	ready.Wait()
+	close(start)
+	var successes int
+	for range requests {
+		if err := <-results; err == nil {
+			successes++
+		} else {
+			requireProviderSettlementError(t, err, "activate_provider_invocation", "lease_lineage_mismatch")
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("activation successes=%d, want one", successes)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("load activation attempt: found=%t err=%v", found, err)
+	}
+	if attempt.ActiveProviderInvocationID != "invocation_current" {
+		t.Fatalf("stale generation activated provider invocation: %#v", attempt)
 	}
 }
 
@@ -1851,7 +1914,7 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 		t.Fatalf("mark old provider invocation open: %v", err)
 	}
 
-	_, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{
+	_, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{
 		ProviderInvocationID:         "invocation_new",
 		AttemptID:                    attemptID,
 		RunID:                        "run_1",
@@ -2102,7 +2165,7 @@ func TestStoreListProviderReceiptIngestionCandidatesPaginatesAndIncludesCleanupD
 		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeReceiptRequired, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
 			t.Fatalf("enqueue candidate %q: %v", invocationID, err)
 		}
-		if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "cap-" + invocationID, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+		if _, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "cap-" + invocationID, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 			t.Fatalf("activate candidate %q: %v", invocationID, err)
 		}
 		if terminal {
@@ -2182,7 +2245,7 @@ func providerReceiptIngestionFixture(t *testing.T, suffix string) (*Store, *sql.
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeReceiptRequired, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
 		t.Fatalf("enqueue receipt ingestion fixture: %v", err)
 	}
-	if _, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_" + suffix, ProviderSessionID: "session_" + suffix, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-" + suffix, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:03Z"}); err != nil {
+	if _, err := activateProviderInvocationForTest(t, s, context.Background(), ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_" + suffix, ProviderSessionID: "session_" + suffix, CompletionMode: ProviderCompletionModeReceiptRequired, CompletionCapability: "capability-" + suffix, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:03Z"}); err != nil {
 		t.Fatalf("activate receipt ingestion fixture: %v", err)
 	}
 	return s, db, IngestProviderCompletionReceiptRequest{

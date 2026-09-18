@@ -94,6 +94,11 @@ const (
 	// maxIndexedRepositories bounds what one connection may remember, so the
 	// index stays an accelerator and never an unbounded cache.
 	maxIndexedRepositories = 2000
+	// repositoryResolutionProbeBudget bounds direct installation probes when a
+	// cold resolution cannot use the listing index. It deliberately matches the
+	// discovery budget, while avoiding a cursor walk that would restart from
+	// page one for every issue request.
+	repositoryResolutionProbeBudget = repositoryRequestBudget
 )
 
 // connectionRepositoryIndex remembers which installation granted a repository,
@@ -101,6 +106,7 @@ const (
 type connectionRepositoryIndex struct {
 	rowVersion int
 	byID       map[string]external.Repository
+	order      []string
 }
 
 type tokenMint struct {
@@ -593,9 +599,6 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 			}
 		}
 		if more {
-			if page >= 100 {
-				return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureOversizedResponse}
-			}
 			page++
 			continue
 		}
@@ -624,10 +627,14 @@ func (c *Client) rememberRepositories(conn state.ExternalConnection, items []ext
 		index = &connectionRepositoryIndex{rowVersion: conn.RowVersion, byID: map[string]external.Repository{}}
 		c.repositoryIndex[conn.ConnectionID] = index
 	}
-	if len(index.byID) >= maxIndexedRepositories {
-		return
-	}
 	for _, item := range items {
+		if _, exists := index.byID[item.ID]; !exists {
+			if len(index.order) == maxIndexedRepositories {
+				delete(index.byID, index.order[0])
+				index.order = index.order[1:]
+			}
+			index.order = append(index.order, item.ID)
+		}
 		index.byID[item.ID] = item
 	}
 }
@@ -646,35 +653,22 @@ func (c *Client) indexedRepository(conn state.ExternalConnection, id string) (ex
 }
 
 // repository resolves a repository ID back to the locator and installation that
-// grants it.
-//
-// Every issue listing and every preview goes through here, and the fallback is
-// a walk of the connection's entire grant. Remembering what the picker's own
-// repository listing already learned turns that walk into a map read for the
-// path an operator actually takes — select a repository, then read its issues —
-// while leaving the walk in place for cold callers such as a refresh after
-// restart.
+// grants it. The cache is the normal picker-to-issue path; a cold lookup checks
+// one bounded discovery page before using GitHub's direct repository endpoint.
 func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id string) (external.Repository, error) {
 	if item, ok := c.indexedRepository(conn, id); ok {
 		return item, nil
 	}
-	cursor := ""
-	for pages := 0; pages < 100; pages++ {
-		p, err := c.ListRepositories(ctx, conn, "", cursor)
-		if err != nil {
-			return external.Repository{}, err
-		}
-		for _, r := range p.Items {
-			if r.ID == id {
-				return r, nil
-			}
-		}
-		if p.NextCursor == "" {
-			break
-		}
-		cursor = p.NextCursor
+	page, err := c.ListRepositories(ctx, conn, "", "")
+	if err != nil {
+		return external.Repository{}, err
 	}
-	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+	for _, item := range page.Items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return c.directRepository(ctx, conn, id, "")
 }
 
 func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, repositoryID, stateFilter, search, cursor string) (external.IssuePage, error) {
@@ -941,23 +935,77 @@ func (c *Client) permanentTransferLocation(response responseMetadata) (*url.URL,
 }
 
 func (c *Client) repositoryByLocator(ctx context.Context, conn state.ExternalConnection, locator string) (external.Repository, error) {
-	cursor := ""
-	for pages := 0; pages < 100; pages++ {
-		page, err := c.ListRepositories(ctx, conn, "", cursor)
+	page, err := c.ListRepositories(ctx, conn, "", "")
+	if err != nil {
+		return external.Repository{}, err
+	}
+	for _, item := range page.Items {
+		if strings.EqualFold(item.Locator, locator) {
+			return item, nil
+		}
+	}
+	return c.directRepository(ctx, conn, "", locator)
+}
+
+// directRepository resolves one stable repository coordinate without replaying a
+// paginated grant walk. App installation credentials must be tried in stable
+// order because GitHub scopes each token to one installation; shared user
+// credentials cover every installation and need only one request.
+func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnection, id, locator string) (external.Repository, error) {
+	var path string
+	if id != "" {
+		parsedID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || parsedID <= 0 || strconv.FormatInt(parsedID, 10) != id {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+		path = "/repositories/" + id
+	} else {
+		validatedLocator, err := validateRepositoryLocator(locator)
+		if err != nil {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+		locator = validatedLocator
+		path = "/repos/" + locator
+	}
+	if len(conn.Installations) == 0 {
+		return external.Repository{}, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	probes := len(conn.Installations)
+	strategy := conn.CredentialStrategy
+	if strategy == "" {
+		strategy = "app_private_key"
+	}
+	if strategy == "user_access_token" {
+		probes = 1
+	} else if probes > repositoryResolutionProbeBudget {
+		probes = repositoryResolutionProbeBudget
+	}
+	for _, installation := range conn.Installations[:probes] {
+		token, err := c.accessToken(ctx, conn, installation.InstallationID)
 		if err != nil {
 			return external.Repository{}, err
 		}
-		for _, item := range page.Items {
-			if item.Locator == locator {
-				return item, nil
+		var response githubRepository
+		if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, path, token, nil, &response, ""); err != nil {
+			var providerErr *external.ProviderError
+			if errors.As(err, &providerErr) && providerErr.Status == http.StatusNotFound {
+				continue
 			}
+			return external.Repository{}, err
 		}
-		if page.NextCursor == "" {
-			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		items, err := normalizeRepositories([]githubRepository{response})
+		if err != nil {
+			return external.Repository{}, err
 		}
-		cursor = page.NextCursor
+		repository := items[0]
+		if id != "" && repository.ID != id || locator != "" && !strings.EqualFold(repository.Locator, locator) || installation.AccountID != "" && repository.AccountID != installation.AccountID {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		repository.InstallationID = installation.InstallationID
+		c.rememberRepositories(conn, []external.Repository{repository})
+		return repository, nil
 	}
-	return external.Repository{}, &external.ProviderError{Class: external.FailureOversizedResponse}
+	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 }
 
 func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) ([]state.ExternalComment, int, int, int, int, string, bool, error) {

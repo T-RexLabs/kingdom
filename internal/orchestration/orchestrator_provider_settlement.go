@@ -76,6 +76,8 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		CreatedAt:                    issuedAt,
 		OpenedAt:                     issuedAt,
 		ReplacesProviderInvocationID: strings.TrimSpace(replacesInvocationID),
+		ExpectedLeaseOwner:           attempt.LeaseOwner,
+		ExpectedLeaseVersion:         attempt.LeaseVersion,
 	}); err != nil {
 		if receiptDir != "" {
 			_ = o.fsStore.RemoveProviderCompletionInbox(providerInvocationID)

@@ -1829,7 +1829,7 @@ func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomical
 		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
-	if _, err := execStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_run_cancel", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: "ses_run_cancel", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
+	if _, err := execStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_run_cancel", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: "ses_run_cancel", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 

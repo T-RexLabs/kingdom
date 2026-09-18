@@ -135,8 +135,7 @@ func (o *orchestrationLoop) renewProviderExecutionLease(ctx context.Context, job
 	renewedAt := o.now().UTC()
 	leaseUntil := renewedAt.Add(job.providerLeaseDuration)
 	if previous, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(previousLeaseExpiresAt)); err == nil && !leaseUntil.After(previous) {
-		// SQLite's julianday comparison is millisecond-granular on supported builds.
-		leaseUntil = previous.Add(time.Millisecond)
+		leaseUntil = previous.Add(time.Nanosecond)
 	}
 	timeout := job.providerLeaseDuration / 3
 	if timeout <= 0 || timeout > providerLeaseRenewalTimeoutMaximum {

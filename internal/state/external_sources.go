@@ -21,9 +21,11 @@ const (
 	// External evidence shares the bounded provider prompt with conversation
 	// history and planner instructions, so its rendered form stays within this
 	// per-prompt allocation.
-	MaxPlannerCommentBytes   = 4 * 1024
-	MaxPlannerExternalBytes  = 6 * 1024
-	ExternalAssemblerVersion = "external-context-v2"
+	MaxPlannerCommentBytes  = 4 * 1024
+	MaxPlannerExternalBytes = 6 * 1024
+	// Operation bindings retain the most recently adopted active sources.
+	MaxPlanningOperationExternalSources = 8
+	ExternalAssemblerVersion            = "external-context-v2"
 )
 
 var (
@@ -376,7 +378,7 @@ type ExternalHistoryEntry struct {
 }
 
 func (s *ExternalStore) LinkHistory(ctx context.Context, linkID string) ([]ExternalHistoryEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT snap.snapshot_id,COALESCE(snap.predecessor_snapshot_id,''),snap.provider_updated_at,snap.fetched_at,snap.content_digest FROM external_source_links l JOIN external_source_snapshots snap ON snap.source_id=l.source_id WHERE l.link_id=? ORDER BY snap.created_at DESC,snap.snapshot_id DESC`, linkID)
+	rows, err := s.db.QueryContext(ctx, `SELECT snap.snapshot_id,COALESCE(snap.predecessor_snapshot_id,''),snap.provider_updated_at,snap.fetched_at,snap.content_digest FROM external_source_links l JOIN external_source_snapshots snap ON snap.source_id=l.source_id WHERE l.link_id=? ORDER BY snap.created_at_unix_nano DESC,snap.snapshot_id DESC`, linkID)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +404,7 @@ func (s *ExternalStore) LinkHistoryPage(ctx context.Context, linkID string, offs
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT snap.snapshot_id,COALESCE(snap.predecessor_snapshot_id,''),snap.provider_updated_at,snap.fetched_at,snap.content_digest FROM external_source_links l JOIN external_source_snapshots snap ON snap.source_id=l.source_id WHERE l.link_id=? ORDER BY snap.created_at DESC,snap.snapshot_id DESC LIMIT ? OFFSET ?`, linkID, limit+1, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT snap.snapshot_id,COALESCE(snap.predecessor_snapshot_id,''),snap.provider_updated_at,snap.fetched_at,snap.content_digest FROM external_source_links l JOIN external_source_snapshots snap ON snap.source_id=l.source_id WHERE l.link_id=? ORDER BY snap.created_at_unix_nano DESC,snap.snapshot_id DESC LIMIT ? OFFSET ?`, linkID, limit+1, offset)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1139,6 +1141,10 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 	if err := validateCapture(req); err != nil {
 		return ExternalSourceSnapshot{}, false, err
 	}
+	createdAtUnixNano, err := rfc3339NanoUnixNano(req.FetchedAt)
+	if err != nil {
+		return ExternalSourceSnapshot{}, false, fmt.Errorf("parse external snapshot fetched at: %w", err)
+	}
 	if req.ConnectionRowVersion > 0 {
 		var version int
 		var lifecycle, health string
@@ -1169,7 +1175,7 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 	canonical, _ := json.Marshal(contentMaterial)
 	contentDigest := digest(canonical)
 	now := req.FetchedAt
-	_, err := tx.ExecContext(ctx, `INSERT INTO external_sources (source_id,connection_id,provider,source_kind,provider_native_id,repository_native_id,repository_locator,issue_number,canonical_url,created_at,updated_at) VALUES (?,?,?,'issue',?,?,?,?,?,?,?) ON CONFLICT(connection_id,source_kind,provider_native_id) DO UPDATE SET repository_native_id=excluded.repository_native_id,repository_locator=excluded.repository_locator,issue_number=excluded.issue_number,canonical_url=excluded.canonical_url,row_version=row_version+1,updated_at=excluded.updated_at`, req.SourceID, req.ConnectionID, "github", req.ProviderNativeID, req.RepositoryNativeID, req.Issue.Repository, req.Issue.IssueNumber, req.Issue.CanonicalURL, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO external_sources (source_id,connection_id,provider,source_kind,provider_native_id,repository_native_id,repository_locator,issue_number,canonical_url,created_at,updated_at) VALUES (?,?,?,'issue',?,?,?,?,?,?,?) ON CONFLICT(connection_id,source_kind,provider_native_id) DO UPDATE SET repository_native_id=excluded.repository_native_id,repository_locator=excluded.repository_locator,issue_number=excluded.issue_number,canonical_url=excluded.canonical_url,row_version=row_version+1,updated_at=excluded.updated_at`, req.SourceID, req.ConnectionID, "github", req.ProviderNativeID, req.RepositoryNativeID, req.Issue.Repository, req.Issue.IssueNumber, req.Issue.CanonicalURL, now, now)
 	if err != nil {
 		return ExternalSourceSnapshot{}, false, fmt.Errorf("upsert external source: %w", err)
 	}
@@ -1178,7 +1184,7 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 		return ExternalSourceSnapshot{}, false, err
 	}
 	predecessor := nullable(strings.TrimSpace(req.PredecessorSnapshotID))
-	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO external_source_snapshots (snapshot_id,source_id,predecessor_snapshot_id,normalized_issue_json,import_profile_json,import_profile_digest,provider_updated_at,fetched_at,content_digest,etag,comments_etag,last_modified,provider_comment_count,fetched_comment_count,fetched_comment_pages,omitted_comment_count,omitted_comment_pages,retained_comment_count,retained_comment_bytes,comments_truncated,truncation_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.SnapshotID, sourceID, predecessor, string(issueJSON), string(profileJSON), profileDigest, req.ProviderUpdatedAt, req.FetchedAt, contentDigest, req.ETag, req.CommentsETag, req.LastModified, req.ProviderCommentCount, req.FetchedCommentCount, req.FetchedCommentPages, req.OmittedCommentCount, req.OmittedCommentPages, len(retained), retainedBytes, boolInt(truncated), truncationJSON(req, retained), req.FetchedAt)
+	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO external_source_snapshots (snapshot_id,source_id,predecessor_snapshot_id,normalized_issue_json,import_profile_json,import_profile_digest,provider_updated_at,fetched_at,content_digest,etag,comments_etag,last_modified,provider_comment_count,fetched_comment_count,fetched_comment_pages,omitted_comment_count,omitted_comment_pages,retained_comment_count,retained_comment_bytes,comments_truncated,truncation_json,created_at,created_at_unix_nano) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, req.SnapshotID, sourceID, predecessor, string(issueJSON), string(profileJSON), profileDigest, req.ProviderUpdatedAt, req.FetchedAt, contentDigest, req.ETag, req.CommentsETag, req.LastModified, req.ProviderCommentCount, req.FetchedCommentCount, req.FetchedCommentPages, req.OmittedCommentCount, req.OmittedCommentPages, len(retained), retainedBytes, boolInt(truncated), truncationJSON(req, retained), req.FetchedAt, createdAtUnixNano)
 	if err != nil {
 		return ExternalSourceSnapshot{}, false, fmt.Errorf("insert external snapshot: %w", err)
 	}
@@ -1209,6 +1215,14 @@ func validateCapture(req CaptureExternalIssueRequest) error {
 		return fmt.Errorf("issue number must be positive")
 	}
 	return nil
+}
+
+func rfc3339NanoUnixNano(value string) (int64, error) {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	if err != nil {
+		return 0, err
+	}
+	return parsed.UnixNano(), nil
 }
 
 func boundExternalComments(in []ExternalComment) ([]ExternalComment, int, bool) {
@@ -1904,22 +1918,32 @@ func (s *ExternalStore) AdoptLatest(ctx context.Context, linkID, adoptionID, act
 // read this binding: a later adoption cannot change queued or recovered work.
 func bindPlanningOperationExternalContext(ctx context.Context, tx *sql.Tx, operation PlanningOperation) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT adoption.snapshot_id,link.source_id,snapshot.source_id
-		FROM planning_external_source_adoptions adoption
-		JOIN external_source_links link ON link.link_id=adoption.link_id
-		JOIN external_source_snapshots snapshot ON snapshot.snapshot_id=adoption.snapshot_id
-		WHERE adoption.planning_session_id=?
-		  AND link.target_kind='planning_session'
-		  AND link.target_id=adoption.planning_session_id
-		  AND NOT `+linkDetached("link.link_id")+`
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM planning_external_source_adoptions newer
-			WHERE newer.planning_session_id=adoption.planning_session_id
-			  AND newer.link_id=adoption.link_id
-			  AND (newer.adopted_at>adoption.adopted_at OR (newer.adopted_at=adoption.adopted_at AND newer.adoption_id>adoption.adoption_id))
-		  )
-		ORDER BY adoption.snapshot_id,adoption.link_id`, operation.PlanningSessionID)
+		WITH active_adoptions AS (
+			SELECT adoption.snapshot_id,link.source_id AS link_source_id,snapshot.source_id AS snapshot_source_id,
+				adoption.link_id,adoption.adopted_at,adoption.adoption_id
+			FROM planning_external_source_adoptions adoption
+			JOIN external_source_links link ON link.link_id=adoption.link_id
+			JOIN external_source_snapshots snapshot ON snapshot.snapshot_id=adoption.snapshot_id
+			WHERE adoption.planning_session_id=?
+			  AND link.target_kind='planning_session'
+			  AND link.target_id=adoption.planning_session_id
+			  AND NOT `+linkDetached("link.link_id")+`
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM planning_external_source_adoptions newer
+				WHERE newer.planning_session_id=adoption.planning_session_id
+				  AND newer.link_id=adoption.link_id
+				  AND (newer.adopted_at>adoption.adopted_at OR (newer.adopted_at=adoption.adopted_at AND newer.adoption_id>adoption.adoption_id))
+			  )
+		), selected_adoptions AS (
+			SELECT snapshot_id,link_source_id,snapshot_source_id,link_id
+			FROM active_adoptions
+			ORDER BY adopted_at DESC,adoption_id DESC
+			LIMIT ?
+		)
+		SELECT snapshot_id,link_source_id,snapshot_source_id
+		FROM selected_adoptions
+		ORDER BY snapshot_id,link_id`, operation.PlanningSessionID, MaxPlanningOperationExternalSources)
 	if err != nil {
 		return err
 	}
@@ -1966,7 +1990,7 @@ func (s *PlanningStore) LoadPlanningOperationExternalContext(ctx context.Context
 		issueBytes       int
 		commentBytes     int
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id=? ORDER BY snapshot_id`, operationID)
+	rows, err := s.db.QueryContext(ctx, `SELECT snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id=? ORDER BY snapshot_id LIMIT ?`, operationID, MaxPlanningOperationExternalSources+1)
 	if err != nil {
 		return "", nil, err
 	}
@@ -1985,6 +2009,9 @@ func (s *PlanningStore) LoadPlanningOperationExternalContext(ctx context.Context
 	}
 	if err := rows.Close(); err != nil {
 		return "", nil, err
+	}
+	if len(bindings) > MaxPlanningOperationExternalSources {
+		return "", nil, fmt.Errorf("planning operation external source bindings exceed %d", MaxPlanningOperationExternalSources)
 	}
 	var snapshotIDs []string
 	if len(bindings) > 0 {

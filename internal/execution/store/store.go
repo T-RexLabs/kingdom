@@ -1059,10 +1059,32 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 	if !leaseUntilTime.After(claimedTime) {
 		return AttemptExecution{}, false, fmt.Errorf("lease_until must be after claimed_at")
 	}
+	claimedAt = claimedTime.UTC().Format(time.RFC3339Nano)
+	leaseUntil = leaseUntilTime.UTC().Format(time.RFC3339Nano)
 
 	var claim AttemptExecution
 	claimed := false
 	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var currentOwner string
+		var currentExpiry sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT lease_owner, lease_expires_at
+			FROM attempt_executions
+			WHERE attempt_id = ? AND state = 'queued' AND execution_mode = 'provider_backed'`, attemptID).Scan(&currentOwner, &currentExpiry)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load queued provider attempt lease %q: %w", attemptID, err)
+		}
+		if currentOwner != "" && currentExpiry.Valid {
+			expiresAt, parseErr := time.Parse(time.RFC3339Nano, currentExpiry.String)
+			if parseErr != nil {
+				return fmt.Errorf("parse queued provider attempt lease expiry %q: %w", attemptID, parseErr)
+			}
+			if expiresAt.After(claimedTime) {
+				return nil
+			}
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_owner = ?,
 		    lease_expires_at = ?,
@@ -1071,11 +1093,8 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 		WHERE attempt_id = ?
 		  AND state = 'queued'
 		  AND execution_mode = 'provider_backed'
-		  AND (
-		    lease_owner = '' OR
-		    lease_expires_at IS NULL OR
-		    julianday(lease_expires_at) <= julianday(?)
-		  )`, owner, leaseUntil, claimedAt, attemptID, claimedAt)
+		  AND lease_owner = ?
+		  AND COALESCE(lease_expires_at, '') = ?`, owner, leaseUntil, claimedAt, attemptID, currentOwner, currentExpiry.String)
 		if err != nil {
 			return fmt.Errorf("claim queued provider attempt %q: %w", attemptID, err)
 		}
@@ -1144,9 +1163,33 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 	if !leaseUntilTime.After(renewedTime) {
 		return false, fmt.Errorf("lease_until must be after renewed_at")
 	}
+	renewedAt = renewedTime.UTC().Format(time.RFC3339Nano)
+	leaseUntil = leaseUntilTime.UTC().Format(time.RFC3339Nano)
 
 	renewed := false
 	_, err = sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var currentExpiry string
+		err := tx.QueryRowContext(ctx, `SELECT lease_expires_at
+			FROM attempt_executions
+			WHERE attempt_id = ?
+			  AND execution_mode = 'provider_backed'
+			  AND state IN ('starting', 'running')
+			  AND lease_owner = ?
+			  AND lease_version = ?
+			  AND lease_expires_at IS NOT NULL`, attemptID, owner, req.LeaseVersion).Scan(&currentExpiry)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load provider attempt lease %q for renewal: %w", attemptID, err)
+		}
+		expiresAt, parseErr := time.Parse(time.RFC3339Nano, currentExpiry)
+		if parseErr != nil {
+			return fmt.Errorf("parse provider attempt lease expiry %q: %w", attemptID, parseErr)
+		}
+		if !expiresAt.After(renewedTime) || !leaseUntilTime.After(expiresAt) {
+			return nil
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_expires_at = ?
 		WHERE attempt_id = ?
@@ -1155,14 +1198,12 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 		  AND lease_owner = ?
 		  AND lease_version = ?
 		  AND lease_expires_at IS NOT NULL
-		  AND julianday(lease_expires_at) > julianday(?)
-		  AND julianday(?) > julianday(lease_expires_at)`,
+		  AND lease_expires_at = ?`,
 			leaseUntil,
 			attemptID,
 			owner,
 			req.LeaseVersion,
-			renewedAt,
-			leaseUntil,
+			currentExpiry,
 		)
 		if err != nil {
 			return fmt.Errorf("renew provider attempt lease %q: %w", attemptID, err)

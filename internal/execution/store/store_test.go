@@ -398,6 +398,32 @@ func TestStoreAcquireLeaseHonorsExpiry(t *testing.T) {
 	}
 }
 
+func activateProviderInvocationForTest(t *testing.T, s *Store, ctx context.Context, req ActivateProviderInvocationRequest) (ProviderInvocation, error) {
+	t.Helper()
+	attempt, found, err := s.GetAttempt(ctx, req.AttemptID)
+	if err != nil {
+		t.Fatalf("load activation fixture attempt: %v", err)
+	}
+	if !found {
+		t.Fatalf("activation fixture attempt %q not found", req.AttemptID)
+	}
+	if attempt.LeaseOwner == "" || attempt.LeaseVersion <= 0 || attempt.LeaseExpiresAt == "" {
+		owner := "activation-fixture-" + req.ProviderInvocationID
+		if _, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+			SET lease_owner = ?, lease_expires_at = '2099-01-01T00:00:00Z', lease_version = 1
+			WHERE attempt_id = ?`, owner, req.AttemptID); err != nil {
+			t.Fatalf("seed activation fixture lease: %v", err)
+		}
+		attempt, found, err = s.GetAttempt(ctx, req.AttemptID)
+		if err != nil || !found {
+			t.Fatalf("reload activation fixture lease: found=%t err=%v", found, err)
+		}
+	}
+	req.ExpectedLeaseOwner = attempt.LeaseOwner
+	req.ExpectedLeaseVersion = attempt.LeaseVersion
+	return s.ActivateProviderInvocation(ctx, req)
+}
+
 func TestStoreClaimQueuedProviderAttemptFencesCompetingClaimantsWithoutStarting(t *testing.T) {
 	t.Parallel()
 
@@ -453,6 +479,29 @@ func TestStoreClaimQueuedProviderAttemptFencesCompetingClaimantsWithoutStarting(
 	}
 	if second.LeaseOwner != "worker-b" || second.LeaseVersion != 2 || second.StartedAt != "" {
 		t.Fatalf("expected monotonically fenced second generation without provider start, got %#v", second)
+	}
+}
+
+func TestStoreClaimQueuedProviderAttemptHonorsNanosecondExpiryBoundary(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:nanosecond_claim:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+	if _, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-first", LeaseUntil: "2026-03-01T12:00:00.000000001Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || !acquired {
+		t.Fatalf("claim first lease: acquired=%t err=%v", acquired, err)
+	}
+	if claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-early", LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || acquired || claim.AttemptID != "" {
+		t.Fatalf("claim before nanosecond expiry: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	if claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker-boundary", LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00.000000001Z"}); err != nil || !acquired || claim.LeaseVersion != 2 {
+		t.Fatalf("claim at nanosecond expiry: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 }
 
@@ -537,6 +586,31 @@ func TestStoreRenewProviderAttemptLeasePreservesGeneration(t *testing.T) {
 	}
 	if attempt.LeaseExpiresAt != "2026-03-01T12:02:00Z" || attempt.LeaseOwner != claim.LeaseOwner || attempt.LeaseVersion != claim.LeaseVersion {
 		t.Fatalf("renewal changed lease lineage: %#v", attempt)
+	}
+}
+
+func TestStoreRenewProviderAttemptLeaseHonorsNanosecondExpiryBoundary(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:nanosecond_renewal:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatalf("enqueue provider attempt: %v", err)
+	}
+	claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "worker", LeaseUntil: "2026-03-01T12:00:00.000000001Z", ClaimedAt: "2026-03-01T12:00:00Z"})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'starting' WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatalf("mark provider attempt starting: %v", err)
+	}
+	renewed, err := s.RenewProviderAttemptLease(ctx, RenewProviderAttemptLeaseRequest{AttemptID: attemptID, LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion, LeaseUntil: "2026-03-01T12:01:00Z", RenewedAt: "2026-03-01T12:00:00Z"})
+	if err != nil || !renewed {
+		t.Fatalf("renew before nanosecond expiry: renewed=%t err=%v", renewed, err)
 	}
 }
 
@@ -1369,7 +1443,7 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, createdAt, attemptID); err != nil {
 		t.Fatalf("mark canonical provider attempt %q running: %v", attemptID, err)
 	}
-	if _, err := s.ActivateProviderInvocation(context.Background(), ActivateProviderInvocationRequest{
+	if _, err := activateProviderInvocationForTest(t, s, context.Background(), ActivateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,

@@ -3179,6 +3179,8 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 		IssuedAt:             "2026-03-01T12:59:59Z",
 		CreatedAt:            "2026-03-01T12:59:59Z",
 		OpenedAt:             now,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
