@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ type Service struct {
 	operations     *operationService
 	runner         *operationRunner
 	recovery       *operationRecovery
+	activity       *planningActivityReconciler
 	events         *operationEventService
 	reconcileEvery time.Duration
 
@@ -44,6 +46,9 @@ type Service struct {
 	retryWakeDue          time.Time
 	retryWakeFailures     int
 	retryWakeWG           sync.WaitGroup
+
+	activityDrainMu  sync.Mutex
+	activityDrainErr error
 
 	// Admission gate. closing flips true once Close has been called;
 	// new writes after that get ErrServiceShuttingDown. activeWrites
@@ -86,6 +91,8 @@ func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projec
 		metrics:     metrics,
 		retryEngine: retryEngine,
 	}
+	activity := newPlanningActivityReconciler(shared)
+	shared.reconcileActivity = activity.ReconcileOperation
 	// One service-owned context drives both the recovery loop and every
 	// runner-spawned goroutine. Close cancels this context, which fans
 	// out: recovery loop exits, in-flight operations see Done at their
@@ -98,6 +105,7 @@ func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projec
 		operations:            newOperationService(shared, runner),
 		runner:                runner,
 		recovery:              newOperationRecovery(shared, runner),
+		activity:              activity,
 		events:                newOperationEventService(shared),
 		reconcileEvery:        30 * time.Second,
 		recoveryCtx:           ctx,
@@ -132,6 +140,7 @@ func (s *Service) startRecoveryLoop() {
 	}
 	go func() {
 		defer close(s.recoveryDone)
+		s.continueStartupActivityRecovery(s.recoveryCtx)
 		ticker := time.NewTicker(s.reconcileEvery)
 		defer ticker.Stop()
 		for {
@@ -140,9 +149,40 @@ func (s *Service) startRecoveryLoop() {
 				return
 			case <-ticker.C:
 				_ = s.recoverOperationsAndSchedule(s.recoveryCtx, false)
+				s.continueStartupActivityRecovery(s.recoveryCtx)
 			}
 		}
 	}()
+}
+
+func (s *Service) continueStartupActivityRecovery(ctx context.Context) {
+	if s == nil || s.activity == nil || ctx.Err() != nil || s.startupPlanningProcessGuardReplayPending() {
+		return
+	}
+	if err := s.activity.Continue(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("planning activity reconciliation continuation: %v", err)
+		if s.recoveryCtx != nil && s.recoveryCtx.Err() != nil {
+			s.recordActivityDrainFailure(err)
+		}
+	}
+}
+
+func (s *Service) recordActivityDrainFailure(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.activityDrainMu.Lock()
+	defer s.activityDrainMu.Unlock()
+	s.activityDrainErr = errors.Join(s.activityDrainErr, fmt.Errorf("activity reconciliation drain: %w", err))
+}
+
+func (s *Service) activityDrainFailure() error {
+	if s == nil {
+		return nil
+	}
+	s.activityDrainMu.Lock()
+	defer s.activityDrainMu.Unlock()
+	return s.activityDrainErr
 }
 
 // admitWrite registers an in-flight write at the Service facade. It
@@ -224,6 +264,22 @@ func (s *Service) Close(ctx context.Context) error {
 	}
 	drained := s.beginClose()
 	forced := s.forced
+	// Stop every service-owned worker before waiting for foreground writes.
+	// Otherwise a blocked API write can leave recovery reconciliation running
+	// against SQLite until the caller's shutdown deadline.
+	if s.recoveryCancel != nil {
+		s.recoveryCancel()
+	}
+	s.stopPlanningRetryWake()
+	// Cancellation finalization is allowed a bounded handoff so it can record a
+	// terminal row. Once the caller's grace period ends, revoke that handoff as
+	// well: a runner that has not drained must not retain DB write authority
+	// after Close returns.
+	var stopHandoffAbort func() bool
+	if s.runner != nil {
+		stopHandoffAbort = context.AfterFunc(ctx, s.runner.abortHandoffs)
+		defer stopHandoffAbort()
+	}
 
 	var writeDrainErr error
 	select {
@@ -233,10 +289,6 @@ func (s *Service) Close(ctx context.Context) error {
 		writeDrainErr = fmt.Errorf("write drain: %w", ctx.Err())
 	}
 
-	if s.recoveryCancel != nil {
-		s.recoveryCancel()
-	}
-	s.stopPlanningRetryWake()
 	// A service can be closed before runtime startup reaches planning recovery.
 	// Starting the already-cancelled loop closes recoveryDone without allowing
 	// recovery work to run.
@@ -250,6 +302,7 @@ func (s *Service) Close(ctx context.Context) error {
 			recoveryDrainErr = fmt.Errorf("recovery drain: %w", ctx.Err())
 		}
 	}
+	recoveryDrainErr = errors.Join(recoveryDrainErr, s.activityDrainFailure())
 	if err := s.waitPlanningRetryWake(ctx); err != nil {
 		recoveryDrainErr = errors.Join(recoveryDrainErr, fmt.Errorf("retry wake drain: %w", err))
 	}
@@ -275,6 +328,9 @@ func (s *Service) ForceClose() {
 		s.recoveryCancel()
 	}
 	s.stopPlanningRetryWake()
+	if s.runner != nil {
+		s.runner.abortHandoffs()
+	}
 	s.forceOnce.Do(func() {
 		close(s.forced)
 	})
@@ -375,7 +431,19 @@ func (s *Service) recoverOperationsAndSchedule(ctx context.Context, backoffOverd
 	if err := s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck); err != nil {
 		return err
 	}
+	if s.activity != nil {
+		if err := s.activity.RecoverStartupPass(ctx); err != nil {
+			return err
+		}
+	}
 	return s.scheduleNextPlanningRetryWake(ctx, backoffOverdueWake)
+}
+
+func (s *Service) PlanningActivityReconciliationPending(ctx context.Context, operationID string) (bool, error) {
+	if s == nil || s.activity == nil || s.activity.deps.store == nil {
+		return false, fmt.Errorf("planning activity reconciliation runtime is required")
+	}
+	return s.activity.deps.store.PlanningActivityReconciliationPending(ctx, operationID)
 }
 
 // replayStartupPlanningProcessGuards protects startup latency from a large
@@ -416,6 +484,15 @@ func (s *Service) replayStartupPlanningProcessGuards(ctx context.Context) (bool,
 	}
 	s.startupProcessGuardReplayPending = pending
 	return pending, nil
+}
+
+func (s *Service) startupPlanningProcessGuardReplayPending() bool {
+	if s == nil {
+		return false
+	}
+	s.startupProcessGuardReplayMu.Lock()
+	defer s.startupProcessGuardReplayMu.Unlock()
+	return s.startupProcessGuardReplayPending
 }
 
 // FinaliseIfStuck transitions a running operation to failed if and only if

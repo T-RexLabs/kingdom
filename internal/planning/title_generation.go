@@ -203,6 +203,6 @@ func maybeAutoGenerateTitleForRecoveryCatchup(
 	return &updated, nil
 }
 
-func detachedAutoTitleContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), autoTitleEnqueueTimeout)
+func boundedAutoTitleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, autoTitleEnqueueTimeout)
 }

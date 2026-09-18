@@ -180,6 +180,10 @@ export function FormalizeNotifier({ streamed }: { streamed: PlannerOperationStat
       clearStorage();
     }
 
+    // Canonical plan completion must not keep the composer active, but its
+    // stream still owns late diagnostic activity until this durable marker.
+    if (streamed.status === "done" && !streamed.activityReconciled) return;
+
     const operationId = current.operationId;
     if (dismissTimerRef.current?.operationId === operationId) return;
     if (dismissTimerRef.current) {

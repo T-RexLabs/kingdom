@@ -188,7 +188,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	}
 	s.runner.Start(operation.OperationID)
 	if operationType == state.PlanningOperationTypeReply && !request.ForceNewSession {
-		autoCtx, cancel := detachedAutoTitleContext(ctx)
+		autoCtx, cancel := boundedAutoTitleContext(ctx)
 		defer cancel()
 		if _, autoErr := maybeAutoGenerateTitleAfterSecondUserMessage(autoCtx, s.deps, s.runner, planningSessionID, titleTriggerSourceAutoSecondUserMessageCreate); autoErr != nil {
 			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageCreate, planningSessionID, autoErr)

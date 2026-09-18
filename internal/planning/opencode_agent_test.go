@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
@@ -35,14 +36,38 @@ func TestOpenCodeAgentCarriesProviderDiagnosticsMetadata(t *testing.T) {
 	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
 
 	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{
-		SessionID:   "session-1",
-		ProjectRoot: t.TempDir(),
+		SessionID:      "session-1",
+		ProjectRoot:    t.TempDir(),
+		ModelSelection: PlannerModelSelection{Model: "openai/gpt-5.6-luna", ThinkingEffort: "none"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("planner invocation: %v", err)
 	}
 	if turn.Metadata.ProviderDiagnosticsJSON != `{"stream":{"events":4}}` {
 		t.Fatalf("expected provider diagnostics metadata to be carried, got %q", turn.Metadata.ProviderDiagnosticsJSON)
+	}
+	if adapter.request.Variant != "none" {
+		t.Fatalf("expected planner thinking effort to reach OpenCode as variant, got %q", adapter.request.Variant)
+	}
+}
+
+func TestOpenCodeAgentRequestsManagedWorkspacePaths(t *testing.T) {
+	projectRoot := t.TempDir()
+	adapter := &recordingPlannerAdapter{}
+	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
+
+	if _, err := agent.ContinueTurnStream(context.Background(), AgentContext{
+		SessionID:   "session-1",
+		ProjectRoot: projectRoot,
+	}, nil); err != nil {
+		t.Fatalf("planner invocation: %v", err)
+	}
+	if adapter.request.WorkspacePath != projectRoot {
+		t.Fatalf("expected workspace path %q, got %q", projectRoot, adapter.request.WorkspacePath)
+	}
+	wantConfigDir := bootstrapassets.ManagedOpenCodeRoot(projectRoot)
+	if adapter.request.ConfigDir != wantConfigDir {
+		t.Fatalf("expected managed config dir %q, got %q", wantConfigDir, adapter.request.ConfigDir)
 	}
 }
 

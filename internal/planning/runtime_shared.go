@@ -19,17 +19,20 @@ import (
 )
 
 type runtimeDeps struct {
-	store             *state.PlanningStore
-	planner           Agent
-	now               clockFunc
-	ids               idFunc
-	projectRoot       string
-	leaseOwner        string
-	broker            *operationEventBroker
-	metrics           *plannerMetrics
-	retryEngine       *retryengine.Engine
-	retryWake         func(time.Time)
-	retryWakeProgress func()
+	store                                 *state.PlanningStore
+	planner                               Agent
+	now                                   clockFunc
+	ids                                   idFunc
+	projectRoot                           string
+	leaseOwner                            string
+	broker                                *operationEventBroker
+	metrics                               *plannerMetrics
+	retryEngine                           *retryengine.Engine
+	retryWake                             func(time.Time)
+	retryWakeProgress                     func()
+	newLeaseTicker                        func(time.Duration) planningOperationLeaseTicker
+	inspectPlannerProviderSessionActivity func(context.Context, string, string, string, string, *string, string) ([]sessionActivityItem, error)
+	reconcileActivity                     func(context.Context, string) error
 }
 
 func (d runtimeDeps) nowString() string {

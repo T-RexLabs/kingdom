@@ -48,7 +48,6 @@ type sessionActivityInvocationBoundary struct {
 
 type cliSessionDiagnosticExporter struct {
 	binaryPath string
-	runner     GuardianRunner
 }
 
 func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDiagnosticExportRequest) (sessionDiagnosticExportResult, error) {
@@ -61,12 +60,26 @@ func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDia
 		args = append(args, "--sanitize")
 	}
 	args = append(args, providerSessionID)
-	releaseStartup, err := opencodeDatabaseStartupGates.acquire(ctx, req.DatabasePath)
+	// Export is observability only. Its complete process lifecycle has one hard
+	// deadline, including the reserved cancellation and stream-drain window.
+	diagnosticCtx, cancel, err := sessionDiagnosticExportRunContext(ctx)
+	if err != nil {
+		return sessionDiagnosticExportResult{}, err
+	}
+	defer cancel()
+	releaseStartup, err := opencodeDatabaseStartupGates.acquire(diagnosticCtx, req.DatabasePath)
 	if err != nil {
 		return sessionDiagnosticExportResult{}, fmt.Errorf("wait for opencode database startup: %w", err)
 	}
 	defer releaseStartup()
-	stdout, stderr, _, err := runGuardedCommand(ctx, e.runner, processguardian.Command{Path: e.binaryPath, Args: args, Dir: strings.TrimSpace(req.WorkDir), Env: opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))})
+	runner, err := processguardian.NewRunner(processguardian.Config{
+		CancelGrace: sessionDiagnosticExportCancelGrace,
+		CancelForce: sessionDiagnosticExportCancelForce,
+	})
+	if err != nil {
+		return sessionDiagnosticExportResult{}, fmt.Errorf("create diagnostic export guardian: %w", err)
+	}
+	stdout, stderr, _, err := runBoundedGuardedCommand(diagnosticCtx, runner, processguardian.Command{Path: e.binaryPath, Args: args, Dir: strings.TrimSpace(req.WorkDir), Env: opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))}, sessionDiagnosticExportCancelReserve)
 	result := sessionDiagnosticExportResult{
 		Stdout: append([]byte(nil), stdout...),
 		Stderr: strings.TrimSpace(string(stderr)),
@@ -79,6 +92,48 @@ func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDia
 		return result, fmt.Errorf("opencode export %q: %w", providerSessionID, err)
 	}
 	return result, nil
+}
+
+const (
+	sessionDiagnosticExportBudget      = 750 * time.Millisecond
+	sessionDiagnosticExportCancelGrace = 100 * time.Millisecond
+	sessionDiagnosticExportCancelForce = 100 * time.Millisecond
+	// Guardian cancellation also needs pipe delivery, terminal evidence, and
+	// stream-drain time around the configured process grace and force windows.
+	sessionDiagnosticExportCancelOverhead = 100 * time.Millisecond
+	sessionDiagnosticExportCancelReserve  = sessionDiagnosticExportCancelGrace + sessionDiagnosticExportCancelForce + sessionDiagnosticExportCancelOverhead
+	// runGuardedCommand waits for guardian quiescence after cancellation. Keep
+	// that bounded cancellation window inside the complete diagnostic budget.
+	sessionDiagnosticExportRunBudget = sessionDiagnosticExportBudget - sessionDiagnosticExportCancelReserve
+)
+
+func sessionDiagnosticExportRunContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	now := time.Now()
+	_, runnable := sessionDiagnosticExportRunnableDeadline(ctx, now)
+	if !runnable {
+		return nil, nil, fmt.Errorf("diagnostic export budget unavailable: %w", context.DeadlineExceeded)
+	}
+	diagnosticDeadline := sessionDiagnosticExportDeadline(ctx, now)
+	diagnosticCtx, cancel := context.WithDeadline(ctx, diagnosticDeadline)
+	return diagnosticCtx, cancel, nil
+}
+
+func sessionDiagnosticExportMayStartAt(ctx context.Context, now time.Time) bool {
+	_, runnable := sessionDiagnosticExportRunnableDeadline(ctx, now)
+	return runnable
+}
+
+func sessionDiagnosticExportRunnableDeadline(ctx context.Context, now time.Time) (time.Time, bool) {
+	runnableDeadline := sessionDiagnosticExportDeadline(ctx, now).Add(-sessionDiagnosticExportCancelReserve)
+	return runnableDeadline, runnableDeadline.After(now)
+}
+
+func sessionDiagnosticExportDeadline(ctx context.Context, now time.Time) time.Time {
+	deadline := now.Add(sessionDiagnosticExportBudget)
+	if callerDeadline, hasDeadline := ctx.Deadline(); hasDeadline && callerDeadline.Before(deadline) {
+		return callerDeadline
+	}
+	return deadline
 }
 
 func sessionActivityInvocationBoundaryFromMap(node map[string]any) (sessionActivityInvocationBoundary, bool) {

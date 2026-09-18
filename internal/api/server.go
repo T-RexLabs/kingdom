@@ -128,7 +128,16 @@ type Server struct {
 // implement http.Handler directly means callers don't need a parallel
 // handler reference — the same object exposes serving and Close().
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.handler.ServeHTTP(w, r)
+	// The request context remains the parent, so client disconnects and request
+	// deadlines retain their normal cancellation behavior. Server.Close also
+	// cancels this derived context, allowing graceful HTTP shutdown to drain
+	// long-lived handlers such as SSE streams.
+	ctx, cancel := context.WithCancel(r.Context())
+	stopLifecycleCancel := context.AfterFunc(s.lifecycleCtx, cancel)
+	defer cancel()
+	defer stopLifecycleCancel()
+
+	s.handler.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // Close releases resources owned by the server. The recovery goroutine in
@@ -479,11 +488,15 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		firstEventTimeout, streamInactivityTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
+		firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
 		if timeoutErr != nil {
 			return nil, fmt.Errorf("parse provider execution timeouts: %w", timeoutErr)
 		}
-		plannerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{RuntimeRoot: plannerRuntimeRoot})
+		plannerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
+			RuntimeRoot: plannerRuntimeRoot,
+			CancelGrace: cancelGraceTimeout,
+			CancelForce: cancelForceTimeout,
+		})
 		if runnerErr != nil {
 			return nil, fmt.Errorf("init planner process guardian: %w", runnerErr)
 		}

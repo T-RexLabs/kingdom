@@ -88,7 +88,9 @@ describe("popover listbox", () => {
 
 		const trigger = screen.getByRole("button", { name: "Select a step" });
 		await user.click(trigger);
+		await waitFor(() => expect(screen.getByRole("option", { name: "Plan" })).toHaveFocus());
 		trigger.focus();
+		expect(trigger).toHaveFocus();
 		await user.keyboard("{End}{Enter}");
 
 		expect(onSelect).toHaveBeenCalledOnce();

@@ -150,16 +150,24 @@ func normalizeAndValidate(policy *Policy) error {
 
 	return nil
 }
-func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, error) {
+func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, time.Duration, time.Duration, error) {
 	firstEventTimeout, err := parseDuration(p.Timeouts.FirstEventTimeout, "first_event_timeout")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	streamInactivityTimeout, err := parseDuration(p.Timeouts.StreamInactivityTimeout, "stream_inactivity_timeout")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
-	return firstEventTimeout, streamInactivityTimeout, nil
+	cancelGraceTimeout, err := parseDuration(p.Timeouts.CancelGraceTimeout, "cancel_grace_timeout")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	cancelForceTimeout, err := parseDuration(p.Timeouts.CancelForceTimeout, "cancel_force_timeout")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, nil
 }
 
 func (p Policy) AgentForRole(roleID string) string {

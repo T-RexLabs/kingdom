@@ -88,7 +88,7 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		InvocationID:      invocationID,
 		OnProviderSession: func(providerSessionID string) {
 			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
-			markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			markCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			if _, err := r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
 				PlanningProviderInvocationID: invocationID,

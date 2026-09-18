@@ -162,6 +162,35 @@ type PlanningOperationEvent struct {
 	CreatedAt   string
 }
 
+type PlanningActivityReconciliationStatus string
+
+const (
+	PlanningActivityReconciliationStatusPending   PlanningActivityReconciliationStatus = "pending"
+	PlanningActivityReconciliationStatusCompleted PlanningActivityReconciliationStatus = "completed"
+)
+
+// PlanningActivityReconciliation is a post-settlement diagnostic activity
+// delivery lifecycle. It is deliberately independent of the operation lease.
+type PlanningActivityReconciliation struct {
+	PlanningOperationID          string
+	PlanningProviderInvocationID string
+	Status                       PlanningActivityReconciliationStatus
+	LeaseOwner                   string
+	LeaseExpiresAt               *string
+	LeaseVersion                 int
+	CreatedAt                    string
+	CompletedAt                  *string
+}
+
+type CompletePlanningActivityReconciliationRequest struct {
+	PlanningOperationID string
+	LeaseOwner          string
+	LeaseVersion        int
+	CompletedAt         string
+	ActivityEvents      []AppendPlanningOperationEventRequest
+	MarkerEvent         AppendPlanningOperationEventRequest
+}
+
 type PlanningOperationTelemetrySample struct {
 	OperationID           string
 	CreatedAt             string

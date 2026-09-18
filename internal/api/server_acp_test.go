@@ -18,10 +18,21 @@ import (
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
+)
+
+const (
+	plannerTimeoutTestFirstEventTimeout       = 10 * time.Second
+	plannerTimeoutTestStreamInactivityTimeout = 2 * time.Second
+	plannerTimeoutTestCancelGraceTimeout      = 500 * time.Millisecond
+	plannerTimeoutTestCancelForceTimeout      = time.Second
+	// This bounds test liveness only. It includes asynchronous launch,
+	// guardian quiescence, and durable ACP finalization under package-wide load.
+	plannerTimeoutTestTerminalDeadline = 30 * time.Second
 )
 
 func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
@@ -158,10 +169,23 @@ func TestServerRealPlannerUsesPolicyStreamInactivityTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read provider policy: %v", err)
 	}
-	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: 10s", 1)
-	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: 2s", 1)
+	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: "+plannerTimeoutTestFirstEventTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: "+plannerTimeoutTestStreamInactivityTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "cancel_grace_timeout: 5s", "cancel_grace_timeout: "+plannerTimeoutTestCancelGraceTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "cancel_force_timeout: 10s", "cancel_force_timeout: "+plannerTimeoutTestCancelForceTimeout.String(), 1)
 	if err := os.WriteFile(policyPath, []byte(policyText), 0o600); err != nil {
 		t.Fatalf("write timeout provider policy: %v", err)
+	}
+	policy, err := providerpolicy.LoadPolicyFromFile(policyPath, filepath.Join(kingdomHome, "schemas", "opencode_provider_policy.schema.json"))
+	if err != nil {
+		t.Fatalf("load timeout provider policy: %v", err)
+	}
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := policy.ExecutionTimeouts()
+	if err != nil {
+		t.Fatalf("parse timeout provider policy: %v", err)
+	}
+	if firstEventTimeout != plannerTimeoutTestFirstEventTimeout || streamInactivityTimeout != plannerTimeoutTestStreamInactivityTimeout || cancelGraceTimeout != plannerTimeoutTestCancelGraceTimeout || cancelForceTimeout != plannerTimeoutTestCancelForceTimeout {
+		t.Fatalf("unexpected timeout fixture: first_event=%s stream_inactivity=%s cancel_grace=%s cancel_force=%s", firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout)
 	}
 
 	pidPath := filepath.Join(t.TempDir(), "planner.pid")
@@ -173,7 +197,8 @@ if [ "$1" != "run" ]; then
 fi
 printf '%s\n' "$$" > "$FAKE_OPENCODE_PID_PATH"
 printf '%s\n' '{"type":"step_start","sessionID":"ses_planner_stall","part":{"id":"part_planner_stall"}}'
-sleep 30
+trap '' TERM
+exec /bin/sleep 30
 `
 	if err := os.WriteFile(binaryPath, []byte(fakeOpenCode), 0o755); err != nil {
 		t.Fatalf("write fake OpenCode executable: %v", err)
@@ -235,11 +260,11 @@ sleep 30
 	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode ACP run: %v", err)
 	}
-	terminal := awaitAcpRun(t, handler, run.RunId.String(), 10*time.Second)
+	terminal := awaitAcpRun(t, handler, run.RunId.String(), plannerTimeoutTestTerminalDeadline)
 	if terminal.Status != gen.AcpRunStatus(acp.PlannerRunStatusFailed) {
 		t.Fatalf("expected failed ACP run, got %+v", terminal)
 	}
-	if terminal.Error == nil || !strings.Contains(*terminal.Error, "stream_inactivity_timeout") || !strings.Contains(*terminal.Error, "event_count=1") {
+	if terminal.Error == nil || !strings.Contains(*terminal.Error, "stream_inactivity_timeout exceeded after 2s") || !strings.Contains(*terminal.Error, "event_count=1") {
 		t.Fatalf("expected inactivity diagnostics on terminal run, got %+v", terminal.Error)
 	}
 
@@ -557,6 +582,44 @@ func TestWritePlanningOperationEventsReplaysOnlyEventsAfterLastEventID(t *testin
 	}
 	if count := strings.Count(body, "id: op_live_resume:8\n"); count != 1 {
 		t.Fatalf("expected resumed stream to emit event 8 once, got %d copies in %q", count, body)
+	}
+}
+
+func TestWritePlanningOperationEventsReplaysRecoveredActivityThenMarkerAfterCompletedRun(t *testing.T) {
+	t.Parallel()
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	server := handler.(*Server)
+	store := state.NewPlanningStore(db)
+	ctx := t.Context()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{PlanningSessionID: "ps_reconcile_replay", Title: "Reconcile replay", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"gpt-5.4"}`, CreatedAt: "2026-06-12T11:00:00Z", UpdatedAt: "2026-06-12T11:00:00Z"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	bindAPIPlanningContext(t, store, "ps_reconcile_replay")
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{OperationID: "op_reconcile_replay", PlanningSessionID: "ps_reconcile_replay", Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusSucceeded, RequestPayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:01Z", StartedAt: "2026-06-12T11:00:01Z", FinishedAt: "2026-06-12T11:00:06Z"}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	for _, event := range []state.AppendPlanningOperationEventRequest{
+		{EventID: "op_reconcile_replay:1", OperationID: "op_reconcile_replay", Seq: 1, EventType: acp.RunCompletedEventType, PayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:06Z"},
+		{EventID: "op_reconcile_replay:2", OperationID: "op_reconcile_replay", Seq: 2, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.tool","activity_id":"recovered-tool","label":"Fetched https://example.com"}`, CreatedAt: "2026-06-12T11:00:07Z"},
+		{EventID: "op_reconcile_replay:3", OperationID: "op_reconcile_replay", Seq: 3, EventType: acp.RunActivityReconciledEventType, PayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:08Z"},
+	} {
+		if _, err := store.AppendOperationEvent(ctx, event); err != nil {
+			t.Fatalf("append event %s: %v", event.EventID, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_reconcile_replay/events", nil)
+	res := httptest.NewRecorder()
+	server.writePlanningOperationEvents(res, req, "op_reconcile_replay", "op_reconcile_replay:1", nil)
+	body := res.Body.String()
+	if strings.Contains(body, "id: op_reconcile_replay:1\n") || !strings.Contains(body, "id: op_reconcile_replay:2\n") || !strings.Contains(body, "id: op_reconcile_replay:3\n") {
+		t.Fatalf("expected exact replay of activity then marker after completed event, got %q", body)
+	}
+	if strings.Index(body, "id: op_reconcile_replay:2\n") > strings.Index(body, "id: op_reconcile_replay:3\n") {
+		t.Fatalf("expected recovered activity before marker, got %q", body)
 	}
 }
 

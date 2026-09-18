@@ -54,7 +54,7 @@ Under the hood, Kingdom asks OpenCode for its model catalog and exposes that lis
 
 ### Prerequisites
 
-- Go `1.26.3`
+- Go `1.27.0`
 - Node `26.2.0`
 - `opencode` installed and authenticated for the providers and models you want to use
 

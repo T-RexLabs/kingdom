@@ -3820,7 +3820,7 @@ components:
         type:
           type: string
           enum:
-            [run.created, run.in-progress, message.part, message.completed, run.completed, run.failed, run.cancelled, error, generic]
+            [run.created, run.in-progress, message.part, message.completed, run.completed, run.activity.reconciled, run.failed, run.cancelled, error, generic]
         payload:
           type: object
           additionalProperties: true

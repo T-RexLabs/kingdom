@@ -4,10 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// The diagnostic budget already includes guardian cancellation. This only
+// permits one small scheduling delay while the process timeout is delivered.
+const sessionDiagnosticExportSchedulerTolerance = 100 * time.Millisecond
 
 func TestParseSessionActivityExportIncludesReasoningAndExternalTools(t *testing.T) {
 	raw := []byte(`{
@@ -162,10 +167,74 @@ func TestInspectSessionActivityFallsBackToSanitizedDiagnosticExport(t *testing.T
 	}
 }
 
-func TestCLISessionDiagnosticExporterSetsManagedOpenCodeEnvironment(t *testing.T) {
-	binaryPath, _ := writeFakeOpenCodeBinary(t)
-	envLogPath := filepath.Join(t.TempDir(), "env.log")
-	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+func TestInspectSessionActivitySkipsBlockedSanitizedFallbackAfterEmptyRawExport(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	ctx := fixedDeadlineContext{Context: context.Background(), deadline: now.Add(sessionDiagnosticExportBudget)}
+	exporter := &sessionActivityTestExporter{raw: []byte(`{"messages":[]}`)}
+	clockCalls := 0
+	clock := func() time.Time {
+		clockCalls++
+		if clockCalls == 1 {
+			return now
+		}
+		return now.Add(sessionDiagnosticExportRunBudget)
+	}
+
+	items, err := inspectSessionActivityWithExporterAt(ctx, SessionActivityRequest{ProviderSessionID: "session_1"}, exporter, clock)
+	if err != nil {
+		t.Fatalf("inspect session activity: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected no diagnostic activity, got %#v", items)
+	}
+	if len(exporter.modes) != 1 || exporter.modes[0] != sessionDiagnosticExportModeRaw {
+		t.Fatalf("expected successful empty raw export without sanitized fallback, got %#v", exporter.modes)
+	}
+}
+
+func TestSessionDiagnosticExportRunnableDeadlineReservesFullGuardianCancellationWindow(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	callerDeadline := now.Add(sessionDiagnosticExportBudget)
+	ctx, cancel := context.WithDeadline(context.Background(), callerDeadline)
+	defer cancel()
+
+	runnableDeadline, runnable := sessionDiagnosticExportRunnableDeadline(ctx, now)
+	if !runnable {
+		t.Fatal("expected diagnostic export to have a runnable budget")
+	}
+	if want := callerDeadline.Add(-sessionDiagnosticExportCancelReserve); !runnableDeadline.Equal(want) {
+		t.Fatalf("runnable deadline=%s, want caller deadline minus guardian reserve %s", runnableDeadline, want)
+	}
+	if total := runnableDeadline.Add(sessionDiagnosticExportCancelReserve); !total.Equal(callerDeadline) {
+		t.Fatalf("runnable deadline plus guardian reserve=%s, want full caller deadline %s", total, callerDeadline)
+	}
+}
+
+func TestSessionDiagnosticExportRunnableDeadlinePreservesDefaultWithoutCallerDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	runnableDeadline, runnable := sessionDiagnosticExportRunnableDeadline(context.Background(), now)
+	if !runnable {
+		t.Fatal("expected deadline-less diagnostic export to be runnable")
+	}
+	if want := now.Add(sessionDiagnosticExportRunBudget); !runnableDeadline.Equal(want) {
+		t.Fatalf("runnable deadline=%s, want default run budget deadline %s", runnableDeadline, want)
+	}
+}
+
+func TestSessionDiagnosticExportRunnableDeadlineCapsLongCallerDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	ctx := fixedDeadlineContext{Context: context.Background(), deadline: now.Add(10 * time.Second)}
+
+	runnableDeadline, runnable := sessionDiagnosticExportRunnableDeadline(ctx, now)
+	if !runnable {
+		t.Fatal("expected diagnostic export to have a runnable budget")
+	}
+	if want := now.Add(sessionDiagnosticExportRunBudget); !runnableDeadline.Equal(want) {
+		t.Fatalf("runnable deadline=%s, want capped diagnostic deadline %s", runnableDeadline, want)
+	}
+}
+
+func TestDiagnosticExportEnvironmentIsManaged(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", `{"messages":[]}`)
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION", CompletionProtocolVersion)
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID", "ambient_export_attempt")
@@ -173,23 +242,9 @@ func TestCLISessionDiagnosticExporterSetsManagedOpenCodeEnvironment(t *testing.T
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_CAPABILITY", "ambient_export_capability")
 	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", t.TempDir())
 
-	workDir := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), ".kingdom", "opencode")
 	databasePath := filepath.Join(configDir, "opencode.db")
-	_, err := (cliSessionDiagnosticExporter{binaryPath: binaryPath}).Export(context.Background(), sessionDiagnosticExportRequest{
-		ProviderSessionID: "ses_export_env",
-		WorkDir:           workDir,
-		ConfigDir:         configDir,
-		DatabasePath:      databasePath,
-	})
-	if err != nil {
-		t.Fatalf("export diagnostic session: %v", err)
-	}
-	raw, err := os.ReadFile(envLogPath)
-	if err != nil {
-		t.Fatalf("read env log: %v", err)
-	}
-	envLog := parseFakeOpenCodeEnvLog(string(raw))
+	envLog := parseFakeOpenCodeEnvLog(strings.Join(opencodeProcessEnvironment(ConfigDirEnvironment(configDir), DatabasePathEnvironment(databasePath)), "\n"))
 	if envLog["OPENCODE_CONFIG_DIR"] != configDir {
 		t.Fatalf("expected OPENCODE_CONFIG_DIR %q, got %q", configDir, envLog["OPENCODE_CONFIG_DIR"])
 	}
@@ -200,6 +255,32 @@ func TestCLISessionDiagnosticExporterSetsManagedOpenCodeEnvironment(t *testing.T
 		if strings.HasPrefix(key, "KINGDOM_COMPLETE_ATTEMPT_") {
 			t.Fatalf("expected no inherited completion attempt env, got %s=%q in env log %#v", key, value, envLog)
 		}
+	}
+}
+
+func TestCLISessionDiagnosticExporterBoundsBlockedExport(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture requires Unix process signals")
+	}
+	binaryPath := writeBlockedDiagnosticExportBinary(t)
+	workDir := t.TempDir()
+	configDir := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "opencode.db")
+
+	ctx, cancel := context.WithTimeout(context.Background(), sessionDiagnosticExportBudget)
+	defer cancel()
+	startedAt := time.Now()
+	_, err := (cliSessionDiagnosticExporter{binaryPath: binaryPath}).Export(ctx, sessionDiagnosticExportRequest{
+		ProviderSessionID: "ses_blocked_export",
+		WorkDir:           workDir,
+		ConfigDir:         configDir,
+		DatabasePath:      databasePath,
+	})
+	if err == nil {
+		t.Fatal("expected blocked diagnostic export to be cancelled")
+	}
+	if elapsed := time.Since(startedAt); elapsed > sessionDiagnosticExportBudget+sessionDiagnosticExportSchedulerTolerance {
+		t.Fatalf("blocked diagnostic export exceeded %s budget plus %s scheduler tolerance: %s", sessionDiagnosticExportBudget, sessionDiagnosticExportSchedulerTolerance, elapsed)
 	}
 }
 
@@ -246,6 +327,29 @@ type sessionActivityTestExporter struct {
 	raw       []byte
 	sanitized []byte
 	modes     []sessionDiagnosticExportMode
+}
+
+type fixedDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c fixedDeadlineContext) Deadline() (time.Time, bool) {
+	return c.deadline, true
+}
+
+func writeBlockedDiagnosticExportBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "blocked-opencode.sh")
+	script := `#!/bin/sh
+printf '%s\n' '{"messages":[{"info":{"role":"assistant"},"parts":[{"type":"reasoning","text":"diagnostic only"}]}]}'
+trap '' TERM
+while :; do sleep 1; done
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("write blocked diagnostic exporter: %v", err)
+	}
+	return path
 }
 
 func (f *sessionActivityTestExporter) Export(_ context.Context, req sessionDiagnosticExportRequest) (sessionDiagnosticExportResult, error) {

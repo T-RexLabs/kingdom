@@ -14,6 +14,9 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	if err := validateFinalizeGenerateTitleRequest(req); err != nil {
 		return err
 	}
+	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -95,6 +98,9 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
+	if err := createPlanningActivityReconciliationTx(ctx, tx, operation, req.FinishedAt); err != nil {
+		return rollbackPlanningTx(tx, "finalize generate title", err)
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize generate title: %w", err)
@@ -106,6 +112,9 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 // or cancelled without touching the interactive session lane.
 func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req FinalizeGenerateTitleAbortRequest) error {
 	if err := validateFinalizeGenerateTitleAbortRequest(req); err != nil {
+		return err
+	}
+	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
 		return err
 	}
 

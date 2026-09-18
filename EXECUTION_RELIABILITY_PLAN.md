@@ -1386,7 +1386,7 @@ Then:
 1. Create a fresh directory under `kd-sandbox/`.
 2. Run `kd init` in that directory.
 3. Run `kd summon` on an available port other than `8080`.
-4. Use `GitHub Copilot - GPT-5.4 Mini` with `Low` thinking if model selection appears.
+4. Use `OpenAI - GPT-5.6 Luna` with `None` thinking effort if model selection appears.
 5. Verify a normal server-response node.
 6. Verify a builder receipt completion.
 7. Verify a temporary rate-limit retry.

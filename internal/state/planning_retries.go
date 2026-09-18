@@ -55,6 +55,12 @@ type FinalizePlanningFailureWithRetryRequest struct {
 }
 
 func (s *PlanningStore) FinalizePlanningFailureWithRetry(ctx context.Context, req FinalizePlanningFailureWithRetryRequest) (bool, error) {
+	if err := validateFinalizePlanningFailureWithRetryRequest(req); err != nil {
+		return false, err
+	}
+	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
+		return false, err
+	}
 	var retry bool
 	_, err := sqlitex.Retry(ctx, func() error {
 		var retryErr error

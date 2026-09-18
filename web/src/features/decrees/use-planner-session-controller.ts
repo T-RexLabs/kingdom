@@ -108,6 +108,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
 
   useEffect(() => {
     if (!canonicalOperation || !isPlannerOperationTerminal(canonicalOperation.status)) return;
+    if (canonicalOperation.status === "done" && !canonicalOperation.activityReconciled) return;
 
     // Failed and cancelled runs stay query-backed for their notice. Successful
     // runs release local tracking after the stream hook reconciles the canonical
@@ -171,6 +172,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          activityReconciled: false,
           events: [],
           activityItems: [],
         });
@@ -221,6 +223,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          activityReconciled: false,
           events: [],
           activityItems: [],
         });
@@ -277,6 +280,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          activityReconciled: false,
           events: [],
           activityItems: [],
         });

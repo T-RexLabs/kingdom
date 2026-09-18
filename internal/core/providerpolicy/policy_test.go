@@ -248,8 +248,10 @@ func TestPolicyExecutionTimeouts(t *testing.T) {
 	policy := Policy{Timeouts: Timeouts{
 		FirstEventTimeout:       " 125ms ",
 		StreamInactivityTimeout: "3s",
+		CancelGraceTimeout:      "250ms",
+		CancelForceTimeout:      "4s",
 	}}
-	firstEventTimeout, streamInactivityTimeout, err := policy.ExecutionTimeouts()
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := policy.ExecutionTimeouts()
 	if err != nil {
 		t.Fatalf("parse execution timeouts: %v", err)
 	}
@@ -258,6 +260,12 @@ func TestPolicyExecutionTimeouts(t *testing.T) {
 	}
 	if streamInactivityTimeout != 3*time.Second {
 		t.Fatalf("expected 3s stream-inactivity timeout, got %s", streamInactivityTimeout)
+	}
+	if cancelGraceTimeout != 250*time.Millisecond {
+		t.Fatalf("expected 250ms cancel grace timeout, got %s", cancelGraceTimeout)
+	}
+	if cancelForceTimeout != 4*time.Second {
+		t.Fatalf("expected 4s cancel force timeout, got %s", cancelForceTimeout)
 	}
 }
 
@@ -274,6 +282,8 @@ func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
 			policy: Policy{Timeouts: Timeouts{
 				FirstEventTimeout:       "not-a-duration",
 				StreamInactivityTimeout: "3s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "1s",
 			}},
 			field: "first_event_timeout",
 		},
@@ -282,15 +292,37 @@ func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
 			policy: Policy{Timeouts: Timeouts{
 				FirstEventTimeout:       "1s",
 				StreamInactivityTimeout: "0s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "1s",
 			}},
 			field: "stream_inactivity_timeout",
+		},
+		{
+			name: "cancel grace",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "1s",
+				StreamInactivityTimeout: "1s",
+				CancelGraceTimeout:      "0s",
+				CancelForceTimeout:      "1s",
+			}},
+			field: "cancel_grace_timeout",
+		},
+		{
+			name: "cancel force",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "1s",
+				StreamInactivityTimeout: "1s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "not-a-duration",
+			}},
+			field: "cancel_force_timeout",
 		},
 	}
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := tt.policy.ExecutionTimeouts()
+			_, _, _, _, err := tt.policy.ExecutionTimeouts()
 			if err == nil || !strings.Contains(err.Error(), tt.field) {
 				t.Fatalf("expected %s validation error, got %v", tt.field, err)
 			}

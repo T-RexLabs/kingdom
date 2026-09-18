@@ -20,7 +20,6 @@ type SessionActivityRequest struct {
 	AttemptID           string
 	InvocationID        string
 	InvocationStartedAt time.Time
-	Runner              GuardianRunner
 }
 
 type SessionActivityItem struct {
@@ -38,11 +37,18 @@ func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]
 	if binaryPath == "" {
 		binaryPath = "opencode"
 	}
-	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath, runner: req.Runner}
+	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath}
 	return inspectSessionActivityWithExporter(ctx, req, exporter)
 }
 
 func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter) ([]SessionActivityItem, error) {
+	return inspectSessionActivityWithExporterAt(ctx, req, exporter, time.Now)
+}
+
+func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter, now func() time.Time) ([]SessionActivityItem, error) {
+	if !sessionDiagnosticExportMayStartAt(ctx, now()) {
+		return nil, nil
+	}
 	result, err := exporter.Export(ctx, sessionDiagnosticExportRequest{
 		ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
 		WorkDir:           strings.TrimSpace(req.WorkDir),
@@ -66,6 +72,9 @@ func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivity
 		})
 	}
 	if len(items) == 0 {
+		if !sessionDiagnosticExportMayStartAt(ctx, now()) {
+			return nil, nil
+		}
 		sanitizedResult, sanitizedErr := exporter.Export(ctx, sessionDiagnosticExportRequest{
 			ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
 			WorkDir:           strings.TrimSpace(req.WorkDir),

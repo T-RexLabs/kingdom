@@ -592,7 +592,30 @@ func startStderrCapture(stream io.Reader) <-chan stderrCapture {
 	return done
 }
 
+type guardedCommandReadResult struct {
+	raw []byte
+	err error
+}
+
 func runGuardedCommand(ctx context.Context, runner GuardianRunner, command processguardian.Command) ([]byte, []byte, processguardian.Result, error) {
+	return runGuardedCommandWithLifecycle(ctx, runner, command, false, 0)
+}
+
+// runBoundedGuardedCommand keeps every command-lifecycle phase within ctx's
+// deadline. Unlike provider execution, diagnostic callers may not wait beyond
+// their observation budget for quiescence or a blocked pipe drain.
+func runBoundedGuardedCommand(ctx context.Context, runner GuardianRunner, command processguardian.Command, cancelReserve time.Duration) ([]byte, []byte, processguardian.Result, error) {
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		return nil, nil, processguardian.Result{}, fmt.Errorf("bounded guarded command requires a deadline")
+	}
+	if cancelReserve < 0 {
+		cancelReserve = 0
+	}
+	return runGuardedCommandWithLifecycle(ctx, runner, command, true, time.Until(deadline.Add(-cancelReserve)))
+}
+
+func runGuardedCommandWithLifecycle(ctx context.Context, runner GuardianRunner, command processguardian.Command, bounded bool, cancelAfter time.Duration) ([]byte, []byte, processguardian.Result, error) {
 	if runner == nil {
 		var err error
 		runner, err = processguardian.NewRunner(processguardian.Config{})
@@ -604,40 +627,100 @@ func runGuardedCommand(ctx context.Context, runner GuardianRunner, command proce
 	if err != nil {
 		return nil, nil, processguardian.Result{}, err
 	}
-	type commandReadResult struct {
-		raw []byte
-		err error
-	}
-	stdoutDone := make(chan commandReadResult, 1)
-	stderrDone := make(chan commandReadResult, 1)
+	stdoutDone := make(chan guardedCommandReadResult, 1)
+	stderrDone := make(chan guardedCommandReadResult, 1)
 	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
+	var cancelCtx context.Context
+	var cancelCtxDone context.CancelFunc
+	if bounded {
+		deadline, _ := ctx.Deadline()
+		cancelCtx, cancelCtxDone = context.WithDeadline(context.Background(), deadline)
+		defer cancelCtxDone()
+	}
 	var cancelOnce sync.Once
 	cancel := func() {
-		cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) })
+		cancelOnce.Do(func() {
+			if bounded {
+				_ = handle.Cancel(cancelCtx)
+				return
+			}
+			_ = handle.Cancel(context.Background())
+		})
 	}
 	go func() {
 		defer stdoutStream.Close()
 		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
-		stdoutDone <- commandReadResult{raw: raw, err: readErr}
+		stdoutDone <- guardedCommandReadResult{raw: raw, err: readErr}
 	}()
 	go func() {
 		defer stderrStream.Close()
 		raw, readErr := providerlimits.ReadBoundedOnLimit(stderrStream, providerlimits.GuardedCommandStreamBytes, "command stderr", cancel)
-		stderrDone <- commandReadResult{raw: raw, err: readErr}
+		stderrDone <- guardedCommandReadResult{raw: raw, err: readErr}
 	}()
 	cancelDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
+	if bounded {
+		if cancelAfter <= 0 {
 			cancel()
-		case <-cancelDone:
+		} else {
+			go func() {
+				timer := time.NewTimer(cancelAfter)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+					cancel()
+				case <-ctx.Done():
+					cancel()
+				case <-cancelDone:
+				}
+			}()
 		}
-	}()
-	result, waitErr := handle.Wait(context.Background())
+	}
+	if !bounded {
+		go func() {
+			select {
+			case <-ctx.Done():
+				cancel()
+			case <-cancelDone:
+			}
+		}()
+	}
+	waitCtx := context.Background()
+	if bounded {
+		waitCtx = ctx
+	}
+	result, waitErr := handle.Wait(waitCtx)
 	close(cancelDone)
-	stdout := <-stdoutDone
-	stderr := <-stderrDone
+	if bounded && waitErr != nil {
+		cancel()
+		_ = stdoutStream.Close()
+		_ = stderrStream.Close()
+	}
+	stdout, stdoutComplete := awaitGuardedCommandRead(ctx, stdoutDone, bounded)
+	stderr, stderrComplete := awaitGuardedCommandRead(ctx, stderrDone, bounded)
+	if bounded && (!stdoutComplete || !stderrComplete) {
+		cancel()
+		_ = stdoutStream.Close()
+		_ = stderrStream.Close()
+		return stdout.raw, stderr.raw, processguardian.Result{}, firstNonNilError(stdout.err, stderr.err, ctx.Err(), fmt.Errorf("diagnostic command stream drain did not complete before deadline"))
+	}
 	return stdout.raw, stderr.raw, result, firstNonNilError(stdout.err, stderr.err, waitErr, guardianResultError(result))
+}
+
+func awaitGuardedCommandRead(ctx context.Context, done <-chan guardedCommandReadResult, bounded bool) (guardedCommandReadResult, bool) {
+	if !bounded {
+		return <-done, true
+	}
+	select {
+	case result := <-done:
+		return result, true
+	case <-ctx.Done():
+		select {
+		case result := <-done:
+			return result, true
+		default:
+			return guardedCommandReadResult{}, false
+		}
+	}
 }
 
 // awaitGuardedRun deliberately waits without the request context: cancellation
@@ -2219,9 +2302,11 @@ type commandWatchdog struct {
 	stop   chan struct{}
 	done   chan struct{}
 
-	mu       sync.Mutex
-	err      error
-	stopOnce sync.Once
+	mu           sync.Mutex
+	err          error
+	now          func() time.Time
+	lastSignalAt time.Time
+	stopOnce     sync.Once
 }
 
 func startCommandWatchdog(handle processguardian.Handle, firstTimeout, inactivityTimeout time.Duration) *commandWatchdog {
@@ -2229,6 +2314,7 @@ func startCommandWatchdog(handle processguardian.Handle, firstTimeout, inactivit
 		signal: make(chan struct{}, 1),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
+		now:    time.Now,
 	}
 
 	go func() {
@@ -2248,12 +2334,12 @@ func startCommandWatchdog(handle processguardian.Handle, firstTimeout, inactivit
 
 		var inactivityTimer *time.Timer
 		var inactivityTimerC <-chan time.Time
-		resetInactivity := func() {
+		resetInactivity := func(delay time.Duration) {
 			if inactivityTimeout <= 0 {
 				return
 			}
 			if inactivityTimer == nil {
-				inactivityTimer = time.NewTimer(inactivityTimeout)
+				inactivityTimer = time.NewTimer(delay)
 				inactivityTimerC = inactivityTimer.C
 				return
 			}
@@ -2263,7 +2349,7 @@ func startCommandWatchdog(handle processguardian.Handle, firstTimeout, inactivit
 				default:
 				}
 			}
-			inactivityTimer.Reset(inactivityTimeout)
+			inactivityTimer.Reset(delay)
 		}
 
 		stopTimer := func(timer *time.Timer) {
@@ -2293,12 +2379,18 @@ func startCommandWatchdog(handle processguardian.Handle, firstTimeout, inactivit
 						firstTimerC = nil
 					}
 				}
-				resetInactivity()
+				resetInactivity(wd.inactivityDelay(inactivityTimeout))
 			case <-firstTimerC:
 				wd.setErr(newProviderTimeoutError("first_event_timeout", firstTimeout))
 				_ = handle.Cancel(context.Background())
 				return
 			case <-inactivityTimerC:
+				// Signal coalesces notifications, so a newer observation can be
+				// queued when the timer wins select readiness. Re-read it before
+				// treating the command as inactive.
+				if wd.resetInactivityAfterTimerFire(inactivityTimeout, resetInactivity) {
+					continue
+				}
 				wd.setErr(newProviderTimeoutError("stream_inactivity_timeout", inactivityTimeout))
 				_ = handle.Cancel(context.Background())
 				return
@@ -2324,10 +2416,39 @@ func (w *commandWatchdog) Signal() {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	w.lastSignalAt = w.now()
+	w.mu.Unlock()
 	select {
 	case w.signal <- struct{}{}:
 	default:
 	}
+}
+
+func (w *commandWatchdog) signalAt() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastSignalAt
+}
+
+func (w *commandWatchdog) inactivityDelay(timeout time.Duration) time.Duration {
+	return watchdogInactivityDelay(w.signalAt(), timeout, w.now())
+}
+
+func (w *commandWatchdog) resetInactivityAfterTimerFire(timeout time.Duration, reset func(time.Duration)) bool {
+	delay := w.inactivityDelay(timeout)
+	if delay <= 0 {
+		return false
+	}
+	reset(delay)
+	return true
+}
+
+func watchdogInactivityDelay(observedAt time.Time, timeout time.Duration, now time.Time) time.Duration {
+	if delay := observedAt.Add(timeout).Sub(now); delay > 0 {
+		return delay
+	}
+	return 0
 }
 
 func (w *commandWatchdog) Stop() {

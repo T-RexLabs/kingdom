@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providerlimits"
@@ -196,8 +197,98 @@ func TestRunGuardedCommandCancelsOverflowBeforeDrainingContinuedOutput(t *testin
 	}
 }
 
+func TestRunBoundedGuardedCommandBoundsCancellationQuiescenceAndPipeDrains(t *testing.T) {
+	const (
+		budget        = 250 * time.Millisecond
+		cancelReserve = 100 * time.Millisecond
+		tolerance     = 100 * time.Millisecond
+	)
+	stdout := newBlockedGuardedCommandStream()
+	stderr := newBlockedGuardedCommandStream()
+	handle := &blockedBoundedCommandHandle{stdout: stdout, stderr: stderr, cancelled: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	startedAt := time.Now()
+	_, _, result, err := runBoundedGuardedCommand(ctx, blockedBoundedCommandRunner{handle: handle}, processguardian.Command{Path: "blocked-diagnostic"}, cancelReserve)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked bounded command error=%v, want deadline exceeded", err)
+	}
+	if result.Quiescent {
+		t.Fatalf("blocked bounded command reported unproven quiescence as success: %#v", result)
+	}
+	if elapsed := time.Since(startedAt); elapsed > budget+tolerance {
+		t.Fatalf("blocked bounded command exceeded %s budget plus %s scheduler tolerance: %s", budget, tolerance, elapsed)
+	}
+	select {
+	case <-handle.cancelled:
+	default:
+		t.Fatal("blocked bounded command did not request cancellation")
+	}
+	for _, stream := range []*blockedGuardedCommandStream{stdout, stderr} {
+		select {
+		case <-stream.drained:
+		case <-time.After(tolerance):
+			t.Fatal("blocked bounded command left a pipe reader blocked after closing its stream")
+		}
+	}
+}
+
 type continuedOutputRunner struct {
 	handle *continuedOutputHandle
+}
+
+type blockedBoundedCommandRunner struct {
+	handle *blockedBoundedCommandHandle
+}
+
+func (r blockedBoundedCommandRunner) Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	return r.handle, nil
+}
+
+type blockedBoundedCommandHandle struct {
+	stdout     *blockedGuardedCommandStream
+	stderr     *blockedGuardedCommandStream
+	cancelled  chan struct{}
+	cancelOnce sync.Once
+}
+
+func (h *blockedBoundedCommandHandle) GuardID() string       { return "blocked-diagnostic" }
+func (h *blockedBoundedCommandHandle) Stdout() io.ReadCloser { return h.stdout }
+func (h *blockedBoundedCommandHandle) Stderr() io.ReadCloser { return h.stderr }
+func (h *blockedBoundedCommandHandle) Cancel(context.Context) error {
+	h.cancelOnce.Do(func() { close(h.cancelled) })
+	return nil
+}
+func (h *blockedBoundedCommandHandle) Wait(ctx context.Context) (processguardian.Result, error) {
+	select {
+	case <-h.cancelled:
+	case <-ctx.Done():
+		return processguardian.Result{}, ctx.Err()
+	}
+	<-ctx.Done()
+	return processguardian.Result{}, ctx.Err()
+}
+
+type blockedGuardedCommandStream struct {
+	closed    chan struct{}
+	drained   chan struct{}
+	closeOnce sync.Once
+	drainOnce sync.Once
+}
+
+func newBlockedGuardedCommandStream() *blockedGuardedCommandStream {
+	return &blockedGuardedCommandStream{closed: make(chan struct{}), drained: make(chan struct{})}
+}
+
+func (s *blockedGuardedCommandStream) Read([]byte) (int, error) {
+	<-s.closed
+	s.drainOnce.Do(func() { close(s.drained) })
+	return 0, io.EOF
+}
+
+func (s *blockedGuardedCommandStream) Close() error {
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
 }
 
 func (r continuedOutputRunner) Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {

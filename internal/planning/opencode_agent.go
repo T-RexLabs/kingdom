@@ -127,6 +127,7 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 		RunID:             "planner-" + input.SessionID,
 		NodeRunID:         attemptID,
 		Model:             input.ModelSelection.Model,
+		Variant:           input.ModelSelection.ThinkingEffort,
 		Agent:             "planner",
 		ForceNewSession:   forceNew,
 		WorkspacePath:     input.ProjectRoot,

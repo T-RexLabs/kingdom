@@ -273,17 +273,13 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider node wall-clock timeouts: %w", err)
 	}
-	firstEventTimeout, streamInactivityTimeout, err := providerCfg.ExecutionTimeouts()
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := providerCfg.ExecutionTimeouts()
 	if err != nil {
 		return nil, fmt.Errorf("parse provider execution timeouts: %w", err)
 	}
 	strictStartupTotalTimeout, err := parseStrictStartupTotalTimeout(providerCfg.Timeouts.StrictStartupTotalTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("parse provider strict_startup_total_timeout: %w", err)
-	}
-	cancelGraceTimeout, cancelForceTimeout, err := parseProviderCancelTimeouts(providerCfg.Timeouts.CancelGraceTimeout, providerCfg.Timeouts.CancelForceTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider cancellation timeouts: %w", err)
 	}
 	if cfg.ProviderSession.Runner == nil {
 		providerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
@@ -1796,32 +1792,4 @@ func parseStrictStartupTotalTimeout(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("strict_startup_total_timeout must be > 0")
 	}
 	return timeout, nil
-}
-
-func parseProviderCancelTimeouts(graceRaw, forceRaw string) (time.Duration, time.Duration, error) {
-	graceTimeout := strings.TrimSpace(graceRaw)
-	if graceTimeout == "" {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout is required")
-	}
-	grace, err := time.ParseDuration(graceTimeout)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout parse failed: %w", err)
-	}
-	if grace <= 0 {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout must be > 0")
-	}
-
-	forceTimeout := strings.TrimSpace(forceRaw)
-	if forceTimeout == "" {
-		return 0, 0, fmt.Errorf("cancel_force_timeout is required")
-	}
-	force, err := time.ParseDuration(forceTimeout)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cancel_force_timeout parse failed: %w", err)
-	}
-	if force <= 0 {
-		return 0, 0, fmt.Errorf("cancel_force_timeout must be > 0")
-	}
-
-	return grace, force, nil
 }

@@ -12207,34 +12207,51 @@ func TestRuntimePausesAtAwaitingHumanConfirmationWhenAutonomousApprovalsDisabled
 	}
 	assertLoadedRunAutonomousApprovals(t, rt.orchestrator, "run_closure_no_validation", false)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
-	}
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
 		}
 	}()
 
-	awaitRunState(t, db, "run_closure_no_validation", 5*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
-		if planState != "awaiting_king_decision" {
-			return fmt.Errorf("plan_state=%s", planState)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick decree intake: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain decree intake completion outbox: %v", err)
+	}
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick plan drafting: %v", err)
+	}
+	if err := rt.orchestrator.waitForAsyncDrain(context.Background()); err != nil {
+		t.Fatalf("wait for plan drafting completion: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain plan drafting completion outbox: %v", err)
+	}
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick plan approval gate: %v", err)
+	}
+	_, planState := queryRunState(t, db, "run_closure_no_validation")
+	if planState != "awaiting_king_decision" {
+		t.Fatalf("expected plan_state=awaiting_king_decision, got %q", planState)
+	}
 	approvePlanStateForRuntimeTest(t, db, "run_closure_no_validation")
-	awaitRunStatus(t, db, "run_closure_no_validation", 5*time.Second, 25*time.Millisecond, func(status string) error {
-		if status == "succeeded" {
-			return fmt.Errorf("expected autonomous_approvals=false flow to pause before succeeded")
-		}
-		if status != "awaiting_human_confirmation" {
-			return fmt.Errorf("run_status=%s", status)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick royal closure: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+		t.Fatalf("drain royal closure completion outbox: %v", err)
+	}
+	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+		t.Fatalf("tick final approval gate: %v", err)
+	}
+	status := queryRunStatus(t, db, "run_closure_no_validation")
+	if status == "succeeded" {
+		t.Fatal("expected autonomous_approvals=false flow to pause before succeeded")
+	}
+	if status != "awaiting_human_confirmation" {
+		t.Fatalf("expected run_status=awaiting_human_confirmation, got %q", status)
+	}
 }
 
 func TestRuntimeAutonomousApprovalsFalsePausesAtPlanAndFinalGatesOnFullWorkflow(t *testing.T) {

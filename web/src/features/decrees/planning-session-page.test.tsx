@@ -929,7 +929,7 @@ describe("PlanningSessionPage", () => {
         project_root: "/tmp/project",
         model_selection: { model: "github-copilot/gpt-5.4" },
       },
-      error: null,
+        error: null,
       refetch: vi.fn(),
     });
     mockUsePlanningOperation.mockReturnValue({
@@ -970,7 +970,7 @@ describe("PlanningSessionPage", () => {
       hasPreviousPage: false,
       isFetchingPreviousPage: false,
       fetchPreviousPage: vi.fn(),
-      error: null,
+				error: null,
       isLoading: false,
     });
 

@@ -69,7 +69,7 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
           replyText: terminal.replyText || state.operation.replyText,
           formalizeText: terminal.formalizeText || state.operation.formalizeText,
         },
-        connection: { state: "idle" },
+        connection: state.connection,
       };
     }
     case "event":
@@ -89,7 +89,11 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
 
 export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperationResult {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const ownerRef = useRef<{ runId: string; controller: AbortController; active: boolean } | null>(null);
+  const ownerRef = useRef<{
+    runId: string;
+    controller: AbortController;
+    active: boolean;
+  } | null>(null);
   const operationRef = useRef<AcpRun | null>(operation ?? null);
   const queryClient = useQueryClient();
   const runId = operation?.run_id;
@@ -112,21 +116,25 @@ export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperat
 
     dispatch({ type: "hydrate", operation: initialOperation });
 
-    if (initialOperation.status === "completed" || initialOperation.status === "failed" || initialOperation.status === "cancelled") {
+    if (initialOperation.status === "failed" || initialOperation.status === "cancelled") {
       reconcileTerminalOperationSnapshot(queryClient, initialOperation);
       dispatch({ type: "connection", connection: { state: "idle" } });
       return;
     }
 
     const controller = new AbortController();
-    const owner = { runId: initialOperation.run_id, controller, active: true };
+    const owner = {
+      runId: initialOperation.run_id,
+      controller,
+      active: true,
+    };
     ownerRef.current = owner;
     const isCurrentOwner = () => owner.active && ownerRef.current === owner && !controller.signal.aborted;
 
     void subscribeSSE({
       url: `${API_BASE}/acp/runs/${initialOperation.run_id}/events`,
       buildHeaders: (lastId) => buildAuthHeaders(lastId ? { "Last-Event-ID": lastId } : undefined),
-      isTerminalEventType: (type) => type === "run.completed" || type === "run.failed" || type === "run.cancelled",
+      isTerminalEventType: (type) => type === "run.activity.reconciled" || type === "run.failed" || type === "run.cancelled",
       signal: controller.signal,
       onConnectionChange: (next) => {
         if (!isCurrentOwner()) return;
@@ -166,7 +174,7 @@ export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperat
       return;
     }
     const owner = ownerRef.current;
-    if (owner?.runId === terminalOperation.run_id) {
+    if ((operationStatus === "failed" || operationStatus === "cancelled") && owner?.runId === terminalOperation.run_id) {
       owner.active = false;
       owner.controller.abort();
       ownerRef.current = null;
@@ -252,6 +260,7 @@ function isAcpEventType(eventType: string): eventType is AcpRunEvent["type"] {
     "message.part",
     "message.completed",
     "run.completed",
+    "run.activity.reconciled",
     "run.failed",
     "run.cancelled",
     "error",
@@ -272,6 +281,10 @@ export function patchPlannerTerminalCaches(
   operation: AcpRun,
   event: AcpRunEvent,
 ) {
+  if (event.type === "run.activity.reconciled") {
+    void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
+    return;
+  }
   if (event.type !== "run.completed" && event.type !== "run.failed" && event.type !== "run.cancelled") return;
   const fields: Partial<PlanningSessionDetail> =
     operation.agent_name === "planner-generate-title"

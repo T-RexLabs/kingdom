@@ -520,6 +520,9 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 	if err := validateFinalizeOperationRequest(req); err != nil {
 		return err
 	}
+	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
+		return err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -682,6 +685,11 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		}
 	} else if req.Kind != FinalizeFail {
 		if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	}
+	if terminalStatus == PlanningOperationStatusSucceeded {
+		if err := createPlanningActivityReconciliationTx(ctx, tx, operation, req.FinishedAt); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}
 	}

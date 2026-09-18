@@ -127,9 +127,16 @@ export function PlanningSessionPage() {
   const { activeOperation, activeOperationId, connection, operationQueryState, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
-  const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
-  const titleOperationQuery = usePlanningOperation(session?.current_title_run_id);
-  usePlannerOperation(titleOperationQuery.data ?? null);
+	const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
+	const [titleStreamRunID, setTitleStreamRunID] = useState<string | undefined>(session?.current_title_run_id);
+	if (session?.current_title_run_id && session.current_title_run_id !== titleStreamRunID) {
+		setTitleStreamRunID(session.current_title_run_id);
+	}
+	const titleOperationQuery = usePlanningOperation(titleStreamRunID);
+	const { operation: titleStreamOperation } = usePlannerOperation(titleOperationQuery.data ?? null);
+	if (titleStreamRunID && !session?.current_title_run_id && titleStreamOperation && (titleStreamOperation.status === "error" || titleStreamOperation.status === "cancelled" || (titleStreamOperation.status === "done" && titleStreamOperation.activityReconciled))) {
+		setTitleStreamRunID(undefined);
+	}
   usePlanningSessionAutoTitleCatchup(sessionId, session);
 
   // Title persistence is rooted in the explicit commit event (Enter,

@@ -16,6 +16,70 @@ import (
 	"kingdom/internal/testutil"
 )
 
+func TestCommandWatchdogSignalUsesLatestObservationTimestampWhenCoalesced(t *testing.T) {
+	firstObservation := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	secondObservation := firstObservation.Add(400 * time.Millisecond)
+	observations := []time.Time{firstObservation, secondObservation}
+	watchdog := &commandWatchdog{
+		signal: make(chan struct{}, 1),
+		now: func() time.Time {
+			observedAt := observations[0]
+			observations = observations[1:]
+			return observedAt
+		},
+	}
+
+	watchdog.Signal()
+	watchdog.Signal()
+
+	if queued := len(watchdog.signal); queued != 1 {
+		t.Fatalf("expected one coalesced signal, got %d", queued)
+	}
+	if got := watchdog.signalAt(); !got.Equal(secondObservation) {
+		t.Fatalf("expected latest observation at %s, got %s", secondObservation, got)
+	}
+	if got, want := watchdogInactivityDelay(watchdog.signalAt(), time.Second, secondObservation.Add(250*time.Millisecond)), 750*time.Millisecond; got != want {
+		t.Fatalf("expected inactivity delay %s from observation timestamp, got %s", want, got)
+	}
+}
+
+func TestCommandWatchdogInactivityTimerRechecksQueuedSignal(t *testing.T) {
+	firstObservation := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	secondObservation := firstObservation.Add(400 * time.Millisecond)
+	timeout := time.Second
+	now := firstObservation
+	watchdog := &commandWatchdog{
+		signal: make(chan struct{}, 1),
+		now: func() time.Time {
+			return now
+		},
+	}
+
+	// The first notification has already started inactivity tracking.
+	watchdog.Signal()
+	<-watchdog.signal
+
+	// A later observation is coalesced into the queued notification while the
+	// original inactivity timer is also ready. Process the timer first.
+	now = secondObservation
+	watchdog.Signal()
+	inactivityTimerC := make(chan time.Time, 1)
+	inactivityTimerC <- firstObservation.Add(timeout)
+	<-inactivityTimerC
+	now = firstObservation.Add(500 * time.Millisecond)
+
+	if queued := len(watchdog.signal); queued != 1 {
+		t.Fatalf("expected later signal to remain queued while timer is processed, got %d", queued)
+	}
+	var resetDelay time.Duration
+	if reset := watchdog.resetInactivityAfterTimerFire(timeout, func(delay time.Duration) { resetDelay = delay }); !reset {
+		t.Fatal("expected queued observation to reset inactivity timer instead of timing out")
+	}
+	if want := 900 * time.Millisecond; resetDelay != want {
+		t.Fatalf("expected queued observation to reset inactivity timer for %s, got %s", want, resetDelay)
+	}
+}
+
 func TestSessionAdapterExecuteAndStream(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
@@ -2176,13 +2240,11 @@ func TestSessionAdapterNonZeroExitPrefersStructuredUpstreamError(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-			adapter, err := NewSessionAdapter(SessionAdapterConfig{
-				BinaryPath:              binaryPath,
-				FirstEventTimeout:       2 * time.Second,
-				StreamInactivityTimeout: 2 * time.Second,
-			})
+			t.Run(tt.name, func(t *testing.T) {
+				binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+				adapter, err := NewSessionAdapter(SessionAdapterConfig{
+					BinaryPath: binaryPath,
+				})
 			if err != nil {
 				t.Fatalf("new session adapter: %v", err)
 			}

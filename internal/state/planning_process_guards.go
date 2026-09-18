@@ -252,6 +252,69 @@ func (s *PlanningStore) ReplayConfiguredPlanningProcessGuardEvidence(ctx context
 	return s.ReplayPlanningProcessGuardEvidence(ctx, s.processGuardRuntimeRoot)
 }
 
+// replayConfiguredPlanningProcessGuardEvidenceForFinalizer replays only the
+// acknowledged guards that can authorize one terminal provider settlement.
+// Reading the evidence happens before the finalizer opens its SQLite
+// transaction, so transaction retries never repeat filesystem work.
+func (s *PlanningStore) replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx context.Context, operationID string, settlement *FinalizePlanningProviderSettlementRequest) error {
+	if s == nil || s.db == nil || strings.TrimSpace(s.processGuardRuntimeRoot) == "" || settlement == nil {
+		return nil
+	}
+	operationID = strings.TrimSpace(operationID)
+	invocationID := strings.TrimSpace(settlement.PlanningProviderInvocationID)
+	if operationID == "" || invocationID == "" {
+		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT guard_id FROM provider_process_guards
+		WHERE owner_kind = 'planning_operation'
+		  AND planning_operation_id = ?
+		  AND provider_invocation_id = ?
+		  AND lifecycle = 'acknowledged'
+		ORDER BY guard_id ASC`, operationID, invocationID)
+	if err != nil {
+		return fmt.Errorf("list finalizer planning process guards: %w", err)
+	}
+
+	var guardIDs []string
+	for rows.Next() {
+		var guardID string
+		if err := rows.Scan(&guardID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan finalizer planning process guard: %w", err)
+		}
+		guardIDs = append(guardIDs, guardID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate finalizer planning process guards: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close finalizer planning process guards: %w", err)
+	}
+
+	for _, guardID := range guardIDs {
+		result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(s.processGuardRuntimeRoot, guardID)
+		if err != nil {
+			// Missing or malformed evidence remains acknowledged. The terminal
+			// transaction then fails closed at its normal quiescence check.
+			continue
+		}
+		if err := s.IngestPlanningProcessGuardQuiescence(ctx, PlanningProcessGuardQuiescence{
+			GuardID: guardID, Capability: result.QuiescenceCapability, Platform: result.Platform,
+			GuardianPID: result.GuardianPID, GuardianIdentityToken: result.GuardianIdentityToken,
+			ChildPID: result.ChildPID, ChildIdentityToken: result.ChildIdentityToken,
+			TreeID: fmt.Sprintf("%d", result.TreeID), TreeIdentityToken: result.TreeIdentityToken,
+			QuiescentAt: time.Now().UTC().Format(time.RFC3339Nano), ExitCode: result.ExitCode,
+			ExitSignal: result.ExitSignal, Forced: result.Forced, FailureCode: result.FailureCode,
+			FailureText: result.FailureText, EvidenceSHA256: digest, EvidenceJSON: evidence,
+		}); err != nil {
+			return fmt.Errorf("replay finalizer planning process guard %q: %w", guardID, err)
+		}
+	}
+	return nil
+}
+
 // ReplayConfiguredPlanningProcessGuardEvidencePass replays one configured
 // runtime-root page, or returns an empty pass when no root is configured.
 func (s *PlanningStore) ReplayConfiguredPlanningProcessGuardEvidencePass(ctx context.Context, cursor string, limit int) (PlanningProcessGuardReplayPass, error) {
