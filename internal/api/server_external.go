@@ -497,7 +497,7 @@ func (s *Server) fetchCapture(r *http.Request, req gen.ExternalIntake) (state.Ca
 		return state.CaptureExternalIssueRequest{}, err
 	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	return state.CaptureExternalIssueRequest{SourceID: s.idGenerator("external_source"), SnapshotID: s.idGenerator("external_snapshot"), ConnectionID: conn.ConnectionID, ConnectionRowVersion: conn.RowVersion, ProviderNativeID: result.NativeID, RepositoryNativeID: result.RepositoryID, Issue: result.Issue, Profile: result.Profile, ProviderUpdatedAt: result.Issue.UpdatedAt, FetchedAt: now, ETag: result.ETag, CommentsETag: result.CommentsETag, LastModified: result.LastModified, ProviderCommentCount: result.ProviderCommentCount, FetchedCommentCount: result.FetchedCommentCount, FetchedCommentPages: result.FetchedCommentPages, OmittedCommentCount: result.OmittedCommentCount, OmittedCommentPages: result.OmittedCommentPages, Comments: result.Comments}, nil
+	return state.CaptureExternalIssueRequest{SourceID: s.idGenerator("external_source"), SnapshotID: s.idGenerator("external_snapshot"), ConnectionID: conn.ConnectionID, ConnectionRowVersion: conn.RowVersion, ProviderNativeID: result.NativeID, RepositoryNativeID: result.RepositoryID, RepositoryInstallationID: result.RepositoryInstallationID, Issue: result.Issue, Profile: result.Profile, ProviderUpdatedAt: result.Issue.UpdatedAt, FetchedAt: now, ETag: result.ETag, CommentsETag: result.CommentsETag, LastModified: result.LastModified, ProviderCommentCount: result.ProviderCommentCount, FetchedCommentCount: result.FetchedCommentCount, FetchedCommentPages: result.FetchedCommentPages, OmittedCommentCount: result.OmittedCommentCount, OmittedCommentPages: result.OmittedCommentPages, Comments: result.Comments}, nil
 }
 func (s *Server) handleCaptureExternalSource(w http.ResponseWriter, r *http.Request) {
 	var req gen.ExternalIntake
@@ -675,7 +675,7 @@ func (s *Server) handleRefreshExternalSourceLink(w http.ResponseWriter, r *http.
 			request.Outcome = "service_unavailable"
 		} else {
 			_, oldComments, _ := s.externalStore.GetSnapshot(r.Context(), basis.LatestSnapshot.SnapshotID)
-			result, fetchErr := adapter.FetchIssue(r.Context(), external.IssueRequest{Connection: basis.Connection, RepositoryID: basis.FetchRepositoryNativeID, IssueNumber: basis.FetchIssueNumber, Profile: basis.LatestSnapshot.Profile, ETag: basis.LatestSnapshot.ETag, CommentsETag: basis.LatestSnapshot.CommentsETag, ProviderNativeID: basis.ProviderNativeID, CurrentIssue: basis.LatestSnapshot.Issue, CurrentCommentCount: basis.LatestSnapshot.ProviderCommentCount})
+			result, fetchErr := adapter.FetchIssue(r.Context(), external.IssueRequest{Connection: basis.Connection, RepositoryID: basis.FetchRepositoryNativeID, RepositoryInstallationID: basis.FetchRepositoryInstallationID, IssueNumber: basis.FetchIssueNumber, Profile: basis.LatestSnapshot.Profile, ETag: basis.LatestSnapshot.ETag, CommentsETag: basis.LatestSnapshot.CommentsETag, ProviderNativeID: basis.ProviderNativeID, CurrentIssue: basis.LatestSnapshot.Issue, CurrentCommentCount: basis.LatestSnapshot.ProviderCommentCount})
 			request.FinishedAt = s.now().UTC().Format(time.RFC3339Nano)
 			if fetchErr != nil {
 				request.Outcome = refreshOutcome(fetchErr)
@@ -695,7 +695,7 @@ func (s *Server) handleRefreshExternalSourceLink(w http.ResponseWriter, r *http.
 					result.OmittedCommentPages = (result.OmittedCommentCount + 99) / 100
 					result.CommentsETag = basis.LatestSnapshot.CommentsETag
 				}
-				capture := state.CaptureExternalIssueRequest{SourceID: basis.Link.SourceID, SnapshotID: s.idGenerator("external_snapshot"), ConnectionID: basis.Connection.ConnectionID, ProviderNativeID: basis.ProviderNativeID, RepositoryNativeID: result.RepositoryID, Issue: result.Issue, Profile: result.Profile, ProviderUpdatedAt: result.Issue.UpdatedAt, FetchedAt: request.FinishedAt, ETag: result.ETag, CommentsETag: result.CommentsETag, LastModified: result.LastModified, ProviderCommentCount: result.ProviderCommentCount, FetchedCommentCount: result.FetchedCommentCount, FetchedCommentPages: result.FetchedCommentPages, OmittedCommentCount: result.OmittedCommentCount, OmittedCommentPages: result.OmittedCommentPages, Comments: result.Comments}
+				capture := state.CaptureExternalIssueRequest{SourceID: basis.Link.SourceID, SnapshotID: s.idGenerator("external_snapshot"), ConnectionID: basis.Connection.ConnectionID, ProviderNativeID: basis.ProviderNativeID, RepositoryNativeID: result.RepositoryID, RepositoryInstallationID: result.RepositoryInstallationID, Issue: result.Issue, Profile: result.Profile, ProviderUpdatedAt: result.Issue.UpdatedAt, FetchedAt: request.FinishedAt, ETag: result.ETag, CommentsETag: result.CommentsETag, LastModified: result.LastModified, ProviderCommentCount: result.ProviderCommentCount, FetchedCommentCount: result.FetchedCommentCount, FetchedCommentPages: result.FetchedCommentPages, OmittedCommentCount: result.OmittedCommentCount, OmittedCommentPages: result.OmittedCommentPages, Comments: result.Comments}
 				changes = compareExternalResult(basis.LatestSnapshot, oldComments, result)
 				if !result.Transferred && result.RepositoryID == basis.FetchRepositoryNativeID && sameExternalResult(basis.LatestSnapshot, oldComments, result) {
 					request.Outcome = "unchanged"

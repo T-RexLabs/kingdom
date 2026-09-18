@@ -59,13 +59,21 @@ func (s *Server) handleStartGitHubManifestFlow(w http.ResponseWriter, r *http.Re
 		return
 	}
 	principal, _ := authenticatedPrincipal(r.Context())
-	flow, err := s.manifestFlows.Create(sessionID, origin, principal.ExpiresAt)
+	flow, created, err := s.manifestFlows.ReserveStart(sessionID, origin, input.OwnerType, input.Organization, principal.ExpiresAt)
 	if err != nil {
-		if errors.Is(err, errManifestFlowCapacity) {
+		switch {
+		case errors.Is(err, errManifestFlowCapacity):
 			writeCanonicalError(w, http.StatusTooManyRequests, errorcatalog.CodeDependencyBlocked, "too many GitHub setup flows are active; finish or wait for an existing flow to expire", "api.github_manifest.start", nil)
-			return
+		case errors.Is(err, errManifestFlowIntentConflict):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "another GitHub App setup is already active in this browser session; resume or discard it first", "api.github_manifest.start", nil)
+		default:
+			s.writeInternalError(w, "create GitHub setup flow failed")
 		}
-		s.writeInternalError(w, "create GitHub setup flow failed")
+		return
+	}
+	if !created {
+		setSensitiveIdempotencyExpiry(w, flow.ExpiresAt)
+		writeJSON(w, http.StatusOK, statusFromManifestFlow(flow))
 		return
 	}
 	manifestCallback := origin + s.basePath + "/connections/github/manifest-flows/manifest-callback"

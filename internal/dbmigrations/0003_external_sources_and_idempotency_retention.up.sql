@@ -76,6 +76,7 @@ CREATE TABLE external_sources (
   source_kind TEXT NOT NULL CHECK (source_kind IN ('issue')),
   provider_native_id TEXT NOT NULL,
   repository_native_id TEXT NOT NULL,
+  repository_installation_id TEXT NOT NULL DEFAULT '',
   repository_locator TEXT NOT NULL,
   issue_number INTEGER NOT NULL CHECK (issue_number > 0),
   canonical_url TEXT NOT NULL,

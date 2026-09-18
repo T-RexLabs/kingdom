@@ -19,10 +19,11 @@ const (
 )
 
 var (
-	errManifestFlowNotFound = errors.New("github manifest flow not found")
-	errManifestFlowStage    = errors.New("github manifest flow is not in the required stage")
-	errManifestFlowCapacity = errors.New("too many active github manifest flows")
-	errManifestFlowInFlight = errors.New("github manifest flow is in flight")
+	errManifestFlowNotFound       = errors.New("github manifest flow not found")
+	errManifestFlowStage          = errors.New("github manifest flow is not in the required stage")
+	errManifestFlowCapacity       = errors.New("too many active github manifest flows")
+	errManifestFlowIntentConflict = errors.New("another github manifest flow intent is active for this browser binding")
+	errManifestFlowInFlight       = errors.New("github manifest flow is in flight")
 )
 
 type manifestFlowStage string
@@ -55,6 +56,7 @@ type manifestStateRef struct {
 
 type githubManifestFlow struct {
 	ID, SessionID, Origin                           string
+	OwnerType, Organization                         string
 	Stage                                           manifestFlowStage
 	CreatedAt, ExpiresAt, TerminalAt                time.Time
 	ManifestState, SetupState, OAuthState           string
@@ -92,42 +94,57 @@ func newManifestFlowManager(now func() time.Time) *manifestFlowManager {
 	return &manifestFlowManager{now: now, maxRetained: manifestFlowMaxRetained, flows: make(map[string]*githubManifestFlow), states: make(map[string]manifestStateRef)}
 }
 
-func (m *manifestFlowManager) Create(sessionID, origin string, sessionExpiresAt time.Time) (*githubManifestFlow, error) {
-	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(origin) == "" {
-		return nil, errManifestFlowNotFound
+// ReserveStart claims the browser binding before returning a manifest form.
+// The same owner intent resumes its existing flow; a different intent cannot
+// create a competing flow that would hide the existing resumable setup.
+func (m *manifestFlowManager) ReserveStart(sessionID, origin, ownerType, organization string, sessionExpiresAt time.Time) (*githubManifestFlow, bool, error) {
+	sessionID, origin = strings.TrimSpace(sessionID), strings.TrimSpace(origin)
+	ownerType, organization = strings.TrimSpace(ownerType), strings.TrimSpace(organization)
+	if sessionID == "" || origin == "" {
+		return nil, false, errManifestFlowNotFound
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneLocked()
+	for _, flow := range m.flows {
+		if flow.SessionID != sessionID || flow.Origin != origin || flow.terminal() {
+			continue
+		}
+		if flow.OwnerType != ownerType || flow.Organization != organization {
+			return nil, false, errManifestFlowIntentConflict
+		}
+		copy := *flow
+		return &copy, false, nil
+	}
 	if len(m.flows) >= m.maxRetained && !m.evictOldestTerminalLocked() {
-		return nil, errManifestFlowCapacity
+		return nil, false, errManifestFlowCapacity
 	}
 	flowID, err := randomToken(24)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	manifestState, err := randomToken(32)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	setupState, err := randomToken(32)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	now := m.now().UTC()
 	expiresAt := now.Add(manifestFlowTTL)
 	if sessionExpiresAt.IsZero() || !sessionExpiresAt.After(now) {
-		return nil, errManifestFlowNotFound
+		return nil, false, errManifestFlowNotFound
 	}
 	if sessionExpiresAt.Before(expiresAt) {
 		expiresAt = sessionExpiresAt
 	}
-	flow := &githubManifestFlow{ID: flowID, SessionID: sessionID, Origin: origin, Stage: manifestStageAwaitingManifest, CreatedAt: now, ExpiresAt: expiresAt, ManifestState: manifestState, SetupState: setupState}
+	flow := &githubManifestFlow{ID: flowID, SessionID: sessionID, Origin: origin, OwnerType: ownerType, Organization: organization, Stage: manifestStageAwaitingManifest, CreatedAt: now, ExpiresAt: expiresAt, ManifestState: manifestState, SetupState: setupState}
 	m.flows[flow.ID] = flow
 	m.states[manifestState] = manifestStateRef{FlowID: flow.ID, Kind: manifestStateRegistration}
 	m.states[setupState] = manifestStateRef{FlowID: flow.ID, Kind: manifestStateSetup}
 	copy := *flow
-	return &copy, nil
+	return &copy, true, nil
 }
 
 func (m *manifestFlowManager) Current(sessionID, origin string) (manifestFlowStatus, error) {
@@ -136,7 +153,7 @@ func (m *manifestFlowManager) Current(sessionID, origin string) (manifestFlowSta
 	m.pruneLocked()
 	var selected *githubManifestFlow
 	for _, flow := range m.flows {
-		if flow.Stage == manifestStageFinalized || flow.Stage == manifestStageFailed {
+		if flow.terminal() {
 			continue
 		}
 		if flow.SessionID == sessionID && flow.Origin == origin && (selected == nil || flow.CreatedAt.After(selected.CreatedAt)) {
@@ -406,7 +423,7 @@ func (m *manifestFlowManager) pruneLocked() {
 func (m *manifestFlowManager) evictOldestTerminalLocked() bool {
 	var oldest *githubManifestFlow
 	for _, flow := range m.flows {
-		if flow.Stage != manifestStageFinalized && flow.Stage != manifestStageFailed {
+		if !flow.terminal() {
 			continue
 		}
 		if oldest == nil || manifestTerminalLess(flow, oldest) {
@@ -418,6 +435,10 @@ func (m *manifestFlowManager) evictOldestTerminalLocked() bool {
 	}
 	m.removeFlowLocked(oldest.ID, oldest)
 	return true
+}
+
+func (f *githubManifestFlow) terminal() bool {
+	return f.Stage == manifestStageFinalized || f.Stage == manifestStageFailed
 }
 
 func manifestTerminalLess(left, right *githubManifestFlow) bool {

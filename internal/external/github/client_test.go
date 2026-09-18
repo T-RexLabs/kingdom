@@ -2109,7 +2109,7 @@ func TestRepositoryResolvesFromTheListingIndex(t *testing.T) {
 	}
 	before := listings.Load()
 
-	repo, err := client.repository(context.Background(), conn, "2")
+	repo, err := client.repository(context.Background(), conn, "2", "")
 	if err != nil {
 		t.Fatalf("resolve repository: %v", err)
 	}
@@ -2126,6 +2126,68 @@ func TestRepositoryResolvesFromTheListingIndex(t *testing.T) {
 	moved.RowVersion = conn.RowVersion + 1
 	if _, ok := client.indexedRepository(moved, "2"); ok {
 		t.Fatal("expected a newer connection row version to invalidate the index")
+	}
+}
+
+func TestIssueFetchColdResolvesAndRefreshesRepositoryGrantedByInstallationSix(t *testing.T) {
+	keys, fingerprint := provisionTestKey(t)
+	now := time.Now().UTC()
+	var listings int
+	var repositoryTokens, issueTokens []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/installation/repositories":
+			listings++
+			_, _ = w.Write([]byte(`{"repositories":[]}`))
+		case "/repositories/600":
+			repositoryTokens = append(repositoryTokens, r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "Bearer token-6" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":600,"full_name":"owner/six","html_url":"https://github.com/owner/six","owner":{"id":6}}`))
+		case "/repos/owner/six/issues/7":
+			issueTokens = append(issueTokens, r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "Bearer token-6" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":900,"number":7,"title":"Issue","body":"body","state":"open","html_url":"https://github.com/owner/six/issues/7","created_at":"2026-08-01T00:00:00Z","updated_at":"2026-08-02T00:00:00Z","comments":0,"repository_url":"https://api.github.com/repos/owner/six"}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	conn := state.ExternalConnection{ConnectionID: "conn-1", RowVersion: 1, CredentialGeneration: 1}
+	for installationID := 1; installationID <= 6; installationID++ {
+		conn.Installations = append(conn.Installations, state.ConnectionInstallation{InstallationID: strconv.Itoa(installationID)})
+	}
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedInstallationTestTokens(client, conn, fingerprint, now.Add(time.Hour))
+
+	captured, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: conn, RepositoryID: "600", IssueNumber: 7})
+	if err != nil || captured.RepositoryInstallationID != "6" {
+		t.Fatalf("cold capture=%#v err=%v", captured, err)
+	}
+	if listings != repositoryRequestBudget || len(repositoryTokens) != 6 || repositoryTokens[5] != "Bearer token-6" || len(issueTokens) != 1 || issueTokens[0] != "Bearer token-6" {
+		t.Fatalf("cold lookup listings=%d repository_tokens=%v issue_tokens=%v", listings, repositoryTokens, issueTokens)
+	}
+
+	client.repositoryIndexMu.Lock()
+	delete(client.repositoryIndex, conn.ConnectionID)
+	client.repositoryIndexMu.Unlock()
+	beforeListings := listings
+	refreshed, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: conn, RepositoryID: captured.RepositoryID, RepositoryInstallationID: captured.RepositoryInstallationID, IssueNumber: 7, ProviderNativeID: captured.NativeID})
+	if err != nil || refreshed.RepositoryInstallationID != "6" {
+		t.Fatalf("source refresh=%#v err=%v", refreshed, err)
+	}
+	if listings != beforeListings || len(repositoryTokens) != 7 || repositoryTokens[6] != "Bearer token-6" || len(issueTokens) != 2 || issueTokens[1] != "Bearer token-6" {
+		t.Fatalf("refresh listings=%d repository_tokens=%v issue_tokens=%v", listings, repositoryTokens, issueTokens)
 	}
 }
 

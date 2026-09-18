@@ -49,10 +49,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Resume the latest restart-scoped GitHub manifest flow bound to this browser session and origin. */
+        /** Resume the active restart-scoped GitHub manifest flow bound to this browser session and origin. */
         get: operations["getCurrentGitHubManifestFlow"];
         put?: never;
-        /** Start user-owned GitHub App manifest registration for this exact browser session and origin. */
+        /** Start user-owned GitHub App manifest registration or resume the same intent for this exact browser session and origin. */
         post: operations["startGitHubManifestFlow"];
         delete?: never;
         options?: never;
@@ -3429,6 +3429,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Safe status for an existing flow with the same owner intent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubManifestFlowStatus"];
+                };
+            };
             /** @description Transient GitHub form action and manifest. The response is replayable only within the current process and is never persisted. */
             201: {
                 headers: {

@@ -174,7 +174,7 @@ type ExternalComment struct {
 
 type CaptureExternalIssueRequest struct {
 	SourceID, SnapshotID, ConnectionID, ProviderNativeID           string
-	RepositoryNativeID                                             string
+	RepositoryNativeID, RepositoryInstallationID                   string
 	Issue                                                          NormalizedExternalIssue
 	Profile                                                        ExternalImportProfile
 	ProviderUpdatedAt, FetchedAt, ETag, CommentsETag, LastModified string
@@ -359,14 +359,15 @@ func (s *ExternalStore) AttachPlanningExternalSource(ctx context.Context, req At
 }
 
 type ExternalRefreshBasis struct {
-	Link                    ExternalLinkSummary
-	Connection              ExternalConnection
-	ProviderNativeID        string
-	FetchRepositoryNativeID string
-	FetchRepository         string
-	FetchIssueNumber        int
-	FetchCanonicalURL       string
-	LatestSnapshot          ExternalSourceSnapshot
+	Link                          ExternalLinkSummary
+	Connection                    ExternalConnection
+	ProviderNativeID              string
+	FetchRepositoryNativeID       string
+	FetchRepositoryInstallationID string
+	FetchRepository               string
+	FetchIssueNumber              int
+	FetchCanonicalURL             string
+	LatestSnapshot                ExternalSourceSnapshot
 }
 
 type ExternalHistoryEntry struct {
@@ -1175,7 +1176,7 @@ func captureExternalIssueTx(ctx context.Context, tx *sql.Tx, req CaptureExternal
 	canonical, _ := json.Marshal(contentMaterial)
 	contentDigest := digest(canonical)
 	now := req.FetchedAt
-	_, err = tx.ExecContext(ctx, `INSERT INTO external_sources (source_id,connection_id,provider,source_kind,provider_native_id,repository_native_id,repository_locator,issue_number,canonical_url,created_at,updated_at) VALUES (?,?,?,'issue',?,?,?,?,?,?,?) ON CONFLICT(connection_id,source_kind,provider_native_id) DO UPDATE SET repository_native_id=excluded.repository_native_id,repository_locator=excluded.repository_locator,issue_number=excluded.issue_number,canonical_url=excluded.canonical_url,row_version=row_version+1,updated_at=excluded.updated_at`, req.SourceID, req.ConnectionID, "github", req.ProviderNativeID, req.RepositoryNativeID, req.Issue.Repository, req.Issue.IssueNumber, req.Issue.CanonicalURL, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO external_sources (source_id,connection_id,provider,source_kind,provider_native_id,repository_native_id,repository_installation_id,repository_locator,issue_number,canonical_url,created_at,updated_at) VALUES (?,?,?,'issue',?,?,?,?,?,?,?,?) ON CONFLICT(connection_id,source_kind,provider_native_id) DO UPDATE SET repository_native_id=excluded.repository_native_id,repository_installation_id=excluded.repository_installation_id,repository_locator=excluded.repository_locator,issue_number=excluded.issue_number,canonical_url=excluded.canonical_url,row_version=row_version+1,updated_at=excluded.updated_at`, req.SourceID, req.ConnectionID, "github", req.ProviderNativeID, req.RepositoryNativeID, req.RepositoryInstallationID, req.Issue.Repository, req.Issue.IssueNumber, req.Issue.CanonicalURL, now, now)
 	if err != nil {
 		return ExternalSourceSnapshot{}, false, fmt.Errorf("upsert external source: %w", err)
 	}
@@ -1646,7 +1647,7 @@ func (s *ExternalStore) GetRefreshBasis(ctx context.Context, linkID string) (Ext
 		SELECT l.link_id,l.target_kind,l.target_id,l.source_id,l.used_snapshot_id,
 			l.latest_snapshot_id,l.status,l.checked_at,l.row_version,l.created_at,
 			src.provider,provenance.normalized_issue_json,l.active_snapshot_id,
-			src.provider_native_id,src.repository_native_id,src.repository_locator,src.issue_number,src.canonical_url,
+			src.provider_native_id,src.repository_native_id,src.repository_installation_id,src.repository_locator,src.issue_number,src.canonical_url,
 			`+connectionColumnList("c")+`
 		FROM link_view l
 		JOIN external_sources src ON src.source_id=l.source_id
@@ -1656,7 +1657,7 @@ func (s *ExternalStore) GetRefreshBasis(ctx context.Context, linkID string) (Ext
 		END
 		JOIN external_connections c ON c.connection_id=src.connection_id`, strings.TrimSpace(linkID)).Scan(append([]any{
 		&out.Link.LinkID, &out.Link.TargetKind, &out.Link.TargetID, &out.Link.SourceID, &out.Link.UsedSnapshotID, &out.Link.LatestSnapshotID, &out.Link.Status, &checked, &out.Link.RowVersion, &out.Link.CreatedAt, &out.Link.Provider, &issueJSON, &out.Link.ActiveSnapshotID,
-		&out.ProviderNativeID, &out.FetchRepositoryNativeID, &out.FetchRepository, &out.FetchIssueNumber, &out.FetchCanonicalURL,
+		&out.ProviderNativeID, &out.FetchRepositoryNativeID, &out.FetchRepositoryInstallationID, &out.FetchRepository, &out.FetchIssueNumber, &out.FetchCanonicalURL,
 	}, connectionScanTargets(&out.Connection, &connectionChecked, &connectionSuccess)...)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, ErrExternalNotFound

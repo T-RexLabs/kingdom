@@ -55,6 +55,28 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(
 	}
 }
 
+func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-six", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "6", AccountID: "16", AccountLogin: "owner"}}, CredentialHandle: "github-app:conn-six", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-six"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-six", SnapshotID: "snapshot-six", ConnectionID: "conn-six", ProviderNativeID: "100", RepositoryNativeID: "600", RepositoryInstallationID: "6", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/six", IssueNumber: 7, CanonicalURL: "https://github.com/owner/six/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-six" }, ActorID: "local-operator"}); err != nil {
+		t.Fatal(err)
+	}
+	basis, err := store.GetRefreshBasis(ctx, "link-six")
+	if err != nil || basis.FetchRepositoryNativeID != "600" || basis.FetchRepositoryInstallationID != "6" {
+		t.Fatalf("refresh basis=%#v err=%v", basis, err)
+	}
+}
+
 func TestCreateDecreeExternalLinkRollsBackOnUnknownSnapshot(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")

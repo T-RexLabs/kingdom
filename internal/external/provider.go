@@ -57,29 +57,32 @@ type IssuePage struct {
 }
 
 type IssueRequest struct {
-	Connection          state.ExternalConnection
-	RepositoryID        string
-	IssueNumber         int
-	Profile             state.ExternalImportProfile
-	ETag                string
-	CommentsETag        string
-	ProviderNativeID    string
-	CurrentIssue        state.NormalizedExternalIssue
-	CurrentCommentCount int
+	Connection   state.ExternalConnection
+	RepositoryID string
+	// RepositoryInstallationID is the persisted grant witness for a captured
+	// source. It is internal because installation selection is credential state.
+	RepositoryInstallationID string
+	IssueNumber              int
+	Profile                  state.ExternalImportProfile
+	ETag                     string
+	CommentsETag             string
+	ProviderNativeID         string
+	CurrentIssue             state.NormalizedExternalIssue
+	CurrentCommentCount      int
 }
 
 type IssueResult struct {
-	RepositoryID, NativeID                    string
-	Issue                                     state.NormalizedExternalIssue
-	Profile                                   state.ExternalImportProfile
-	Comments                                  []state.ExternalComment
-	ProviderCommentCount, FetchedCommentCount int
-	FetchedCommentPages, OmittedCommentCount  int
-	OmittedCommentPages                       int
-	ETag, CommentsETag, LastModified          string
-	NotModified                               bool
-	CommentsNotModified                       bool
-	Transferred                               bool
+	RepositoryID, RepositoryInstallationID, NativeID string
+	Issue                                            state.NormalizedExternalIssue
+	Profile                                          state.ExternalImportProfile
+	Comments                                         []state.ExternalComment
+	ProviderCommentCount, FetchedCommentCount        int
+	FetchedCommentPages, OmittedCommentCount         int
+	OmittedCommentPages                              int
+	ETag, CommentsETag, LastModified                 string
+	NotModified                                      bool
+	CommentsNotModified                              bool
+	Transferred                                      bool
 }
 
 // ConnectionValidation is the verdict for a whole connection. Every installation

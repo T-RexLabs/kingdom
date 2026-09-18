@@ -94,11 +94,6 @@ const (
 	// maxIndexedRepositories bounds what one connection may remember, so the
 	// index stays an accelerator and never an unbounded cache.
 	maxIndexedRepositories = 2000
-	// repositoryResolutionProbeBudget bounds direct installation probes when a
-	// cold resolution cannot use the listing index. It deliberately matches the
-	// discovery budget, while avoiding a cursor walk that would restart from
-	// page one for every issue request.
-	repositoryResolutionProbeBudget = repositoryRequestBudget
 )
 
 // connectionRepositoryIndex remembers which installation granted a repository,
@@ -654,8 +649,12 @@ func (c *Client) indexedRepository(conn state.ExternalConnection, id string) (ex
 
 // repository resolves a repository ID back to the locator and installation that
 // grants it. The cache is the normal picker-to-issue path; a cold lookup checks
-// one bounded discovery page before using GitHub's direct repository endpoint.
-func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id string) (external.Repository, error) {
+// one bounded discovery page before probing every covered installation through
+// GitHub's direct repository endpoint.
+func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id, installationID string) (external.Repository, error) {
+	if installationID != "" {
+		return c.directRepository(ctx, conn, id, "", installationID)
+	}
 	if item, ok := c.indexedRepository(conn, id); ok {
 		return item, nil
 	}
@@ -668,13 +667,13 @@ func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, 
 			return item, nil
 		}
 	}
-	return c.directRepository(ctx, conn, id, "")
+	return c.directRepository(ctx, conn, id, "", "")
 }
 
 func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, repositoryID, stateFilter, search, cursor string) (external.IssuePage, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	repo, err := c.repository(ctx, conn, repositoryID)
+	repo, err := c.repository(ctx, conn, repositoryID, "")
 	if err != nil {
 		return external.IssuePage{}, err
 	}
@@ -750,7 +749,7 @@ type githubIssue struct {
 func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (external.IssueResult, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	repo, err := c.repository(ctx, req.Connection, req.RepositoryID)
+	repo, err := c.repository(ctx, req.Connection, req.RepositoryID, req.RepositoryInstallationID)
 	if err != nil {
 		return external.IssueResult{}, err
 	}
@@ -766,16 +765,16 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 		if providerError && pe.Status == 304 {
 			profile := req.Profile
 			if !profile.IncludeComments {
-				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
+				return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
 			comments, fetched, fetchedPages, omitted, omittedPages, commentETag, commentsUnchanged, commentErr := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, repo.Locator, req.IssueNumber, req.CommentsETag, req.CurrentCommentCount)
 			if commentErr != nil {
 				return external.IssueResult{}, commentErr
 			}
 			if commentsUnchanged {
-				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
+				return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
-			return external.IssueResult{RepositoryID: req.RepositoryID, NativeID: req.ProviderNativeID, Issue: req.CurrentIssue, Profile: profile, Comments: comments, ProviderCommentCount: req.CurrentCommentCount, FetchedCommentCount: fetched, FetchedCommentPages: fetchedPages, OmittedCommentCount: omitted, OmittedCommentPages: omittedPages, ETag: req.ETag, CommentsETag: commentETag}, nil
+			return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, Issue: req.CurrentIssue, Profile: profile, Comments: comments, ProviderCommentCount: req.CurrentCommentCount, FetchedCommentCount: fetched, FetchedCommentPages: fetchedPages, OmittedCommentCount: omitted, OmittedCommentPages: omittedPages, ETag: req.ETag, CommentsETag: commentETag}, nil
 		}
 		if providerError && pe.Status >= 300 && pe.Status < 400 {
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
@@ -856,7 +855,7 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	if err := validateResponseValidators(response.Header.Get("ETag"), response.Header.Get("Last-Modified")); err != nil {
 		return external.IssueResult{}, err
 	}
-	out := external.IssueResult{RepositoryID: destination.ID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
+	out := external.IssueResult{RepositoryID: destination.ID, RepositoryInstallationID: destination.InstallationID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
 	if out.Profile.IncludeComments {
 		comments, fetched, fetchedPages, omitted, omittedPages, fetchedCommentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, destination.Locator, issue.Number, commentETag, issue.Comments)
 		if e != nil {
@@ -944,14 +943,16 @@ func (c *Client) repositoryByLocator(ctx context.Context, conn state.ExternalCon
 			return item, nil
 		}
 	}
-	return c.directRepository(ctx, conn, "", locator)
+	return c.directRepository(ctx, conn, "", locator, "")
 }
 
 // directRepository resolves one stable repository coordinate without replaying a
 // paginated grant walk. App installation credentials must be tried in stable
-// order because GitHub scopes each token to one installation; shared user
-// credentials cover every installation and need only one request.
-func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnection, id, locator string) (external.Repository, error) {
+// order because GitHub scopes each token to one installation. This cannot stop
+// at the discovery budget: a cold source coordinate may belong to any covered
+// installation. Shared user credentials cover every installation and need only
+// one request.
+func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnection, id, locator, installationID string) (external.Repository, error) {
 	var path string
 	if id != "" {
 		parsedID, err := strconv.ParseInt(id, 10, 64)
@@ -970,17 +971,26 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 	if len(conn.Installations) == 0 {
 		return external.Repository{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
-	probes := len(conn.Installations)
+	installations := conn.Installations
 	strategy := conn.CredentialStrategy
 	if strategy == "" {
 		strategy = "app_private_key"
 	}
-	if strategy == "user_access_token" {
-		probes = 1
-	} else if probes > repositoryResolutionProbeBudget {
-		probes = repositoryResolutionProbeBudget
+	if installationID != "" {
+		installations = nil
+		for _, installation := range conn.Installations {
+			if installation.InstallationID == installationID {
+				installations = append(installations, installation)
+				break
+			}
+		}
+		if len(installations) == 0 {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+	} else if strategy == "user_access_token" {
+		installations = installations[:1]
 	}
-	for _, installation := range conn.Installations[:probes] {
+	for _, installation := range installations {
 		token, err := c.accessToken(ctx, conn, installation.InstallationID)
 		if err != nil {
 			return external.Repository{}, err

@@ -72,6 +72,7 @@ type externalAPITestAdapter struct {
 	repositoryCursor string
 	installations    []external.Installation
 	validation       []state.ConnectionInstallation
+	fetchRequests    []external.IssueRequest
 }
 
 func TestExternalProviderErrorsExposeOnlySafeRetryTime(t *testing.T) {
@@ -251,10 +252,46 @@ func (a *externalAPITestAdapter) FetchIssue(_ context.Context, request external.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.calls++
+	a.fetchRequests = append(a.fetchRequests, request)
 	if result, ok := a.results[request.IssueNumber]; ok {
 		return result, a.fetchErr
 	}
 	return a.result, a.fetchErr
+}
+
+func TestExternalSourceRefreshUsesPersistedInstallationSix(t *testing.T) {
+	adapter := &externalAPITestAdapter{result: external.IssueResult{NotModified: true}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-refresh-six", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "6"}}, CredentialHandle: "github-app:conn-refresh-six", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-six-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-refresh-six-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "6", AccountID: "16", AccountLogin: "owner"}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh-six", SnapshotID: "snapshot-refresh-six", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "600", RepositoryInstallationID: "6", Issue: state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/six", IssueNumber: 7, CanonicalURL: "https://github.com/owner/six/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{DecreeID: "decree-refresh-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh-six" }, ActorID: "local-operator"}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh-six/refreshes", idempotencyKey: "refresh-six"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.fetchRequests) != 1 || adapter.fetchRequests[0].RepositoryID != "600" || adapter.fetchRequests[0].RepositoryInstallationID != "6" {
+		t.Fatalf("refresh requests=%#v", adapter.fetchRequests)
+	}
 }
 
 func publishExternalTestCredential(t *testing.T, db *sql.DB, connectionID, auditID, at string) {

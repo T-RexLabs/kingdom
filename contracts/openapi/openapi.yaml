@@ -84,7 +84,7 @@ paths:
     get:
       tags: [connections]
       operationId: getCurrentGitHubManifestFlow
-      summary: Resume the latest restart-scoped GitHub manifest flow bound to this browser session and origin.
+      summary: Resume the active restart-scoped GitHub manifest flow bound to this browser session and origin.
       responses:
         "200": { description: Current safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubManifestFlowStatus" } } } }
         "204": { description: No active flow is bound to this browser session and origin. }
@@ -94,7 +94,7 @@ paths:
     post:
       tags: [connections]
       operationId: startGitHubManifestFlow
-      summary: Start user-owned GitHub App manifest registration for this exact browser session and origin.
+      summary: Start user-owned GitHub App manifest registration or resume the same intent for this exact browser session and origin.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -102,6 +102,7 @@ paths:
         required: true
         content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubManifestFlowRequest" } } }
       responses:
+        "200": { description: Safe status for an existing flow with the same owner intent., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubManifestFlowStatus" } } } }
         "201": { description: Transient GitHub form action and manifest. The response is replayable only within the current process and is never persisted., content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubManifestFlowPayload" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }

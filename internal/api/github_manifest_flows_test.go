@@ -47,10 +47,7 @@ func TestManifestFlowStagesBindSessionOriginAndRejectReplay(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
 	sessionExpiresAt := now.Add(30 * time.Minute)
-	flow, err := manager.Create("session-a", "https://kingdom.example", sessionExpiresAt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	flow := createManifestFlow(t, manager, "session-a", "https://kingdom.example", sessionExpiresAt)
 	if !flow.ExpiresAt.Equal(sessionExpiresAt) {
 		t.Fatalf("manifest flow expiry=%s, want session expiry %s", flow.ExpiresAt, sessionExpiresAt)
 	}
@@ -106,6 +103,31 @@ func TestManifestFlowStagesBindSessionOriginAndRejectReplay(t *testing.T) {
 	}
 }
 
+func TestManifestFlowStartReservationResumesSameIntentAndConflictsWithAnother(t *testing.T) {
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	manager := newManifestFlowManager(func() time.Time { return now })
+	first, created, err := manager.ReserveStart("session", "https://kingdom.example", "organization", "kingdom-org", now.Add(time.Hour))
+	if err != nil || !created {
+		t.Fatalf("first reservation created=%v err=%v", created, err)
+	}
+	resumed, created, err := manager.ReserveStart("session", "https://kingdom.example", "organization", "kingdom-org", now.Add(time.Hour))
+	if err != nil || created || resumed.ID != first.ID || resumed.ManifestState != first.ManifestState {
+		t.Fatalf("same intent did not resume: flow=%#v created=%v err=%v", resumed, created, err)
+	}
+	if _, _, err := manager.ReserveStart("session", "https://kingdom.example", "personal", "", now.Add(time.Hour)); !errors.Is(err, errManifestFlowIntentConflict) {
+		t.Fatalf("personal intent while organization flow is active error=%v", err)
+	}
+	if _, _, err := manager.ReserveStart("session", "https://kingdom.example", "organization", "other-org", now.Add(time.Hour)); !errors.Is(err, errManifestFlowIntentConflict) {
+		t.Fatalf("different organization intent error=%v", err)
+	}
+	if err := manager.Discard(first.ID, first.SessionID, first.Origin); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := manager.ReserveStart("session", "https://kingdom.example", "personal", "", now.Add(time.Hour)); err != nil || !created {
+		t.Fatalf("new intent after discard created=%v err=%v", created, err)
+	}
+}
+
 func TestManifestFlowFinalizationRemainsPinnedAcrossExpiry(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
@@ -123,10 +145,7 @@ func TestManifestFlowFinalizationRemainsPinnedAcrossExpiry(t *testing.T) {
 func TestGitHubManifestCallbackUsesOneTimeStateWithoutCookie(t *testing.T) {
 	handler, _ := newAPIServerForTest(t)
 	server := handler.(*Server)
-	flow, err := server.manifestFlows.Create("browser-session", "https://kingdom.example", time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
+	flow := createManifestFlow(t, server.manifestFlows, "browser-session", "https://kingdom.example", time.Now().Add(time.Hour))
 	path := "/api/v1/connections/github/manifest-flows/manifest-callback?state=" + flow.ManifestState + "&code=manifest-code"
 	request := httptest.NewRequest(http.MethodGet, path, nil)
 	response := httptest.NewRecorder()
@@ -202,10 +221,54 @@ func TestStartGitHubManifestFlowBuildsExactPrivateAppManifestWithoutSensitiveIde
 	}
 }
 
+func TestStartGitHubManifestFlowResumesOnlyTheSameIntent(t *testing.T) {
+	handler, _ := newAPIServerForTest(t)
+	server := handler.(*Server)
+	cookie, session := seedBrowserSessionForTest(t, server, "http://127.0.0.1:9090", server.now().UTC().Add(time.Hour))
+
+	start := func(key, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9090/api/v1/connections/github/manifest-flows", bytes.NewBufferString(body))
+		request.RemoteAddr = "127.0.0.1:49152"
+		request.Host = "127.0.0.1:9090"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", "http://127.0.0.1:9090")
+		request.Header.Set("X-CSRF-Token", session.CSRFToken)
+		request.Header.Set("Idempotency-Key", key)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+
+	organization := `{"owner_type":"organization","organization":"kingdom-org"}`
+	key := testIdempotencyKey(t, "manifest-reservation", time.Now())
+	first := start(key, organization)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first start status=%d body=%s", first.Code, first.Body.String())
+	}
+	var started startManifestFlowResponse
+	if err := json.Unmarshal(first.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	replay := start(key, organization)
+	if replay.Code != http.StatusCreated || replay.Body.String() != first.Body.String() {
+		t.Fatalf("idempotency replay status=%d body=%s, want status=%d body=%s", replay.Code, replay.Body.String(), first.Code, first.Body.String())
+	}
+	resumed := start(testIdempotencyKey(t, "manifest-reservation-resume", time.Now()), organization)
+	var resumedStatus manifestFlowStatus
+	if resumed.Code != http.StatusOK || json.Unmarshal(resumed.Body.Bytes(), &resumedStatus) != nil || resumedStatus.FlowID != started.FlowID || resumedStatus.Stage != manifestStageAwaitingManifest {
+		t.Fatalf("same intent resume status=%d body=%s", resumed.Code, resumed.Body.String())
+	}
+	conflict := start(testIdempotencyKey(t, "manifest-reservation-conflict", time.Now()), `{"owner_type":"personal"}`)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("competing intent status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+}
+
 func TestManifestFlowExpiryPrunesAndZeroesSecrets(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
-	flow, _ := manager.Create("session", "https://kingdom.example", now.Add(time.Hour))
+	flow := createManifestFlow(t, manager, "session", "https://kingdom.example", now.Add(time.Hour))
 	_, _ = manager.RecordManifestCode(flow.ManifestState, "manifest-code")
 	secret := manager.flows[flow.ID].ManifestCode
 	now = now.Add(time.Hour)
@@ -223,13 +286,9 @@ func TestManifestFlowCapacityIsBounded(t *testing.T) {
 	manager := newManifestFlowManager(time.Now)
 	manager.maxRetained = 2
 	expiresAt := time.Now().Add(time.Hour)
-	if _, err := manager.Create("one", "https://one.example", expiresAt); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Create("two", "https://two.example", expiresAt); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.Create("three", "https://three.example", expiresAt); !errors.Is(err, errManifestFlowCapacity) {
+	createManifestFlow(t, manager, "one", "https://one.example", expiresAt)
+	createManifestFlow(t, manager, "two", "https://two.example", expiresAt)
+	if _, _, err := manager.ReserveStart("three", "https://three.example", "personal", "", expiresAt); !errors.Is(err, errManifestFlowCapacity) {
 		t.Fatalf("capacity error=%v", err)
 	}
 }
@@ -238,19 +297,13 @@ func TestManifestFlowRetentionEvictsOldestTerminalAndPreservesActive(t *testing.
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
 	manager.maxRetained = 4
-	active, err := manager.Create("active", "https://kingdom.example", now.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
+	active := createManifestFlow(t, manager, "active", "https://kingdom.example", now.Add(time.Hour))
 
 	var firstTerminalID string
 	var firstSecret []byte
 	for i := 0; i < 100; i++ {
 		now = now.Add(time.Second)
-		flow, createErr := manager.Create("terminal", "https://kingdom.example", now.Add(time.Hour))
-		if createErr != nil {
-			t.Fatalf("create terminal flow %d: %v", i, createErr)
-		}
+		flow := createManifestFlow(t, manager, "terminal", "https://kingdom.example", now.Add(time.Hour))
 		secret := []byte(fmt.Sprintf("secret-%d", i))
 		manager.flows[flow.ID].PrivateKey = secret
 		if i%2 == 0 {
@@ -293,10 +346,7 @@ func TestManifestFlowRetentionEvictsOldestTerminalAndPreservesActive(t *testing.
 func TestManifestFlowDiscardIsSessionBoundAndZeroesSecrets(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
-	flow, err := manager.Create("session-a", "https://kingdom.example", now.Add(30*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
+	flow := createManifestFlow(t, manager, "session-a", "https://kingdom.example", now.Add(30*time.Minute))
 	if _, err := manager.RecordManifestCode(flow.ManifestState, "manifest-code"); err != nil {
 		t.Fatal(err)
 	}
@@ -334,10 +384,7 @@ func TestManifestFlowDiscardIsSessionBoundAndZeroesSecrets(t *testing.T) {
 func TestManifestFlowDiscardRejectsInFlightWork(t *testing.T) {
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	manager := newManifestFlowManager(func() time.Time { return now })
-	flow, err := manager.Create("session-a", "https://kingdom.example", now.Add(30*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
+	flow := createManifestFlow(t, manager, "session-a", "https://kingdom.example", now.Add(30*time.Minute))
 	if _, err := manager.RecordManifestCode(flow.ManifestState, "manifest-code"); err != nil {
 		t.Fatal(err)
 	}
@@ -425,4 +472,13 @@ func TestDiscardGitHubManifestFlowEndpointAbandonsResumableSetup(t *testing.T) {
 	if response := discard("manifest-discard-repeat", true); response.Code != http.StatusNotFound {
 		t.Fatalf("repeat discard status=%d body=%s", response.Code, response.Body.String())
 	}
+}
+
+func createManifestFlow(t *testing.T, manager *manifestFlowManager, sessionID, origin string, expiresAt time.Time) *githubManifestFlow {
+	t.Helper()
+	flow, created, err := manager.ReserveStart(sessionID, origin, "personal", "", expiresAt)
+	if err != nil || !created {
+		t.Fatalf("create manifest flow created=%v err=%v", created, err)
+	}
+	return flow
 }
