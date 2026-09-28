@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
+
+	"kingdom/internal/testutil"
 )
 
 func TestStoreAcknowledgeProviderProcessGuardFencesActiveLeaseAndReplaysExactly(t *testing.T) {
@@ -38,6 +41,65 @@ func TestStoreAcknowledgeProviderProcessGuardFencesActiveLeaseAndReplaysExactly(
 		t.Fatal("expected changed acknowledgement to conflict")
 	} else {
 		requireProviderSettlementError(t, err, "acknowledge_provider_process_guard", "guard_conflict")
+	}
+}
+
+func TestStoreAcknowledgeProviderProcessGuardConfirmsDurableCommitError(t *testing.T) {
+	connector := testutil.NewSQLiteCommitFaultConnector(":memory:")
+	db := connector.OpenDB()
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+	s, db, settlement := providerProcessGuardFixtureWithDB(t, db)
+	ack := providerProcessGuardAcknowledgement(settlement, "guard_commit_then_error", 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connector.FailNextDurableCommit(cancel)
+	result, err := s.AcknowledgeProviderProcessGuard(ctx, ack)
+	if err != nil {
+		t.Fatalf("confirm exact acknowledgement after durable commit error: %v", err)
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatal("expected the commit fault to cancel the request before readback")
+	}
+	if result.Idempotent || result.Guard.Lifecycle != ProviderProcessGuardLifecycleAcknowledged {
+		t.Fatalf("unexpected acknowledged result after commit error: %#v", result)
+	}
+	normalized, err := normalizeAcknowledgeProviderProcessGuardRequest(ack)
+	if err != nil {
+		t.Fatalf("normalize acknowledgement: %v", err)
+	}
+	if !sameProviderProcessGuardAcknowledgement(result.Guard, providerProcessGuardFromAcknowledgement(normalized)) {
+		t.Fatalf("readback returned a different acknowledgement lineage: %#v", result.Guard)
+	}
+	connector.FailNextDurableCommit(nil)
+	replay, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack)
+	if err != nil || !replay.Idempotent || replay.Guard != result.Guard {
+		t.Fatalf("confirm exact acknowledgement replay after durable commit error: replay=%#v err=%v", replay, err)
+	}
+}
+
+func TestStoreAcknowledgeProviderProcessGuardRejectsMismatchedDurableCommitReadback(t *testing.T) {
+	connector := testutil.NewSQLiteCommitFaultConnector(":memory:")
+	db := connector.OpenDB()
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+	s, db, settlement := providerProcessGuardFixtureWithDB(t, db)
+	ack := providerProcessGuardAcknowledgement(settlement, "guard_mismatched_commit", 1)
+	if _, err := db.Exec(`CREATE TRIGGER alter_acknowledged_guard_lease AFTER INSERT ON provider_process_guards WHEN NEW.guard_id = 'guard_mismatched_commit' BEGIN UPDATE provider_process_guards SET lease_version = lease_version + 1 WHERE guard_id = NEW.guard_id; END`); err != nil {
+		t.Fatalf("create acknowledgement lineage trigger: %v", err)
+	}
+	connector.FailNextDurableCommit(nil)
+
+	_, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack)
+	if err == nil || !errors.Is(err, testutil.ErrDurableCommit) {
+		t.Fatalf("expected the mismatched durable row to fail closed with the commit error, got %v", err)
 	}
 }
 
@@ -152,7 +214,12 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 
 func providerProcessGuardFixture(t *testing.T) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
 	t.Helper()
-	s, db, req := atomicProviderSettlementFixture(t)
+	return providerProcessGuardFixtureWithDB(t, openTestDB(t))
+}
+
+func providerProcessGuardFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
+	t.Helper()
+	s, db, req := atomicProviderSettlementFixtureWithDB(t, db)
 	mustExec(t, db, `DELETE FROM provider_process_guards`)
 	return s, db, req
 }

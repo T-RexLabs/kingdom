@@ -24,6 +24,7 @@ type modelCatalogTestHandle struct {
 }
 
 func (h *modelCatalogTestHandle) GuardID() string       { return "guard-models" }
+func (*modelCatalogTestHandle) Stdin() io.WriteCloser   { return modelCatalogDiscardWriter{} }
 func (h *modelCatalogTestHandle) Stdout() io.ReadCloser { return h.stdout }
 func (h *modelCatalogTestHandle) Stderr() io.ReadCloser { return h.stderr }
 func (h *modelCatalogTestHandle) Cancel(context.Context) error {
@@ -33,6 +34,11 @@ func (h *modelCatalogTestHandle) Cancel(context.Context) error {
 func (*modelCatalogTestHandle) Wait(context.Context) (processguardian.Result, error) {
 	return processguardian.Result{Quiescent: true}, nil
 }
+
+type modelCatalogDiscardWriter struct{}
+
+func (modelCatalogDiscardWriter) Write(payload []byte) (int, error) { return len(payload), nil }
+func (modelCatalogDiscardWriter) Close() error                      { return nil }
 
 func TestCollectOpenCodeVerboseModelOutputBoundsProviderStreams(t *testing.T) {
 	handle := &modelCatalogTestHandle{

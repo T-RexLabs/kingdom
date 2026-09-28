@@ -67,6 +67,9 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 	if err != nil {
 		return nil, fmt.Errorf("resolve absolute guarded command path: %w", err)
 	}
+	if err := configureCommandIdentity(&command); err != nil {
+		return nil, fmt.Errorf("configure guarded process identity: %w", err)
+	}
 	guardID, err := newRandomHex(16)
 	if err != nil {
 		return nil, fmt.Errorf("generate guard id: %w", err)
@@ -112,21 +115,30 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		stdoutWriter.Close()
 		return nil, err
 	}
-
-	cmd := exec.Command(r.executable, HiddenGuardianMode)
-	configureGuardianIO(cmd, specReader, controlReader, statusWriter, stdoutWriter, stderrWriter)
-	if err := configureGuardianProcess(cmd); err != nil {
+	childStdinReader, childStdinWriter, err := os.Pipe()
+	if err != nil {
 		closeFiles(specReader, controlReader, controlWriter, statusReader, statusWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
 		return nil, err
 	}
+
+	cmd := exec.Command(r.executable, HiddenGuardianMode)
+	if err := configureGuardianIdentity(cmd); err != nil {
+		closeFiles(specReader, controlReader, controlWriter, statusReader, statusWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter, childStdinReader, childStdinWriter)
+		return nil, fmt.Errorf("configure guardian process identity: %w", err)
+	}
+	configureGuardianIO(cmd, specReader, controlReader, statusWriter, stdoutWriter, stderrWriter, childStdinReader)
+	if err := configureGuardianProcess(cmd); err != nil {
+		closeFiles(specReader, controlReader, controlWriter, statusReader, statusWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter, childStdinReader, childStdinWriter)
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
-		closeFiles(specReader, controlReader, controlWriter, statusReader, statusWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter)
+		closeFiles(specReader, controlReader, controlWriter, statusReader, statusWriter, stdoutReader, stdoutWriter, stderrReader, stderrWriter, childStdinReader, childStdinWriter)
 		return nil, fmt.Errorf("start process guardian: %w", err)
 	}
-	closeFiles(specReader, controlReader, statusWriter, stdoutWriter, stderrWriter)
+	closeFiles(specReader, controlReader, statusWriter, stdoutWriter, stderrWriter, childStdinReader)
 	statuses := startStatusReader(statusReader)
 	abortUnacknowledged := func() {
-		closeFiles(specWriter, controlWriter, stdoutReader, stderrReader)
+		closeFiles(specWriter, controlWriter, stdoutReader, stderrReader, childStdinWriter)
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		statuses.shutdown()
@@ -162,6 +174,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 	ownershipPersisted := false
 	if persist != nil {
 		if err := persistOwnership(ctx, persist, status.Ownership); err != nil {
+			_ = childStdinWriter.Close()
 			result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, false)
 			closeFiles(stdoutReader, stderrReader)
 			return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("persist guardian ownership: %w", err), resultErr), Result: result}
@@ -169,6 +182,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		ownershipPersisted = true
 	}
 	if err := ctx.Err(); err != nil {
+		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
@@ -178,6 +192,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		releaseCommand = 'D'
 	}
 	if err := writeControlContext(ctx, controlWriter, releaseCommand); err != nil {
+		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -186,6 +201,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("release provider launch gate: %w", err), resultErr), Result: result}
 	}
 	if err := ctx.Err(); err != nil {
+		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
@@ -199,18 +215,21 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			cause = ctxErr
 		}
+		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		return nil, &LaunchError{Cause: errors.Join(cause, resultErr), Result: result}
 	}
 	if err := ctx.Err(); err != nil {
+		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
 	}
-	handle := &handle{guardID: guardID, ownership: status.Ownership, control: controlWriter, statuses: statuses, stdout: stdoutReader, stderr: stderrReader, guardian: cmd, runtimeRoot: r.runtimeRoot, cancelGrace: r.cancelGrace, cancelForce: r.cancelForce, done: make(chan struct{})}
-	handle.startWait()
-	return handle, nil
+	startedHandle := &handle{guardID: guardID, ownership: status.Ownership, control: controlWriter, statuses: statuses, stdout: stdoutReader, stderr: stderrReader, guardian: cmd, runtimeRoot: r.runtimeRoot, cancelGrace: r.cancelGrace, cancelForce: r.cancelForce, done: make(chan struct{})}
+	startedHandle.stdin = &guardedStdin{owner: startedHandle, file: childStdinWriter}
+	startedHandle.startWait()
+	return startedHandle, nil
 }
 
 type statusRead struct {
@@ -441,6 +460,7 @@ type handle struct {
 	ownership   Ownership
 	control     *os.File
 	statuses    *statusReaderHandle
+	stdin       *guardedStdin
 	stdout      *os.File
 	stderr      *os.File
 	guardian    *exec.Cmd
@@ -453,9 +473,58 @@ type handle struct {
 	cancelOnce  sync.Once
 }
 
+type guardedStdin struct {
+	owner     *handle
+	file      *os.File
+	mu        sync.Mutex
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (s *guardedStdin) Write(p []byte) (int, error) {
+	if s == nil || s.file == nil {
+		return 0, os.ErrClosed
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return 0, os.ErrClosed
+	}
+	n, err := s.file.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil && s.owner != nil {
+		_ = s.owner.Cancel(context.Background())
+	}
+	return n, err
+}
+
+func (s *guardedStdin) Close() error {
+	if s == nil || s.file == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
+		s.closeErr = s.file.Close()
+	})
+	return s.closeErr
+}
+
 func (h *handle) GuardID() string       { return h.guardID }
+func (h *handle) Stdin() io.WriteCloser { return h.stdin }
 func (h *handle) Stdout() io.ReadCloser { return h.stdout }
 func (h *handle) Stderr() io.ReadCloser { return h.stderr }
+
+func (h *handle) closeStdin() {
+	if h != nil && h.stdin != nil {
+		_ = h.stdin.Close()
+	}
+}
 
 func (h *handle) Cancel(_ context.Context) error {
 	if h == nil {
@@ -463,6 +532,7 @@ func (h *handle) Cancel(_ context.Context) error {
 	}
 	var result error
 	h.cancelOnce.Do(func() { _, result = h.control.Write([]byte{'C'}); _ = h.control.Close() })
+	h.closeStdin()
 	return result
 }
 
@@ -482,6 +552,7 @@ func (h *handle) startWait() {
 	h.waitOnce.Do(func() {
 		go func() {
 			defer close(h.done)
+			defer h.closeStdin()
 			defer h.control.Close()
 			defer h.statuses.shutdown()
 			received, ok := <-h.statuses.updates

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -23,13 +22,16 @@ func configureGuardianProcess(*exec.Cmd) error { return nil }
 
 // Windows uses a suspended provider process assigned to a kill-on-close Job
 // Object before it can execute. The Unix gate is unnecessary on this platform.
-func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
-	defer closeFiles(specFile, control, status, stdout, stderr)
+func runGuardian(specFile, control, status, stdout, stderr, stdin *os.File) error {
+	defer closeFiles(specFile, control, status, stdout, stderr, stdin)
 	var spec wireSpec
 	if err := readFrame(specFile, &spec); err != nil {
 		return err
 	}
 	if err := validateWireSpec(spec); err != nil {
+		return err
+	}
+	if err := makeGuardianDescriptorsNonInheritable(specFile, control, status); err != nil {
 		return err
 	}
 	jobName := "Local\\Kingdom-" + spec.GuardID
@@ -47,10 +49,11 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		return fmt.Errorf("configure provider Job Object: %w", err)
 	}
-	process, thread, pid, err := createSuspendedProvider(spec, stdout, stderr)
+	process, thread, pid, err := createSuspendedProvider(spec, stdin, stdout, stderr)
 	if err != nil {
 		return err
 	}
+	_ = stdin.Close()
 	defer windows.CloseHandle(process)
 	defer windows.CloseHandle(thread)
 	if err := windows.AssignProcessToJobObject(job, process); err != nil {
@@ -96,33 +99,36 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	}
 }
 
-func runGate(io.Reader, *os.File) error {
+func runGate(io.Reader, *os.File, *os.File) error {
 	return fmt.Errorf("windows guardian does not use a gate process")
 }
 func terminateAcknowledgedTree(ownership Ownership, _, force time.Duration) error {
-	if name, err := windows.UTF16PtrFromString(ownership.TreeIdentityToken); err == nil {
-		if job, err := openWindowsJobObject(name); err == nil {
-			defer windows.CloseHandle(job)
-			deadline := time.Now().Add(force)
-			for time.Now().Before(deadline) {
-				active, queryErr := windowsJobActive(job)
-				if queryErr != nil {
-					return queryErr
-				}
-				if active == 0 {
-					return nil
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			return fmt.Errorf("provider Job Object did not become empty after guardian exit")
-		}
-	}
-	process, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(ownership.ChildPID))
+	name, err := windows.UTF16PtrFromString(ownership.TreeIdentityToken)
 	if err != nil {
-		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-			return nil
-		}
 		return err
+	}
+	job, jobErr := openWindowsJobObject(name)
+	if jobErr == nil {
+		defer windows.CloseHandle(job)
+		deadline := time.Now().Add(force)
+		for time.Now().Before(deadline) {
+			active, queryErr := windowsJobActive(job)
+			if queryErr != nil {
+				return queryErr
+			}
+			if active == 0 {
+				return nil
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return fmt.Errorf("provider Job Object did not become empty after guardian exit")
+	}
+	if !windowsJobObjectNotFound(jobErr) {
+		return fmt.Errorf("inspect provider Job Object after guardian exit: %w", jobErr)
+	}
+	process, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(ownership.ChildPID))
+	if err != nil {
+		return windowsProcessOpenError(err)
 	}
 	defer windows.CloseHandle(process)
 	wait := uint32(force.Milliseconds())
@@ -133,10 +139,27 @@ func terminateAcknowledgedTree(ownership Ownership, _, force time.Duration) erro
 	if err != nil {
 		return err
 	}
-	if result != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("provider Job Object did not terminate after guardian exit")
+	if result == windows.WAIT_OBJECT_0 {
+		return nil
 	}
-	return nil
+	if result != uint32(windows.WAIT_TIMEOUT) {
+		return fmt.Errorf("unexpected provider process wait result %d after guardian exit", result)
+	}
+	current, err := windowsProcessIdentity(process, ownership.ChildPID)
+	if err != nil {
+		return fmt.Errorf("inspect provider process identity after guardian exit: %w", err)
+	}
+	if current != ownership.ChildIdentityToken {
+		return nil
+	}
+	return fmt.Errorf("provider leader remains active after guardian exit and Job Object inspection failed")
+}
+
+func windowsProcessOpenError(err error) error {
+	if windowsProcessNotFound(err) {
+		return nil
+	}
+	return fmt.Errorf("inspect provider process after guardian exit: %w", err)
 }
 
 func ManagedProcessAbsent(pid, _ int, identityToken, treeIdentityToken string) bool {
@@ -145,15 +168,37 @@ func ManagedProcessAbsent(pid, _ int, identityToken, treeIdentityToken string) b
 			defer windows.CloseHandle(job)
 			active, queryErr := windowsJobActive(job)
 			return queryErr == nil && active == 0
+		} else if !windowsJobObjectNotFound(err) {
+			return false
 		}
+	} else {
+		return false
 	}
 	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return true
+		return windowsProcessNotFound(err)
 	}
 	defer windows.CloseHandle(process)
+	wait, err := windows.WaitForSingleObject(process, 0)
+	if err != nil {
+		return false
+	}
+	if wait == windows.WAIT_OBJECT_0 {
+		return true
+	}
+	if wait != uint32(windows.WAIT_TIMEOUT) {
+		return false
+	}
 	current, err := windowsProcessIdentity(process, pid)
-	return err != nil || current != identityToken
+	return err == nil && current != identityToken
+}
+
+func windowsJobObjectNotFound(err error) bool {
+	return errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_INVALID_NAME)
+}
+
+func windowsProcessNotFound(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 }
 
 var openJobObjectW = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
@@ -167,7 +212,7 @@ func openWindowsJobObject(name *uint16) (windows.Handle, error) {
 	return windows.Handle(handle), nil
 }
 
-func createSuspendedProvider(spec wireSpec, stdout, stderr *os.File) (windows.Handle, windows.Handle, int, error) {
+func createSuspendedProvider(spec wireSpec, stdin, stdout, stderr *os.File) (windows.Handle, windows.Handle, int, error) {
 	app, err := windows.UTF16PtrFromString(spec.Command.Path)
 	if err != nil {
 		return 0, 0, 0, err
@@ -190,7 +235,7 @@ func createSuspendedProvider(spec wireSpec, stdout, stderr *os.File) (windows.Ha
 			return 0, 0, 0, err
 		}
 	}
-	startup := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{})), Flags: windows.STARTF_USESTDHANDLES, StdInput: windows.Handle(os.Stdin.Fd()), StdOutput: windows.Handle(stdout.Fd()), StdErr: windows.Handle(stderr.Fd())}
+	startup := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{})), Flags: windows.STARTF_USESTDHANDLES, StdInput: windows.Handle(stdin.Fd()), StdOutput: windows.Handle(stdout.Fd()), StdErr: windows.Handle(stderr.Fd())}
 	info := windows.ProcessInformation{}
 	environment, err := windowsEnvironmentBlock(spec.Command.Env)
 	if err != nil {
@@ -206,23 +251,24 @@ func createSuspendedProvider(spec wireSpec, stdout, stderr *os.File) (windows.Ha
 	return info.Process, info.Thread, int(info.ProcessId), nil
 }
 
+func makeGuardianDescriptorsNonInheritable(files ...*os.File) error {
+	for _, file := range files {
+		if file == nil {
+			return fmt.Errorf("guardian descriptor is required")
+		}
+		if err := windows.SetHandleInformation(windows.Handle(file.Fd()), windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			return fmt.Errorf("prevent guardian descriptor inheritance: %w", err)
+		}
+	}
+	return nil
+}
+
 func windowsEnvironmentBlock(environment []string) ([]uint16, error) {
 	if len(environment) == 0 {
 		return nil, nil
 	}
-	entries := make(map[string]string, len(environment))
-	for _, entry := range environment {
-		name, _, _ := strings.Cut(entry, "=")
-		entries[strings.ToUpper(name)] = entry
-	}
-	keys := make([]string, 0, len(entries))
-	for key := range entries {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
 	block := make([]uint16, 0)
-	for _, key := range keys {
-		entry := entries[key]
+	for _, entry := range normalizeWindowsEnvironment(environment) {
 		encoded, err := windows.UTF16FromString(entry)
 		if err != nil {
 			return nil, fmt.Errorf("encode provider environment: %w", err)
@@ -239,6 +285,22 @@ func windowsProcessIdentity(process windows.Handle, pid int) (string, error) {
 	}
 	return fmt.Sprintf("%d:%d:%d", pid, created.HighDateTime, created.LowDateTime), nil
 }
+
+func processIdentityToken(pid int) (string, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return "", fmt.Errorf("open process identity: %w", err)
+	}
+	defer windows.CloseHandle(process)
+	return windowsProcessIdentity(process, pid)
+}
+
+func processIdentityNotFound(err error) bool {
+	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
+}
+
+func configureCommandIdentity(*Command) error   { return nil }
+func configureGuardianIdentity(*exec.Cmd) error { return nil }
 
 func controlEOF(control io.Reader) <-chan struct{} {
 	done := make(chan struct{})
@@ -265,7 +327,17 @@ func publishWindowsResult(status *os.File, spec wireSpec, ownership Ownership, j
 	if err := windows.GetExitCodeProcess(process, &exitCode); err != nil {
 		return err
 	}
-	active, err := windowsJobActive(job)
+	var (
+		active uint32
+		err    error
+	)
+	if forced {
+		active, err = waitForProcessesQuiescent(time.Duration(spec.CancelForceMS)*time.Millisecond, func() (uint32, error) {
+			return windowsJobActive(job)
+		})
+	} else {
+		active, err = windowsJobActive(job)
+	}
 	if err != nil {
 		return err
 	}

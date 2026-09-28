@@ -16,71 +16,111 @@ import (
 	"kingdom/internal/testutil/guardianfixture"
 )
 
-func TestSessionAdapterRejectsOversizedPromptBeforeLaunch(t *testing.T) {
-	runner := guardianfixture.NewOutputRunner(nil, nil)
+func TestSessionAdapterStreamsLongPromptThroughStdin(t *testing.T) {
+	const promptMarker = "kingdom-stdin-prompt-marker"
+	prompt := strings.Repeat("Long decree context 界\n", 240_000) + promptMarker
+	if len(prompt) <= 4<<20 {
+		t.Fatalf("test prompt bytes=%d, want larger than guardian control frame", len(prompt))
+	}
+	runner := &promptCaptureRunner{output: successfulProviderEvents("ok")}
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: runner})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: "session_prompt_overflow", AttemptID: "attempt_prompt_overflow", RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: strings.Repeat("x", providerlimits.PromptBytes+1), OccurredAt: "2026-03-02T10:21:15Z"})
-	if err == nil {
-		t.Fatal("expected oversized prompt to fail")
+	const attemptID = "attempt_large_stdin_prompt"
+	const invocationID = "invocation_large_stdin_prompt"
+	if _, err := adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_large_stdin_prompt",
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         prompt,
+		InvocationID:   invocationID,
+		OccurredAt:     "2026-03-02T10:21:15Z",
+	}); err != nil {
+		t.Fatalf("execute long prompt: %v", err)
 	}
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) || limitErr.Resource != "prompt" {
-		t.Fatalf("oversized prompt error=%v, want typed prompt limit error", err)
+	if got, want := runner.input.String(), strings.Join(providerInvocationPromptParts(prompt, attemptID, invocationID), ""); got != want {
+		t.Fatalf("stdin prompt bytes=%d, want exact decorated prompt bytes=%d", len(got), len(want))
 	}
-	if runner.Starts() != 0 {
-		t.Fatalf("oversized prompt reached provider launch %d times", runner.Starts())
+	if !runner.input.closed {
+		t.Fatal("OpenCode stdin was not closed to deliver EOF")
+	}
+	for _, arg := range runner.command.Args {
+		if strings.Contains(arg, promptMarker) {
+			t.Fatal("prompt content appeared in the OpenCode command arguments")
+		}
 	}
 }
 
-func TestSessionAdapterEnforcesDecoratedPromptLimitBeforeLaunch(t *testing.T) {
-	request := func(prompt string) ExecuteRequest {
-		return ExecuteRequest{
-			CompletionMode: CompletionModeServerResponse,
-			SessionID:      "session_decorated_prompt",
-			AttemptID:      "attempt_decorated_prompt",
-			RunID:          "run_1",
-			NodeRunID:      "nr_1",
-			WorkspacePath:  t.TempDir(),
-			Prompt:         prompt,
-			InvocationID:   "invocation_decorated_prompt",
-			OccurredAt:     "2026-03-02T10:21:15Z",
-		}
+func TestSessionAdapterBoundsPromptInputStallsAndPreservesCancellationOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		cancel           bool
+		partialWrites    int
+		partialWriteWait time.Duration
+		inactivity       time.Duration
+		wantReason       string
+		wantEvent        string
+	}{
+		{name: "stalled input times out", inactivity: 40 * time.Millisecond, wantReason: "timeout", wantEvent: AttemptEventTypeFailed},
+		{name: "partial writes count as progress", partialWrites: 4, partialWriteWait: 50 * time.Millisecond, inactivity: 500 * time.Millisecond, wantReason: "timeout", wantEvent: AttemptEventTypeFailed},
+		{name: "caller cancellation remains cancellation", cancel: true, inactivity: time.Second, wantReason: "provider_cancelled", wantEvent: AttemptEventTypeCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := newBlockedPromptRunner(test.partialWrites, test.partialWriteWait)
+			adapter, err := NewSessionAdapter(SessionAdapterConfig{
+				BinaryPath:              os.Args[0],
+				Runner:                  runner,
+				FirstEventTimeout:       time.Second,
+				StreamInactivityTimeout: test.inactivity,
+			})
+			if err != nil {
+				t.Fatalf("new session adapter: %v", err)
+			}
+			ctx := context.Background()
+			if test.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				go func() {
+					time.Sleep(15 * time.Millisecond)
+					cancel()
+				}()
+			}
+			response, err := adapter.Execute(ctx, ExecuteRequest{
+				CompletionMode: CompletionModeServerResponse,
+				SessionID:      "session_prompt_stall_" + strings.ReplaceAll(test.name, " ", "_"),
+				AttemptID:      "attempt_prompt_stall_" + strings.ReplaceAll(test.name, " ", "_"),
+				RunID:          "run_prompt_stall",
+				NodeRunID:      "node_prompt_stall",
+				WorkspacePath:  t.TempDir(),
+				Prompt:         strings.Repeat("blocked prompt input ", 4096),
+				OccurredAt:     "2026-03-02T10:21:15Z",
+			})
+			if err == nil {
+				t.Fatal("expected prompt input interruption")
+			}
+			if response.Outcome.ReasonCode != test.wantReason {
+				t.Fatalf("prompt input outcome=%#v, want reason %q", response.Outcome, test.wantReason)
+			}
+			if response.StreamObservation.TimedOut != !test.cancel || response.StreamObservation.Cancelled != test.cancel {
+				t.Fatalf("prompt input observation timeout=%t cancelled=%t, cancel=%t", response.StreamObservation.TimedOut, response.StreamObservation.Cancelled, test.cancel)
+			}
+			if !runner.cancelled {
+				t.Fatal("stalled/cancelled prompt input did not stop the guarded process")
+			}
+			if runner.handle.input.partialWritesDone != test.partialWrites {
+				t.Fatalf("completed partial writes=%d, want %d before terminal input handling", runner.handle.input.partialWritesDone, test.partialWrites)
+			}
+			events := eventsFromAttempt(t, adapter, "attempt_prompt_stall_"+strings.ReplaceAll(test.name, " ", "_"))
+			if len(events) < 2 || events[len(events)-1].EventType != test.wantEvent {
+				t.Fatalf("prompt input terminal events=%#v, want last type %q", events, test.wantEvent)
+			}
+		})
 	}
-	metadataBytes := len(promptWithProviderInvocationMetadata("", "attempt_decorated_prompt", "invocation_decorated_prompt"))
-	exactPrompt := strings.Repeat("x", providerlimits.PromptBytes-metadataBytes-2)
-
-	t.Run("exact decorated limit launches", func(t *testing.T) {
-		runner := guardianfixture.NewOutputRunner(successfulProviderEvents("ok"), nil)
-		adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: runner})
-		if err != nil {
-			t.Fatalf("new session adapter: %v", err)
-		}
-		if _, err := adapter.Execute(context.Background(), request(exactPrompt)); err != nil {
-			t.Fatalf("exact decorated prompt boundary rejected: %v", err)
-		}
-		if runner.Starts() != 1 {
-			t.Fatalf("exact decorated prompt launches=%d, want 1", runner.Starts())
-		}
-	})
-
-	t.Run("one byte overflow does not launch", func(t *testing.T) {
-		runner := guardianfixture.NewOutputRunner(nil, nil)
-		adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: runner})
-		if err != nil {
-			t.Fatalf("new session adapter: %v", err)
-		}
-		_, err = adapter.Execute(context.Background(), request(exactPrompt+"x"))
-		var limitErr *providerlimits.LimitExceededError
-		if !errors.As(err, &limitErr) || limitErr.Resource != "prompt" {
-			t.Fatalf("decorated prompt overflow error=%v, want typed prompt limit error", err)
-		}
-		if runner.Starts() != 0 {
-			t.Fatalf("decorated prompt overflow reached provider launch %d times", runner.Starts())
-		}
-	})
 }
 
 func TestSessionAdapterCanonicalOutputBoundary(t *testing.T) {
@@ -178,10 +218,137 @@ func successfulProviderEvents(text string) []byte {
 	return []byte(`{"type":"step_start"}` + "\n" + `{"type":"text","part":{"text":"` + text + `"}}` + "\n" + `{"type":"step_finish","part":{"reason":"stop"}}` + "\n")
 }
 
-func TestRunGuardedCommandCancelsOverflowBeforeDrainingContinuedOutput(t *testing.T) {
+type promptCaptureRunner struct {
+	command processguardian.Command
+	input   promptCaptureWriteCloser
+	output  []byte
+}
+
+func (r *promptCaptureRunner) Start(_ context.Context, command processguardian.Command, _ processguardian.PersistOwnership) (processguardian.Handle, error) {
+	r.command = command
+	return &promptCaptureHandle{runner: r}, nil
+}
+
+type promptCaptureHandle struct {
+	runner *promptCaptureRunner
+}
+
+func (*promptCaptureHandle) GuardID() string         { return "guard_prompt_capture" }
+func (h *promptCaptureHandle) Stdin() io.WriteCloser { return &h.runner.input }
+func (h *promptCaptureHandle) Stdout() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(string(h.runner.output)))
+}
+func (*promptCaptureHandle) Stderr() io.ReadCloser        { return io.NopCloser(strings.NewReader("")) }
+func (*promptCaptureHandle) Cancel(context.Context) error { return nil }
+func (h *promptCaptureHandle) Wait(context.Context) (processguardian.Result, error) {
+	if !h.runner.input.closed {
+		return processguardian.Result{}, errors.New("prompt stdin was not closed")
+	}
+	return processguardian.Result{Quiescent: true}, nil
+}
+
+type promptCaptureWriteCloser struct {
+	strings.Builder
+	closed bool
+}
+
+func (w *promptCaptureWriteCloser) Write(payload []byte) (int, error) {
+	if w.closed {
+		return 0, io.ErrClosedPipe
+	}
+	return w.Builder.Write(payload)
+}
+
+func (w *promptCaptureWriteCloser) Close() error {
+	w.closed = true
+	return nil
+}
+
+type blockedPromptRunner struct {
+	mu        sync.Mutex
+	cancelled bool
+	handle    *blockedPromptHandle
+}
+
+func newBlockedPromptRunner(partialWrites int, partialWriteWait time.Duration) *blockedPromptRunner {
+	runner := &blockedPromptRunner{}
+	runner.handle = &blockedPromptHandle{runner: runner, input: &blockedPromptInput{closed: make(chan struct{}), partialWrites: partialWrites, partialWriteWait: partialWriteWait}}
+	return runner
+}
+
+func (r *blockedPromptRunner) Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
+	return r.handle, nil
+}
+
+type blockedPromptHandle struct {
+	runner *blockedPromptRunner
+	input  *blockedPromptInput
+}
+
+func (*blockedPromptHandle) GuardID() string         { return "guard_blocked_prompt" }
+func (h *blockedPromptHandle) Stdin() io.WriteCloser { return h.input }
+func (*blockedPromptHandle) Stdout() io.ReadCloser   { return io.NopCloser(strings.NewReader("")) }
+func (*blockedPromptHandle) Stderr() io.ReadCloser   { return io.NopCloser(strings.NewReader("")) }
+func (h *blockedPromptHandle) Cancel(context.Context) error {
+	h.runner.mu.Lock()
+	h.runner.cancelled = true
+	h.runner.mu.Unlock()
+	return h.input.Close()
+}
+func (*blockedPromptHandle) Wait(context.Context) (processguardian.Result, error) {
+	return processguardian.Result{Quiescent: true}, nil
+}
+
+type blockedPromptInput struct {
+	closed            chan struct{}
+	once              sync.Once
+	mu                sync.Mutex
+	partialWrites     int
+	partialWriteWait  time.Duration
+	partialWritesDone int
+	initialFullWrite  bool
+}
+
+func (w *blockedPromptInput) Write(payload []byte) (int, error) {
+	w.mu.Lock()
+	partial := w.partialWrites > 0
+	if partial {
+		w.partialWrites--
+	}
+	if !partial && w.partialWriteWait == 0 && !w.initialFullWrite {
+		w.initialFullWrite = true
+		w.mu.Unlock()
+		return len(payload), nil
+	}
+	delay := w.partialWriteWait
+	w.mu.Unlock()
+	if partial {
+		time.Sleep(delay)
+		select {
+		case <-w.closed:
+			return 0, io.ErrClosedPipe
+		default:
+		}
+		written := min(len(payload), 1024)
+		w.mu.Lock()
+		w.partialWritesDone++
+		w.mu.Unlock()
+		return written, nil
+	}
+	<-w.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockedPromptInput) Close() error {
+	w.once.Do(func() { close(w.closed) })
+	return nil
+}
+
+func TestRunGuardedCommandCancelsOverflowAndClosesStreamBeforeQuiescence(t *testing.T) {
 	cancelled := make(chan struct{})
-	reader := &continuedOutputReader{remaining: providerlimits.GuardedCommandStreamBytes + 1, cancelled: cancelled, drained: make(chan struct{})}
-	handle := &continuedOutputHandle{stdout: io.NopCloser(reader), stderr: io.NopCloser(strings.NewReader("")), cancelled: cancelled, stdoutDrained: reader.drained}
+	reader := &continuedOutputReader{remaining: providerlimits.GuardedCommandStreamBytes + 1, cancelled: cancelled}
+	stdout := &continuedOutputStream{Reader: reader, closed: make(chan struct{})}
+	handle := &continuedOutputHandle{stdout: stdout, stderr: io.NopCloser(strings.NewReader("")), cancelled: cancelled, stdoutClosed: stdout.closed}
 	runner := continuedOutputRunner{handle: handle}
 
 	_, _, result, err := runGuardedCommand(context.Background(), runner, processguardian.Command{Path: "continued-output"})
@@ -189,8 +356,16 @@ func TestRunGuardedCommandCancelsOverflowBeforeDrainingContinuedOutput(t *testin
 	if !errors.As(err, &limitErr) {
 		t.Fatalf("continued output error=%v, want limit error", err)
 	}
-	if !handle.cancelObserved || !handle.drainObserved {
-		t.Fatalf("overflow did not cancel before stream drain: cancel=%t drained=%t", handle.cancelObserved, handle.drainObserved)
+	if !handle.cancelObserved {
+		t.Fatal("overflow did not request cancellation")
+	}
+	select {
+	case <-stdout.closed:
+	default:
+		t.Fatal("guarded command returned without closing its stdout stream")
+	}
+	if reader.continued {
+		t.Fatal("guarded command continued reading stdout after the first overflow byte")
 	}
 	if !result.Quiescent {
 		t.Fatalf("overflow returned without guardian quiescence: %#v", result)
@@ -253,6 +428,7 @@ type blockedBoundedCommandHandle struct {
 }
 
 func (h *blockedBoundedCommandHandle) GuardID() string       { return "blocked-diagnostic" }
+func (*blockedBoundedCommandHandle) Stdin() io.WriteCloser   { return unusedWriteCloser{} }
 func (h *blockedBoundedCommandHandle) Stdout() io.ReadCloser { return h.stdout }
 func (h *blockedBoundedCommandHandle) Stderr() io.ReadCloser { return h.stderr }
 func (h *blockedBoundedCommandHandle) Cancel(context.Context) error {
@@ -295,17 +471,28 @@ func (r continuedOutputRunner) Start(context.Context, processguardian.Command, p
 	return r.handle, nil
 }
 
+type continuedOutputStream struct {
+	io.Reader
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (s *continuedOutputStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
 type continuedOutputHandle struct {
 	stdout         io.ReadCloser
 	stderr         io.ReadCloser
 	cancelled      chan struct{}
-	stdoutDrained  <-chan struct{}
+	stdoutClosed   <-chan struct{}
 	cancelOnce     sync.Once
 	cancelObserved bool
-	drainObserved  bool
 }
 
 func (h *continuedOutputHandle) GuardID() string       { return "continued-output" }
+func (*continuedOutputHandle) Stdin() io.WriteCloser   { return unusedWriteCloser{} }
 func (h *continuedOutputHandle) Stdout() io.ReadCloser { return h.stdout }
 func (h *continuedOutputHandle) Stderr() io.ReadCloser { return h.stderr }
 func (h *continuedOutputHandle) Cancel(context.Context) error {
@@ -317,17 +504,19 @@ func (h *continuedOutputHandle) Cancel(context.Context) error {
 }
 func (h *continuedOutputHandle) Wait(context.Context) (processguardian.Result, error) {
 	<-h.cancelled
-	<-h.stdoutDrained
-	h.drainObserved = true
+	<-h.stdoutClosed
 	return processguardian.Result{Quiescent: true}, nil
 }
+
+type unusedWriteCloser struct{}
+
+func (unusedWriteCloser) Write(payload []byte) (int, error) { return len(payload), nil }
+func (unusedWriteCloser) Close() error                      { return nil }
 
 type continuedOutputReader struct {
 	remaining int64
 	cancelled <-chan struct{}
 	continued bool
-	drained   chan struct{}
-	once      sync.Once
 }
 
 func (r *continuedOutputReader) Read(buffer []byte) (int, error) {
@@ -345,7 +534,6 @@ func (r *continuedOutputReader) Read(buffer []byte) (int, error) {
 		buffer[0] = 'y'
 		return 1, nil
 	}
-	r.once.Do(func() { close(r.drained) })
 	return 0, io.EOF
 }
 

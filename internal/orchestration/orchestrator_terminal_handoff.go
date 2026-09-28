@@ -78,12 +78,15 @@ func (o *orchestrationLoop) persistProviderTerminalHandoffFile(ctx context.Conte
 		if marshalErr != nil {
 			return executionstore.PersistProviderTerminalHandoffResult{}, fmt.Errorf("marshal provider terminal handoff wire: %w", marshalErr)
 		}
-		identity, persistErr := o.fsStore.PersistProviderTerminalHandoff(result.providerInvocationID, raw)
-		if persistErr != nil {
-			return executionstore.PersistProviderTerminalHandoffResult{}, persistErr
-		}
-		file = runtimefs.ProviderTerminalHandoffFile{Wire: raw, Identity: identity}
+		file = runtimefs.ProviderTerminalHandoffFile{Wire: raw}
 	}
+	// Exact replays must cross the same filesystem publication boundary before
+	// SQLite can accept the handoff.
+	identity, persistErr := o.fsStore.PersistProviderTerminalHandoff(result.providerInvocationID, file.Wire)
+	if persistErr != nil {
+		return executionstore.PersistProviderTerminalHandoffResult{}, persistErr
+	}
+	file.Identity = identity
 
 	var persisted executionstore.PersistProviderTerminalHandoffResult
 	err = o.retrySQLiteBusyWrite(ctx, func(writeCtx context.Context) error {
@@ -121,6 +124,13 @@ func (o *orchestrationLoop) recoverProviderTerminalHandoffFile(ctx context.Conte
 	if err := validateProviderTerminalHandoffWireForCandidate(wire, candidate); err != nil {
 		return &providerReceiptInfrastructureError{cause: err}
 	}
+	// Startup replay must verify the exact handoff file before restoring its
+	// SQLite projection as well.
+	identity, persistErr := o.fsStore.PersistProviderTerminalHandoff(candidate.ProviderInvocationID, file.Wire)
+	if persistErr != nil {
+		return &providerReceiptInfrastructureError{cause: persistErr}
+	}
+	file.Identity = identity
 	if err := o.retrySQLiteBusyWrite(ctx, func(writeCtx context.Context) error {
 		_, persistErr := o.executionStore.PersistProviderTerminalHandoff(writeCtx, providerTerminalHandoffStoreRequest(wire))
 		return persistErr

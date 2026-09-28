@@ -12,18 +12,18 @@ func DispatchHiddenMode(args []string) (int, bool) {
 	}
 	switch args[1] {
 	case HiddenGuardianMode:
-		spec, control, status, stdout, stderr, err := guardianFiles()
+		spec, control, status, stdout, stderr, stdin, err := guardianFiles()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "process guardian:", err)
 			return 1, true
 		}
-		if err := runGuardian(spec, control, status, stdout, stderr); err != nil {
+		if err := runGuardian(spec, control, status, stdout, stderr, stdin); err != nil {
 			fmt.Fprintln(os.Stderr, "process guardian:", err)
 			return 1, true
 		}
 		return 0, true
 	case HiddenGateMode:
-		if err := runGate(os.Stdin, os.NewFile(3, "gate-release")); err != nil {
+		if err := runGate(os.Stdin, os.NewFile(3, "gate-release"), os.NewFile(5, "provider-stdin")); err != nil {
 			fmt.Fprintln(os.Stderr, "process gate:", err)
 			return 1, true
 		}

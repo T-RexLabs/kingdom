@@ -17,6 +17,7 @@ import (
 )
 
 const maxProviderTerminalHandoffPayloadBytes = 32 * 1024 * 1024
+const providerInvocationActivationReadbackTimeout = time.Second
 
 type ProviderInvocationState string
 
@@ -303,12 +304,37 @@ type InvalidateProviderInvocationRequest struct {
 	UpdatedAt            string
 }
 
+type InvalidateUnlaunchedProviderInvocationRequest struct {
+	ProviderInvocationID string
+	InvalidReason        string
+	UpdatedAt            string
+}
+
 type ProviderSettlementError struct {
 	Operation            string
 	Reason               string
 	ProviderInvocationID string
 	AttemptID            string
 	State                string
+}
+
+type ProviderInvocationActivationOutcomeUnknownError struct {
+	ProviderInvocationID string
+	Cause                error
+}
+
+func (e *ProviderInvocationActivationOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "provider invocation activation outcome is unknown"
+	}
+	return fmt.Sprintf("provider invocation activation outcome is unknown for %q: %v", strings.TrimSpace(e.ProviderInvocationID), e.Cause)
+}
+
+func (e *ProviderInvocationActivationOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 func (e *ProviderSettlementError) Error() string {
@@ -798,9 +824,78 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		return nil
 	}, sqlitex.Options{})
 	if err != nil {
-		return ProviderInvocation{}, fmt.Errorf("activate provider invocation transaction: %w", err)
+		return s.reconcileProviderInvocationActivationFailure(ctx, createReq, invocation, expectedLeaseOwner, expectedLeaseVersion, replacementID, err)
 	}
 	return invocation, nil
+}
+
+func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string, activationErr error) (ProviderInvocation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	readbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), providerInvocationActivationReadbackTimeout)
+	defer cancel()
+
+	invocationID := strings.TrimSpace(req.ProviderInvocationID)
+	var readbackErrs []error
+	for attempt := 0; attempt < 2; attempt++ {
+		actual, committed, err := s.confirmProviderInvocationActivation(readbackCtx, req, expected, expectedLeaseOwner, expectedLeaseVersion, replacementID)
+		if err != nil {
+			readbackErrs = append(readbackErrs, err)
+			continue
+		}
+		if !committed {
+			return ProviderInvocation{}, fmt.Errorf("activate provider invocation transaction: %w", activationErr)
+		}
+		return actual, nil
+	}
+	return expected, providerInvocationActivationOutcomeUnknown(invocationID, activationErr, errors.Join(readbackErrs...))
+}
+
+func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string) (ProviderInvocation, bool, error) {
+	invocationID := strings.TrimSpace(req.ProviderInvocationID)
+	actual, found, err := s.GetProviderInvocation(ctx, invocationID)
+	if err != nil {
+		return expected, false, fmt.Errorf("read back activated provider invocation: %w", err)
+	}
+	if !found {
+		return ProviderInvocation{}, false, nil
+	}
+	if expected.ProviderInvocationID == "" || actual != expected {
+		return actual, false, fmt.Errorf("durable provider invocation does not match the attempted activation")
+	}
+
+	attempt, attemptFound, err := s.GetAttempt(ctx, req.AttemptID)
+	if err != nil {
+		return actual, false, fmt.Errorf("read back attempt after provider invocation activation: %w", err)
+	}
+	if !attemptFound {
+		return actual, false, fmt.Errorf("attempt disappeared after provider invocation activation")
+	}
+	if attempt.RunID != req.RunID || attempt.NodeRunID != req.NodeRunID ||
+		attempt.ActiveProviderInvocationID != invocationID ||
+		attempt.LeaseOwner != strings.TrimSpace(expectedLeaseOwner) || attempt.LeaseVersion != expectedLeaseVersion {
+		return actual, false, fmt.Errorf("durable attempt does not match the attempted activation lease and invocation")
+	}
+
+	if replacementID != "" {
+		replaced, replacedFound, err := s.GetProviderInvocation(ctx, replacementID)
+		if err != nil {
+			return actual, false, fmt.Errorf("read back replaced provider invocation: %w", err)
+		}
+		if !replacedFound || replaced.InvocationState != ProviderInvocationStateSuperseded || replaced.SupersededByInvocationID != invocationID {
+			return actual, false, fmt.Errorf("replaced provider invocation does not confirm the attempted activation")
+		}
+	}
+
+	return actual, true, nil
+}
+
+func providerInvocationActivationOutcomeUnknown(providerInvocationID string, activationErr, readbackErr error) error {
+	return &ProviderInvocationActivationOutcomeUnknownError{
+		ProviderInvocationID: strings.TrimSpace(providerInvocationID),
+		Cause:                errors.Join(activationErr, readbackErr),
+	}
 }
 
 func (s *Store) MarkProviderInvocationOpen(ctx context.Context, req MarkProviderInvocationOpenRequest) (ProviderInvocation, error) {
@@ -2147,6 +2242,110 @@ func (s *Store) supersedeProviderInvocationOnce(ctx context.Context, req Superse
 func (s *Store) InvalidateProviderInvocation(ctx context.Context, req InvalidateProviderInvocationRequest) error {
 	_, err := sqlitex.Retry(ctx, func() error { return s.invalidateProviderInvocationOnce(ctx, req) }, sqlitex.Options{})
 	return err
+}
+
+// InvalidateUnlaunchedProviderInvocation rolls back invocation authority when
+// durable node-start publication fails before the provider launch gate opens.
+// The invocation and its queued attempt lease are invalidated atomically.
+func (s *Store) InvalidateUnlaunchedProviderInvocation(ctx context.Context, req InvalidateUnlaunchedProviderInvocationRequest) error {
+	normalized, err := normalizeInvalidateProviderInvocationRequest(InvalidateProviderInvocationRequest{
+		ProviderInvocationID: req.ProviderInvocationID,
+		InvalidReason:        req.InvalidReason,
+		UpdatedAt:            req.UpdatedAt,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = sqlitex.Retry(ctx, func() error {
+		return s.invalidateUnlaunchedProviderInvocationOnce(ctx, normalized)
+	}, sqlitex.Options{})
+	return err
+}
+
+func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, req InvalidateProviderInvocationRequest) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store database is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin unlaunched provider invocation rollback: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	invocation, found, err := loadProviderInvocationTx(ctx, tx, req.ProviderInvocationID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return providerSettlementError("invalidate_unlaunched_provider_invocation", "invocation_not_found", req.ProviderInvocationID, "", "")
+	}
+	if invocation.InvocationState == ProviderInvocationStateInvalidHandshake && invocation.InvalidReason == req.InvalidReason {
+		if err := requireAttemptInvocationInactiveTx(ctx, tx, invocation.AttemptID, invocation.ProviderInvocationID); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit unlaunched provider invocation rollback replay: %w", err)
+		}
+		committed = true
+		return nil
+	}
+	if invocation.InvocationState != ProviderInvocationStateOpen {
+		return providerSettlementError("invalidate_unlaunched_provider_invocation", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+		SET active_provider_invocation_id = NULL,
+		    lease_owner = '',
+		    lease_expires_at = NULL,
+		    updated_at = ?
+		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
+		  AND active_provider_invocation_id = ?
+		  AND state = 'queued'
+		  AND launch_started_at IS NULL AND started_at IS NULL
+		  AND canonical_settlement_id IS NULL`,
+		req.UpdatedAt,
+		invocation.AttemptID,
+		invocation.RunID,
+		invocation.NodeRunID,
+		invocation.ProviderInvocationID,
+	)
+	if err != nil {
+		return fmt.Errorf("clear unlaunched provider invocation from attempt %q: %w", invocation.AttemptID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify unlaunched provider invocation rollback for attempt %q: %w", invocation.AttemptID, err)
+	}
+	if rows != 1 {
+		return providerSettlementError("invalidate_unlaunched_provider_invocation", "attempt_not_unlaunched", invocation.ProviderInvocationID, invocation.AttemptID, "")
+	}
+	if err := invalidateProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID, req.UpdatedAt, req.InvalidReason); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit unlaunched provider invocation rollback: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func requireAttemptInvocationInactiveTx(ctx context.Context, tx *sql.Tx, attemptID, providerInvocationID string) error {
+	var activeInvocationID string
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state, COALESCE(active_provider_invocation_id, '') FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state, &activeInvocationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("verify inactive provider invocation %q on attempt %q: %w", providerInvocationID, attemptID, err)
+	}
+	if activeInvocationID != "" {
+		return providerSettlementError("invalidate_unlaunched_provider_invocation", "attempt_not_unlaunched", providerInvocationID, attemptID, state)
+	}
+	return nil
 }
 
 func (s *Store) invalidateProviderInvocationOnce(ctx context.Context, req InvalidateProviderInvocationRequest) error {

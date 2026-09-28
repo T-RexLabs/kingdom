@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/testutil"
 )
 
 func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
@@ -1116,6 +1117,11 @@ func TestStoreSettleProviderCompletionAndTerminalRacesInvocationReplacement(t *t
 func atomicProviderSettlementFixture(t *testing.T) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
 	t.Helper()
 	db := openTestDB(t)
+	return atomicProviderSettlementFixtureWithDB(t, db)
+}
+
+func atomicProviderSettlementFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
+	t.Helper()
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	s := New(db)
@@ -1808,6 +1814,73 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 	}
 	if oldInvocation.InvocationState != ProviderInvocationStateSuperseded || oldInvocation.SupersededByInvocationID != "invocation_new" {
 		t.Fatalf("expected old invocation to be superseded by replacement, got %#v", oldInvocation)
+	}
+}
+
+func TestStoreActivateProviderInvocationConfirmsDurableCommitError(t *testing.T) {
+	connector := testutil.NewSQLiteCommitFaultConnector(":memory:")
+	db := connector.OpenDB()
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatalf("enable foreign keys: %v", err)
+	}
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:decree_intake:activation_commit_ambiguous"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		ExecutionMode:  ExecutionModeProviderBacked,
+		CompletionMode: ProviderCompletionModeReceiptRequired,
+		SessionRef:     "session_activation_commit_ambiguous",
+		CreatedAt:      "2026-03-01T12:00:01Z",
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+	claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{
+		AttemptID:  attemptID,
+		LeaseOwner: "worker_activation_commit_ambiguous",
+		LeaseUntil: "2026-03-01T12:10:00Z",
+		ClaimedAt:  "2026-03-01T12:00:02Z",
+	})
+	if err != nil || !acquired {
+		t.Fatalf("claim provider attempt: acquired=%t err=%v", acquired, err)
+	}
+
+	connector.FailNextDurableCommit(func() {
+		connector.FailNextQueryContaining("FROM provider_invocations WHERE provider_invocation_id")
+	})
+	activated, err := s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{
+		ProviderInvocationID: "invocation_activation_commit_ambiguous",
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_activation_commit_ambiguous",
+		CompletionMode:       ProviderCompletionModeReceiptRequired,
+		CompletionCapability: "capability_activation_commit_ambiguous",
+		IssuedAt:             "2026-03-01T12:00:03Z",
+		CreatedAt:            "2026-03-01T12:00:03Z",
+		OpenedAt:             "2026-03-01T12:00:03Z",
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+	})
+	if err != nil {
+		t.Fatalf("confirm activation after durable commit error: %v", err)
+	}
+	if activated.ProviderInvocationID != "invocation_activation_commit_ambiguous" || activated.InvocationState != ProviderInvocationStateOpen {
+		t.Fatalf("unexpected activated invocation: %#v", activated)
+	}
+	attempt, found, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || !found {
+		t.Fatalf("read back activated attempt: found=%t err=%v", found, err)
+	}
+	if attempt.ActiveProviderInvocationID != activated.ProviderInvocationID || attempt.LeaseOwner != claim.LeaseOwner || attempt.LeaseVersion != claim.LeaseVersion {
+		t.Fatalf("activation did not retain exact attempt authority: %#v", attempt)
 	}
 }
 

@@ -51,6 +51,7 @@ type outputHandle struct {
 }
 
 func (*outputHandle) GuardID() string         { return "guardian-fixture" }
+func (*outputHandle) Stdin() io.WriteCloser   { return discardWriteCloser{} }
 func (h *outputHandle) Stdout() io.ReadCloser { return h.stdout }
 func (h *outputHandle) Stderr() io.ReadCloser { return h.stderr }
 func (h *outputHandle) Cancel(context.Context) error {
@@ -62,3 +63,8 @@ func (h *outputHandle) Cancel(context.Context) error {
 func (*outputHandle) Wait(context.Context) (processguardian.Result, error) {
 	return processguardian.Result{Quiescent: true}, nil
 }
+
+type discardWriteCloser struct{}
+
+func (discardWriteCloser) Write(payload []byte) (int, error) { return io.Discard.Write(payload) }
+func (discardWriteCloser) Close() error                      { return nil }

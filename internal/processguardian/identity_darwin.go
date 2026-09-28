@@ -3,7 +3,9 @@
 package processguardian
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 
 	"golang.org/x/sys/unix"
 )
@@ -22,3 +24,10 @@ func processIdentityToken(pid int) (string, error) {
 	}
 	return fmt.Sprintf("%d:%d", start.Sec, start.Usec), nil
 }
+
+func processIdentityNotFound(err error) bool {
+	return errors.Is(err, unix.ESRCH) || errors.Is(err, unix.ENOENT) || errors.Is(err, unix.EIO)
+}
+
+func configureCommandIdentity(*Command) error   { return nil }
+func configureGuardianIdentity(*exec.Cmd) error { return nil }

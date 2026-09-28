@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	PromptBytes                      = 24 * 1024
 	CompletionReceiptWireBytes int64 = 1 << 20
 	TerminalHandoffWireBytes   int64 = 32 * 1024 * 1024
 	OpenCodeEventLineBytes           = 8 * 1024 * 1024
@@ -121,15 +120,14 @@ func (b *WorkspaceBudget) AddFile(sizeBytes int64) error {
 	return nil
 }
 
-// ReadBoundedOnLimit drains reader while retaining no more than maxBytes. It
-// invokes onLimit as soon as overflow is observed, before continuing to drain.
+// ReadBoundedOnLimit retains no more than maxBytes from reader. On the first
+// overflow byte, it invokes onLimit and returns without reading further.
 func ReadBoundedOnLimit(reader io.Reader, maxBytes int64, resource string, onLimit func()) ([]byte, error) {
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
 	buffer := make([]byte, 0, maxBytes)
 	chunk := make([]byte, 32*1024)
-	overflow := false
 	for {
 		readSize := len(chunk)
 		if remaining := maxBytes - int64(len(buffer)); remaining < int64(readSize) {
@@ -145,24 +143,19 @@ func ReadBoundedOnLimit(reader io.Reader, maxBytes int64, resource string, onLim
 				buffer = append(buffer, chunk[:keep]...)
 			}
 			if int64(count) > remaining {
-				overflow = true
 				if onLimit != nil {
 					onLimit()
-					onLimit = nil
 				}
+				return buffer, &LimitExceededError{Resource: resource, Limit: maxBytes}
 			}
 		}
 		if readErr == io.EOF {
-			break
+			return buffer, nil
 		}
 		if readErr != nil {
 			return buffer, readErr
 		}
 	}
-	if overflow {
-		return buffer, &LimitExceededError{Resource: resource, Limit: maxBytes}
-	}
-	return buffer, nil
 }
 
 // CopyBounded copies at most maxBytes from reader. It probes one additional

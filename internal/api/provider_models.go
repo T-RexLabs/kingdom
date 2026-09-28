@@ -379,6 +379,10 @@ func collectOpenCodeVerboseModelOutput(ctx context.Context, handle processguardi
 	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
 	var cancelOnce sync.Once
 	cancel := func() { cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) }) }
+	stdinErr := handle.Stdin().Close()
+	if stdinErr != nil {
+		cancel()
+	}
 	go func() {
 		defer stdoutStream.Close()
 		raw, err := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "model catalog stdout", cancel)
@@ -405,6 +409,9 @@ func collectOpenCodeVerboseModelOutput(ctx context.Context, handle processguardi
 	}
 	if stderr.err != nil {
 		return stdout.raw, stderr.err
+	}
+	if stdinErr != nil {
+		return stdout.raw, fmt.Errorf("close model catalog command stdin: %w", stdinErr)
 	}
 	if waitErr != nil {
 		return stdout.raw, waitErr

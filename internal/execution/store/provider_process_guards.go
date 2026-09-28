@@ -16,6 +16,8 @@ import (
 
 const maxProviderProcessGuardEvidenceBytes = 64 << 10
 
+const providerProcessGuardCommitReadbackTimeout = 2 * time.Second
+
 type ProviderProcessGuardLifecycle string
 
 const (
@@ -177,7 +179,12 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 			return result, providerSettlementError("acknowledge_provider_process_guard", "guard_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
 		if err := tx.Commit(); err != nil {
-			return result, fmt.Errorf("commit provider process guard acknowledgement replay transaction: %w", err)
+			confirmed, confirmErr := s.confirmProviderProcessGuardAcknowledgementAfterCommitError(normalized, candidate, true, err)
+			if confirmErr != nil {
+				return result, confirmErr
+			}
+			committed = true
+			return confirmed, nil
 		}
 		committed = true
 		return AcknowledgeProviderProcessGuardResult{Guard: existing, Idempotent: true}, nil
@@ -198,10 +205,41 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		return result, fmt.Errorf("insert provider process guard %q: %w", guard.GuardID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit provider process guard acknowledgement transaction: %w", err)
+		confirmed, confirmErr := s.confirmProviderProcessGuardAcknowledgementAfterCommitError(normalized, guard, false, err)
+		if confirmErr != nil {
+			return result, confirmErr
+		}
+		committed = true
+		return confirmed, nil
 	}
 	committed = true
 	return AcknowledgeProviderProcessGuardResult{Guard: guard}, nil
+}
+
+func (s *Store) confirmProviderProcessGuardAcknowledgementAfterCommitError(
+	req normalizedAcknowledgeProviderProcessGuardRequest,
+	candidate ProviderProcessGuard,
+	idempotent bool,
+	commitErr error,
+) (AcknowledgeProviderProcessGuardResult, error) {
+	// Commit may have made the guard durable just before returning an error or
+	// the request context was canceled; confirm it on an independent deadline.
+	readCtx, cancel := context.WithTimeout(context.Background(), providerProcessGuardCommitReadbackTimeout)
+	defer cancel()
+
+	persisted, readErr := scanProviderProcessGuard(s.db.QueryRowContext(readCtx, providerProcessGuardSelect+` WHERE guard_id = ?`, req.GuardID))
+	if readErr == nil && sameProviderProcessGuardAcknowledgement(persisted, candidate) {
+		return AcknowledgeProviderProcessGuardResult{Guard: persisted, Idempotent: idempotent}, nil
+	}
+	if readErr == nil {
+		readErr = fmt.Errorf("persisted row does not match the exact acknowledged ownership lineage")
+	} else {
+		readErr = fmt.Errorf("read back acknowledged provider process guard %q: %w", req.GuardID, readErr)
+	}
+	return AcknowledgeProviderProcessGuardResult{}, errors.Join(
+		fmt.Errorf("commit provider process guard acknowledgement transaction: %w", commitErr),
+		readErr,
+	)
 }
 
 func (s *Store) ListPendingProviderProcessGuards(ctx context.Context, afterGuardID string, limit int) ([]ProviderProcessGuard, error) {
@@ -696,7 +734,7 @@ func providerProcessGuardQuiescenceTimesValid(guard ProviderProcessGuard, req no
 }
 
 func sameProviderProcessGuardAcknowledgement(existing, candidate ProviderProcessGuard) bool {
-	return existing.Lifecycle == ProviderProcessGuardLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.OwnerKind == candidate.OwnerKind && existing.OwnerID == candidate.OwnerID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt
+	return existing.Lifecycle == ProviderProcessGuardLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.OwnerKind == candidate.OwnerKind && existing.OwnerID == candidate.OwnerID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt && existing.CreatedAt == candidate.CreatedAt
 }
 
 func sameProviderProcessGuardQuiescence(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {

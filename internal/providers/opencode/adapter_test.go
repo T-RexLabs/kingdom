@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"kingdom/internal/providerlimits"
 )
 
 func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
@@ -110,7 +108,7 @@ func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
 	}
 }
 
-func TestValidateExecuteRequestPromptByteBoundary(t *testing.T) {
+func TestValidateExecuteRequestAcceptsLongPrompt(t *testing.T) {
 	request := func(prompt string) ExecuteRequest {
 		return ExecuteRequest{
 			CompletionMode: CompletionModeServerResponse,
@@ -122,13 +120,9 @@ func TestValidateExecuteRequestPromptByteBoundary(t *testing.T) {
 			OccurredAt:     "2026-03-01T12:00:00Z",
 		}
 	}
-	if err := validateExecuteRequest(request(strings.Repeat("x", providerlimits.PromptBytes))); err != nil {
-		t.Fatalf("exact prompt boundary rejected: %v", err)
-	}
-	err := validateExecuteRequest(request(strings.Repeat("x", providerlimits.PromptBytes+1)))
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) || limitErr.Resource != "prompt" || limitErr.Limit != providerlimits.PromptBytes {
-		t.Fatalf("one-byte prompt overflow error=%v, want typed prompt limit error", err)
+	prompt := strings.Repeat("large prompt context ", 4096)
+	if err := validateExecuteRequest(request(prompt)); err != nil {
+		t.Fatalf("long prompt rejected: %v", err)
 	}
 }
 

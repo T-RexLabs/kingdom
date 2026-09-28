@@ -2165,8 +2165,15 @@ func TestSessionAdapterMissingFinishReasonWithCapturedReviewVerdictFailsWithoutT
 		t.Fatalf("read args log: %v", readErr)
 	}
 	argsLog := string(argsLogRaw)
-	if strings.Count(argsLog, "KingdomProviderInvocationID: invocation_test2_review") != 1 {
-		t.Fatalf("expected a single foreground provider invocation, args log=%q", argsLog)
+	promptLog, readErr := os.ReadFile(argsLogPath + ".ses_fake_created.prompt")
+	if readErr != nil {
+		t.Fatalf("read captured OpenCode stdin: %v", readErr)
+	}
+	if strings.Count(string(promptLog), "KingdomProviderInvocationID: invocation_test2_review") != 1 {
+		t.Fatalf("expected one invocation marker in piped prompt, stdin=%q", string(promptLog))
+	}
+	if strings.Contains(argsLog, "KingdomProviderInvocationID") {
+		t.Fatalf("prompt metadata appeared in command arguments: %q", argsLog)
 	}
 	if strings.Contains(argsLog, "export ") {
 		t.Fatalf("expected no export command, args log=%q", argsLog)
@@ -2240,11 +2247,11 @@ func TestSessionAdapterNonZeroExitPrefersStructuredUpstreamError(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
-				adapter, err := NewSessionAdapter(SessionAdapterConfig{
-					BinaryPath: binaryPath,
-				})
+		t.Run(tt.name, func(t *testing.T) {
+			binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+			adapter, err := NewSessionAdapter(SessionAdapterConfig{
+				BinaryPath: binaryPath,
+			})
 			if err != nil {
 				t.Fatalf("new session adapter: %v", err)
 			}
@@ -2491,7 +2498,6 @@ fi
 SESSION=""
 DIR=""
 PREV=""
-PROMPT_ARG=""
 for ARG in "$@"; do
   if [ "$PREV" = "--session" ]; then
     SESSION="$ARG"
@@ -2500,7 +2506,6 @@ for ARG in "$@"; do
     DIR="$ARG"
   fi
   PREV="$ARG"
-  PROMPT_ARG="$ARG"
 done
 
 if [ -z "$SESSION" ]; then
@@ -2508,7 +2513,9 @@ if [ -z "$SESSION" ]; then
 fi
 
 if [ -n "$FAKE_OPENCODE_ARGS_LOG" ]; then
-  printf '%s' "$PROMPT_ARG" > "$FAKE_OPENCODE_ARGS_LOG.$SESSION.prompt"
+  cat > "$FAKE_OPENCODE_ARGS_LOG.$SESSION.prompt"
+else
+  cat >/dev/null
 fi
 
 if [ -n "$FAKE_OPENCODE_WRITE_RELATIVE_PATH" ] && [ -n "$DIR" ]; then

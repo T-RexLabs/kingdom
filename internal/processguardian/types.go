@@ -26,8 +26,9 @@ const (
 	maxWireBytes = 4 << 20
 )
 
-// Command contains only the command data supplied over private pipes. It is
-// deliberately not represented in the guardian process arguments.
+// Command contains the guarded executable metadata supplied over private
+// pipes. Prompt/input payload belongs on Handle.Stdin, never in Args or the
+// bounded guardian wire specification.
 type Command struct {
 	Path string
 	Args []string
@@ -84,6 +85,9 @@ type Runner struct {
 // Handle owns a single started guardian command.
 type Handle interface {
 	GuardID() string
+	// Stdin writes bytes to the guarded child. Close it to deliver EOF; a write
+	// error on an open stream cancels the guarded process tree.
+	Stdin() io.WriteCloser
 	Stdout() io.ReadCloser
 	Stderr() io.ReadCloser
 	Cancel(context.Context) error

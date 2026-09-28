@@ -413,6 +413,23 @@ func TestProviderTerminalHandoffIsPersistedBeforeReceiptIngestion(t *testing.T) 
 	}
 }
 
+func TestProviderTerminalHandoffPublicationFailurePreventsSQLiteInsert(t *testing.T) {
+	h := newReceiptIngestionHarness(t)
+	invocation, capability, inbox := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, capability, inbox, 1)
+	handoffsPath := filepath.Join(h.runtimeDir, "provider-completion", "handoffs")
+	if err := os.WriteFile(handoffsPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block handoff directory creation: %v", err)
+	}
+
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil {
+		t.Fatal("expected trusted handoff publication failure")
+	}
+	if count := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("failed file publication left %d SQLite handoff rows", count)
+	}
+}
+
 func TestProviderTerminalHandoffFileRecoversAfterInsertFailureAndLeaseExpiry(t *testing.T) {
 	h := newReceiptIngestionHarness(t)
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
@@ -940,6 +957,113 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 	}
 }
 
+func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(t *testing.T) {
+	ctx := context.Background()
+	h := newReceiptIngestionHarness(t)
+	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
+	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
+	if err := os.Remove(evidencePath); err != nil {
+		t.Fatalf("remove already-ingested guardian evidence: %v", err)
+	}
+	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
+
+	pass, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false)
+	if err != nil || pass.Visited != 1 || pass.NextCursor != guardID {
+		t.Fatalf("replay missing quiescent evidence: pass=%#v err=%v", pass, err)
+	}
+	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
+}
+
+func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		quiescent   bool
+		replacement bool
+	}{
+		{name: "acknowledged missing"},
+		{name: "quiescent corrupt", quiescent: true},
+		{name: "quiescent replaced", quiescent: true, replacement: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			h := newReceiptIngestionHarness(t)
+			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.addPendingGuardEvidence(t, 1)
+			const guardID = "guard_startup_replay_001"
+			if tc.quiescent {
+				_, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
+				payload := []byte(`{"type":"result","unexpected":true}`)
+				if tc.replacement {
+					replaced, err := json.Marshal(struct {
+						Type   string                 `json:"type"`
+						Result processguardian.Result `json:"result"`
+					}{Type: "result", Result: processguardian.Result{Ownership: processguardian.Ownership{GuardID: guardID}, Quiescent: true, FailureText: "replaced evidence"}})
+					if err != nil {
+						t.Fatalf("marshal replacement evidence: %v", err)
+					}
+					payload = replaced
+				}
+				if err := os.WriteFile(evidencePath, payload, 0o600); err != nil {
+					t.Fatalf("replace provider guard evidence: %v", err)
+				}
+			} else {
+				if err := os.Remove(providerGuardEvidencePath(h.runtimeDir, guardID)); err != nil {
+					t.Fatalf("remove acknowledged guardian evidence: %v", err)
+				}
+			}
+
+			if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+				t.Fatalf("replay untrusted provider guard evidence: %v", err)
+			}
+			wantLifecycle := "acknowledged"
+			if tc.quiescent {
+				wantLifecycle = "quiescent"
+			}
+			assertProviderGuardCleanupState(t, h, guardID, wantLifecycle, true)
+		})
+	}
+}
+
+func TestProviderProcessGuardCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
+	ctx := context.Background()
+	h := newReceiptIngestionHarness(t)
+	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
+	guardID, evidence, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
+	if err := os.Remove(evidencePath); err != nil {
+		t.Fatalf("remove evidence after replay read: %v", err)
+	}
+
+	h.loop.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guardID, evidence)
+	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
+}
+
+func TestProviderProcessGuardCleanupMarkerFailureIsRetryable(t *testing.T) {
+	ctx := context.Background()
+	h := newReceiptIngestionHarness(t)
+	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
+	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
+	if err := os.Remove(evidencePath); err != nil {
+		t.Fatalf("remove already-ingested guardian evidence: %v", err)
+	}
+	if _, err := h.db.Exec(`CREATE TRIGGER fail_provider_guard_cleanup_marker BEFORE UPDATE OF evidence_cleaned_at ON provider_process_guards WHEN NEW.guard_id = 'guard_startup_replay_001' BEGIN SELECT RAISE(ABORT, 'cleanup marker unavailable'); END`); err != nil {
+		t.Fatalf("create cleanup marker failure trigger: %v", err)
+	}
+	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+		t.Fatalf("cleanup marker failure turned durable quiescence into replay failure: %v", err)
+	}
+	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
+	if _, err := h.db.Exec(`DROP TRIGGER fail_provider_guard_cleanup_marker`); err != nil {
+		t.Fatalf("remove cleanup marker failure trigger: %v", err)
+	}
+	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+		t.Fatalf("retry provider guard cleanup marker: %v", err)
+	}
+	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
+}
+
 func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProvingQuiescence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1286,6 +1410,66 @@ func (h receiptIngestionHarness) runningHandoffJob(t *testing.T, invocation exec
 	}
 	attachQuiescentProviderProcessGuard(t, h.store, invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, job.expectedLeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:01Z")
 	return job
+}
+
+func (h receiptIngestionHarness) persistPendingProviderGuardQuiescence(t *testing.T, index int) (string, string, string) {
+	t.Helper()
+	guardID := fmt.Sprintf("guard_startup_replay_%03d", index)
+	result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(h.runtimeDir, guardID)
+	if err != nil {
+		t.Fatalf("read provider guard evidence before ingest: %v", err)
+	}
+	quiescentAt := "2026-03-01T12:00:04Z"
+	_, err = h.store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+		GuardID: guardID, ProviderInvocationID: fmt.Sprintf("pinv_receipt_ingestion_%03d", index),
+		AttemptID: fmt.Sprintf("run_receipt_ingestion:delegated_execution_berserker:%d", index), RunID: "run_receipt_ingestion",
+		NodeRunID: fmt.Sprintf("nr_receipt_ingestion_%03d", index), Platform: result.Platform,
+		GuardianPID: int64(result.GuardianPID), GuardianIdentityToken: result.GuardianIdentityToken,
+		ChildPID: int64(result.ChildPID), ChildIdentityToken: result.ChildIdentityToken, TreeID: strconv.Itoa(result.TreeID),
+		TreeIdentityToken: result.TreeIdentityToken, QuiescenceCapability: result.QuiescenceCapability,
+		ExitedAt: quiescentAt, QuiescentAt: quiescentAt, ExitCode: int64(result.ExitCode), ExitSignal: int64(result.ExitSignal),
+		TerminationForced: result.Forced, FailureCode: result.FailureCode, FailureText: result.FailureText,
+		EvidenceSHA256: digest, EvidenceJSON: evidence,
+	})
+	if err != nil {
+		t.Fatalf("ingest provider guard evidence: %v", err)
+	}
+	return guardID, evidence, providerGuardEvidencePath(h.runtimeDir, guardID)
+}
+
+func providerGuardEvidencePath(runtimeRoot, guardID string) string {
+	name := sha256.Sum256([]byte(guardID))
+	return filepath.Join(runtimeRoot, "provider-process-guards", "quiescence", fmt.Sprintf("%x.json", name[:]))
+}
+
+func assertProviderGuardCleanupState(t *testing.T, h receiptIngestionHarness, guardID, wantLifecycle string, wantPending bool) {
+	t.Helper()
+	var lifecycle string
+	var cleanedAt sql.NullString
+	if err := h.db.QueryRow(`SELECT lifecycle, evidence_cleaned_at FROM provider_process_guards WHERE guard_id = ?`, guardID).Scan(&lifecycle, &cleanedAt); err != nil {
+		t.Fatalf("load provider guard cleanup state: %v", err)
+	}
+	if lifecycle != wantLifecycle {
+		t.Fatalf("provider guard lifecycle=%q, want %q", lifecycle, wantLifecycle)
+	}
+	markerPending := !cleanedAt.Valid
+	if markerPending != wantPending {
+		t.Fatalf("unexpected provider guard cleanup state: lifecycle=%q want=%q marker_valid=%t pending=%t", lifecycle, wantLifecycle, cleanedAt.Valid, wantPending)
+	}
+	pending, err := h.store.ListPendingProviderProcessGuards(context.Background(), "", 2)
+	if err != nil {
+		t.Fatalf("list provider guards after cleanup replay: %v", err)
+	}
+	found := false
+	for _, guard := range pending {
+		if guard.GuardID == guardID {
+			found = true
+			break
+		}
+	}
+	if found != wantPending {
+		t.Fatalf("provider guard pending=%t, want %t (rows=%#v)", found, wantPending, pending)
+	}
 }
 
 func (h receiptIngestionHarness) addPendingGuardEvidence(t *testing.T, index int) {

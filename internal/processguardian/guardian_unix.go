@@ -20,8 +20,8 @@ func configureGuardianProcess(cmd *exec.Cmd) error {
 	return nil
 }
 
-func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
-	defer closeFiles(specFile, control, status, stdout, stderr)
+func runGuardian(specFile, control, status, stdout, stderr, childStdin *os.File) error {
+	defer closeFiles(specFile, control, status, stdout, stderr, childStdin)
 	var spec wireSpec
 	if err := readFrame(specFile, &spec); err != nil {
 		return fmt.Errorf("read launch specification: %w", err)
@@ -40,10 +40,13 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 		return err
 	}
 	gate := exec.Command(os.Args[0], HiddenGateMode)
+	if identityToken := processIdentityEnvironmentValue(spec.Command.Env); identityToken != "" {
+		gate.Env = withProcessIdentityEnvironment(os.Environ(), identityToken)
+	}
 	gate.Stdin = newWireSpecReader(spec)
 	gate.Stdout = stdout
 	gate.Stderr = stderr
-	gate.ExtraFiles = []*os.File{releaseRead, execStatusWrite}
+	gate.ExtraFiles = []*os.File{releaseRead, execStatusWrite, childStdin}
 	gate.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := gate.Start(); err != nil {
 		closeFiles(releaseRead, releaseWrite, execStatusRead, execStatusWrite)
@@ -51,6 +54,7 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	}
 	_ = releaseRead.Close()
 	_ = execStatusWrite.Close()
+	_ = childStdin.Close()
 	guardianIdentity, err := processIdentityToken(os.Getpid())
 	if err != nil {
 		_ = releaseWrite.Close()
@@ -65,7 +69,7 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	}
 	ownership := Ownership{GuardID: spec.GuardID, GuardianPID: os.Getpid(), GuardianIdentityToken: guardianIdentity, ChildPID: gate.Process.Pid, ChildIdentityToken: childIdentity, TreeID: gate.Process.Pid, TreeIdentityToken: childIdentity, Platform: "unix_process_group", QuiescenceCapability: spec.Capability}
 	if err := writeFrame(status, wireStatus{Type: "ownership", Ownership: ownership}); err != nil {
-		_ = terminateGroup(ownership.TreeID, spec.CancelGraceMS, spec.CancelForceMS)
+		_ = terminateGroup(ownership, spec.CancelGraceMS, spec.CancelForceMS)
 		_ = gate.Wait()
 		return fmt.Errorf("write ownership acknowledgement: %w", err)
 	}
@@ -97,7 +101,7 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	}
 	_ = execStatusRead.Close()
 	if err := writeFrame(status, wireStatus{Type: "started"}); err != nil {
-		_ = terminateGroup(ownership.TreeID, spec.CancelGraceMS, spec.CancelForceMS)
+		_ = terminateGroup(ownership, spec.CancelGraceMS, spec.CancelForceMS)
 		_ = gate.Wait()
 		return err
 	}
@@ -116,13 +120,13 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 			forced = true
 			failureCode = "provider_descendant_leak"
 			failureText = "provider leader exited while its process group remained alive"
-			_ = terminateGroup(ownership.TreeID, spec.CancelGraceMS, spec.CancelForceMS)
+			_ = terminateGroup(ownership, spec.CancelGraceMS, spec.CancelForceMS)
 		}
 	case <-controlDone:
 		forced = true
 		failureCode = "provider_cancelled"
 		failureText = "guardian owner requested cancellation"
-		_ = terminateGroup(ownership.TreeID, spec.CancelGraceMS, spec.CancelForceMS)
+		_ = terminateGroup(ownership, spec.CancelGraceMS, spec.CancelForceMS)
 		waitErr = <-waitDone
 	}
 	result := resultFromWait(ownership, waitErr, forced, failureCode, failureText)
@@ -145,8 +149,11 @@ func runGuardian(specFile, control, status, stdout, stderr *os.File) error {
 	return nil
 }
 
-func runGate(specReader io.Reader, release *os.File) error {
-	defer release.Close()
+func runGate(specReader io.Reader, release, childStdin *os.File) error {
+	defer closeFiles(release, childStdin)
+	if release == nil || childStdin == nil {
+		return fmt.Errorf("provider launch gate descriptors are incomplete")
+	}
 	var spec wireSpec
 	if err := readFrame(specReader, &spec); err != nil {
 		return err
@@ -161,11 +168,23 @@ func runGate(specReader io.Reader, release *os.File) error {
 	if command[0] != 'R' {
 		return fmt.Errorf("invalid provider launch gate command")
 	}
+	if err := syscall.Dup2(int(childStdin.Fd()), int(os.Stdin.Fd())); err != nil {
+		return fmt.Errorf("connect provider stdin: %w", err)
+	}
+	if err := syscall.SetNonblock(int(os.Stdin.Fd()), false); err != nil {
+		return fmt.Errorf("configure provider stdin: %w", err)
+	}
+	if err := release.Close(); err != nil {
+		return fmt.Errorf("close provider launch gate descriptor: %w", err)
+	}
 	execStatus := os.NewFile(4, "provider-exec-status")
+	if execStatus == nil {
+		return fmt.Errorf("provider exec status descriptor is unavailable")
+	}
 	defer execStatus.Close()
-	// The gate retains only stdin/stdout/stderr and its release pipe. Inherited
-	// guardian control or status descriptors would keep EOF from reaching the
-	// parent when the guardian crashes, leaving the provider tree unowned.
+	// Close every nonstandard descriptor before exec. Inherited guardian control
+	// or status descriptors would keep EOF from reaching the parent when the
+	// guardian crashes, leaving the provider tree unowned.
 	for fd := 5; fd < 32; fd++ {
 		_ = syscall.Close(fd)
 	}
@@ -187,48 +206,90 @@ func groupAbsent(pgid int) bool {
 	return errors.Is(err, syscall.ESRCH)
 }
 
-func ManagedProcessAbsent(pid, treeID int, identityToken, _ string) bool {
-	if current, err := processIdentityToken(pid); err == nil && current == identityToken {
+func ManagedProcessAbsent(pid, treeID int, identityToken, treeIdentityToken string) bool {
+	absent, err := acknowledgedTreeAbsent(Ownership{
+		ChildPID: pid, ChildIdentityToken: identityToken,
+		TreeID: treeID, TreeIdentityToken: treeIdentityToken,
+	})
+	if err != nil {
 		return false
 	}
-	return groupAbsent(treeID)
+	return absent
 }
-
-func terminateGroup(pgid int, graceMS, forceMS int64) error {
-	if pgid <= 0 || groupAbsent(pgid) {
-		return nil
-	}
-	if err := syscall.Kill(-pgid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+func terminateGroup(ownership Ownership, graceMS, forceMS int64) error {
+	absent, err := acknowledgedTreeAbsent(ownership)
+	if err != nil {
 		return err
 	}
-	if waitGroupAbsent(pgid, time.Duration(graceMS)*time.Millisecond) {
+	if absent {
 		return nil
 	}
-	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := syscall.Kill(-ownership.TreeID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
-	if !waitGroupAbsent(pgid, time.Duration(forceMS)*time.Millisecond) {
-		return fmt.Errorf("process group %d did not exit", pgid)
+	absent, err = waitAcknowledgedTreeAbsent(ownership, time.Duration(graceMS)*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	if absent {
+		return nil
+	}
+	// Recheck the leader generation after the grace period. If the old group
+	// vanished and its PGID was reused, never force-kill the replacement group.
+	absent, err = acknowledgedTreeAbsent(ownership)
+	if err != nil {
+		return err
+	}
+	if absent {
+		return nil
+	}
+	if err := syscall.Kill(-ownership.TreeID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	absent, err = waitAcknowledgedTreeAbsent(ownership, time.Duration(forceMS)*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	if !absent {
+		return fmt.Errorf("process group %d did not exit", ownership.TreeID)
 	}
 	return nil
 }
 
 func terminateAcknowledgedTree(ownership Ownership, grace, force time.Duration) error {
-	return terminateGroup(ownership.TreeID, grace.Milliseconds(), force.Milliseconds())
+	return terminateGroup(ownership, grace.Milliseconds(), force.Milliseconds())
 }
 
-func waitGroupAbsent(pgid int, timeout time.Duration) bool {
+func acknowledgedTreeAbsent(ownership Ownership) (bool, error) {
+	if ownership.TreeID <= 0 || ownership.ChildPID != ownership.TreeID || ownership.TreeIdentityToken == "" || ownership.ChildIdentityToken != ownership.TreeIdentityToken {
+		return false, fmt.Errorf("unix process-group identity is incomplete or inconsistent")
+	}
+	current, err := processIdentityToken(ownership.TreeID)
+	if err == nil {
+		return current != ownership.TreeIdentityToken, nil
+	}
+	if !processIdentityNotFound(err) {
+		if groupAbsent(ownership.TreeID) {
+			return true, nil
+		}
+		return false, fmt.Errorf("verify unix process-group generation: %w", err)
+	}
+	return groupAbsent(ownership.TreeID), nil
+}
+
+func waitAcknowledgedTreeAbsent(ownership Ownership, timeout time.Duration) (bool, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if groupAbsent(pgid) {
-			return true
+		absent, err := acknowledgedTreeAbsent(ownership)
+		if err != nil || absent {
+			return absent, err
 		}
 		select {
 		case <-deadline.C:
-			return groupAbsent(pgid)
+			return acknowledgedTreeAbsent(ownership)
 		case <-ticker.C:
 		}
 	}
@@ -262,9 +323,9 @@ func waitAndQuiesce(gate *exec.Cmd, ownership Ownership, spec wireSpec, forced b
 	// An unreleased gate exits on release-pipe EOF. Reap it before probing its
 	// process group, otherwise a zombie leader can falsely keep the group alive.
 	waitErr := gate.Wait()
-	_ = terminateGroup(ownership.TreeID, spec.CancelGraceMS, spec.CancelForceMS)
+	_ = terminateGroup(ownership, spec.CancelGraceMS, spec.CancelForceMS)
 	returnResult := resultFromWait(ownership, waitErr, forced, code, text)
-	returnResult.Quiescent = groupAbsent(ownership.TreeID)
+	returnResult.Quiescent, _ = acknowledgedTreeAbsent(ownership)
 	return returnResult
 }
 

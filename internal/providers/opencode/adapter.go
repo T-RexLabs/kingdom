@@ -19,7 +19,6 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/processguardian"
-	"kingdom/internal/providerlimits"
 )
 
 const (
@@ -446,20 +445,10 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	if req.Prompt == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if err := validatePromptBytes(req.Prompt); err != nil {
-		return err
-	}
 	if req.OccurredAt == "" {
 		return fmt.Errorf("occurred_at is required")
 	}
 
-	return nil
-}
-
-func validatePromptBytes(prompt string) error {
-	if len(prompt) > providerlimits.PromptBytes {
-		return &providerlimits.LimitExceededError{Resource: "prompt", Limit: int64(providerlimits.PromptBytes)}
-	}
 	return nil
 }
 

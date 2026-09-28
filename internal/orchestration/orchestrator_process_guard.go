@@ -2,7 +2,10 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +80,13 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 	for _, guard := range guards {
 		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
 		if err != nil {
+			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent && errors.Is(err, fs.ErrNotExist) {
+				// The durable quiescence row already contains the accepted proof;
+				// an absent file is completed cleanup, not missing authority.
+				o.markProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID)
+			} else if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
+				slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guard.GuardID, "error", err)
+			}
 			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged {
 				if o.pendingProviderProcessGuardAbsent(guard) {
 					if _, quarantineErr := o.executionStore.QuarantineProviderProcessGuardEvidence(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); quarantineErr != nil {
@@ -86,15 +96,18 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 					return providerProcessGuardPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
 				}
 			}
-			// Missing or invalid evidence never proves quiescence. Proven process
-			// absence is retained only as an operator-recoverable quarantine.
+			// Missing or invalid evidence never advances an acknowledged guard.
+			// Proven process absence is retained only as an operator-recoverable
+			// quarantine until a guardian proof is available.
 			pass.NextCursor = guard.GuardID
 			pass.Visited++
 			continue
 		}
 		if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
-			if digest == guard.QuiescenceEvidenceSHA256 && processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
-				_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano))
+			if digest == guard.QuiescenceEvidenceSHA256 {
+				o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, evidence)
+			} else {
+				slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guard.GuardID, "reason", "evidence_digest_mismatch")
 			}
 			pass.NextCursor = guard.GuardID
 			pass.Visited++
@@ -111,13 +124,31 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 		}
 		// Cleanup is deliberately after the authoritative SQLite commit. A
 		// cleanup failure is replayable evidence debt, not lost quiescence.
-		if processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID, evidence) == nil {
-			_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano))
-		}
+		o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, evidence)
 		pass.NextCursor = guard.GuardID
 		pass.Visited++
 	}
 	return pass, nil
+}
+
+func (o *orchestrationLoop) removeAndMarkProviderProcessGuardEvidenceCleaned(ctx context.Context, guardID, evidence string) {
+	removeErr := processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guardID, evidence)
+	if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+		slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guardID, "error", removeErr)
+		return
+	}
+	// Not-exist is also the expected result when another cleanup pass removes
+	// the file after this pass successfully read the durable proof.
+	o.markProviderProcessGuardEvidenceCleaned(ctx, guardID)
+}
+
+func (o *orchestrationLoop) markProviderProcessGuardEvidenceCleaned(ctx context.Context, guardID string) {
+	if o == nil || o.executionStore == nil {
+		return
+	}
+	if err := o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guardID, o.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		slog.Warn("provider process guard evidence cleanup marker deferred", "guard_id", guardID, "error", err)
+	}
 }
 
 func (o *orchestrationLoop) pendingProviderProcessGuardAbsent(guard executionstore.ProviderProcessGuard) bool {
@@ -250,9 +281,7 @@ func (o *orchestrationLoop) ingestProviderProcessGuardQuiescence(ctx context.Con
 		EvidenceJSON:          result.EvidenceJSON,
 	})
 	if err == nil && strings.TrimSpace(o.processGuardRuntimeRoot) != "" {
-		if processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, result.GuardID, result.EvidenceJSON) == nil {
-			_ = o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, result.GuardID, o.now().UTC().Format(time.RFC3339Nano))
-		}
+		o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, result.GuardID, result.EvidenceJSON)
 	}
 	return err
 }

@@ -18,6 +18,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if exitCode, handled := runStdinTestProvider(os.Args); handled {
+		os.Exit(exitCode)
+	}
 	if len(os.Args) > 1 && os.Args[1] == HiddenGuardianMode {
 		switch os.Getenv("KINGDOM_TEST_GUARDIAN_BLOCK") {
 		case "ownership":
@@ -389,11 +392,11 @@ func waitForGroupAbsentForTest(treeID int, timeout time.Duration) error {
 }
 
 func runBlockedOwnershipGuardian() int {
-	spec, control, status, stdout, stderr, err := guardianFiles()
+	spec, control, status, stdout, stderr, stdin, err := guardianFiles()
 	if err != nil {
 		return 1
 	}
-	defer closeFiles(spec, control, status, stdout, stderr)
+	defer closeFiles(spec, control, status, stdout, stderr, stdin)
 	var launch wireSpec
 	if readFrame(spec, &launch) != nil {
 		return 1
@@ -419,11 +422,11 @@ func runBlockedOwnershipGuardian() int {
 }
 
 func runBlockedStartedGuardian() int {
-	spec, control, status, stdout, stderr, err := guardianFiles()
+	spec, control, status, stdout, stderr, stdin, err := guardianFiles()
 	if err != nil {
 		return 1
 	}
-	defer closeFiles(spec, control, status, stdout, stderr)
+	defer closeFiles(spec, control, status, stdout, stderr, stdin)
 	var launch wireSpec
 	if readFrame(spec, &launch) != nil {
 		return 1

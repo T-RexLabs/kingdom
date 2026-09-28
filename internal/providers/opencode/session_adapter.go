@@ -467,10 +467,7 @@ func (a *SessionAdapter) WarmRuntime(ctx context.Context) error {
 	return nil
 }
 
-func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteRequest, sessionID, prompt string, commandOrdinal int) (startedOpencodeRun, error) {
-	if err := validatePromptBytes(prompt); err != nil {
-		return startedOpencodeRun{}, err
-	}
+func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteRequest, sessionID string, commandOrdinal int) (startedOpencodeRun, error) {
 	// `--thinking` makes `opencode run --format json` emit `reasoning` parts on
 	// the event stream. Without it the stream carries only text/tool/step parts
 	// and reasoning is reachable only via a post-hoc `opencode export`, so the
@@ -507,8 +504,6 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	if strings.TrimSpace(req.WorkspacePath) != "" {
 		args = append(args, "--dir", strings.TrimSpace(req.WorkspacePath))
 	}
-	args = append(args, prompt)
-
 	dir := a.workDir
 	if strings.TrimSpace(req.WorkspacePath) != "" {
 		dir = strings.TrimSpace(req.WorkspacePath)
@@ -520,10 +515,15 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 		return startedOpencodeRun{}, fmt.Errorf("wait for opencode database startup: %w", err)
 	}
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	var (
+		acknowledgedAt     string
+		acknowledgedAtOnce sync.Once
+	)
 	var persist processguardian.PersistOwnership
 	if req.OnProcessGuardOwnership != nil {
 		persist = func(callbackCtx context.Context, ownership processguardian.Ownership) error {
-			return req.OnProcessGuardOwnership(callbackCtx, ProcessGuardOwnership{CommandOrdinal: commandOrdinal, StartedAt: startedAt, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
+			acknowledgedAtOnce.Do(func() { acknowledgedAt = time.Now().UTC().Format(time.RFC3339Nano) })
+			return req.OnProcessGuardOwnership(callbackCtx, ProcessGuardOwnership{CommandOrdinal: commandOrdinal, StartedAt: startedAt, AcknowledgedAt: acknowledgedAt, Ownership: ownership})
 		}
 	}
 	handle, err := a.runner.Start(ctx, command, persist)
@@ -537,7 +537,142 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 		}
 		return startedOpencodeRun{}, fmt.Errorf("start guarded opencode run: %w", err)
 	}
-	return startedOpencodeRun{handle: handle, stdout: handle.Stdout(), stderr: handle.Stderr(), releaseDatabaseStartup: releaseStartup}, nil
+	return startedOpencodeRun{
+		handle:                 handle,
+		stdout:                 handle.Stdout(),
+		stderr:                 handle.Stderr(),
+		releaseDatabaseStartup: releaseStartup,
+	}, nil
+}
+
+// writeOpenCodePrompt streams each prompt part to OpenCode's stdin. The timeout
+// is an inactivity timeout that resets only when bytes are delivered; it never
+// places a total byte or duration ceiling on a progressing prompt.
+func writeOpenCodePrompt(ctx context.Context, handle processguardian.Handle, parts []string, inactivityTimeout time.Duration) error {
+	if handle == nil {
+		return fmt.Errorf("OpenCode process handle is unavailable")
+	}
+	stdin := handle.Stdin()
+	if stdin == nil {
+		return fmt.Errorf("OpenCode stdin is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if inactivityTimeout <= 0 {
+		return writeOpenCodePromptChunks(stdin, parts, nil)
+	}
+	progress := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	var progressMu sync.Mutex
+	lastProgressAt := time.Now()
+	noteProgress := func() {
+		progressMu.Lock()
+		lastProgressAt = time.Now()
+		progressMu.Unlock()
+		select {
+		case progress <- struct{}{}:
+		default:
+		}
+	}
+	go func() { done <- writeOpenCodePromptChunks(stdin, parts, noteProgress) }()
+	timer := time.NewTimer(inactivityTimeout)
+	defer timer.Stop()
+	resetTimer := func() {
+		progressMu.Lock()
+		remaining := inactivityTimeout - time.Since(lastProgressAt)
+		progressMu.Unlock()
+		if remaining < 0 {
+			remaining = 0
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(remaining)
+	}
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			cancelErr := handle.Cancel(context.Background())
+			return errors.Join(ctx.Err(), cancelErr, <-done)
+		case <-progress:
+			resetTimer()
+		case <-timer.C:
+			select {
+			case err := <-done:
+				return err
+			case <-progress:
+				resetTimer()
+				continue
+			default:
+			}
+			progressMu.Lock()
+			stalled := time.Since(lastProgressAt) >= inactivityTimeout
+			progressMu.Unlock()
+			if !stalled {
+				resetTimer()
+				continue
+			}
+			timeoutErr := &providerTimeoutError{TimeoutType: "prompt_input_stalled", Timeout: inactivityTimeout}
+			cancelErr := handle.Cancel(context.Background())
+			return errors.Join(timeoutErr, cancelErr, <-done)
+		}
+	}
+}
+
+func writeOpenCodePromptChunks(stdin io.WriteCloser, parts []string, onProgress func()) error {
+	// This is only an I/O copy buffer; the complete prompt is never capped to
+	// this size or accumulated into another contiguous byte slice.
+	const writeChunkBytes = 64 * 1024
+	buffer := make([]byte, writeChunkBytes)
+	var writeErr error
+	for _, part := range parts {
+		for offset := 0; offset < len(part); {
+			end := min(offset+len(buffer), len(part))
+			chunk := buffer[:copy(buffer, part[offset:end])]
+			writtenInChunk := 0
+			for writtenInChunk < len(chunk) {
+				written, err := stdin.Write(chunk[writtenInChunk:])
+				if written > 0 {
+					writtenInChunk += written
+					if onProgress != nil {
+						onProgress()
+					}
+				}
+				if err != nil {
+					writeErr = fmt.Errorf("write OpenCode prompt to stdin: %w", err)
+					break
+				}
+				if written == 0 {
+					writeErr = fmt.Errorf("write OpenCode prompt to stdin: %w", io.ErrNoProgress)
+					break
+				}
+			}
+			if writeErr != nil {
+				break
+			}
+			offset = end
+		}
+		if writeErr != nil {
+			break
+		}
+	}
+	closeErr := stdin.Close()
+	if writeErr != nil {
+		if closeErr != nil {
+			writeErr = errors.Join(writeErr, fmt.Errorf("close OpenCode stdin: %w", closeErr))
+		}
+		return writeErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close OpenCode stdin after prompt: %w", closeErr)
+	}
+	return nil
 }
 
 func readStderrCapture(stream io.Reader) stderrCapture {
@@ -647,6 +782,10 @@ func runGuardedCommandWithLifecycle(ctx context.Context, runner GuardianRunner, 
 			_ = handle.Cancel(context.Background())
 		})
 	}
+	stdinErr := handle.Stdin().Close()
+	if stdinErr != nil {
+		cancel()
+	}
 	go func() {
 		defer stdoutStream.Close()
 		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
@@ -703,7 +842,7 @@ func runGuardedCommandWithLifecycle(ctx context.Context, runner GuardianRunner, 
 		_ = stderrStream.Close()
 		return stdout.raw, stderr.raw, processguardian.Result{}, firstNonNilError(stdout.err, stderr.err, ctx.Err(), fmt.Errorf("diagnostic command stream drain did not complete before deadline"))
 	}
-	return stdout.raw, stderr.raw, result, firstNonNilError(stdout.err, stderr.err, waitErr, guardianResultError(result))
+	return stdout.raw, stderr.raw, result, firstNonNilError(stdout.err, stderr.err, stdinErr, waitErr, guardianResultError(result))
 }
 
 func awaitGuardedCommandRead(ctx context.Context, done <-chan guardedCommandReadResult, bounded bool) (guardedCommandReadResult, bool) {
@@ -941,10 +1080,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		ctx = context.Background()
 	}
 	invocationID := resolveProviderInvocationID(req)
-	launchPrompt := promptWithProviderInvocationMetadata(req.Prompt, req.AttemptID, invocationID)
-	if err := validatePromptBytes(launchPrompt); err != nil {
-		return ExecuteResponse{}, err
-	}
+	launchPrompt := providerInvocationPromptParts(req.Prompt, req.AttemptID, invocationID)
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
 	attemptDone := a.beginAttemptOperation(req.AttemptID)
@@ -972,7 +1108,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		AttemptID: strings.TrimSpace(req.AttemptID),
 		SessionID: strings.TrimSpace(req.SessionID),
 	}
-	startedRun, err := a.startOpencodeRun(attemptCtx, req, actualSessionID, launchPrompt, 1)
+	startedRun, err := a.startOpencodeRun(attemptCtx, req, actualSessionID, 1)
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
@@ -998,7 +1134,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		}
 	}()
 	defer close(ctxCancelDone)
-	watchdog := startCommandWatchdog(startedRun.handle, a.firstEventTimeout, a.streamInactivityTimeout)
 
 	stderrDone := startStderrCapture(stderr)
 
@@ -1030,11 +1165,24 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 	allStdoutDrained := false
 	allStderrDrained := false
 	continuationTimedOut := false
+	inputTimedOut := false
+	inputCancelled := false
+	inputTerminalSet := false
+	var watchdog *commandWatchdog
 	processGuards := make([]ProcessGuardObservation, 0, a.maxContinuationTurns)
 	finish := func(resp ExecuteResponse) ExecuteResponse {
 		terminalText := strings.TrimSpace(canonicalTerminalText)
 		if terminalText == "" {
 			terminalText = strings.TrimSpace(stepText.terminalOutput())
+		}
+		timedOut := inputTimedOut || continuationTimedOut
+		cancelled := inputCancelled
+		if !inputTerminalSet {
+			timedOut = timedOut || isExecutionTimedOut(attemptCtx.Err())
+			cancelled = cancelled || isExecutionCancelled(attemptCtx.Err())
+		}
+		if watchdog != nil && watchdog.Err() != nil {
+			timedOut = true
 		}
 		observation := InvocationStreamObservation{
 			ProviderSessionID:           strings.TrimSpace(actualSessionID),
@@ -1054,8 +1202,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			StderrDrained:               allStderrDrained,
 			ProcessQuiescent:            allProcessesExited && len(processGuards) > 0,
 			ProcessGuards:               append([]ProcessGuardObservation(nil), processGuards...),
-			TimedOut:                    watchdog.Err() != nil || continuationTimedOut || isExecutionTimedOut(attemptCtx.Err()),
-			Cancelled:                   isExecutionCancelled(attemptCtx.Err()),
+			TimedOut:                    timedOut,
+			Cancelled:                   cancelled,
 			ProviderErrorPresent:        providerErrorSeen,
 			ProviderError:               strings.TrimSpace(upstreamErrorText),
 			ProviderErrorCode:           strings.TrimSpace(providerErrorCode),
@@ -1073,6 +1221,92 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		resp = withInvocationStreamObservation(resp, observation)
 		return withExecuteProviderDiagnostics(resp, buildProviderDiagnosticsJSON(req, diagnostics, execDiag, stderrSnapshot, providerRetryAt, providerRetryAfterMS))
 	}
+	inputTimeout := a.streamInactivityTimeout
+	if inputTimeout <= 0 {
+		inputTimeout = a.firstEventTimeout
+	}
+	if inputErr := writeOpenCodePrompt(attemptCtx, startedRun.handle, launchPrompt, inputTimeout); inputErr != nil {
+		_ = startedRun.handle.Cancel(context.Background())
+		_ = stdout.Close()
+		execDiag.CmdWaitStartedAt = time.Now().UTC().Format(time.RFC3339)
+		guardResult, capturedStderr, waitErr := awaitGuardedRun(req, 1, startedRun.handle, stderrDone)
+		processGuards = append(processGuards, processGuardObservation(1, guardResult))
+		execDiag.CmdWaitFinishedAt = time.Now().UTC().Format(time.RFC3339)
+		execDiag.WaitReturned = true
+		allProcessesExited = guardResult.Quiescent
+		if waitErr != nil {
+			execDiag.WaitError = waitErr.Error()
+		}
+		exitCode := guardResult.ExitCode
+		execDiag.ExitCode = &exitCode
+		if guardResult.ExitSignal != 0 {
+			exitSignal := guardResult.ExitSignal
+			execDiag.ExitSignal = &exitSignal
+		}
+		diagnostics.ProcessExitedAt = time.Now().UTC().Format(time.RFC3339)
+		a.clearInFlight(req.AttemptID)
+		execDiag.StderrLineCount = capturedStderr.lineCount
+		execDiag.LastStderrLineAt = capturedStderr.lastLineAt
+		execDiag.StderrEOFSeen = capturedStderr.eofSeen
+		stderrSnapshot = capturedStderr
+		allStderrDrained = capturedStderr.eofSeen
+		failureText := inputErr.Error()
+		var result attemptCompletionResult
+		var inputTimeout *providerTimeoutError
+		switch {
+		case isExecutionCancelled(attemptCtx.Err()) || isExecutionCancelled(inputErr):
+			result = executionResultForCancellation(inputErr, actualSessionID, "OpenCode prompt input was cancelled")
+		case isExecutionTimedOut(attemptCtx.Err()) || errors.As(inputErr, &inputTimeout):
+			timeoutErr := inputErr
+			if isExecutionTimedOut(attemptCtx.Err()) {
+				timeoutErr = attemptCtx.Err()
+			}
+			result = executionResultForTimeout(timeoutErr, actualSessionID)
+			inputTimedOut = true
+		default:
+			result = attemptCompletionResult{
+				State:             attemptCompletionStateFailed,
+				ReasonCode:        "provider_unknown_failure",
+				FailureText:       failureText,
+				ProviderSessionID: actualSessionID,
+				EvidenceSource:    completionEvidenceSourceStream,
+			}
+		}
+		failureText = firstNonEmpty(strings.TrimSpace(result.FailureText), failureText)
+		terminalType := AttemptEventTypeFailed
+		payloadMap := map[string]any{
+			"error":                      failureText,
+			"stream_diagnostics":         diagnostics.toMap(),
+			"execution_path_diagnostics": execDiag.toMap(),
+		}
+		if result.State == attemptCompletionStateCancelled {
+			terminalType = AttemptEventTypeCancelled
+			inputCancelled = true
+			inputTimedOut = false
+			payloadMap = map[string]any{"reason": failureText}
+		}
+		payload, _ := json.Marshal(payloadMap)
+		appended, existingTerminalType := a.appendTerminalEventOnceWithType(req.AttemptID, AttemptStreamEvent{
+			AttemptID:   req.AttemptID,
+			EventType:   terminalType,
+			PayloadJSON: string(payload),
+			OccurredAt:  time.Now().UTC().Format(time.RFC3339),
+		})
+		if !appended && existingTerminalType == AttemptEventTypeCancelled {
+			result = executionResultForCancellation(context.Canceled, actualSessionID, "OpenCode prompt input was cancelled")
+			failureText = result.FailureText
+			inputCancelled = true
+			inputTimedOut = false
+		}
+		inputTerminalSet = true
+		if terminalType == AttemptEventTypeCancelled || existingTerminalType == AttemptEventTypeCancelled {
+			execDiag.CancelledEventAppended = true
+		} else {
+			execDiag.FailedEventAppended = appended
+		}
+		return finish(executeResponseForCompletionResult(result)), errors.Join(executeErrorForCompletionResult(result), inputErr, waitErr)
+	}
+	watchdog = startCommandWatchdog(startedRun.handle, a.firstEventTimeout, a.streamInactivityTimeout)
 	if err := decodeOpencodeRunEventStream(stdout, streamBudget.consumeEvent, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
 		now := time.Now().UTC()
@@ -1769,10 +2003,26 @@ func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
 	case "step_start":
 		observation.Kind = ExecuteActivityKindProgress
 		observation.Label = "Provider step started"
+	case "step_finish":
+		if !stepFinishHasTokenUsage(event) {
+			return
+		}
+		observation.Kind = ExecuteActivityKindProgress
+		observation.Label = "Provider Step Completed"
 	default:
 		return
 	}
 	req.OnActivity(observation)
+}
+
+func stepFinishHasTokenUsage(event opencodeRunEvent) bool {
+	tokens := event.Part.Tokens
+	return tokens != nil && (tokens.Total > 0 ||
+		tokens.Input > 0 ||
+		tokens.Output > 0 ||
+		tokens.Reasoning > 0 ||
+		tokens.Cache.Read > 0 ||
+		tokens.Cache.Write > 0)
 }
 
 // activityObservationOccurredAt prefers the part's own end/start timestamp
@@ -1880,7 +2130,7 @@ func (a *SessionAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 }
 
 func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req ExecuteRequest, sessionID, invocationID string, commandOrdinal int, streamBudget *providerStreamBudget) (continuationTurnResult, error) {
-	startedRun, err := a.startOpencodeRun(ctx, req, sessionID, promptWithProviderInvocationMetadata("Continue from the pending tool-call state and finish the response.", req.AttemptID, invocationID), commandOrdinal)
+	startedRun, err := a.startOpencodeRun(ctx, req, sessionID, commandOrdinal)
 	if err != nil {
 		return continuationTurnResult{}, err
 	}
@@ -1902,8 +2152,6 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	}()
 	defer close(ctxCancelDone)
 
-	watchdog := startCommandWatchdog(startedRun.handle, a.firstEventTimeout, a.streamInactivityTimeout)
-	defer watchdog.Stop()
 	stderrDone := startStderrCapture(stderr)
 
 	result := continuationTurnResult{
@@ -1917,6 +2165,35 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	providerSessionObserved := false
 	terminalSuccessSeen := false
 	terminalFailureSeen := false
+	continuationPrompt := providerInvocationPromptParts("Continue from the pending tool-call state and finish the response.", req.AttemptID, invocationID)
+	inputTimeout := a.streamInactivityTimeout
+	if inputTimeout <= 0 {
+		inputTimeout = a.firstEventTimeout
+	}
+	if inputErr := writeOpenCodePrompt(ctx, startedRun.handle, continuationPrompt, inputTimeout); inputErr != nil {
+		_ = startedRun.handle.Cancel(context.Background())
+		_ = stdout.Close()
+		guardResult, capturedStderr, waitErr := awaitGuardedRun(req, commandOrdinal, startedRun.handle, stderrDone)
+		result.GuardResult = guardResult
+		result.ProcessExited = guardResult.Quiescent
+		exitCode := guardResult.ExitCode
+		result.ExitCode = &exitCode
+		if guardResult.ExitSignal != 0 {
+			exitSignal := guardResult.ExitSignal
+			result.ExitSignal = &exitSignal
+		}
+		result.StdoutDrained = false
+		result.Stderr = capturedStderr
+		result.StderrDrained = capturedStderr.eofSeen
+		var inputTimeout *providerTimeoutError
+		result.TimedOut = isExecutionTimedOut(ctx.Err()) || errors.As(inputErr, &inputTimeout)
+		if waitErr != nil {
+			result.WaitError = waitErr.Error()
+		}
+		return result, errors.Join(inputErr, waitErr)
+	}
+	watchdog := startCommandWatchdog(startedRun.handle, a.firstEventTimeout, a.streamInactivityTimeout)
+	defer watchdog.Stop()
 
 	streamErr := decodeOpencodeRunEventStream(stdout, streamBudget.consumeEvent, func(event opencodeRunEvent) error {
 		startedRun.databaseStartupObserved()
@@ -2188,6 +2465,11 @@ func (a *SessionAdapter) appendEvent(attemptID string, event AttemptStreamEvent)
 }
 
 func (a *SessionAdapter) appendTerminalEventOnce(attemptID string, event AttemptStreamEvent) bool {
+	appended, _ := a.appendTerminalEventOnceWithType(attemptID, event)
+	return appended
+}
+
+func (a *SessionAdapter) appendTerminalEventOnceWithType(attemptID string, event AttemptStreamEvent) (bool, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	record, ok := a.attempts[attemptID]
@@ -2197,7 +2479,7 @@ func (a *SessionAdapter) appendTerminalEventOnce(attemptID string, event Attempt
 	}
 	for _, existing := range record.Events {
 		if isTerminalAttemptEvent(existing.EventType) {
-			return false
+			return false, existing.EventType
 		}
 	}
 	event.Seq = len(record.Events) + 1
@@ -2205,7 +2487,7 @@ func (a *SessionAdapter) appendTerminalEventOnce(attemptID string, event Attempt
 		event.OccurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	record.Events = append(record.Events, event)
-	return true
+	return true, event.EventType
 }
 
 func (a *SessionAdapter) appendEventUnlessTerminal(attemptID string, event AttemptStreamEvent) bool {
@@ -2529,11 +2811,11 @@ func buildProviderInvocationPromptMarker(invocationID string) string {
 	return providerInvocationIDLabel + " " + trimmed
 }
 
-func promptWithProviderInvocationMetadata(prompt, attemptID, invocationID string) string {
+func providerInvocationPromptParts(prompt, attemptID, invocationID string) []string {
 	trimmedPrompt := strings.TrimRight(prompt, "\n")
 	marker := buildProviderInvocationPromptMarker(invocationID)
 	if marker == "" {
-		return trimmedPrompt
+		return []string{trimmedPrompt}
 	}
 	metadataBlock := strings.Join([]string{
 		providerInvocationMetadataHeader,
@@ -2541,23 +2823,9 @@ func promptWithProviderInvocationMetadata(prompt, attemptID, invocationID string
 		marker,
 	}, "\n")
 	if trimmedPrompt == "" {
-		return metadataBlock
+		return []string{metadataBlock}
 	}
-	return trimmedPrompt + "\n\n" + metadataBlock
-}
-
-// PromptContentByteLimit reserves the exact invocation metadata appended by
-// SessionAdapter so callers can bound prompt content before provider dispatch.
-func PromptContentByteLimit(attemptID, invocationID string) int {
-	metadataBytes := len(promptWithProviderInvocationMetadata("", attemptID, invocationID))
-	if metadataBytes == 0 {
-		return providerlimits.PromptBytes
-	}
-	limit := providerlimits.PromptBytes - metadataBytes - len("\n\n")
-	if limit < 0 {
-		return 0
-	}
-	return limit
+	return []string{trimmedPrompt, "\n\n", metadataBlock}
 }
 
 func isExecutionCancelled(err error) bool {
