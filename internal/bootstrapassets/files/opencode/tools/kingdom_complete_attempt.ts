@@ -7,7 +7,7 @@ import { tool } from "@opencode-ai/plugin"
 const RECEIPT_WIRE_LIMIT_BYTES = 1024 * 1024
 
 async function syncDirectory(directoryPath: string) {
-  const directory = await open(directoryPath, "r")
+  const directory = await open(directoryPath, process.platform === "win32" ? "r+" : "r")
   try {
     await directory.sync()
   } finally {

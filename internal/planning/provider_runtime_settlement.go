@@ -80,14 +80,23 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 			return nil, err
 		}
 	}
+	durableProviderSessionID := providerSessionID
+	providerSessionOpenReported := false
 	var invocationContext *ProviderInvocationContext
 	invocationContext = &ProviderInvocationContext{
 		AttemptID:         operation.OperationID,
 		LogicalSessionID:  logicalSessionID,
 		ProviderSessionID: providerSessionID,
 		InvocationID:      invocationID,
-		OnProviderSession: func(providerSessionID string) {
+		OnProviderSession: func(providerSessionID string) error {
 			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
+			if trimmedProviderSessionID != "" && trimmedProviderSessionID == durableProviderSessionID {
+				if !providerSessionOpenReported && invocationContext.OnProviderSessionOpened != nil {
+					invocationContext.OnProviderSessionOpened(trimmedProviderSessionID)
+				}
+				providerSessionOpenReported = true
+				return nil
+			}
 			markCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			if _, err := r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
@@ -98,14 +107,17 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 				LeaseOwner:                   operation.LeaseOwner,
 				LeaseVersion:                 operation.LeaseVersion,
 			}); err != nil {
-				return
+				return fmt.Errorf("open planner provider invocation %q: %w", invocationID, err)
 			}
 			if trimmedProviderSessionID != "" {
+				durableProviderSessionID = trimmedProviderSessionID
 				invocationContext.ProviderSessionID = trimmedProviderSessionID
 			}
 			if invocationContext.OnProviderSessionOpened != nil {
 				invocationContext.OnProviderSessionOpened(trimmedProviderSessionID)
 			}
+			providerSessionOpenReported = true
+			return nil
 		},
 		OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
 			return r.deps.store.AcknowledgePlanningProcessGuard(callbackCtx, state.PlanningProcessGuardOwnership{
@@ -230,6 +242,10 @@ func providerMetadataFromError(err error) ProviderExecutionMetadata {
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
+	var contextVersionErr *state.UnsupportedPlanningExternalContextVersionError
+	if errors.As(cause, &contextVersionErr) {
+		return "dependency_blocked"
+	}
 	if providerlimits.IsResourceLimitError(cause) {
 		return "resource_limit_exceeded"
 	}

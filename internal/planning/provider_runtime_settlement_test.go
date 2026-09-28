@@ -257,7 +257,9 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 		t.Fatalf("open retry provider invocation: %v", err)
 	}
 
-	oldInvocation.OnProviderSession("ses_stale_old")
+	if err := oldInvocation.OnProviderSession("ses_stale_old"); err == nil {
+		t.Fatal("expected stale invocation session callback to be rejected")
+	}
 
 	persisted, found, err := store.GetOperation(ctx, operation.OperationID)
 	if err != nil || !found {

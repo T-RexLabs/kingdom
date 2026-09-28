@@ -317,6 +317,14 @@ type CancelQueuedPlanningOperationRequest struct {
 	TerminalEvent *AppendPlanningOperationEventRequest
 }
 
+type FailQueuedPlanningOperationRequest struct {
+	OperationID   string
+	ErrorMessage  string
+	UpdatedAt     string
+	FinishedAt    string
+	TerminalEvent AppendPlanningOperationEventRequest
+}
+
 type CreatePlanningSessionBundleRequest struct {
 	Session        CreatePlanningSessionRequest
 	OpeningMessage AppendPlanningMessageRequest
@@ -417,7 +425,11 @@ type FinalizeOperationRequest struct {
 	ErrorMessage       string // FinalizeFail / FinalizeCancel only
 	ObservedOutputText string
 	ProviderSettlement *FinalizePlanningProviderSettlementRequest
-	TerminalEvent      *AppendPlanningOperationEventRequest
+	// MessageCompletedEvent is committed atomically with the canonical message,
+	// draft, or title, provider settlement, and terminal run event. Streamed
+	// message.part events remain provisional until this boundary commits.
+	MessageCompletedEvent *AppendPlanningOperationEventRequest
+	TerminalEvent         *AppendPlanningOperationEventRequest
 }
 
 // FinalizeGenerateTitleRequest settles a successful generated-title operation
@@ -429,12 +441,13 @@ type FinalizeGenerateTitleRequest struct {
 	LeaseOwner   string
 	LeaseVersion int
 
-	UpdatedAt          string
-	FinishedAt         string
-	GeneratedTitle     string
-	ObservedOutputText string
-	ProviderSettlement *FinalizePlanningProviderSettlementRequest
-	TerminalEvent      *AppendPlanningOperationEventRequest
+	UpdatedAt             string
+	FinishedAt            string
+	GeneratedTitle        string
+	ObservedOutputText    string
+	ProviderSettlement    *FinalizePlanningProviderSettlementRequest
+	MessageCompletedEvent *AppendPlanningOperationEventRequest
+	TerminalEvent         *AppendPlanningOperationEventRequest
 }
 
 // FinalizeGenerateTitleAbortRequest terminates a generated-title operation as

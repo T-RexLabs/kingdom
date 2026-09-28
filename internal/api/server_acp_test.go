@@ -651,7 +651,7 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	}
 }
 
-func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing.T) {
+func TestAcpRunDoesNotAutomaticallyRetryAfterMeaningfulPartialText(t *testing.T) {
 	projectRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
@@ -664,16 +664,10 @@ func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	var nowMu sync.RWMutex
-	now := time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC)
 	agent := &retryOutputPlannerAgent{observed: make(chan struct{}, 2)}
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
-		ProjectRoot: projectRoot,
-		Now: func() time.Time {
-			nowMu.RLock()
-			defer nowMu.RUnlock()
-			return now
-		},
+		ProjectRoot:  projectRoot,
+		Now:          func() time.Time { return time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC) },
 		PlannerAgent: agent,
 		RetryEngine:  retries,
 	})
@@ -692,42 +686,29 @@ func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing
 		if err != nil {
 			return err
 		}
-		if !found || operation.Status != state.PlanningOperationStatusQueued {
-			return fmt.Errorf("retry operation status=%q found=%t", operation.Status, found)
-		}
-		if operation.ObservedOutputText != "" {
-			return fmt.Errorf("retry retained failed partial output %q", operation.ObservedOutputText)
+		if !found || operation.Status != state.PlanningOperationStatusFailed {
+			return fmt.Errorf("meaningful-progress operation status=%q found=%t", operation.Status, found)
 		}
 		return nil
 	})
-	var dueAt string
-	if err := db.QueryRow(`SELECT due_at FROM retry_decisions WHERE planning_operation_id = ?`, op.Operation.OperationID).Scan(&dueAt); err != nil {
+	var meaningfulProgress int
+	var decision string
+	if err := db.QueryRow(`SELECT meaningful_progress, decision FROM retry_decisions WHERE planning_operation_id = ?`, op.Operation.OperationID).Scan(&meaningfulProgress, &decision); err != nil {
 		t.Fatal(err)
 	}
-	nextNow, err := time.Parse(time.RFC3339Nano, dueAt)
-	if err != nil {
+	if meaningfulProgress != 1 || decision != string(state.RetryDecisionFailFast) {
+		t.Fatalf("retry decision meaningful_progress=%d decision=%q, want progress and fail-fast", meaningfulProgress, decision)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("provider call count=%d, want no automatic rerun after streamed text", agent.calls)
+	}
+	var messageParts int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_operation_events WHERE operation_id = ? AND event_type = ?`, op.Operation.OperationID, acp.MessagePartEventType).Scan(&messageParts); err != nil {
 		t.Fatal(err)
 	}
-	nowMu.Lock()
-	now = nextNow
-	nowMu.Unlock()
-	if err := server.planningService.RecoverOperations(context.Background()); err != nil {
-		t.Fatal(err)
+	if messageParts == 0 {
+		t.Fatal("expected the first attempt's streamed partial text to remain in the event log")
 	}
-	<-agent.observed
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		operation, found, err := state.NewPlanningStore(db).GetOperation(context.Background(), op.Operation.OperationID)
-		if err != nil {
-			return err
-		}
-		if !found || operation.Status != state.PlanningOperationStatusSucceeded {
-			return fmt.Errorf("retry operation status=%q found=%t", operation.Status, found)
-		}
-		if operation.ObservedOutputText != "current successful response" {
-			return fmt.Errorf("retry output=%q", operation.ObservedOutputText)
-		}
-		return nil
-	})
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/acp/runs/" + acp.PlannerRunID(op.Operation.OperationID)})
 	if res.Code != http.StatusOK {
@@ -737,8 +718,11 @@ func TestAcpRunReturnsSuccessfulRetryOutputInsteadOfFailedPartialText(t *testing
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatal(err)
 	}
-	if run.OutputText == nil || *run.OutputText != "current successful response" {
-		t.Fatalf("acp output=%v, want current successful response", run.OutputText)
+	if run.Status != gen.AcpRunStatusFailed {
+		t.Fatalf("acp status=%q, want failed", run.Status)
+	}
+	if run.OutputText != nil && strings.Contains(*run.OutputText, "current successful response") {
+		t.Fatalf("acp output unexpectedly came from an automatic retry: %v", run.OutputText)
 	}
 }
 
@@ -758,7 +742,9 @@ func (a *retryOutputPlannerAgent) OpeningTurnStream(ctx context.Context, input p
 func (a *retryOutputPlannerAgent) ContinueTurnStream(_ context.Context, input planning.AgentContext, onChunk func(string)) (planning.AgentTurn, error) {
 	a.calls++
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		input.ProviderInvocation.OnProviderSession("retry-output-session")
+		if err := input.ProviderInvocation.OnProviderSession("retry-output-session"); err != nil {
+			return planning.AgentTurn{}, err
+		}
 	}
 	a.observed <- struct{}{}
 	if a.calls == 1 {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/timestamporder"
 )
 
 // FinalizeGenerateTitle settles a successful generated-title operation on the
@@ -62,7 +64,7 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning)).
-		Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
+		Where(timestamporder.ComparisonSQL("lease_expires_at", "?", ">"), strings.TrimSpace(req.FinishedAt))
 	res, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", fmt.Errorf("finalize generate title operation: %w", err))
@@ -91,6 +93,11 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		return rollbackPlanningTx(tx, "finalize generate title", ErrPlanningLeaseConflict)
 	}
 
+	if req.MessageCompletedEvent != nil {
+		if _, err := insertPlanningOperationEvent(ctx, tx, *req.MessageCompletedEvent); err != nil {
+			return rollbackPlanningTx(tx, "finalize generate title", err)
+		}
+	}
 	if _, err := insertPlanningOperationEvent(ctx, tx, *req.TerminalEvent); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
@@ -157,7 +164,7 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning))
 	if !req.AllowExpiredLease {
-		opUpdate.Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
+		opUpdate.Where(timestamporder.ComparisonSQL("lease_expires_at", "?", ">"), strings.TrimSpace(req.FinishedAt))
 	}
 	res, err := opUpdate.Exec(ctx, tx)
 	if err != nil {
@@ -195,6 +202,10 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 		if err := resolveCancelledPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 			return rollbackPlanningTx(tx, "finalize generate title abort", err)
 		}
+	} else {
+		if err := resolveFailedPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize generate title abort", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -224,6 +235,17 @@ func validateFinalizeGenerateTitleRequest(req FinalizeGenerateTitleRequest) erro
 	}
 	if err := validatePlanningOperationEventAppend(*req.TerminalEvent); err != nil {
 		return err
+	}
+	if req.MessageCompletedEvent != nil {
+		if err := validatePlanningOperationEventAppend(*req.MessageCompletedEvent); err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.MessageCompletedEvent.EventType) != "message.completed" {
+			return fmt.Errorf("message completed event has type %q", strings.TrimSpace(req.MessageCompletedEvent.EventType))
+		}
+		if strings.TrimSpace(req.MessageCompletedEvent.OperationID) != strings.TrimSpace(req.OperationID) {
+			return fmt.Errorf("message completed event operation id does not match generate_title operation")
+		}
 	}
 	if req.ProviderSettlement != nil {
 		if _, err := normalizeFinalizePlanningProviderSettlementRequest(*req.ProviderSettlement); err != nil {

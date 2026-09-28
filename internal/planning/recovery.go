@@ -86,10 +86,24 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 				// A planner turn settles server-side only inside the atomic
 				// FinalizeOperation transaction. An operation still marked
 				// running after a restart never reached that point, so there
-				// is no durable success to replay — finalise it as stuck once
-				// the lease grace expires. The user simply retries the turn.
+				// is no durable success to replay. Once the lease grace expires,
+				// finalise the stuck invocation through normal retry policy using
+				// meaningful progress recovered from durable operation events.
 				if _, err := finaliseIfStuck(ctx, operation.OperationID); err != nil {
 					return fmt.Errorf("finalise-if-stuck %s: %w", operation.OperationID, err)
+				}
+				continue
+			}
+			contextVersionMismatch, err := r.deps.store.UnsupportedPlanningOperationExternalContextVersion(ctx, operation.OperationID)
+			if err != nil {
+				return fmt.Errorf("check linked-source context version for queued planning operation %s: %w", operation.OperationID, err)
+			}
+			if contextVersionMismatch != nil {
+				// This immutable binding cannot be repaired by waiting for its retry
+				// due time. Fail the queued operation atomically without creating a
+				// provider invocation or rewriting its historical binding.
+				if err := r.runner.failQueuedUnsupportedExternalContext(ctx, operation, contextVersionMismatch); err != nil {
+					return fmt.Errorf("fail queued planning operation with unsupported linked-source context %s: %w", operation.OperationID, err)
 				}
 				continue
 			}
@@ -137,13 +151,22 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 	}
 }
 
-// failStuck performs the lease-fenced FinalizeFail with an error message
-// that reports elapsed-since-expiry rather than an attempt count. Callers
-// (recovery + SSE) both go through Service.FinaliseIfStuck which decides
-// whether to call us; this function unconditionally finalises.
+// failStuck performs lease-fenced, retry-aware failure finalization with an
+// error message that reports elapsed-since-expiry rather than an attempt
+// count. Callers (recovery + SSE) both go through Service.FinaliseIfStuck,
+// which decides whether the operation is eligible for this transition.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
 	cause := fmt.Errorf("%w (idle for %s)", ErrOperationStuck, idleFor.Round(time.Second))
 	_, finalizeErr := r.runner.finalizeFailureWithRetry(ctx, op, nil, cause, "", true)
+	return r.finishExpiredOperation(op, finalizeErr)
+}
+
+func (r *operationRecovery) failUnsupportedExternalContextVersion(ctx context.Context, op state.PlanningOperation, cause error) error {
+	_, finalizeErr := r.runner.finalizeFailureWithRetry(ctx, op, nil, cause, "", true)
+	return r.finishExpiredOperation(op, finalizeErr)
+}
+
+func (r *operationRecovery) finishExpiredOperation(op state.PlanningOperation, finalizeErr error) error {
 	if finalizeErr != nil {
 		// A concurrent finaliser (e.g. recovery vs SSE-observer) winning
 		// the lease race is benign — the op is terminal either way. The

@@ -86,6 +86,12 @@ func (r *operationRunner) planAutomaticRetry(ctx context.Context, operation stat
 		return state.RetryDecisionCreateRequest{}, err
 	}
 	meaningfulProgress := metadata.StreamObservation.MeaningfulProgress
+	if !meaningfulProgress {
+		meaningfulProgress, err = r.deps.store.HasMeaningfulPlanningOperationProgress(ctx, operation.OperationID)
+		if err != nil {
+			return state.RetryDecisionCreateRequest{}, fmt.Errorf("load durable planner progress for retry decision: %w", err)
+		}
+	}
 	decision := state.RetryDecisionFailFast
 	if plan.ShouldRetry && !meaningfulProgress {
 		decision = state.RetryDecisionRetry

@@ -92,6 +92,35 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 	}
 }
 
+func TestPlannerProfileKeepsOutputRulesScopedToTheirMode(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("files", "opencode", "agents", "planner.md"))
+	if err != nil {
+		t.Fatalf("read planner profile: %v", err)
+	}
+	profile := string(raw)
+	for _, forbidden := range []string{
+		"Every response must include exactly one `structured_question`",
+		"Your output is conversation only",
+		"Return conversational prose only",
+	} {
+		if strings.Contains(profile, forbidden) {
+			t.Fatalf("planner profile has unconditional output rule %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"Interactive Reply / Regenerate (`reply` / `regenerate`)",
+		"Formalize (`formalize`)",
+		"Generate Title (`generate_title`)",
+		"Every interactive reply/regenerate response must include",
+		"Do not include conversational prose, ask a follow-up question, or emit a `structured_question` block.",
+		"Return exactly one concise title line.",
+	} {
+		if !strings.Contains(profile, required) {
+			t.Errorf("planner profile is missing mode-specific output rule %q", required)
+		}
+	}
+}
+
 func TestManagedOpenCodeDatabasePath(t *testing.T) {
 	t.Parallel()
 
@@ -198,6 +227,7 @@ func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
 		"const serialized = JSON.stringify(payload)",
 		"Buffer.byteLength(serialized, \"utf8\")",
 		"await open(temporaryPath, \"wx\", 0o600)",
+		"process.platform === \"win32\" ? \"r+\" : \"r\"",
 		"await temporaryFile.sync()",
 		"await temporaryFile.close()",
 		"await link(temporaryPath, receiptPath)",

@@ -64,8 +64,9 @@ func TestPersistObservedPlanningProviderSessionDoesNotReplayProviderSessionCallb
 	called := false
 	invocation := &ProviderInvocationContext{
 		ProviderSessionID: "ses_existing",
-		OnProviderSession: func(string) {
+		OnProviderSession: func(string) error {
 			called = true
+			return nil
 		},
 	}
 

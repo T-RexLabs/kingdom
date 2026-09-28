@@ -41,7 +41,9 @@ type testPlannerAgent struct{}
 // surface the provider session so the invocation opens.
 func apiTestReceiptMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		input.ProviderInvocation.OnProviderSession("provider-session-1")
+		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
+			return planning.ProviderExecutionMetadata{}, err
+		}
 	}
 	return planning.ProviderExecutionMetadata{
 		FinalText:                       finalText,

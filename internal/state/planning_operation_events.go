@@ -111,3 +111,41 @@ func (s *PlanningStore) GetLatestOperationEvent(ctx context.Context, operationID
 	}
 	return row, true, nil
 }
+
+// HasMeaningfulPlanningOperationProgress reports whether an operation has
+// durable provider output or activity that must suppress an automatic retry.
+// It intentionally examines the append-only event log rather than inferring
+// success: only FinalizeOperation can authorize a canonical result.
+func (s *PlanningStore) HasMeaningfulPlanningOperationProgress(ctx context.Context, operationID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("planning store database is required")
+	}
+	trimmedOperationID := strings.TrimSpace(operationID)
+	if trimmedOperationID == "" {
+		return false, fmt.Errorf("planning operation id is required")
+	}
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1
+		FROM planning_operation_events
+		WHERE operation_id = ?
+		  AND (
+		    event_type IN ('message.part', 'message.completed')
+		    OR (
+		      event_type = 'generic'
+		      AND json_extract(
+		        CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,
+		        '$.kind'
+		      ) IN ('kingdom.tool', 'kingdom.reasoning', 'kingdom.progress')
+		      AND COALESCE(json_extract(
+		        CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,
+		        '$.activity_id'
+		      ), '') <> ''
+		    )
+		  )
+	)`, trimmedOperationID).Scan(&found)
+	if err != nil {
+		return false, fmt.Errorf("check meaningful planning operation progress %q: %w", trimmedOperationID, err)
+	}
+	return found, nil
+}

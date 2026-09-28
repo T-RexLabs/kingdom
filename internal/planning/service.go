@@ -542,6 +542,16 @@ func (s *Service) FinaliseIfStuck(ctx context.Context, operationID string) (bool
 	if unresolved {
 		return false, nil
 	}
+	contextVersionMismatch, err := s.operations.deps.store.UnsupportedPlanningOperationExternalContextVersion(ctx, operationID)
+	if err != nil {
+		return false, fmt.Errorf("check linked-source context version for stale planning operation %s: %w", operationID, err)
+	}
+	if contextVersionMismatch != nil {
+		if err := s.recovery.failUnsupportedExternalContextVersion(ctx, op, contextVersionMismatch); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	if err := s.recovery.failStuck(ctx, op, idleFor(op, now)); err != nil {
 		return false, err
 	}

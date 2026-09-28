@@ -111,10 +111,38 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if writeAcpRunCreationPending(w, r, planningSessionID, err) {
+			return
+		}
 		handlePlanningError(w, err, "api.create_acp_run")
 		return
 	}
 	writeJSON(w, http.StatusCreated, acpRunFromOperation(operation))
+}
+
+func writeAcpRunCreationPending(w http.ResponseWriter, r *http.Request, planningSessionID string, err error) bool {
+	var commitErr *state.CommitOutcomeUnknownError
+	var projectionErr *state.PostCommitProjectionError
+	var operationID string
+	switch {
+	case errors.As(err, &commitErr):
+		operationID = strings.TrimSpace(commitErr.ResourceID)
+	case errors.As(err, &projectionErr):
+		operationID = strings.TrimSpace(projectionErr.ResourceID)
+	default:
+		return false
+	}
+	details := map[string]any{"planning_session_id": strings.TrimSpace(planningSessionID)}
+	if operationID != "" {
+		details["operation_id"] = operationID
+		if runID := acp.PlannerRunID(operationID); runID != "" {
+			details["run_id"] = runID
+		}
+	}
+	writeCommitOutcomePending(w, r, "api.create_acp_run",
+		"planner operation creation outcome is still being confirmed; retry later with the same idempotency key",
+		details)
+	return true
 }
 
 func (s *Server) handleGetAcpRun(w http.ResponseWriter, r *http.Request) {

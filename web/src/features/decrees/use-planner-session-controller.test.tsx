@@ -69,10 +69,22 @@ describe("usePlannerSessionController mutation recovery", () => {
   });
 
   it.each([
-    ["reply", (controller: ReturnType<typeof usePlannerSessionController>) => controller.submitReply({ text: "Ship it" })],
-    ["regenerate", (controller: ReturnType<typeof usePlannerSessionController>) => controller.regenerate({ messageId: "message-1" })],
-    ["formalize", (controller: ReturnType<typeof usePlannerSessionController>) => controller.startFormalize()],
-  ])("reuses the exact ACP %s request after idempotency_pending", async (_kind, invoke) => {
+    [
+      "reply",
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.submitReply({ text: "Ship it" }),
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.retryReplyRecovery(),
+    ],
+    [
+      "regenerate",
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.regenerate({ messageId: "message-1" }),
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.regenerate({ messageId: "message-1" }),
+    ],
+    [
+      "formalize",
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.startFormalize(),
+      (controller: ReturnType<typeof usePlannerSessionController>) => controller.startFormalize(),
+    ],
+  ])("reuses the exact ACP %s request after idempotency_pending", async (_kind, invoke, retry) => {
     createOperation
       .mockRejectedValueOnce(pendingError())
       .mockResolvedValueOnce({ run_id: "acp-run-1", status: "pending" });
@@ -84,11 +96,50 @@ describe("usePlannerSessionController mutation recovery", () => {
     const firstRequest = createOperation.mock.calls[0]?.[0];
 
     await act(async () => {
-      await invoke(result.current);
+      await retry(result.current);
     });
 
     expect(createOperation.mock.calls[1]?.[0].body).toBe(firstRequest.body);
     expect(createOperation.mock.calls[1]?.[0].key).toBe(firstRequest.key);
+  });
+
+  it.each([
+    ["idempotency_pending", () => pendingError()],
+    ["a transport failure", () => new Error("connection reset")],
+  ])("blocks a different reply during %s recovery and retries the retained reply explicitly", async (_failureKind, makeFailure) => {
+    createOperation
+      .mockRejectedValueOnce(makeFailure())
+      .mockResolvedValueOnce({ run_id: "acp-run-a", status: "pending" })
+      .mockResolvedValueOnce({ run_id: "acp-run-b", status: "pending" });
+    const { result } = renderHook(() => usePlannerSessionController(session), { wrapper });
+
+    await act(async () => {
+      await expect(result.current.submitReply({ text: "Reply A" })).rejects.toThrow();
+    });
+    const firstRequest = createOperation.mock.calls[0]?.[0];
+    expect(result.current.recoveryKind).toBe("reply");
+
+    await act(async () => {
+      await expect(result.current.submitReply({ text: "Reply B" })).rejects.toThrow(
+        "Retry the pending reply request before sending another reply",
+      );
+    });
+    expect(createOperation).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.retryReplyRecovery();
+    });
+
+    expect(createOperation.mock.calls[1]?.[0].body).toBe(firstRequest?.body);
+    expect(createOperation.mock.calls[1]?.[0].key).toBe(firstRequest?.key);
+    expect(result.current.recoveryKind).toBeNull();
+
+    await act(async () => {
+      await result.current.submitReply({ text: "Reply B" });
+    });
+
+    expect(createOperation.mock.calls[2]?.[0].body.reply?.content_markdown).toBe("Reply B");
+    expect(createOperation.mock.calls[2]?.[0].key).not.toBe(firstRequest?.key);
   });
 
   it("retains a failed operation after the session clears its live run pointer", async () => {

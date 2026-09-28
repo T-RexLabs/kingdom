@@ -88,24 +88,29 @@ func enqueueGeneratedTitleForSession(
 	}
 	now := deps.nowString()
 	operationID := deps.nextID("planning_operation")
-	requestJSON, err := json.Marshal(operationRequest{TriggerSource: strings.TrimSpace(string(source))})
+	titleRequest := operationRequest{TriggerSource: strings.TrimSpace(string(source))}
+	requestJSON, err := json.Marshal(titleRequest)
 	if err != nil {
 		return state.PlanningSession{}, nil, false, fmt.Errorf("marshal generate title request: %w", err)
 	}
-	operation, err := deps.store.CreateGenerateTitleBundle(ctx, state.CreatePlanningGenerateTitleBundleRequest{
-		SessionID: session.PlanningSessionID,
-		Operation: state.CreatePlanningOperationRequest{
-			OperationID:        operationID,
-			PlanningSessionID:  session.PlanningSessionID,
-			Type:               state.PlanningOperationTypeGenerateTitle,
-			Status:             state.PlanningOperationStatusQueued,
-			RequestPayloadJSON: string(requestJSON),
-			CreatedAt:          now,
-		},
-		InitialEvent:            plannerAcpRunCreatedEvent(operationID, session.PlanningSessionID, state.PlanningOperationTypeGenerateTitle, operationRequest{TriggerSource: strings.TrimSpace(string(source))}, now),
+	operationRequest := state.CreatePlanningOperationRequest{
+		OperationID:        operationID,
+		PlanningSessionID:  session.PlanningSessionID,
+		Type:               state.PlanningOperationTypeGenerateTitle,
+		Status:             state.PlanningOperationStatusQueued,
+		RequestPayloadJSON: string(requestJSON),
+		CreatedAt:          now,
+	}
+	initialEvent := plannerAcpRunCreatedEvent(operationID, session.PlanningSessionID, state.PlanningOperationTypeGenerateTitle, titleRequest, now)
+	bundle := state.CreatePlanningGenerateTitleBundleRequest{
+		SessionID:               session.PlanningSessionID,
+		Operation:               operationRequest,
+		InitialEvent:            initialEvent,
 		CurrentTitleOperationID: operationID,
 		UpdatedAt:               now,
-	})
+	}
+	operation, err := deps.store.CreateGenerateTitleBundle(ctx, bundle)
+	recoveredFromCommitError := false
 	if err != nil {
 		if errors.Is(err, state.ErrPlanningUniqueViolation) {
 			updated, ok, loadErr := deps.store.GetSession(ctx, session.PlanningSessionID)
@@ -115,15 +120,19 @@ func enqueueGeneratedTitleForSession(
 			if ok {
 				return updated, nil, false, nil
 			}
+			return state.PlanningSession{}, nil, false, err
 		}
-		return state.PlanningSession{}, nil, false, err
+		operation, recoveredFromCommitError, err = reconcilePlanningOperationBundleCommit(ctx, deps, err, operationRequest, initialEvent, nil)
+		if err != nil {
+			return state.PlanningSession{}, nil, false, err
+		}
 	}
-	if startRecovered {
+	if recoveredFromCommitError || startRecovered {
 		runner.StartRecovered(operation.OperationID)
 	} else {
 		runner.Start(operation.OperationID)
 	}
-	updated, _, err := deps.store.GetSession(ctx, session.PlanningSessionID)
+	updated, err := readBackPlanningSessionAfterOperation(ctx, deps, session.PlanningSessionID, operation.OperationID, "create planner title operation")
 	if err != nil {
 		return state.PlanningSession{}, &operation, true, err
 	}

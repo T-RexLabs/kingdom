@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PlanningSessionDetail } from "@/api/hooks";
 import { PlannerThread } from "./planner-thread";
@@ -42,6 +42,8 @@ describe("PlannerThread ACP query state", () => {
     render(
       <PlannerThread
         session={session}
+        replyRecoveryPending={false}
+        onRetryReplyRecovery={() => {}}
         operationQueryState={{
           isLoading: false,
           isError: true,
@@ -67,6 +69,8 @@ describe("PlannerThread ACP query state", () => {
     const { rerender } = render(
       <PlannerThread
         session={{ ...session, conversation_state: "processing" }}
+        replyRecoveryPending={false}
+        onRetryReplyRecovery={() => {}}
         operationQueryState={{
           isLoading: true,
           isError: false,
@@ -85,6 +89,8 @@ describe("PlannerThread ACP query state", () => {
     rerender(
       <PlannerThread
         session={{ ...session, conversation_state: "processing" }}
+        replyRecoveryPending={false}
+        onRetryReplyRecovery={() => {}}
         operationQueryState={{
           isLoading: false,
           isError: true,
@@ -99,5 +105,62 @@ describe("PlannerThread ACP query state", () => {
     );
 
     expect(screen.getByRole("button", { name: "Retrying..." })).toBeDisabled();
+  });
+
+  it("keeps a new draft while explicitly retrying a retained reply", async () => {
+    const onSubmitReply = vi.fn().mockResolvedValue(undefined);
+    const onRetryReplyRecovery = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <PlannerThread
+        session={session}
+        replyRecoveryPending
+        onRetryReplyRecovery={onRetryReplyRecovery}
+        onSubmitReply={onSubmitReply}
+        onRegenerate={() => {}}
+        onActivateVariant={() => {}}
+      />,
+    );
+
+    const composer = screen.getByPlaceholderText("Type your response...");
+    fireEvent.change(composer, { target: { value: "Reply B" } });
+
+    expect(composer).toBeEnabled();
+    expect(composer).toHaveValue("Reply B");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "A previous reply could not be confirmed. Retry it with the original request and idempotency key before sending a different reply. Your current draft will be preserved.",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(onSubmitReply).not.toHaveBeenCalled();
+    expect(composer).toHaveValue("Reply B");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry Previous Reply" }));
+      await onRetryReplyRecovery.mock.results[0]?.value;
+    });
+    expect(onRetryReplyRecovery).toHaveBeenCalledTimes(1);
+    expect(composer).toHaveValue("Reply B");
+
+    rerender(
+      <PlannerThread
+        session={session}
+        replyRecoveryPending={false}
+        onRetryReplyRecovery={onRetryReplyRecovery}
+        onSubmitReply={onSubmitReply}
+        onRegenerate={() => {}}
+        onActivateVariant={() => {}}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await waitFor(() => expect(onSubmitReply).toHaveBeenCalledWith({
+      text: "Reply B",
+      answer: { text: "Reply B" },
+    }));
+    expect(composer).toHaveValue("");
   });
 });

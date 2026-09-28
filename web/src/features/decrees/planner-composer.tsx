@@ -5,12 +5,14 @@ import { useAutosizeTextarea } from "./use-autosize-textarea";
 export function PlannerComposer({
   value,
   disabled,
+  sendDisabled,
   textareaRef,
   onChange,
   onSend,
 }: {
   value: string;
   disabled?: boolean;
+  sendDisabled?: boolean;
   textareaRef?: RefObject<HTMLTextAreaElement | null>;
   onChange: (value: string) => void;
   onSend: () => void;
@@ -35,6 +37,7 @@ export function PlannerComposer({
           if (disabled) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
+            if (sendDisabled) return;
             onSend();
           }
         }}
@@ -48,7 +51,7 @@ export function PlannerComposer({
         type="button"
         aria-label="Send"
         onClick={onSend}
-        disabled={disabled || !value.trim()}
+        disabled={disabled || sendDisabled || !value.trim()}
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gold/90 text-background transition-all hover:bg-gold disabled:cursor-not-allowed disabled:opacity-30"
       >
         <Send className="h-4 w-4" />

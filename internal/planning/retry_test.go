@@ -201,8 +201,8 @@ func TestPlanningFormalizeRetryForcesFreshProviderSession(t *testing.T) {
 	if err := service.runner.Wait(context.Background()); err != nil {
 		t.Fatalf("drain retried formalize invocation: %v", err)
 	}
-	if got := agent.forceNewSessions(); len(got) != 2 || got[0] || !got[1] {
-		t.Fatalf("formalize retry force-new lineage=%v, want [false true]", got)
+	if got := agent.forceNewSessions(); len(got) != 2 || !got[0] || !got[1] {
+		t.Fatalf("formalize session lineage=%v, want fresh provider sessions when no durable session is available", got)
 	}
 	if got := agent.providerSessionInputs(); len(got) != 2 || got[0] != "" || got[1] != "" {
 		t.Fatalf("formalize retry provider session lineage=%v, want two fresh sessions", got)

@@ -2,10 +2,39 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestNextPendingPlanningRetryDuePreservesNanosecondOrdering(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE retry_decisions (subject_kind TEXT, decision TEXT, dispatch_state TEXT, due_at TEXT, retry_decision_id TEXT)`); err != nil {
+		t.Fatalf("create retry decision fixture table: %v", err)
+	}
+	for _, row := range []struct {
+		id, dueAt string
+	}{
+		{id: "z_earlier", dueAt: "2026-09-25T10:00:00Z"},
+		{id: "a_later", dueAt: "2026-09-25T10:00:00.000000001Z"},
+	} {
+		if _, err := db.Exec(`INSERT INTO retry_decisions (subject_kind, decision, dispatch_state, due_at, retry_decision_id) VALUES ('planning_invocation', 'retry', 'pending', ?, ?)`, row.dueAt, row.id); err != nil {
+			t.Fatalf("insert retry deadline %q: %v", row.id, err)
+		}
+	}
+
+	due, err := NewPlanningStore(db).NextPendingPlanningRetryDue(context.Background())
+	if err != nil {
+		t.Fatalf("load next planning retry deadline: %v", err)
+	}
+	want := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
+	if due == nil || !due.Equal(want) {
+		t.Fatalf("next retry deadline=%v, want earliest instant %s", due, want.Format(time.RFC3339Nano))
+	}
+}
 
 func TestPlanningRetryDueClaimAndRecoveryAreDurable(t *testing.T) {
 	t.Parallel()
@@ -67,6 +96,65 @@ func TestPlanningRetryDueClaimAndRecoveryAreDurable(t *testing.T) {
 	}
 	if finalized, found, err := restarted.GetOperation(ctx, operation.OperationID); err != nil || !found || finalized.ObservedOutputText != "Recovered plan" {
 		t.Fatalf("recovered operation output=%q found=%t err=%v", finalized.ObservedOutputText, found, err)
+	}
+}
+
+func TestFailQueuedOperationCancelsFutureRetryForUnsupportedExternalContext(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "legacy-retry")
+	store := fixture.planning
+	const operationID = "operation_legacy_context_retry"
+	fixture.createOperation(t, operationID)
+	operation, found, err := store.GetOperation(fixture.ctx, operationID)
+	if err != nil || !found {
+		t.Fatalf("get queued operation: found=%v err=%v", found, err)
+	}
+	processing := PlanningSessionConversationStateProcessing
+	currentOperationID := operationID
+	if err := store.UpdateSession(fixture.ctx, UpdatePlanningSessionRequest{PlanningSessionID: fixture.sessionID, ConversationState: &processing, CurrentOperationID: &currentOperationID, UpdatedAt: fixture.at}); err != nil {
+		t.Fatalf("set session processing state: %v", err)
+	}
+	now, _ := time.Parse(time.RFC3339, fixture.at)
+	claimed, ok, err := store.ClaimOperation(fixture.ctx, operationID, "retry-worker", now.Add(time.Hour).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil || !ok {
+		t.Fatalf("claim source operation: claimed=%v err=%v", ok, err)
+	}
+	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_legacy_context", now)
+	dueAt := now.Add(time.Hour)
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(fixture.ctx, planningRetryFailureRequest(operation, claimed, invocation, now, dueAt, RetryDecisionRetry, 1)); err != nil || !scheduled {
+		t.Fatalf("schedule future retry: scheduled=%v err=%v", scheduled, err)
+	}
+	snapshot := fixture.capture(t, "source-legacy-retry", "snapshot-legacy-retry", "100", "Issue", "full body", nil, fixture.at)
+	fixture.link(t, "link-legacy-retry", snapshot, "adoption-legacy-retry", fixture.at)
+	if _, err := fixture.db.Exec(`INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES (?,?,'external-context-v2',?,0,0,?)`, operationID, snapshot.SnapshotID, strings.Repeat("0", 64), fixture.at); err != nil {
+		t.Fatalf("seed legacy immutable binding: %v", err)
+	}
+	mismatch := &UnsupportedPlanningExternalContextVersionError{
+		BoundVersion: "external-context-v2", CurrentVersion: ExternalAssemblerVersion,
+	}
+	finishedAt := now.Add(time.Second).Format(time.RFC3339Nano)
+	terminalEvent := AppendPlanningOperationEventRequest{
+		EventID: operationID + ":2", OperationID: operationID, Seq: 2, EventType: "run.failed",
+		PayloadJSON: fmt.Sprintf(`{"error":%q}`, mismatch.Error()), CreatedAt: finishedAt,
+	}
+	if err := store.FailQueuedOperation(fixture.ctx, FailQueuedPlanningOperationRequest{
+		OperationID: operationID, ErrorMessage: mismatch.Error(), UpdatedAt: finishedAt, FinishedAt: finishedAt, TerminalEvent: terminalEvent,
+	}); err != nil {
+		t.Fatalf("fail incompatible queued retry: %v", err)
+	}
+	failed, found, err := store.GetOperation(fixture.ctx, operationID)
+	if err != nil || !found || failed.Status != PlanningOperationStatusFailed || failed.Error == nil || !strings.Contains(*failed.Error, "linked-source context version") {
+		t.Fatalf("failed incompatible operation=%+v found=%v err=%v", failed, found, err)
+	}
+	var dispatchState, resolution string
+	if err := fixture.db.QueryRow(`SELECT dispatch_state,resolution FROM retry_decisions WHERE source_planning_invocation_id=?`, invocation).Scan(&dispatchState, &resolution); err != nil {
+		t.Fatalf("read cancelled retry decision: %v", err)
+	}
+	if dispatchState != string(RetryDispatchStateNotApplicable) || resolution != string(RetryDecisionResolutionCancelled) {
+		t.Fatalf("incompatible retry state=(%s,%s), want not_applicable/cancelled", dispatchState, resolution)
+	}
+	events, err := store.ListOperationEventsAfterSeqPage(fixture.ctx, operationID, 0, 10)
+	if err != nil || len(events) != 2 || events[1].EventType != "run.failed" {
+		t.Fatalf("operation events=%#v err=%v, want retry event followed by terminal failure", events, err)
 	}
 }
 
@@ -238,6 +326,48 @@ func TestCancelDispatchedPlanningRetryResolvesDecisionAtomically(t *testing.T) {
 	}
 }
 
+func TestFailedDispatchedPlanningRetryBeforeInvocationResolvesPredecessor(t *testing.T) {
+	t.Parallel()
+	store, operation, now := newPlanningRetryStore(t)
+	ctx := context.Background()
+	source, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-a", now.Add(time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil || !ok {
+		t.Fatalf("claim source operation: ok=%t err=%v", ok, err)
+	}
+	sourceInvocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_preinvoke_source", now)
+	due := now.Add(time.Minute)
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+		t.Fatalf("schedule planning retry: scheduled=%t err=%v", scheduled, err)
+	}
+
+	retry, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-b", due.Add(time.Minute).Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
+	if err != nil || !ok || !retry.AutomaticRetry {
+		t.Fatalf("claim dispatched retry: operation=%+v ok=%t err=%v", retry, ok, err)
+	}
+	failedAt := due.Add(time.Second)
+	if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{
+		Kind: FinalizeFail, SessionID: operation.PlanningSessionID, OperationID: operation.OperationID,
+		LeaseOwner: retry.LeaseOwner, LeaseVersion: retry.LeaseVersion,
+		ConversationState: PlanningSessionConversationStateReady,
+		UpdatedAt:         failedAt.Format(time.RFC3339Nano), FinishedAt: failedAt.Format(time.RFC3339Nano),
+		ErrorMessage: "planner setup failed before provider invocation",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID: "event_preinvoke_retry_failure", OperationID: operation.OperationID,
+			Seq: 2, EventType: "run.failed", PayloadJSON: `{}`, CreatedAt: failedAt.Format(time.RFC3339Nano),
+		},
+	}); err != nil {
+		t.Fatalf("finalize pre-invocation retry failure: %v", err)
+	}
+
+	var dispatchState, resolution, resolvedAt string
+	if err := store.db.QueryRow(`SELECT dispatch_state, resolution, COALESCE(resolved_at, '') FROM retry_decisions WHERE source_planning_invocation_id = ?`, sourceInvocation).Scan(&dispatchState, &resolution, &resolvedAt); err != nil {
+		t.Fatalf("read predecessor retry state: %v", err)
+	}
+	if dispatchState != string(RetryDispatchStateDispatched) || resolution != string(RetryDecisionResolutionFailed) || resolvedAt == "" {
+		t.Fatalf("predecessor retry dispatch=%q resolution=%q resolved_at=%q, want dispatched/failed/resolved", dispatchState, resolution, resolvedAt)
+	}
+}
+
 func TestCancelDispatchedGeneratedTitleRetryResolvesDecisionAtomically(t *testing.T) {
 	t.Parallel()
 	store, _, now := newPlanningRetryStore(t)
@@ -326,6 +456,61 @@ func TestPlanningRetryReclaimsExpiredUnlaunchedClaimWithoutSecondLaunch(t *testi
 	}
 	if status != string(PlanningOperationStatusQueued) || dispatch != string(RetryDispatchStatePending) {
 		t.Fatalf("reclaimed retry status=%q dispatch=%q", status, dispatch)
+	}
+}
+
+func TestFailedDispatchedGeneratedTitleRetryBeforeInvocationResolvesPredecessor(t *testing.T) {
+	t.Parallel()
+	store, _, now := newPlanningRetryStore(t)
+	ctx := context.Background()
+	operation, err := store.CreateGenerateTitleBundle(ctx, CreatePlanningGenerateTitleBundleRequest{
+		SessionID: "session_retry",
+		Operation: CreatePlanningOperationRequest{
+			OperationID:       "operation_retry_title_preinvoke",
+			PlanningSessionID: "session_retry",
+			Type:              PlanningOperationTypeGenerateTitle, Status: PlanningOperationStatusQueued,
+			RequestPayloadJSON: `{}`, CreatedAt: now.Format(time.RFC3339Nano),
+		},
+		CurrentTitleOperationID: "operation_retry_title_preinvoke",
+		UpdatedAt:               now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("create title operation: %v", err)
+	}
+	source, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-a", now.Add(time.Minute).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil || !ok {
+		t.Fatalf("claim source title operation: ok=%t err=%v", ok, err)
+	}
+	sourceInvocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_title_preinvoke_source", now)
+	due := now.Add(time.Minute)
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+		t.Fatalf("schedule title retry: scheduled=%t err=%v", scheduled, err)
+	}
+
+	retry, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-b", due.Add(time.Minute).Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
+	if err != nil || !ok || !retry.AutomaticRetry {
+		t.Fatalf("claim dispatched title retry: operation=%+v ok=%t err=%v", retry, ok, err)
+	}
+	failedAt := due.Add(time.Second)
+	if err := store.FinalizeGenerateTitleAbort(ctx, FinalizeGenerateTitleAbortRequest{
+		SessionID: operation.PlanningSessionID, OperationID: operation.OperationID,
+		LeaseOwner: retry.LeaseOwner, LeaseVersion: retry.LeaseVersion, Status: PlanningOperationStatusFailed,
+		UpdatedAt: failedAt.Format(time.RFC3339Nano), FinishedAt: failedAt.Format(time.RFC3339Nano),
+		ErrorMessage: "title setup failed before provider invocation",
+		TerminalEvent: &AppendPlanningOperationEventRequest{
+			EventID: "event_title_preinvoke_retry_failure", OperationID: operation.OperationID,
+			Seq: 2, EventType: "run.failed", PayloadJSON: `{}`, CreatedAt: failedAt.Format(time.RFC3339Nano),
+		},
+	}); err != nil {
+		t.Fatalf("finalize pre-invocation title retry failure: %v", err)
+	}
+
+	var dispatchState, resolution, resolvedAt string
+	if err := store.db.QueryRow(`SELECT dispatch_state, resolution, COALESCE(resolved_at, '') FROM retry_decisions WHERE source_planning_invocation_id = ?`, sourceInvocation).Scan(&dispatchState, &resolution, &resolvedAt); err != nil {
+		t.Fatalf("read title predecessor retry state: %v", err)
+	}
+	if dispatchState != string(RetryDispatchStateDispatched) || resolution != string(RetryDecisionResolutionFailed) || resolvedAt == "" {
+		t.Fatalf("title predecessor retry dispatch=%q resolution=%q resolved_at=%q, want dispatched/failed/resolved", dispatchState, resolution, resolvedAt)
 	}
 }
 

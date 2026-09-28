@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"kingdom/internal/sqlitex"
+	"kingdom/internal/timestamporder"
 )
 
 // NextPendingPlanningRetryDue returns the next persisted retry deadline. The
 // timer is only a wake-up optimization; ClaimOperation remains authoritative.
 func (s *PlanningStore) NextPendingPlanningRetryDue(ctx context.Context) (*time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT due_at FROM retry_decisions WHERE subject_kind = 'planning_invocation' AND decision = 'retry' AND dispatch_state = 'pending' ORDER BY julianday(due_at), retry_decision_id LIMIT 1`)
+	query := fmt.Sprintf(`SELECT due_at FROM retry_decisions WHERE subject_kind = 'planning_invocation' AND decision = 'retry' AND dispatch_state = 'pending' ORDER BY %s, retry_decision_id LIMIT 1`, timestamporder.OrderBySQL("due_at", false))
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list pending planning retry deadlines: %w", err)
 	}
@@ -118,7 +120,7 @@ func (s *PlanningStore) finalizePlanningFailureWithRetryOnce(ctx context.Context
 		Where("lease_owner = ?", strings.TrimSpace(req.LeaseOwner)).
 		Where("lease_version = ?", req.LeaseVersion)
 	if !req.AllowExpiredLease {
-		update.Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
+		update.Where(timestamporder.ComparisonSQL("lease_expires_at", "?", ">"), strings.TrimSpace(req.FinishedAt))
 	}
 	result, err := update.Exec(ctx, tx)
 	if err != nil {

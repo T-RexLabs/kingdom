@@ -103,7 +103,7 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 		return PlanningSession{}, rollbackPlanningTx(tx, "create planning session bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningSession{}, fmt.Errorf("commit create planning session bundle: %w", err)
+		return PlanningSession{}, &CommitOutcomeUnknownError{Operation: "create planning session bundle", ResourceID: strings.TrimSpace(req.Session.PlanningSessionID), Cause: err}
 	}
 	session.ContextSnapshotID = &adopted
 	return session, nil

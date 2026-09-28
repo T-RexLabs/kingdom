@@ -28,13 +28,40 @@ import (
 
 type mockAgent struct{}
 
+type unopenedFormalizeAgent struct{ mockAgent }
+
+func (a *unopenedFormalizeAgent) FormalizePlanStream(_ context.Context, input AgentContext, onChunk func(string)) (FormalizedPlan, error) {
+	text := "# Durable Planner Settlement\n\n## Objective\nPreserve the settled provider response.\n\n## Proposed Approach\nCommit the draft only with its provider settlement."
+	if onChunk != nil {
+		onChunk(text)
+	}
+	metadata := ProviderExecutionMetadata{
+		FinalText:         text,
+		ProviderSessionID: "session-open-was-not-persisted",
+		OutcomeState:      "success",
+		StreamObservation: terminalPlannerStreamObservation(text, "session-open-was-not-persisted"),
+	}
+	return FormalizedPlan{DecreeTitle: "Durable Planner Settlement", DecreeText: text, Metadata: metadata}, nil
+}
+
 type formalizeContextCaptureAgent struct {
 	*mockAgent
-	contexts chan string
+	contexts      chan string
+	agentContexts chan AgentContext
 }
 
 func (a *formalizeContextCaptureAgent) FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
-	a.contexts <- input.ContextSummary
+	if a.contexts != nil {
+		a.contexts <- input.ContextSummary
+	}
+	if a.agentContexts != nil {
+		captured := input
+		if input.ProviderInvocation != nil {
+			invocation := *input.ProviderInvocation
+			captured.ProviderInvocation = &invocation
+		}
+		a.agentContexts <- captured
+	}
 	return a.mockAgent.FormalizePlanStream(ctx, input, onChunk)
 }
 
@@ -123,6 +150,159 @@ func TestServiceBoundsStartupProcessGuardReplayAndDefersContinuation(t *testing.
 	}
 }
 
+func TestRecoveryFailsQueuedOperationWithUnsupportedExternalContextVersion(t *testing.T) {
+	ctx := context.Background()
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	const at = "2026-09-28T12:00:00Z"
+	service := NewService(store, &erroringAgent{err: errors.New("provider must not be called")}, t.TempDir(), func() string { return at }, deterministicID())
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
+	session, err := service.CreateSession(ctx, "Legacy Linked Source", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create planning session: %v", err)
+	}
+	const operationID = "po_legacy_external_context"
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: session.PlanningSessionID, Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at}); err != nil {
+		t.Fatalf("create queued planner operation: %v", err)
+	}
+	processing := state.PlanningSessionConversationStateProcessing
+	currentOperationID := operationID
+	if err := store.UpdateSession(ctx, state.UpdatePlanningSessionRequest{PlanningSessionID: session.PlanningSessionID, ConversationState: &processing, CurrentOperationID: &currentOperationID, UpdatedAt: at}); err != nil {
+		t.Fatalf("set session processing state: %v", err)
+	}
+	seedLegacyExternalContextBinding(t, db, session.PlanningSessionID, operationID, at)
+	versionMismatch, err := store.UnsupportedPlanningOperationExternalContextVersion(ctx, operationID)
+	if err != nil || versionMismatch == nil {
+		t.Fatalf("detect v2 binding before recovery: mismatch=%#v err=%v", versionMismatch, err)
+	}
+	queued, queuedFound, err := store.GetOperation(ctx, operationID)
+	if err != nil || !queuedFound || queued.Status != state.PlanningOperationStatusQueued {
+		t.Fatalf("operation before recovery status=%q found=%v err=%v", queued.Status, queuedFound, err)
+	}
+
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatalf("recover legacy-bound planner operation: %v", err)
+	}
+	if err := service.operations.runner.Wait(ctx); err != nil {
+		t.Fatalf("wait for recovered legacy-bound operation: %v", err)
+	}
+	operation, found, err := store.GetOperation(ctx, operationID)
+	if err != nil || !found {
+		t.Fatalf("get terminal planner operation: found=%v err=%v", found, err)
+	}
+	if operation.Status != state.PlanningOperationStatusFailed || operation.Error == nil || !strings.Contains(*operation.Error, "linked-source context version") || !strings.Contains(*operation.Error, "Submit a new planner operation") {
+		events, _ := store.ListOperationEventsAfterSeqPage(ctx, operationID, 0, 10)
+		t.Fatalf("legacy-bound operation status=%q error=%v events=%#v", operation.Status, operation.Error, events)
+	}
+	if operation.ActiveProviderInvocationID != nil {
+		t.Fatalf("legacy-bound operation created a provider invocation: %q", *operation.ActiveProviderInvocationID)
+	}
+	var invocationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_provider_invocations WHERE planning_operation_id=?`, operationID).Scan(&invocationCount); err != nil {
+		t.Fatalf("count provider invocations: %v", err)
+	}
+	if invocationCount != 0 {
+		t.Fatalf("legacy-bound operation created %d provider invocations", invocationCount)
+	}
+	events, err := store.ListOperationEventsAfterSeqPage(ctx, operationID, 0, 10)
+	if err != nil {
+		t.Fatalf("list terminal operation events: %v", err)
+	}
+	if len(events) != 1 || events[0].EventType != acp.RunFailedEventType || strings.Contains(events[0].PayloadJSON, "provider must not be called") {
+		t.Fatalf("unexpected legacy context terminal events: %#v", events)
+	}
+}
+
+func TestStuckOperationWithUnsupportedExternalContextVersionFailsAfterQuiescence(t *testing.T) {
+	ctx := context.Background()
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	const (
+		at      = "2026-09-28T12:00:00Z"
+		expired = "2026-09-28T11:00:00Z"
+	)
+	service := NewService(store, &erroringAgent{err: errors.New("provider must not be called")}, t.TempDir(), func() string { return at }, deterministicID())
+	t.Cleanup(func() {
+		if err := service.Close(context.Background()); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
+	session, err := service.CreateSession(ctx, "Stuck Legacy Linked Source", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create planning session: %v", err)
+	}
+	const operationID = "po_stuck_legacy_external_context"
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID: operationID, PlanningSessionID: session.PlanningSessionID, Type: state.PlanningOperationTypeReply,
+		Status: state.PlanningOperationStatusRunning, RequestPayloadJSON: `{}`, LeaseOwner: "stale-worker",
+		LeaseExpiresAt: expired, LeaseVersion: 1, LastHeartbeatAt: expired, StartedAt: expired, CreatedAt: expired,
+	}); err != nil {
+		t.Fatalf("create stale planner operation: %v", err)
+	}
+	processing := state.PlanningSessionConversationStateProcessing
+	currentOperationID := operationID
+	if err := store.UpdateSession(ctx, state.UpdatePlanningSessionRequest{PlanningSessionID: session.PlanningSessionID, ConversationState: &processing, CurrentOperationID: &currentOperationID, UpdatedAt: expired}); err != nil {
+		t.Fatalf("set session processing state: %v", err)
+	}
+	seedLegacyExternalContextBinding(t, db, session.PlanningSessionID, operationID, expired)
+
+	finalized, err := service.FinaliseIfStuck(ctx, operationID)
+	if err != nil || !finalized {
+		t.Fatalf("finalize stale v2-bound operation: finalized=%v err=%v", finalized, err)
+	}
+	operation, found, err := store.GetOperation(ctx, operationID)
+	if err != nil || !found {
+		t.Fatalf("get terminal stale operation: found=%v err=%v", found, err)
+	}
+	if operation.Status != state.PlanningOperationStatusFailed || operation.Error == nil || !strings.Contains(*operation.Error, "linked-source context version") {
+		t.Fatalf("stale v2-bound operation status=%q error=%v", operation.Status, operation.Error)
+	}
+	var retryCount, invocationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM retry_decisions WHERE planning_operation_id=?`, operationID).Scan(&retryCount); err != nil {
+		t.Fatalf("count legacy operation retries: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_provider_invocations WHERE planning_operation_id=?`, operationID).Scan(&invocationCount); err != nil {
+		t.Fatalf("count legacy operation invocations: %v", err)
+	}
+	if retryCount != 0 || invocationCount != 0 {
+		t.Fatalf("stale legacy operation created retries=%d invocations=%d", retryCount, invocationCount)
+	}
+}
+
+func seedLegacyExternalContextBinding(t *testing.T, db *sql.DB, sessionID, operationID, at string) {
+	t.Helper()
+	external := state.NewExternalStore(db)
+	connectionID := "conn_" + operationID
+	if _, err := external.CreateConnection(context.Background(), state.CreateExternalConnectionRequest{
+		ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:" + connectionID,
+		ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit_connection_" + operationID,
+	}); err != nil {
+		t.Fatalf("create linked-source connection: %v", err)
+	}
+	snapshotID := "snapshot_" + operationID
+	if _, err := external.AttachPlanningExternalSource(context.Background(), state.AttachPlanningExternalSourceRequest{
+		PlanningSessionID: sessionID,
+		Capture: state.CaptureExternalIssueRequest{
+			SourceID: "source_" + operationID, SnapshotID: snapshotID, ConnectionID: connectionID,
+			ProviderNativeID: "100", RepositoryNativeID: "repo-100",
+			Issue:             state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at},
+			ProviderUpdatedAt: at, FetchedAt: at,
+		},
+		LinkID: "link_" + operationID, AdoptionID: "adoption_" + operationID, AuditEventID: "audit_attach_" + operationID,
+		ActorID: "local-operator", AttachedAt: at,
+	}); err != nil {
+		t.Fatalf("attach linked source after operation enqueue: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES (?,?,'external-context-v2',?,0,0,?)`, operationID, snapshotID, strings.Repeat("0", 64), at); err != nil {
+		t.Fatalf("seed immutable v2 operation binding: %v", err)
+	}
+}
+
 func seedQuiescentPlanningProcessGuard(t *testing.T, db *sql.DB, runtimeRoot string, index int) {
 	t.Helper()
 	guardID := fmt.Sprintf("planning_guard_%03d", index)
@@ -174,7 +354,9 @@ func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessio
 // final text.
 func testSuccessMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		input.ProviderInvocation.OnProviderSession("provider-session-1")
+		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
+			return ProviderExecutionMetadata{}, err
+		}
 	}
 	return ProviderExecutionMetadata{
 		FinalText:                       finalText,
@@ -369,7 +551,9 @@ func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input Age
 	}
 	p.mu.Unlock()
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		input.ProviderInvocation.OnProviderSession(providerSessionID)
+		if err := input.ProviderInvocation.OnProviderSession(providerSessionID); err != nil {
+			return AgentTurn{}, err
+		}
 	}
 	if onChunk != nil {
 		onChunk(defaultPlanningServiceTestScript.ContinueContent)
@@ -413,12 +597,12 @@ func (p *parallelAutoTitlePlanner) ContinueTurnStream(ctx context.Context, input
 		return parallelAutoTitleReply(input, defaultPlanningServiceTestScript.ContinueContent, StructuredQuestion{
 			Prompt: defaultPlanningServiceTestScript.ContinueQuestion.Prompt,
 			Type:   defaultPlanningServiceTestScript.ContinueQuestion.Type,
-		}, onChunk), nil
+		}, onChunk)
 	}
 	p.secondReplyOnce.Do(func() { close(p.secondReplyStarted) })
 	select {
 	case <-p.release:
-		return parallelAutoTitleReply(input, "Second reply content", StructuredQuestion{Prompt: "Choose scope", Type: "single_select", Options: []StructuredQuestionOption{{Label: "Lean", Value: "lean"}}}, onChunk), nil
+		return parallelAutoTitleReply(input, "Second reply content", StructuredQuestion{Prompt: "Choose scope", Type: "single_select", Options: []StructuredQuestionOption{{Label: "Lean", Value: "lean"}}}, onChunk)
 	case <-ctx.Done():
 		return AgentTurn{}, ctx.Err()
 	}
@@ -431,28 +615,38 @@ func (p *parallelAutoTitlePlanner) GenerateTitle(ctx context.Context, input Agen
 		if onChunk != nil {
 			onChunk("Parallel Title")
 		}
-		return GeneratedTitle{Title: "Parallel Title", Metadata: parallelAutoTitleMetadata(input, "Parallel Title")}, nil
+		metadata, err := parallelAutoTitleMetadata(input, "Parallel Title")
+		if err != nil {
+			return GeneratedTitle{}, err
+		}
+		return GeneratedTitle{Title: "Parallel Title", Metadata: metadata}, nil
 	case <-ctx.Done():
 		return GeneratedTitle{}, ctx.Err()
 	}
 }
 
-func parallelAutoTitleReply(input AgentContext, content string, question StructuredQuestion, onChunk func(text string)) AgentTurn {
+func parallelAutoTitleReply(input AgentContext, content string, question StructuredQuestion, onChunk func(text string)) (AgentTurn, error) {
 	if onChunk != nil {
 		onChunk(content)
+	}
+	metadata, err := parallelAutoTitleMetadata(input, content)
+	if err != nil {
+		return AgentTurn{}, err
 	}
 	return AgentTurn{
 		ContentMarkdown: content,
 		Question:        &question,
-		Metadata:        parallelAutoTitleMetadata(input, content),
-	}
+		Metadata:        metadata,
+	}, nil
 }
 
-func parallelAutoTitleMetadata(input AgentContext, finalText string) ProviderExecutionMetadata {
+func parallelAutoTitleMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
 		// Open the durable invocation needed for server-side settlement without
 		// returning a session for post-provider diagnostic export.
-		input.ProviderInvocation.OnProviderSession("settlement-only-session")
+		if err := input.ProviderInvocation.OnProviderSession("settlement-only-session"); err != nil {
+			return ProviderExecutionMetadata{}, err
+		}
 		input.ProviderInvocation.ProviderSessionID = ""
 	}
 	return ProviderExecutionMetadata{
@@ -460,7 +654,7 @@ func parallelAutoTitleMetadata(input AgentContext, finalText string) ProviderExe
 		OutcomeState:                    "success",
 		CompletionStructuredPayloadJSON: "{}",
 		StreamObservation:               terminalPlannerStreamObservation(finalText, ""),
-	}
+	}, nil
 }
 
 func awaitParallelAutoTitleReplyStarted(t *testing.T, planner *parallelAutoTitlePlanner) {
@@ -766,6 +960,172 @@ func TestServiceFormalizeOperationCreatesDraftWithoutPlanningMessages(t *testing
 	}
 }
 
+func TestServiceFormalizeUsesPersistedProviderSession(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	agent := &formalizeContextCaptureAgent{
+		mockAgent:     &mockAgent{},
+		agentContexts: make(chan AgentContext, 1),
+	}
+	service := NewService(store, agent, projectRoot, func() string { return "2026-06-14T12:00:00Z" }, deterministicID())
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := service.Close(closeCtx); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+	session, err := service.CreateSession(ctx, "Formalize Session Reuse", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	reply, err := service.CreateOperation(ctx, session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     "Capture scope, constraints, and verification.",
+		AnswerPayloadJSON: `{"text":"Capture scope, constraints, and verification."}`,
+	})
+	if err != nil {
+		t.Fatalf("create reply operation: %v", err)
+	}
+	replyTerminal := awaitOperationTerminal(t, store, reply.Operation.OperationID)
+	if replyTerminal.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected succeeded reply operation, got %+v", replyTerminal)
+	}
+
+	const providerSessionID = "provider-session-1"
+	replyInvocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, planningLogicalSessionID(session.PlanningSessionID, state.PlanningOperationTypeReply))
+	if err != nil {
+		t.Fatalf("get persisted reply provider invocation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected the completed reply to persist a reusable provider invocation")
+	}
+	if replyInvocation.ProviderSessionID != providerSessionID {
+		t.Fatalf("reply provider session=%q, want %q", replyInvocation.ProviderSessionID, providerSessionID)
+	}
+	if replyInvocation.InvocationState != state.PlanningProviderInvocationStateSettledSuccess || strings.TrimSpace(replyInvocation.OpenedAt) == "" || strings.TrimSpace(replyInvocation.SettledAt) == "" {
+		t.Fatalf("expected reply invocation to be durably opened and settled, got %+v", replyInvocation)
+	}
+
+	formalize, err := service.CreateOperation(ctx, session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeFormalize})
+	if err != nil {
+		t.Fatalf("create formalize operation: %v", err)
+	}
+	formalizeTerminal := awaitOperationTerminal(t, store, formalize.Operation.OperationID)
+	if formalizeTerminal.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected succeeded formalize operation, got %+v", formalizeTerminal)
+	}
+
+	var formalizeInput AgentContext
+	select {
+	case formalizeInput = <-agent.agentContexts:
+	case <-time.After(time.Second):
+		t.Fatal("formalize agent did not receive its AgentContext")
+	}
+	if formalizeInput.ForceNewSession {
+		t.Error("normal formalize requested a fresh provider session")
+	}
+	if formalizeInput.ProviderInvocation == nil {
+		t.Error("formalize agent received no provider invocation context")
+	} else if formalizeInput.ProviderInvocation.ProviderSessionID != providerSessionID {
+		t.Errorf("formalize provider session=%q, want persisted session %q", formalizeInput.ProviderInvocation.ProviderSessionID, providerSessionID)
+	}
+
+	if formalizeTerminal.CanonicalSettlementID == nil || strings.TrimSpace(*formalizeTerminal.CanonicalSettlementID) == "" {
+		t.Fatal("expected formalize operation to persist a canonical settlement")
+	}
+	settlement, found, err := store.GetPlanningProviderCompletionSettlement(ctx, *formalizeTerminal.CanonicalSettlementID)
+	if err != nil {
+		t.Fatalf("get formalize provider settlement: %v", err)
+	}
+	if !found {
+		t.Fatal("expected formalize provider settlement to exist")
+	}
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeSuccess || settlement.PlanningOperationID != formalize.Operation.OperationID || settlement.PlanningSessionID != session.PlanningSessionID {
+		t.Fatalf("formalize settlement is not a successful settlement for this operation and session: %+v", settlement)
+	}
+
+	formalizeInvocation, found, err := store.GetPlanningProviderInvocation(ctx, settlement.PlanningProviderInvocationID)
+	if err != nil {
+		t.Fatalf("get formalize provider invocation: %v", err)
+	}
+	if !found {
+		t.Fatal("expected formalize provider invocation to exist")
+	}
+	if formalizeInvocation.PlanningOperationID != formalize.Operation.OperationID || formalizeInvocation.PlanningSessionID != session.PlanningSessionID || formalizeInvocation.PlanningProviderInvocationID != settlement.PlanningProviderInvocationID {
+		t.Fatalf("formalize invocation lineage disagrees with its settlement: invocation=%+v settlement=%+v", formalizeInvocation, settlement)
+	}
+	if formalizeInvocation.ProviderSessionID != providerSessionID {
+		t.Errorf("persisted formalize provider session=%q, want %q", formalizeInvocation.ProviderSessionID, providerSessionID)
+	}
+	if formalizeInvocation.InvocationState != state.PlanningProviderInvocationStateSettledSuccess || strings.TrimSpace(formalizeInvocation.OpenedAt) == "" || strings.TrimSpace(formalizeInvocation.SettledAt) == "" {
+		t.Errorf("expected formalize invocation to be durably opened and settled against %q, got %+v", providerSessionID, formalizeInvocation)
+	}
+}
+
+func TestFormalizeSettlementFailureDoesNotPublishCompletedMessageOrRetry(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewServiceWithRetryEngine(
+		store,
+		&unopenedFormalizeAgent{},
+		projectRoot,
+		func() string { return "2026-06-14T12:00:00Z" },
+		deterministicID(),
+		loadPlanningRetryEngine(t),
+	)
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
+
+	session, err := service.CreateSession(context.Background(), "Unopened Formalize", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeFormalize})
+	if err != nil {
+		t.Fatalf("create formalize operation: %v", err)
+	}
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusFailed {
+		t.Fatalf("unopened provider invocation status=%q, want failed", terminal.Status)
+	}
+	if terminal.Error == nil || !strings.Contains(*terminal.Error, "success_requires_open_active_invocation") {
+		t.Fatalf("expected the durable open-invocation failure, got %+v", terminal.Error)
+	}
+	if _, found, err := store.GetCurrentDraft(context.Background(), session.PlanningSessionID); err != nil || found {
+		t.Fatalf("unsettled provider output became a draft: found=%v err=%v", found, err)
+	}
+	var completedMessages, partialMessages int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_operation_events WHERE operation_id = ? AND event_type = ?`, operation.Operation.OperationID, acp.MessageDoneEventType).Scan(&completedMessages); err != nil {
+		t.Fatalf("count completed message events: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_operation_events WHERE operation_id = ? AND event_type = ?`, operation.Operation.OperationID, acp.MessagePartEventType).Scan(&partialMessages); err != nil {
+		t.Fatalf("count partial message events: %v", err)
+	}
+	if completedMessages != 0 || partialMessages == 0 {
+		t.Fatalf("message events completed=%d partial=%d, want no completed event and retained streamed preview", completedMessages, partialMessages)
+	}
+	var meaningfulProgress int
+	var decision string
+	if err := db.QueryRow(`SELECT meaningful_progress, decision FROM retry_decisions WHERE planning_operation_id = ?`, operation.Operation.OperationID).Scan(&meaningfulProgress, &decision); err != nil {
+		t.Fatalf("load retry decision: %v", err)
+	}
+	if meaningfulProgress != 1 || decision != string(state.RetryDecisionFailFast) {
+		t.Fatalf("retry decision meaningful_progress=%d decision=%q, want progress and fail-fast", meaningfulProgress, decision)
+	}
+}
+
 func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 	t.Parallel()
 
@@ -905,7 +1265,7 @@ func TestServiceReplyResourceLimitFailsDurablyWithoutRetry(t *testing.T) {
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	const untrustedPrompt = "operator-secret-prompt-content"
-	service := NewServiceWithRetryEngine(store, &erroringAgent{err: &providerlimits.LimitExceededError{Resource: "prompt", Limit: providerlimits.PromptBytes}}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	service := NewServiceWithRetryEngine(store, &erroringAgent{err: &providerlimits.LimitExceededError{Resource: "canonical output", Limit: providerlimits.CanonicalOutputBytes}}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 
 	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
@@ -2346,8 +2706,9 @@ func TestRefreshContextReturnsErrSessionNotFoundForUnknownSession(t *testing.T) 
 // TestRecoveryFailsStuckRunningOperationAsFailed pins the new server-side
 // settlement contract: a planner reply still marked running after a restart
 // never reached the atomic FinalizeOperation transaction, so there is no
-// durable success to replay. Recovery finalises the abandoned op as failed
-// once the lease is past the 3× TTL grace — the user simply retries the turn.
+// durable success to replay. This test uses a service without an automatic
+// retry engine and verifies the stale operation is finalized as failed rather
+// than replaying provisional output as success.
 func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	t.Parallel()
 
@@ -2464,6 +2825,103 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	}
 	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed {
 		t.Fatalf("expected stuck recovery to settle invocation as failed, got %+v", invocation)
+	}
+}
+
+func TestStaleFormalizeWithDurableOutputDoesNotAutomaticallyRetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewServiceWithRetryEngine(store, nil, projectRoot, func() string {
+		return "2026-04-26T11:00:00Z"
+	}, deterministicID(), loadPlanningRetryEngine(t))
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
+
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_stuck_formalize_progress",
+		Title:              "stuck formalize",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateProcessing,
+		CurrentOperationID: "po_stuck_formalize_progress",
+		ProjectRoot:        projectRoot,
+		ModelSelectionJSON: `{"model":"test-model"}`,
+		CreatedAt:          "2026-04-26T08:55:00Z",
+		UpdatedAt:          "2026-04-26T08:55:00Z",
+	}); err != nil {
+		t.Fatalf("create planning session: %v", err)
+	}
+	bindPlanningContextForTest(t, store, "ps_stuck_formalize_progress")
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID:        "po_stuck_formalize_progress",
+		PlanningSessionID:  "ps_stuck_formalize_progress",
+		Type:               state.PlanningOperationTypeFormalize,
+		Status:             state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{"draft_id":"draft_stuck_formalize_progress","draft_created_at":"2026-04-26T08:55:05Z"}`,
+		LeaseOwner:         "abandoned-worker",
+		LeaseExpiresAt:     "2026-04-26T09:00:00Z",
+		LeaseVersion:       1,
+		CreatedAt:          "2026-04-26T08:55:00Z",
+		StartedAt:          "2026-04-26T08:55:01Z",
+	}); err != nil {
+		t.Fatalf("seed running formalize: %v", err)
+	}
+	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: "ppinv_stuck_formalize_progress",
+		PlanningOperationID:          "po_stuck_formalize_progress",
+		PlanningSessionID:            "ps_stuck_formalize_progress",
+		LogicalSessionID:             "planner-ps_stuck_formalize_progress",
+		CreatedAt:                    "2026-04-26T08:55:02Z",
+		LeaseOwner:                   "abandoned-worker",
+		LeaseVersion:                 1,
+	}); err != nil {
+		t.Fatalf("create provider invocation: %v", err)
+	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
+		PlanningProviderInvocationID: "ppinv_stuck_formalize_progress",
+		PlanningOperationID:          "po_stuck_formalize_progress",
+		ProviderSessionID:            "ses_stuck_formalize_progress",
+		OpenedAt:                     "2026-04-26T08:55:03Z",
+		LeaseOwner:                   "abandoned-worker",
+		LeaseVersion:                 1,
+	}); err != nil {
+		t.Fatalf("open provider invocation: %v", err)
+	}
+	if _, err := store.AppendOperationEvent(ctx, state.AppendPlanningOperationEventRequest{
+		EventID:     "po_stuck_formalize_progress:1",
+		OperationID: "po_stuck_formalize_progress",
+		Seq:         1,
+		EventType:   acp.MessagePartEventType,
+		PayloadJSON: `{"text":"# Recovery plan\n\n## Objective\nPreserve completed output."}`,
+		CreatedAt:   "2026-04-26T08:55:04Z",
+	}); err != nil {
+		t.Fatalf("persist completed provider output: %v", err)
+	}
+
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatalf("recover stale formalize: %v", err)
+	}
+	operation, found, err := store.GetOperation(ctx, "po_stuck_formalize_progress")
+	if err != nil || !found {
+		t.Fatalf("load recovered formalize: found=%v err=%v", found, err)
+	}
+	if operation.Status != state.PlanningOperationStatusFailed {
+		t.Fatalf("stale operation with completed provider output status=%q, want failed without retry", operation.Status)
+	}
+	var meaningfulProgress int
+	var decision string
+	if err := db.QueryRow(`SELECT meaningful_progress, decision FROM retry_decisions WHERE planning_operation_id = ?`, operation.OperationID).Scan(&meaningfulProgress, &decision); err != nil {
+		t.Fatalf("load stale retry decision: %v", err)
+	}
+	if meaningfulProgress != 1 || decision != string(state.RetryDecisionFailFast) {
+		t.Fatalf("stale retry decision meaningful_progress=%d decision=%q, want progress and fail-fast", meaningfulProgress, decision)
+	}
+	if _, found, err := store.GetDraft(ctx, "draft_stuck_formalize_progress"); err != nil || found {
+		t.Fatalf("unsettled output became a draft: found=%v err=%v", found, err)
 	}
 }
 

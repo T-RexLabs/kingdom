@@ -5,12 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"strings"
 	"time"
 
 	"kingdom/internal/processguardian"
 )
+
+const planningProcessGuardCommitReadbackTimeout = 2 * time.Second
 
 // PlanningProcessGuardOwnership is the planning-side durable launch fence. The
 // guardian capability is accepted only to derive its persisted hash.
@@ -95,15 +100,51 @@ func (s *PlanningStore) AcknowledgePlanningProcessGuard(ctx context.Context, req
 	}
 	if inserted == 0 {
 		var count int
-		err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'planning_operation' AND owner_id = ? AND provider_invocation_id = ? AND planning_operation_id = ? AND planning_session_id = ? AND command_ordinal = ? AND lifecycle = 'acknowledged' AND platform = ? AND guardian_pid = ? AND guardian_identity_token = ? AND child_pid = ? AND child_identity_token = ? AND tree_id = ? AND tree_identity_token = ? AND quiescence_capability_hash = ? AND lease_owner = ? AND lease_version = ? AND started_at = ? AND acknowledged_at = ?`, req.GuardID, req.PlanningOperationID, req.PlanningProviderInvocationID, req.PlanningOperationID, req.PlanningSessionID, req.CommandOrdinal, req.Platform, req.GuardianPID, req.GuardianIdentityToken, req.ChildPID, req.ChildIdentityToken, req.TreeID, req.TreeIdentityToken, capabilityHash, req.LeaseOwner, req.LeaseVersion, req.StartedAt, req.AcknowledgedAt).Scan(&count)
+		err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'planning_operation' AND owner_id = ? AND provider_invocation_id = ? AND planning_operation_id = ? AND planning_session_id = ? AND command_ordinal = ? AND lifecycle = 'acknowledged' AND platform = ? AND guardian_pid = ? AND guardian_identity_token = ? AND child_pid = ? AND child_identity_token = ? AND tree_id = ? AND tree_identity_token = ? AND quiescence_capability_hash = ? AND lease_owner = ? AND lease_version = ? AND started_at = ? AND acknowledged_at = ? AND created_at = ?`, req.GuardID, req.PlanningOperationID, req.PlanningProviderInvocationID, req.PlanningOperationID, req.PlanningSessionID, req.CommandOrdinal, req.Platform, req.GuardianPID, req.GuardianIdentityToken, req.ChildPID, req.ChildIdentityToken, req.TreeID, req.TreeIdentityToken, capabilityHash, req.LeaseOwner, req.LeaseVersion, req.StartedAt, req.AcknowledgedAt, req.AcknowledgedAt).Scan(&count)
 		if err != nil || count != 1 {
 			return fmt.Errorf("planning process guard acknowledgement conflict")
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		if readbackErr := s.confirmPlanningProcessGuardAcknowledgementAfterCommitError(req, capabilityHash); readbackErr != nil {
+			return errors.Join(fmt.Errorf("commit planning process guard acknowledgement: %w", err), readbackErr)
+		}
+		committed = true
+		return nil
 	}
 	committed = true
+	return nil
+}
+
+func (s *PlanningStore) confirmPlanningProcessGuardAcknowledgementAfterCommitError(req PlanningProcessGuardOwnership, capabilityHash string) error {
+	// The commit can be durable even if the caller was canceled before it
+	// returned; confirm the full lineage with a bounded independent read.
+	readCtx, cancel := context.WithTimeout(context.Background(), planningProcessGuardCommitReadbackTimeout)
+	defer cancel()
+
+	var persisted PlanningProcessGuardOwnership
+	var ownerKind, ownerID, lifecycle, persistedCapabilityHash, createdAt string
+	err := s.db.QueryRowContext(readCtx, `SELECT guard_id, owner_kind, owner_id, provider_invocation_id,
+		planning_operation_id, planning_session_id, command_ordinal, lifecycle, platform,
+		guardian_pid, guardian_identity_token, child_pid, child_identity_token, tree_id,
+		tree_identity_token, quiescence_capability_hash, lease_owner, lease_version,
+		started_at, acknowledged_at, created_at
+		FROM provider_process_guards WHERE guard_id = ?`, req.GuardID).Scan(
+		&persisted.GuardID, &ownerKind, &ownerID, &persisted.PlanningProviderInvocationID,
+		&persisted.PlanningOperationID, &persisted.PlanningSessionID, &persisted.CommandOrdinal,
+		&lifecycle, &persisted.Platform, &persisted.GuardianPID, &persisted.GuardianIdentityToken,
+		&persisted.ChildPID, &persisted.ChildIdentityToken, &persisted.TreeID, &persisted.TreeIdentityToken,
+		&persistedCapabilityHash, &persisted.LeaseOwner, &persisted.LeaseVersion,
+		&persisted.StartedAt, &persisted.AcknowledgedAt, &createdAt,
+	)
+	if err != nil {
+		return fmt.Errorf("read back acknowledged planning process guard %q: %w", req.GuardID, err)
+	}
+	expected := req
+	expected.Capability = ""
+	if persisted != expected || ownerKind != "planning_operation" || ownerID != req.PlanningOperationID || lifecycle != "acknowledged" || persistedCapabilityHash != capabilityHash || createdAt != req.AcknowledgedAt {
+		return fmt.Errorf("read back planning process guard %q did not match the exact acknowledged ownership lineage", req.GuardID)
+	}
 	return nil
 }
 
@@ -158,7 +199,8 @@ type PlanningProcessGuardReplayPass struct {
 
 // ReplayPlanningProcessGuardEvidencePass converges one bounded page of durable
 // guardian records before planner recovery considers a running operation stale.
-// Missing evidence stays pending and never becomes inferred quiescence.
+// Missing evidence stays pending for acknowledged guards; an already-quiescent
+// guard can finish cleanup from its durable SQLite proof.
 func (s *PlanningStore) ReplayPlanningProcessGuardEvidencePass(ctx context.Context, runtimeRoot, cursor string, limit int) (PlanningProcessGuardReplayPass, error) {
 	if s == nil || s.db == nil {
 		return PlanningProcessGuardReplayPass{NextCursor: cursor}, fmt.Errorf("planning store database is required")
@@ -199,24 +241,48 @@ func (s *PlanningStore) ReplayPlanningProcessGuardEvidencePass(ctx context.Conte
 		pass.Visited++
 		result, digest, evidence, err := processguardian.ReadQuiescenceEvidence(runtimeRoot, item.id)
 		if err != nil {
+			if item.lifecycle == "quiescent" && errors.Is(err, fs.ErrNotExist) {
+				s.markPlanningProcessGuardEvidenceCleaned(ctx, item.id)
+			} else if item.lifecycle == "quiescent" {
+				slog.Warn("planning process guard evidence cleanup deferred", "guard_id", item.id, "error", err)
+			}
 			continue
 		}
 		if item.lifecycle == "quiescent" {
 			if digest == item.digest {
-				if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
-					_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
-				}
+				s.removeAndMarkPlanningProcessGuardEvidenceCleaned(ctx, runtimeRoot, item.id, evidence)
+			} else {
+				slog.Warn("planning process guard evidence cleanup deferred", "guard_id", item.id, "reason", "evidence_digest_mismatch")
 			}
 			continue
 		}
 		if err := s.IngestPlanningProcessGuardQuiescence(ctx, PlanningProcessGuardQuiescence{GuardID: item.id, Capability: result.QuiescenceCapability, Platform: result.Platform, GuardianPID: result.GuardianPID, GuardianIdentityToken: result.GuardianIdentityToken, ChildPID: result.ChildPID, ChildIdentityToken: result.ChildIdentityToken, TreeID: fmt.Sprintf("%d", result.TreeID), TreeIdentityToken: result.TreeIdentityToken, QuiescentAt: time.Now().UTC().Format(time.RFC3339Nano), ExitCode: result.ExitCode, ExitSignal: result.ExitSignal, Forced: result.Forced, FailureCode: result.FailureCode, FailureText: result.FailureText, EvidenceSHA256: digest, EvidenceJSON: evidence}); err != nil {
 			return pass, err
 		}
-		if processguardian.RemoveQuiescenceEvidence(runtimeRoot, item.id, evidence) == nil {
-			_, _ = s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?) WHERE guard_id=?`, time.Now().UTC().Format(time.RFC3339Nano), item.id)
-		}
+		s.removeAndMarkPlanningProcessGuardEvidenceCleaned(ctx, runtimeRoot, item.id, evidence)
 	}
 	return pass, nil
+}
+
+func (s *PlanningStore) removeAndMarkPlanningProcessGuardEvidenceCleaned(ctx context.Context, runtimeRoot, guardID, evidence string) {
+	removeErr := processguardian.RemoveQuiescenceEvidence(runtimeRoot, guardID, evidence)
+	if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+		slog.Warn("planning process guard evidence cleanup deferred", "guard_id", guardID, "error", removeErr)
+		return
+	}
+	// A concurrent replay may remove the file after this pass reads it. The
+	// durable quiescence proof makes that not-exist result completed cleanup.
+	s.markPlanningProcessGuardEvidenceCleaned(ctx, guardID)
+}
+
+func (s *PlanningStore) markPlanningProcessGuardEvidenceCleaned(ctx context.Context, guardID string) {
+	cleanedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.ExecContext(ctx, `UPDATE provider_process_guards
+		SET evidence_cleaned_at=COALESCE(evidence_cleaned_at,?), updated_at=?
+		WHERE guard_id=? AND owner_kind='planning_operation' AND lifecycle='quiescent'`, cleanedAt, cleanedAt, guardID)
+	if err != nil {
+		slog.Warn("planning process guard evidence cleanup marker deferred", "guard_id", guardID, "error", err)
+	}
 }
 
 // PlanningProcessGuardReplayPending reports whether a replay cursor has more

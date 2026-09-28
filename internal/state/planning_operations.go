@@ -10,6 +10,7 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/sqlitex"
+	"kingdom/internal/timestamporder"
 )
 
 func (s *PlanningStore) CreateOperation(ctx context.Context, req CreatePlanningOperationRequest) (PlanningOperation, error) {
@@ -172,7 +173,7 @@ func (s *PlanningStore) CreateReplyBundle(ctx context.Context, req CreatePlannin
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning reply bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningOperation{}, fmt.Errorf("commit create planning reply bundle: %w", err)
+		return PlanningOperation{}, &CommitOutcomeUnknownError{Operation: "create planning reply bundle", ResourceID: strings.TrimSpace(req.Operation.OperationID), Cause: err}
 	}
 	return operation, nil
 }
@@ -225,7 +226,7 @@ func (s *PlanningStore) CreateFormalizeBundle(ctx context.Context, req CreatePla
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning formalize bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningOperation{}, fmt.Errorf("commit create planning formalize bundle: %w", err)
+		return PlanningOperation{}, &CommitOutcomeUnknownError{Operation: "create planning formalize bundle", ResourceID: strings.TrimSpace(req.Operation.OperationID), Cause: err}
 	}
 	return operation, nil
 }
@@ -274,7 +275,7 @@ func (s *PlanningStore) CreateGenerateTitleBundle(ctx context.Context, req Creat
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create planning generate title bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningOperation{}, fmt.Errorf("commit create planning generate title bundle: %w", err)
+		return PlanningOperation{}, &CommitOutcomeUnknownError{Operation: "create planning generate title bundle", ResourceID: strings.TrimSpace(req.Operation.OperationID), Cause: err}
 	}
 	return operation, nil
 }
@@ -332,7 +333,7 @@ func (s *PlanningStore) CreateRegenerateBundle(ctx context.Context, req CreateRe
 		return PlanningOperation{}, rollbackPlanningTx(tx, "create regenerate bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningOperation{}, fmt.Errorf("commit create regenerate bundle: %w", err)
+		return PlanningOperation{}, &CommitOutcomeUnknownError{Operation: "create regenerate bundle", ResourceID: strings.TrimSpace(req.Operation.OperationID), Cause: err}
 	}
 	return operation, nil
 }
@@ -588,7 +589,7 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		Where("lease_version = ?", req.LeaseVersion).
 		Where("status = ?", string(PlanningOperationStatusRunning))
 	if !req.AllowExpiredLease {
-		opUpdate.Where("julianday(lease_expires_at) > julianday(?)", strings.TrimSpace(req.FinishedAt))
+		opUpdate.Where(timestamporder.ComparisonSQL("lease_expires_at", "?", ">"), strings.TrimSpace(req.FinishedAt))
 	}
 
 	opResult, err := opUpdate.Exec(ctx, tx)
@@ -673,6 +674,11 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		// `error` since neither produces a result_ref).
 	}
 
+	if req.MessageCompletedEvent != nil {
+		if _, err := insertPlanningOperationEvent(ctx, tx, *req.MessageCompletedEvent); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	}
 	if req.TerminalEvent != nil {
 		if _, err := insertPlanningOperationEvent(ctx, tx, *req.TerminalEvent); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
@@ -683,7 +689,11 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		if err := resolveCancelledPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}
-	} else if req.Kind != FinalizeFail {
+	} else if req.Kind == FinalizeFail {
+		if err := resolveFailedPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	} else {
 		if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}
@@ -753,25 +763,7 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 		return rollbackPlanningTx(tx, "cancel queued planning operation", err)
 	}
 
-	sessionUpdate := newUpdateBuilder("planning_sessions").Set("updated_at", strings.TrimSpace(req.UpdatedAt))
-	sessionUpdate.Where("planning_session_id = ?", operation.PlanningSessionID)
-	switch operation.Type {
-	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate:
-		ready := string(PlanningSessionConversationStateReady)
-		sessionUpdate.Set("conversation_state", ready)
-		if operation.Type == PlanningOperationTypeRegenerate {
-			previousLeafID, parseErr := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
-			if parseErr != nil {
-				return rollbackPlanningTx(tx, "cancel queued planning operation", parseErr)
-			}
-			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(previousLeafID))
-		}
-		sessionUpdate.Where("current_operation_id = ?", operation.OperationID)
-	case PlanningOperationTypeGenerateTitle:
-		sessionUpdate.Set("current_title_operation_id", nil)
-		sessionUpdate.Where("current_title_operation_id = ?", operation.OperationID)
-	}
-	if _, err := sessionUpdate.Exec(ctx, tx); err != nil {
+	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt); err != nil {
 		return rollbackPlanningTx(tx, "cancel queued planning operation", fmt.Errorf("cancel queued planning session: %w", err))
 	}
 
@@ -782,6 +774,98 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit cancel queued planning operation: %w", err)
+	}
+	return nil
+}
+
+// FailQueuedOperation terminalizes queued work that cannot ever be dispatched
+// with its immutable input binding. Unlike cancellation, this records a failed
+// outcome, while closing any undispatched automatic retry as cancelled.
+func (s *PlanningStore) FailQueuedOperation(ctx context.Context, req FailQueuedPlanningOperationRequest) error {
+	if strings.TrimSpace(req.OperationID) == "" {
+		return fmt.Errorf("planning operation id is required")
+	}
+	if strings.TrimSpace(req.ErrorMessage) == "" {
+		return fmt.Errorf("planning operation failure reason is required")
+	}
+	if strings.TrimSpace(req.UpdatedAt) == "" || strings.TrimSpace(req.FinishedAt) == "" {
+		return fmt.Errorf("planning operation failure timestamps are required")
+	}
+	if err := validatePlanningOperationEventAppend(req.TerminalEvent); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.TerminalEvent.OperationID) != strings.TrimSpace(req.OperationID) {
+		return fmt.Errorf("planning operation failure event must match its operation")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin fail queued planning operation: %w", err)
+	}
+	operation, found, err := getPlanningOperation(ctx, tx, req.OperationID)
+	if err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
+	}
+	if !found || operation.Status != PlanningOperationStatusQueued || (operation.ActiveProviderInvocationID != nil && strings.TrimSpace(*operation.ActiveProviderInvocationID) != "") {
+		return rollbackPlanningTx(tx, "fail queued planning operation", ErrPlanningLeaseConflict)
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE planning_operations
+		SET status=?,error=?,active_provider_invocation_id=NULL,lease_owner='',lease_expires_at=NULL,
+		    lease_version=lease_version+1,last_heartbeat_at=NULL,finished_at=?
+		WHERE operation_id=? AND status=? AND COALESCE(TRIM(active_provider_invocation_id),'')=''`,
+		PlanningOperationStatusFailed, strings.TrimSpace(req.ErrorMessage), strings.TrimSpace(req.FinishedAt),
+		strings.TrimSpace(req.OperationID), PlanningOperationStatusQueued,
+	)
+	if err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
+	} else if changed != 1 {
+		return rollbackPlanningTx(tx, "fail queued planning operation", ErrPlanningLeaseConflict)
+	}
+	if err := resolveCancelledPlanningRetryTx(ctx, tx, operation.OperationID, req.FinishedAt); err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
+	}
+	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt); err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", fmt.Errorf("fail queued planning session: %w", err))
+	}
+	if _, err := insertPlanningOperationEvent(ctx, tx, req.TerminalEvent); err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit fail queued planning operation: %w", err)
+	}
+	return nil
+}
+
+func restoreQueuedOperationSession(ctx context.Context, tx *sql.Tx, operation PlanningOperation, updatedAt string) error {
+	sessionUpdate := newUpdateBuilder("planning_sessions").Set("updated_at", strings.TrimSpace(updatedAt))
+	sessionUpdate.Where("planning_session_id = ?", operation.PlanningSessionID)
+	switch operation.Type {
+	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate:
+		sessionUpdate.Set("conversation_state", string(PlanningSessionConversationStateReady))
+		if operation.Type == PlanningOperationTypeRegenerate {
+			previousLeafID, err := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
+			if err != nil {
+				return err
+			}
+			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(previousLeafID))
+		}
+		sessionUpdate.Where("current_operation_id = ?", operation.OperationID)
+	case PlanningOperationTypeGenerateTitle:
+		sessionUpdate.Set("current_title_operation_id", nil)
+		sessionUpdate.Where("current_title_operation_id = ?", operation.OperationID)
+	}
+	result, err := sessionUpdate.Exec(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return err
+	} else if changed != 1 {
+		return ErrPlanningLeaseConflict
 	}
 	return nil
 }
@@ -852,6 +936,20 @@ func validateFinalizeOperationRequest(req FinalizeOperationRequest) error {
 		}
 	default:
 		return fmt.Errorf("unsupported finalize kind: %d", req.Kind)
+	}
+	if req.MessageCompletedEvent != nil {
+		if req.Kind == FinalizeFail || req.Kind == FinalizeCancel {
+			return fmt.Errorf("message completed event is not valid for %s finalize", req.Kind)
+		}
+		if err := validatePlanningOperationEventAppend(*req.MessageCompletedEvent); err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.MessageCompletedEvent.EventType) != "message.completed" {
+			return fmt.Errorf("message completed event has type %q", strings.TrimSpace(req.MessageCompletedEvent.EventType))
+		}
+		if strings.TrimSpace(req.MessageCompletedEvent.OperationID) != strings.TrimSpace(req.OperationID) {
+			return fmt.Errorf("message completed event operation id does not match finalize operation")
+		}
 	}
 	if req.TerminalEvent != nil {
 		if err := validatePlanningOperationEventAppend(*req.TerminalEvent); err != nil {
@@ -1339,10 +1437,12 @@ func (s *PlanningStore) RenewOperationLease(ctx context.Context, operationID str
 	if trimmedOperationID == "" || trimmedLeaseOwner == "" || trimmedLeaseExpiresAt == "" || trimmedHeartbeatAt == "" {
 		return fmt.Errorf("operation id and lease fields are required")
 	}
-	result, err := s.db.ExecContext(ctx,
-		`UPDATE planning_operations
+	query := fmt.Sprintf(`UPDATE planning_operations
 		 SET lease_expires_at = ?, last_heartbeat_at = ?
-		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running' AND julianday(lease_expires_at) > julianday(?)`,
+		 WHERE operation_id = ? AND lease_owner = ? AND lease_version = ? AND status = 'running' AND %s`,
+		timestamporder.ComparisonSQL("lease_expires_at", "?", ">"),
+	)
+	result, err := s.db.ExecContext(ctx, query,
 		trimmedLeaseExpiresAt,
 		trimmedHeartbeatAt,
 		trimmedOperationID,

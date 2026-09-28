@@ -72,14 +72,21 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
         connection: state.connection,
       };
     }
-    case "event":
+    case "event": {
       if (!state.operation || state.operation.operationId !== action.event.run_id) {
         return state;
       }
+      const startsFreshFormalizeAttempt =
+        state.operation.kind === "formalize" &&
+        action.event.type === "generic" &&
+        action.event.payload.phase === "retry_scheduled" &&
+        action.event.seq > state.operation.lastEventSeq;
+      const operation = reducePlannerOperationEvent(state.operation, action.event);
       return {
-        operation: reducePlannerOperationEvent(state.operation, action.event),
+        operation: startsFreshFormalizeAttempt ? { ...operation, formalizeText: "" } : operation,
         connection: state.connection,
       };
+    }
     case "connection":
       return { ...state, connection: action.connection };
     default:

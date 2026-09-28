@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -579,6 +580,17 @@ func TestPlanningProviderInvocationCreationAndActivationRequireActiveLease(t *te
 func TestPlanningOperationLeaseFencesUseTemporalFractionComparisons(t *testing.T) {
 	ctx := context.Background()
 
+	t.Run("renew allows the nanosecond before expiry", func(t *testing.T) {
+		store, operation := newPlanningProviderSettlementTestStore(t)
+		const leaseExpiresAt = "2026-04-21T16:00:00.100000001Z"
+		if _, err := store.db.Exec(`UPDATE planning_operations SET lease_expires_at = ? WHERE operation_id = ?`, leaseExpiresAt, operation.OperationID); err != nil {
+			t.Fatalf("set nanosecond lease expiry: %v", err)
+		}
+		if err := store.RenewOperationLease(ctx, operation.OperationID, "worker_1", 1, "2026-04-21T16:00:01Z", "2026-04-21T16:00:00.100000000Z"); err != nil {
+			t.Fatalf("renew one nanosecond before lease expiry: %v", err)
+		}
+	})
+
 	t.Run("renew rejects expired fractional lease", func(t *testing.T) {
 		store, operation := newPlanningProviderSettlementTestStore(t)
 		if _, err := store.db.Exec(`UPDATE planning_operations SET lease_expires_at = '2026-04-21T16:00:00.1Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
@@ -623,8 +635,11 @@ func TestPlanningOperationLeaseFencesUseTemporalFractionComparisons(t *testing.T
 
 func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, PlanningOperation) {
 	t.Helper()
+	return newPlanningProviderSettlementTestStoreWithDB(t, openTestDB(t))
+}
 
-	db := openTestDB(t)
+func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*PlanningStore, PlanningOperation) {
+	t.Helper()
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewPlanningStore(db)
 	ctx := context.Background()
