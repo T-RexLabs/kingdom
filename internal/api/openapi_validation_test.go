@@ -266,6 +266,67 @@ func TestOpenAPISecuredOperationsDeclareCanonicalValidationAndAuthErrors(t *test
 	}
 }
 
+func TestOpenAPISpecDocumentsRequestBodyLimits(t *testing.T) {
+	t.Parallel()
+
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatalf("load swagger: %v", err)
+	}
+	if !strings.Contains(swagger.Info.Description, "1 MiB") {
+		t.Fatalf("expected API description to document the default 1 MiB body limit, got %q", swagger.Info.Description)
+	}
+
+	path := swagger.Paths.Find("/decrees")
+	if path == nil || path.Post == nil {
+		t.Fatal("expected POST /decrees operation")
+	}
+	operation := path.Post
+	if !strings.Contains(operation.Description, "16 MiB") {
+		t.Fatalf("expected POST /decrees to document its 16 MiB body limit, got %q", operation.Description)
+	}
+	if operation.RequestBody == nil || operation.RequestBody.Value == nil || !strings.Contains(operation.RequestBody.Value.Description, "16 MiB") {
+		t.Fatalf("expected POST /decrees request body to document its 16 MiB limit, got %#v", operation.RequestBody)
+	}
+	if operation.Responses == nil {
+		t.Fatal("expected POST /decrees to declare its 413 request-body limit response")
+	}
+	tooLargeRef := operation.Responses.Status(http.StatusRequestEntityTooLarge)
+	if tooLargeRef == nil || tooLargeRef.Ref != "#/components/responses/DecreeRequestBodyTooLargeError" {
+		t.Fatalf("POST /decrees 413 response ref=%#v, want DecreeRequestBodyTooLargeError", tooLargeRef)
+	}
+	tooLarge := swagger.Components.Responses["DecreeRequestBodyTooLargeError"]
+	if tooLarge == nil || tooLarge.Value == nil || tooLarge.Value.Description == nil || !strings.Contains(*tooLarge.Value.Description, "non-retryable") {
+		t.Fatalf("expected 413 response to describe its non-retryable policy error, got %#v", tooLarge)
+	}
+	content := tooLarge.Value.Content.Get("application/json")
+	if content == nil || content.Schema == nil || content.Schema.Ref != "#/components/schemas/ErrorEnvelope" {
+		t.Fatalf("expected 413 response to use ErrorEnvelope, got %#v", content)
+	}
+	example, ok := content.Example.(map[string]interface{})
+	if !ok {
+		t.Fatalf("413 response example has type %T, want object", content.Example)
+	}
+	errorExample, ok := example["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("413 response error example has type %T, want object", example["error"])
+	}
+	if errorExample["code"] != "policy_violation" || errorExample["retryable"] != false || errorExample["category"] != "core" || errorExample["correlation_id"] != "api.request_body_limit" {
+		t.Fatalf("413 response example does not match the canonical body-limit error: %#v", errorExample)
+	}
+	if !strings.Contains(fmt.Sprint(errorExample["message"]), "16 MiB") {
+		t.Fatalf("413 response example message=%v, want decree limit", errorExample["message"])
+	}
+	details, ok := errorExample["details"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("413 response error details has type %T, want object", errorExample["details"])
+	}
+	limitBytes, validLimitBytes := details["limit_bytes"].(float64)
+	if !validLimitBytes || limitBytes != float64(maxDecreeCreateRequestBodyBytes) {
+		t.Fatalf("413 response example details=%#v, want limit_bytes=%d", errorExample["details"], maxDecreeCreateRequestBodyBytes)
+	}
+}
+
 func TestOpenAPISpecIncludesCanonicalExamplesForCoreSchemas(t *testing.T) {
 	t.Parallel()
 

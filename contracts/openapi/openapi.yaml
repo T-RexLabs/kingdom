@@ -2,6 +2,11 @@ openapi: 3.0.3
 info:
   title: Kingdom API
   version: 0.2.0
+  description: >-
+    Request bodies are limited to 1 MiB unless an operation documents a different
+    limit. POST /decrees allows up to 16 MiB to carry complete, storage-bounded
+    external issue text. Requests exceeding the applicable limit receive HTTP
+    413 with the canonical error envelope.
   license:
     name: Proprietary
     url: https://kingdom.local/license
@@ -442,6 +447,7 @@ paths:
         "200": { description: Updated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
   /connections/{id}/installation-candidates:
@@ -577,6 +583,7 @@ paths:
         "200": { description: Compact refresh result., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalRefreshResult" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
   /external-source-snapshots/{id}/comments:
@@ -639,6 +646,7 @@ paths:
         "201": { description: Snapshot adopted., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalAdoptionResult" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
   /health:
@@ -661,11 +669,13 @@ paths:
       tags: [decrees]
       operationId: createDecree
       summary: Create a decree entry.
+      description: The request body is limited to 16 MiB. Requests above this limit receive HTTP 413 with the canonical error envelope.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
+        description: Maximum request body size is 16 MiB, including any attached external issue text.
         content:
           application/json:
             schema:
@@ -685,6 +695,8 @@ paths:
           $ref: "#/components/responses/NotFoundError"
         "409":
           $ref: "#/components/responses/ConflictError"
+        "413":
+          $ref: "#/components/responses/DecreeRequestBodyTooLargeError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -755,6 +767,8 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1809,7 +1823,7 @@ paths:
       tags: [runs]
       operationId: retryNode
       summary: Queue a retry for one node.
-      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Retry request.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -1842,7 +1856,7 @@ paths:
       tags: [runs]
       operationId: rerunFromNode
       summary: Queue rerun from a node.
-      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Rerun request.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -2363,6 +2377,22 @@ components:
               category: core
               details: {}
               correlation_id: api.internal
+              occurred_at: "2026-04-30T12:00:00Z"
+    DecreeRequestBodyTooLargeError:
+      description: Canonical non-retryable policy error response for a decree request body exceeding the 16 MiB limit.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+          example:
+            error:
+              code: policy_violation
+              message: decree request body exceeds the 16 MiB limit
+              retryable: false
+              category: core
+              details:
+                limit_bytes: 16777216
+              correlation_id: api.request_body_limit
               occurred_at: "2026-04-30T12:00:00Z"
     BadRequestError:
       description: Canonical validation or request-shape error response envelope.
@@ -3287,8 +3317,8 @@ components:
       additionalProperties: false
       required: [title, body, state, repository, issue_number, canonical_url, created_at, updated_at]
       properties:
-        title: { type: string }
-        body: { type: string }
+        title: { type: string, description: "Maximum 1,024 UTF-8 bytes." }
+        body: { type: string, description: "Maximum 1,048,576 UTF-8 bytes." }
         state: { type: string, enum: [open, closed] }
         repository: { type: string, pattern: "^[^/]+/[^/]+$" }
         issue_number: { type: integer, minimum: 1 }

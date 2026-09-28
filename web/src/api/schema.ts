@@ -610,7 +610,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a decree entry. */
+        /**
+         * Create a decree entry.
+         * @description The request body is limited to 16 MiB. Requests above this limit receive HTTP 413 with the canonical error envelope.
+         */
         post: operations["createDecree"];
         delete?: never;
         options?: never;
@@ -1336,7 +1339,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a retry for one node.
-         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Retry request.
          */
         post: operations["retryNode"];
         delete?: never;
@@ -1356,7 +1359,7 @@ export interface paths {
         put?: never;
         /**
          * Queue rerun from a node.
-         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Rerun request.
          */
         post: operations["rerunFromNode"];
         delete?: never;
@@ -1892,7 +1895,9 @@ export interface components {
             next_cursor?: string;
         };
         NormalizedIssue: {
+            /** @description Maximum 1,024 UTF-8 bytes. */
             title: string;
+            /** @description Maximum 1,048,576 UTF-8 bytes. */
             body: string;
             /** @enum {string} */
             state: "open" | "closed";
@@ -3109,6 +3114,30 @@ export interface components {
                 "application/json": components["schemas"]["ErrorEnvelope"];
             };
         };
+        /** @description Canonical non-retryable policy error response for a decree request body exceeding the 16 MiB limit. */
+        DecreeRequestBodyTooLargeError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "error": {
+                 *         "code": "policy_violation",
+                 *         "message": "decree request body exceeds the 16 MiB limit",
+                 *         "retryable": false,
+                 *         "category": "core",
+                 *         "details": {
+                 *           "limit_bytes": 16777216
+                 *         },
+                 *         "correlation_id": "api.request_body_limit",
+                 *         "occurred_at": "2026-04-30T12:00:00Z"
+                 *       }
+                 *     }
+                 */
+                "application/json": components["schemas"]["ErrorEnvelope"];
+            };
+        };
         /** @description Canonical validation or request-shape error response envelope. */
         BadRequestError: {
             headers: {
@@ -4102,6 +4131,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4330,6 +4360,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4446,6 +4477,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4476,6 +4508,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
+        /** @description Maximum request body size is 16 MiB, including any attached external issue text. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateDecreeRequest"];
@@ -4495,6 +4528,7 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
+            413: components["responses"]["DecreeRequestBodyTooLargeError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4578,6 +4612,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
