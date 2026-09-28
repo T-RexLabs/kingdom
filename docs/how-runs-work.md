@@ -45,13 +45,15 @@ Important behavior:
 - assistant answers can have multiple variants.
 - one assistant variant can be activated as the canonical transcript entry.
 - `formalize` produces the current planning draft.
+- interactive `reply` / `regenerate` output uses the structured-question contract; `formalize` returns a titled Markdown plan without that protocol, and `generate_title` returns only a title line.
 - `generate_title` runs as a durable planner operation through `POST /api/v1/acp/runs`, uses the session's dedicated title-operation lane, and updates the session title only after server-owned settlement succeeds.
 - `generate_title` does not claim the session's interactive `current_operation_id` slot or change `conversation_state`, so title generation can run in the background while interactive planning continues.
 - context refresh exists as an explicit API call on the session.
-- planner stream text is provisional operator feedback; canonical planner state comes from persisted message variants, drafts, and session fields rather than from transient stream output.
+- planner stream text and `message.part` events are provisional operator feedback; `message.completed` is committed atomically with the canonical message, draft, or title, provider settlement, and `run.completed`.
 - provider-backed planner work settles through planner-specific runtime-owned invocation, evidence, and settlement records before canonical planning tables are updated.
 - planner success uses the provider's adjudicated terminal success plus non-empty runtime-assembled output. Planning never uses a `kingdom_complete_attempt` receipt; process exit, provisional stream text, and export output are not success authority.
 - planner operations persist canonical state through planning message variants, drafts, and session fields; planner settlement records authorize those writes but do not replace the planning tables as transcript/draft/session truth.
+- stale recovery consults durable ACP operation progress before retrying; observed progress can suppress an automatic retry but cannot create a canonical message or draft without settlement.
 
 ### Planner Streaming and Recovery
 
@@ -202,6 +204,7 @@ Before execution, the runtime resolves one shared execution target for the run.
 - Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<decree-title-slug>-<run_id>/` next to the repository's main worktree root
 - if the configured project root is nested inside the repository, execution is scoped back to that same relative subdirectory inside the linked worktree
 - that scoped project directory becomes the shared execution and publish target for the run
+- terminal worktree cleanup is bounded and resumable; Retry/Rerun cancels cleanup before deletion starts, but returns `409 dependency_blocked` once deletion begins until filesystem removal and Git pruning finish. A later dispatch recreates the checkout from its pinned seed commit.
 
 ### Snapshot Tracking
 

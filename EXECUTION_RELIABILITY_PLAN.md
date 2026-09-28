@@ -936,15 +936,16 @@ Centralize provider runtime limits for:
 - stderr diagnostic tail.
 - Provider event-line bytes.
 - Receipt entries and bytes.
-- Prompt bytes.
 - Workspace traversal entries and bytes.
 - Startup replay batch sizes.
+
+Send complete first-party decree and planner content to OpenCode over stdin. Do not impose a fixed aggregate provider-prompt byte maximum or truncate/reject prompts based on their assembled byte size. Planner external evidence uses `external-context-v3` without a separate assembly byte budget; external-source API and storage limits remain in force.
 
 Store a bounded stderr tail rather than unbounded stderr.
 
 Reject oversized canonical output with a typed non-retryable error.
 
-Validate prompt size before process launch. Do not rely on operating-system argument limits.
+Do not place prompt content in command-line arguments or reject it based on aggregate byte size before launch.
 
 ### Tests
 
@@ -957,13 +958,13 @@ Cover:
 - Exact resource boundaries and one-byte or one-entry overflow.
 - Large malformed provider events.
 - Bounded stderr behavior.
-- Oversized prompt rejection before provider launch.
+- Full first-party prompt delivery through stdin, including content beyond the former aggregate byte cap.
 
 ### Phase Exit Criteria
 
 - Critical SQLite contention is retried at the transaction boundary.
 - No external side effect can replay with a busy transaction.
-- Every provider-controlled accumulation has one tested upper bound.
+- Every non-prompt provider-controlled accumulation has one tested upper bound; prompt input is delivered without an aggregate Kingdom byte ceiling, and provider context-window failures remain explicit.
 - Resource-limit errors are typed and operator-safe.
 
 ## Phase 8: Canonical Logical-Node API
@@ -1421,7 +1422,7 @@ The implementation is complete only when:
 - Retry causes remain prominent when attempts are grouped.
 - Every physical attempt remains auditable.
 - SQLite contention does not duplicate state or side effects.
-- Every provider-controlled input and output is bounded.
+- Provider event, output, receipt, workspace, and replay accumulation remains bounded; Kingdom imposes no fixed aggregate provider-prompt byte maximum.
 - Desktop and mobile UX are responsive, accessible, and professional.
 - No superseded implementation or compatibility path remains.
 - The independent review gauntlet has passed.

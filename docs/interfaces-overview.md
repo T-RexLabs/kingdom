@@ -24,7 +24,7 @@ Browser flow:
 
 Actor and authority headers do not exist in the public contract. Identity and fixed allfather authority come only from the verified local principal.
 
-All API request bodies have a 1 MiB transport limit and return the canonical error envelope with HTTP `413` when exceeded. Request reads and idle connections are time-bounded; SSE response writes are not.
+Most API request bodies have a 1 MiB transport limit; `POST /decrees` allows up to 16 MiB so complete, storage-bounded external issue text can be issued without clipping. Requests beyond their route's limit return the canonical error envelope with HTTP `413`. Request reads and idle connections are time-bounded; SSE response writes are not.
 
 ## Web UI Surfaces
 
