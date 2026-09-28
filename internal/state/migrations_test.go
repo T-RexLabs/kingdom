@@ -821,9 +821,9 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql"}
+	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql", "0004_resumable_workspace_tree_cleanup.up.sql", "0005_unbounded_planning_external_context.up.sql"}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
-		t.Fatalf("expected only consolidated canonical migrations, got %v", canonicalNames)
+		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)
 	}
 
 	for _, name := range canonicalNames {
@@ -960,6 +960,53 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 	assertNoForeignKeyTo("external_source_links", "planning_sessions", "decrees")
 	assertNoForeignKeyTo("planning_external_source_adoptions", "planning_sessions")
 	assertNoForeignKeyTo("planning_operation_external_snapshots", "planning_operations")
+}
+
+func TestFreshDatabaseGetsFencedResumableManagedWorktreeCleanupSchema(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
+	}
+	migrations := make([]SQLMigration, 0, len(names))
+	for _, name := range names {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply canonical migrations: %v", err)
+	}
+
+	for _, column := range []string{"cleanup_cursor", "cleanup_owner", "cleanup_owner_pid", "cleanup_owner_identity_token", "cleanup_fence", "cleanup_started"} {
+		if !columnExists(t, db, "run_worktrees", column) {
+			t.Fatalf("run_worktrees.%s is missing", column)
+		}
+	}
+	if !columnExists(t, db, "run_execution_targets", "cleanup_cursor") {
+		t.Fatal("run_execution_targets.cleanup_cursor is missing")
+	}
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO run_worktrees (run_id, repo_common_dir, main_worktree_root, project_relpath, worktree_name, seed_commit_oid, state, created_at, last_used_at) VALUES ('run_1', '/repo/.git', '/repo', '.', 'managed-run', '1111111111111111111111111111111111111111', 'active', '2026-08-15T12:00:00Z', '2026-08-15T12:00:00Z')`)
+
+	var cursor, owner, ownerIdentity string
+	var ownerPID, fence, started int
+	if err := db.QueryRow(`SELECT cleanup_cursor, cleanup_owner, cleanup_owner_pid, cleanup_owner_identity_token, cleanup_fence, cleanup_started FROM run_worktrees WHERE run_id = 'run_1'`).Scan(&cursor, &owner, &ownerPID, &ownerIdentity, &fence, &started); err != nil {
+		t.Fatalf("read default run worktree cleanup fence: %v", err)
+	}
+	if cursor != "" || owner != "" || ownerPID != 0 || ownerIdentity != "" || fence != 0 || started != 0 {
+		t.Fatalf("unexpected initial cleanup state: cursor=%q owner=%q owner_pid=%d owner_identity=%q fence=%d started=%d", cursor, owner, ownerPID, ownerIdentity, fence, started)
+	}
+	if _, err := db.Exec(`UPDATE run_worktrees SET cleanup_fence = -1 WHERE run_id = 'run_1'`); err == nil {
+		t.Fatal("schema accepted a negative worktree cleanup fence")
+	}
+	if _, err := db.Exec(`UPDATE run_worktrees SET cleanup_started = 2 WHERE run_id = 'run_1'`); err == nil {
+		t.Fatal("schema accepted an invalid worktree cleanup-started flag")
+	}
 }
 
 func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
