@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -54,6 +55,24 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 		ActorID: authenticatedActorID(r.Context()),
 	})
 	if err != nil {
+		var commitErr *state.CommitOutcomeUnknownError
+		if errors.As(err, &commitErr) {
+			persisted, readbackErr := s.confirmDecreeCreationAfterCommitError(r.Context(), decreeID, createdAt)
+			if readbackErr != nil {
+				slog.Warn("decree creation commit outcome unresolved", "decree_id", decreeID, "commit_error", err, "readback_error", readbackErr)
+				writeCommitOutcomePending(w, r, "api.create_decree",
+					"decree creation outcome is still being confirmed; retry later with the same idempotency key",
+					map[string]any{"decree_id": decreeID})
+				return
+			}
+			if !persisted {
+				s.writeInternalError(w, "create decree failed")
+				return
+			}
+			err = nil
+		}
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, state.ErrDecreeLineageInvalid):
 			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), "api.create_decree", nil)
@@ -73,6 +92,26 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 		DecreeId:  decreeID,
 		CreatedAt: mustParseRFC3339(createdAt),
 	})
+}
+
+func (s *Server) confirmDecreeCreationAfterCommitError(ctx context.Context, decreeID, createdAt string) (bool, error) {
+	readbackCtx, cancel := commitOutcomeReadbackContext(ctx)
+	defer cancel()
+
+	// CreateDecree writes its provenance links in the same transaction, so the
+	// server-generated decree row proves that the complete bundle committed.
+	var durableCreatedAt string
+	err := s.db.QueryRowContext(readbackCtx, `SELECT created_at FROM decrees WHERE decree_id = ?`, strings.TrimSpace(decreeID)).Scan(&durableCreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("confirm decree creation after commit error: %w", err)
+	}
+	if durableCreatedAt != createdAt {
+		return false, fmt.Errorf("confirm decree creation after commit error: stored timestamp did not match request")
+	}
+	return true, nil
 }
 
 func (s *Server) handlePublishWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -283,8 +322,19 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		s.writeInternalError(w, "create run failed")
-		return
+		persisted, reconcileErr := s.confirmRunCreationAfterCommitError(r.Context(), runID, req.DecreeId)
+		if !persisted {
+			if reconcileErr != nil {
+				slog.Warn("run creation commit outcome unresolved", "run_id", runID, "commit_error", err, "reconcile_error", reconcileErr)
+				markIdempotencyOutcomeIndeterminate(r.Context())
+				writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyPending,
+					"run creation outcome is still being confirmed; retry later with the same idempotency key",
+					"api.create_run", map[string]any{"run_id": runID})
+				return
+			}
+			s.writeInternalError(w, "create run failed")
+			return
+		}
 	}
 	committed = true
 
@@ -306,6 +356,25 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		PublishMode:               refRunPublishMode(gen.RunPublishMode(publishMode)),
 		ModelSelection:            normalizedModelSelection,
 	})
+}
+
+func (s *Server) confirmRunCreationAfterCommitError(ctx context.Context, runID, decreeID string) (bool, error) {
+	reconcileCtx, cancel := commitOutcomeReadbackContext(ctx)
+	defer cancel()
+
+	var exists int
+	err := s.db.QueryRowContext(reconcileCtx,
+		`SELECT 1 FROM workflow_runs WHERE run_id = ? AND decree_id = ? LIMIT 1`,
+		runID,
+		decreeID,
+	).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("confirm run creation after commit error: %w", err)
+	}
+	return true, nil
 }
 
 func resolveCreateRunLoopSettings(definition workflow.Definition, req gen.CreateRunRequest) (workflow.LoopSettings, error) {

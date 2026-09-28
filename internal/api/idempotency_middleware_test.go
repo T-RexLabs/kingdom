@@ -58,6 +58,75 @@ func TestIdempotencyMiddlewareRequiresKeyOnMutations(t *testing.T) {
 	}
 }
 
+func TestIdempotencyMiddlewareRejectsOversizedUnknownLengthBodyBeforeReservation(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+
+	called := false
+	routes := http.NewServeMux()
+	routes.HandleFunc("DELETE /connections/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// Model the post-validation middleware boundary: idempotency buffers the
+	// request beneath the outer request-body limiter.
+	handler := limitRequestBody(NewIdempotencyMiddleware(store, time.Now)(routes))
+
+	key := testIdempotencyKey(t, "oversized-unknown-length", time.Now())
+	body := bytes.Repeat([]byte("x"), int(maxAPIRequestBodyBytes)+1)
+	req := httptest.NewRequest(http.MethodDelete, "/connections/connection-test", bytes.NewReader(body))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	req.Header.Set(idempotencyKeyHeader, key)
+	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	assertCanonicalError(t, res.Body.Bytes(), "policy_violation", "api.request_body_limit", "core", false)
+	envelope := decodeCanonicalErrorEnvelope(t, res.Body.Bytes())
+	if envelope.Error.Message != "request body exceeds the 1 MiB limit" {
+		t.Fatalf("message=%q", envelope.Error.Message)
+	}
+	if got := envelope.Error.Details["limit_bytes"]; got != float64(maxAPIRequestBodyBytes) {
+		t.Fatalf("limit_bytes=%v", got)
+	}
+	if called {
+		t.Fatal("oversized request reached the mutation handler")
+	}
+	if _, found, err := store.Lookup(context.Background(), "DELETE /connections/{id}", "actor_1", key); err != nil {
+		t.Fatalf("lookup idempotency reservation: %v", err)
+	} else if found {
+		t.Fatal("oversized request reserved its idempotency key")
+	}
+}
+
+func TestIdempotencyMiddlewareAcceptsDecreeBodyAboveGenericLimit(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+	body := bytes.Repeat([]byte("x"), int(maxAPIRequestBodyBytes)+1)
+	called := false
+	var bodyBytes int64
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/v1/decrees", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		bodyBytes, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := limitRequestBody(NewIdempotencyMiddleware(store, time.Now)(routes))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/decrees", bytes.NewReader(body))
+	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "large-decree-body", time.Now()))
+	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent || !called || bodyBytes != int64(len(body)) {
+		t.Fatalf("decree idempotency request status=%d called=%t bytes=%d, want success with %d body bytes: %s", res.Code, called, bodyBytes, len(body), res.Body.String())
+	}
+}
+
 func TestIdempotencyMiddlewareRejectsMalformedAndFutureKeys(t *testing.T) {
 	store := newIdempotencyStoreForAPITest(t)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)

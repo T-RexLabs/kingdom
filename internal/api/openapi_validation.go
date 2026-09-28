@@ -40,7 +40,8 @@ func NewOpenAPIRequestValidator() (func(http.Handler) http.Handler, error) {
 			statusCode := opts.StatusCode
 			var maxBytesError *http.MaxBytesError
 			if errors.As(err, &maxBytesError) {
-				statusCode = http.StatusRequestEntityTooLarge
+				writeRequestBodyTooLargeForLimit(w, requestBodyLimitForRequest(r))
+				return
 			}
 			code := validationErrorCodeForStatus(statusCode)
 			correlationID := "openapi-validator"

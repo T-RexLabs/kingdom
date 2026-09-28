@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"kingdom/internal/core/errorcatalog"
@@ -28,6 +29,24 @@ const (
 )
 
 var errIdempotencyPending = errors.New("idempotency request is still pending")
+
+type idempotencyOutcomeMarkerKey struct{}
+
+type idempotencyOutcomeMarker struct {
+	indeterminate atomic.Bool
+}
+
+// markIdempotencyOutcomeIndeterminate leaves the request's durable reservation
+// pending so retries cannot re-execute a mutation whose side effect is unknown.
+func markIdempotencyOutcomeIndeterminate(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	marker, ok := ctx.Value(idempotencyOutcomeMarkerKey{}).(*idempotencyOutcomeMarker)
+	if ok {
+		marker.indeterminate.Store(true)
+	}
+}
 
 type sensitiveIdempotencyResponse struct {
 	status      int
@@ -103,6 +122,11 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				writeRequestBodyTooLargeForLimit(w, requestBodyLimitForRequest(r))
+				return
+			}
 			writeCatalogError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "read request body")
 			return
 		}
@@ -172,7 +196,14 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		capture := newResponseCapture()
-		next.ServeHTTP(capture, r)
+		outcome := &idempotencyOutcomeMarker{}
+		requestCtx := context.WithValue(r.Context(), idempotencyOutcomeMarkerKey{}, outcome)
+		next.ServeHTTP(capture, r.WithContext(requestCtx))
+		if outcome.indeterminate.Load() {
+			// Write the owner's response without completing the reservation.
+			capture.WriteTo(w)
+			return
+		}
 
 		sensitiveResponse := isSensitiveIdempotencyResponse(r)
 		sensitiveExpiresAt := time.Time{}
