@@ -43,7 +43,7 @@ func TestDeviceOAuthRequiresExpiringRotatingTokensAndFiltersCandidates(t *testin
 		case "/user":
 			_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
 		case "/user/installations":
-			_, _ = w.Write([]byte(`{"total_count":3,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"},{"id":3,"app_id":1,"client_id":"wrong","app_slug":"kingdom","target_id":11,"account":{"id":11,"login":"spoof"},"permissions":{"metadata":"read","issues":"read"},"events":[]},{"id":4,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":12,"account":{"id":12,"login":"overprivileged"},"permissions":{"metadata":"read","issues":"write"},"events":[]}]}`))
+			_, _ = w.Write([]byte(`{"total_count":3,"installations":[{"id":2,"app_id":1,"app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"},{"id":3,"app_id":1,"client_id":"wrong","app_slug":"kingdom","target_id":11,"account":{"id":11,"login":"spoof"},"permissions":{"metadata":"read","issues":"read"},"events":[]},{"id":4,"app_id":1,"app_slug":"kingdom","target_id":12,"account":{"id":12,"login":"overprivileged"},"permissions":{"metadata":"read","issues":"write"},"events":[]}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -62,7 +62,7 @@ func TestDeviceOAuthRequiresExpiringRotatingTokensAndFiltersCandidates(t *testin
 		t.Fatalf("poll=%#v err=%v", poll, err)
 	}
 	candidates, err := client.Candidates(context.Background(), poll.Tokens.AccessToken, "IvShared", "kingdom")
-	if err != nil || len(candidates) != 1 || candidates[0].InstallationID != "2" {
+	if err != nil || len(candidates) != 1 || candidates[0].InstallationID != "2" || candidates[0].ClientID != "IvShared" {
 		t.Fatalf("candidates=%#v err=%v", candidates, err)
 	}
 	if candidates[0].RepositorySelection != "selected" {
@@ -103,7 +103,7 @@ func TestUserStrategyUsesInstallationScopedRepositoryEndpointAndRetriesOne401(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}
+	connection := state.ExternalConnection{ConnectionID: "connection-1", CredentialStrategy: "user_access_token", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10"}}}
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
 	for range 2 {
@@ -156,7 +156,7 @@ func TestSharedListInstallationsRefreshesExpiredTokenAndRetriesOne401(t *testing
 						w.WriteHeader(http.StatusUnauthorized)
 						return
 					}
-					_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}]}`))
+					_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}]}`))
 				default:
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -209,7 +209,7 @@ func TestStaleGenerationRefreshCannotOverwriteNewerTokenGeneration(t *testing.T)
 			}
 			_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
 		case "/user/installations":
-			_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`))
+			_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -444,7 +444,7 @@ func TestCandidateRepositoryScopeIsAllowlistedButNeverBlocksAnInstallation(t *te
 				case "/user":
 					_, _ = w.Write([]byte(`{"id":7,"login":"authorizer"}`))
 				case "/user/installations":
-					_, _ = fmt.Fprintf(w, `{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,%s"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`, test.provided)
+					_, _ = fmt.Fprintf(w, `{"total_count":1,"installations":[{"id":2,"app_id":1,"app_slug":"kingdom","target_id":10,%s"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[]}]}`, test.provided)
 				default:
 					w.WriteHeader(http.StatusNotFound)
 				}

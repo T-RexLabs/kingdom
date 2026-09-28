@@ -108,6 +108,8 @@ type Server struct {
 	externalRegistry        *external.Registry
 	githubKeys              *githubexternal.KeyStore
 	githubUserTokens        *githubexternal.UserTokenStore
+	appKeyLifecycle         connectionCredentialLifecycleStore
+	userTokenLifecycle      connectionCredentialLifecycleStore
 	githubSetup             *githubexternal.SetupClient
 	githubDeviceOAuth       *githubexternal.DeviceOAuthClient
 	githubSharedAppSlug     string
@@ -393,6 +395,8 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		externalRegistry:           external.NewRegistry(adapters),
 		githubKeys:                 githubKeys,
 		githubUserTokens:           githubUserTokens,
+		appKeyLifecycle:            githubKeys,
+		userTokenLifecycle:         githubUserTokens,
 		githubSetup:                githubSetup,
 		githubDeviceOAuth:          githubDeviceOAuth,
 		githubSharedAppSlug:        sharedSlug,
@@ -442,15 +446,13 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("list connections for removal reconciliation: %w", listErr)
 		}
 		for _, connection := range connections {
+			lifecycleStore, storeErr := s.connectionCredentialLifecycleStore(connection.CredentialStrategy)
+			if storeErr != nil {
+				return nil, fmt.Errorf("reconcile connection removal: %w", storeErr)
+			}
 			reconcile := func() error {
-				var removeErr error
-				if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
-					removeErr = githubUserTokens.RemoveAllWhileLocked(connection.ConnectionID)
-				} else if githubKeys != nil {
-					removeErr = githubKeys.RemoveAllWhileLocked(connection.ConnectionID)
-				}
-				if removeErr != nil {
-					return removeErr
+				if err := lifecycleStore.RemoveAllWhileLocked(connection.ConnectionID); err != nil {
+					return err
 				}
 				if connection.Lifecycle == "removed" {
 					return nil
@@ -458,13 +460,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 				at := now().UTC().Format(time.RFC3339Nano)
 				return s.externalStore.UpdateConnectionStateAudited(startupCtx, connection.ConnectionID, "removed", "removed", "", at, false, "system", idGenerator("external_audit"), "connection.removal_reconciled")
 			}
-			var reconcileErr error
-			if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
-				reconcileErr = githubUserTokens.WithConnectionLock(connection.ConnectionID, reconcile)
-			} else if githubKeys != nil {
-				reconcileErr = githubKeys.WithConnectionLock(connection.ConnectionID, reconcile)
-			}
-			if reconcileErr != nil {
+			if reconcileErr := lifecycleStore.WithConnectionLock(connection.ConnectionID, reconcile); reconcileErr != nil {
 				return nil, fmt.Errorf("reconcile connection removal: %w", reconcileErr)
 			}
 		}

@@ -272,22 +272,69 @@ func assertDecreeProvenanceWriteCount(t *testing.T, db *sql.DB, decreeID string,
 	}
 }
 
+func TestCaptureValidationEnforcesIndependentIssueStorageBounds(t *testing.T) {
+	req := CaptureExternalIssueRequest{
+		SourceID: "source-boundary", SnapshotID: "snapshot-boundary", ConnectionID: "connection-boundary", ProviderNativeID: "100", RepositoryNativeID: "200",
+		Issue: NormalizedExternalIssue{
+			Title:        strings.Repeat("t", MaxExternalIssueTitleBytes),
+			Body:         strings.Repeat("b", MaxExternalIssueBodyBytes),
+			State:        "open",
+			Repository:   "owner/repo",
+			IssueNumber:  1,
+			CanonicalURL: "https://github.com/owner/repo/issues/1",
+			CreatedAt:    "2026-08-12T10:00:00Z",
+			UpdatedAt:    "2026-08-12T10:00:00Z",
+		},
+		FetchedAt: "2026-08-12T10:00:00Z",
+	}
+	if err := validateCapture(req); err != nil {
+		t.Fatalf("exact external issue storage boundaries rejected: %v", err)
+	}
+	req.Issue.Title += "x"
+	if err := validateCapture(req); err == nil || !strings.Contains(err.Error(), "external issue title exceeds") {
+		t.Fatalf("oversized stored title error=%v, want title storage-bound error", err)
+	}
+	req.Issue.Title = strings.Repeat("t", MaxExternalIssueTitleBytes)
+	req.Issue.Body += "x"
+	if err := validateCapture(req); err == nil || !strings.Contains(err.Error(), "external issue body exceeds") {
+		t.Fatalf("oversized stored body error=%v, want body storage-bound error", err)
+	}
+}
+
 func TestExternalCommentBounds(t *testing.T) {
-	comments := make([]ExternalComment, 105)
+	comments := make([]ExternalComment, MaxExternalComments+5)
 	for i := range comments {
-		comments[i] = ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", MaxExternalCommentBytes+10)}
+		comments[i] = ExternalComment{ProviderCommentID: fmt.Sprintf("comment-%03d", i), Body: "x"}
 	}
 	retained, total, truncated := boundExternalComments(comments)
-	if !truncated || len(retained) > MaxExternalComments || total > MaxExternalCommentsBytes {
+	if !truncated || len(retained) != MaxExternalComments || total != MaxExternalComments {
 		t.Fatalf("retained=%d total=%d truncated=%v", len(retained), total, truncated)
+	}
+	if retained[0].ProviderCommentID != "comment-005" || retained[len(retained)-1].ProviderCommentID != "comment-104" {
+		t.Fatalf("comment-count bound retained the wrong window: first=%q last=%q", retained[0].ProviderCommentID, retained[len(retained)-1].ProviderCommentID)
 	}
 }
 
 func TestExternalCommentBoundsPreserveUTF8(t *testing.T) {
 	comments := []ExternalComment{{Body: strings.Repeat("x", MaxExternalCommentBytes-1) + "界"}}
-	retained, _, truncated := boundExternalComments(comments)
-	if !truncated || len(retained) != 1 || !utf8.ValidString(retained[0].Body) || len(retained[0].Body) > MaxExternalCommentBytes {
+	retained, total, truncated := boundExternalComments(comments)
+	wantPerCommentBytes := MaxExternalCommentBytes - 1
+	if !truncated || len(retained) != 1 || !utf8.ValidString(retained[0].Body) || len(retained[0].Body) != wantPerCommentBytes || retained[0].RetainedBytes != wantPerCommentBytes || total != wantPerCommentBytes {
 		t.Fatalf("invalid per-comment truncation: %#v", retained)
+	}
+
+	comments = make([]ExternalComment, 5)
+	for i := range comments {
+		comments[i] = ExternalComment{Body: strings.Repeat("x", MaxExternalCommentBytes)}
+	}
+	retained, total, truncated = boundExternalComments(comments)
+	if !truncated || len(retained) != MaxExternalCommentsBytes/MaxExternalCommentBytes || total != MaxExternalCommentsBytes {
+		t.Fatalf("aggregate truncation total=%d truncated=%v", total, truncated)
+	}
+	for _, comment := range retained {
+		if !utf8.ValidString(comment.Body) {
+			t.Fatalf("aggregate truncation produced invalid UTF-8: %q", comment.Body)
+		}
 	}
 
 	comments = make([]ExternalComment, 0, 5)
@@ -295,9 +342,9 @@ func TestExternalCommentBoundsPreserveUTF8(t *testing.T) {
 		comments = append(comments, ExternalComment{Body: strings.Repeat("x", MaxExternalCommentBytes-1)})
 	}
 	comments = append(comments, ExternalComment{Body: "xx界"})
-	retained, total, truncated := boundExternalComments(comments)
-	if !truncated || total > MaxExternalCommentsBytes {
-		t.Fatalf("aggregate truncation total=%d truncated=%v", total, truncated)
+	retained, total, truncated = boundExternalComments(comments)
+	if !truncated || total > MaxExternalCommentsBytes || len(retained) != 5 || retained[4].Body != "xx" {
+		t.Fatalf("aggregate UTF-8 truncation total=%d retained=%#v truncated=%v", total, retained, truncated)
 	}
 	for _, comment := range retained {
 		if !utf8.ValidString(comment.Body) {
@@ -550,61 +597,118 @@ func TestPlanningOperationExternalContextCapsBindingsToRecentActiveSources(t *te
 	}
 }
 
-func TestPlanningOperationExternalContextUsesAggregateBudgets(t *testing.T) {
-	t.Run("comment budget", func(t *testing.T) {
-		fixture := newPlanningExternalBindingFixture(t, "comment-budget")
-		comments := []ExternalComment{
-			{ProviderCommentID: "1", Author: "one", Body: strings.Repeat("a", 20*1024), CanonicalURL: "https://example.test/1", CreatedAt: fixture.at, UpdatedAt: fixture.at},
-			{ProviderCommentID: "2", Author: "two", Body: strings.Repeat("界", 7*1024), CanonicalURL: "https://example.test/2", CreatedAt: fixture.at, UpdatedAt: fixture.at},
+func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFormerBudgets(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "complete-retained")
+	if ExternalAssemblerVersion != "external-context-v3" {
+		t.Fatalf("assembler version=%q, want external-context-v3", ExternalAssemblerVersion)
+	}
+	issueBody := strings.Repeat(`Complete issue evidence with UTF-8 界 and "quotes". `, 6000)
+	comments := make([]ExternalComment, MaxExternalComments)
+	for i := range comments {
+		body := fmt.Sprintf(`Comment %03d includes UTF-8 界 and "quotes". `, i)
+		comments[i] = ExternalComment{
+			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
+			Author:            fmt.Sprintf("author-%03d-界", i),
+			Body:              strings.Repeat(body, 24),
+			CanonicalURL:      fmt.Sprintf("https://example.test/issues/7#comment-%03d", i),
+			CreatedAt:         fixture.at,
+			UpdatedAt:         fixture.at,
 		}
-		first := fixture.capture(t, "source-a", "snapshot-a", "100", "A", "body", comments, fixture.at)
-		second := fixture.capture(t, "source-b", "snapshot-b", "101", "B", "body", comments, fixture.at)
-		fixture.link(t, "link-a", first, "adopt-a", fixture.at)
-		fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-		fixture.createOperation(t, "operation-budget")
+	}
+	snapshot := fixture.capture(t, "source-complete", "snapshot-complete", "100", `Complete "issue" 界`, issueBody, comments, fixture.at)
+	fixture.link(t, "link-complete", snapshot, "adopt-complete", fixture.at)
+	fixture.createOperation(t, "operation-complete-retained")
 
-		contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-budget")
-		if err != nil {
-			t.Fatal(err)
-		}
-		issueBytes, commentBytes := planningBindingByteTotals(t, fixture.db, "operation-budget")
-		if commentBytes > MaxPlannerCommentBytes || len(contextText) > MaxPlannerExternalBytes {
-			t.Fatalf("aggregate bytes issue=%d comments=%d", issueBytes, commentBytes)
-		}
-		assertExternalContextJSONValid(t, contextText)
-	})
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-complete-retained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondContext, secondIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-complete-retained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextText != secondContext || strings.Join(snapshotIDs, ",") != strings.Join(secondIDs, ",") {
+		t.Fatal("reloading immutable external context was not deterministic")
+	}
+	if len(snapshotIDs) != 1 || snapshotIDs[0] != snapshot.SnapshotID {
+		t.Fatalf("bound snapshots=%#v, want %q", snapshotIDs, snapshot.SnapshotID)
+	}
 
-	t.Run("total external budget", func(t *testing.T) {
-		fixture := newPlanningExternalBindingFixture(t, "external-budget")
-		comments := []ExternalComment{{ProviderCommentID: "1", Author: "one", Body: strings.Repeat("界", 12*1024), CanonicalURL: "https://example.test/1", CreatedAt: fixture.at, UpdatedAt: fixture.at}}
-		first := fixture.capture(t, "source-a", "snapshot-a", "100", "A", strings.Repeat("a", 48*1024), comments, fixture.at)
-		second := fixture.capture(t, "source-b", "snapshot-b", "101", "B", strings.Repeat("b", 48*1024), comments, fixture.at)
-		fixture.link(t, "link-a", first, "adopt-a", fixture.at)
-		fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-		fixture.createOperation(t, "operation-budget")
+	storedSnapshot, retainedComments, err := fixture.external.GetSnapshot(fixture.ctx, snapshot.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retainedComments) != MaxExternalComments || storedSnapshot.RetainedCommentCount != MaxExternalComments {
+		t.Fatalf("stored retained comments=%d metadata=%d, want %d", len(retainedComments), storedSnapshot.RetainedCommentCount, MaxExternalComments)
+	}
+	retainedCommentBytes := 0
+	expectedComments := make([]planningExternalComment, 0, len(retainedComments))
+	for i, comment := range retainedComments {
+		if comment.ProviderCommentID != comments[i].ProviderCommentID || comment.Body != comments[i].Body {
+			t.Fatalf("stored comment %d differs from retained source: got=%#v want=%#v", i, comment, comments[i])
+		}
+		if comment.RetainedBytes != len(comment.Body) || comment.RetainedBytes > MaxExternalCommentBytes {
+			t.Fatalf("stored comment %d retained bytes=%d body bytes=%d", i, comment.RetainedBytes, len(comment.Body))
+		}
+		retainedCommentBytes += comment.RetainedBytes
+		expectedComments = append(expectedComments, planningExternalComment{
+			Author:       comment.Author,
+			Body:         comment.Body,
+			CanonicalURL: comment.CanonicalURL,
+			CreatedAt:    comment.CreatedAt,
+			UpdatedAt:    comment.UpdatedAt,
+		})
+	}
+	if retainedCommentBytes != storedSnapshot.RetainedCommentBytes || retainedCommentBytes > MaxExternalCommentsBytes {
+		t.Fatalf("stored comment body bytes=%d metadata=%d, limit=%d", retainedCommentBytes, storedSnapshot.RetainedCommentBytes, MaxExternalCommentsBytes)
+	}
 
-		contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-budget")
-		if err != nil {
-			t.Fatal(err)
-		}
-		issueBytes, commentBytes := planningBindingByteTotals(t, fixture.db, "operation-budget")
-		unusedBytes := MaxPlannerExternalBytes - len(contextText)
-		if unusedBytes < 0 || commentBytes == 0 || commentBytes > MaxPlannerCommentBytes {
-			t.Fatalf("aggregate bytes issue=%d comments=%d", issueBytes, commentBytes)
-		}
-		assertExternalContextJSONValid(t, contextText)
-	})
+	issueJSON, err := json.Marshal(storedSnapshot.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentsJSON, err := json.Marshal(expectedComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issueJSON) <= 6*1024 || len(commentsJSON) <= 4*1024 || len(contextText) <= 6*1024 {
+		t.Fatalf("assembled content did not exceed former budgets: issue=%d comments=%d frame=%d", len(issueJSON), len(commentsJSON), len(contextText))
+	}
+	if !utf8.ValidString(contextText) {
+		t.Fatal("assembled context is not valid UTF-8")
+	}
+	assertExternalContextJSONValid(t, contextText)
+	wantOpeningFrame := fmt.Sprintf("<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE snapshot_id=%q assembler=%q>\n", snapshot.SnapshotID, ExternalAssemblerVersion)
+	wantJSONPayload := fmt.Sprintf("\nissue_bytes=%d\nissue_json=%s\ncomment_bytes=%d\ncomments_json=%s\n", len(issueJSON), issueJSON, len(commentsJSON), commentsJSON)
+	if !strings.HasPrefix(contextText, wantOpeningFrame) || !strings.Contains(contextText, wantJSONPayload) || !strings.HasSuffix(contextText, "\n</KINGDOM_UNTRUSTED_EXTERNAL_SOURCE>") {
+		t.Fatal("assembled external context lost its complete versioned frame or JSON payload")
+	}
+	if got := strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE"); got != 1 {
+		t.Fatalf("external frame count=%d, want 1", got)
+	}
+
+	var version, storedDigest string
+	var issueBytes, commentBytes int
+	if err := fixture.db.QueryRow(`SELECT assembler_version,context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-complete-retained' AND snapshot_id=?`, snapshot.SnapshotID).Scan(&version, &storedDigest, &issueBytes, &commentBytes); err != nil {
+		t.Fatal(err)
+	}
+	if version != ExternalAssemblerVersion || storedDigest != digest([]byte(contextText)) || issueBytes != len(issueJSON) || commentBytes != len(commentsJSON) {
+		t.Fatalf("immutable binding metadata version=%q digest=%q issue_bytes=%d comment_bytes=%d", version, storedDigest, issueBytes, commentBytes)
+	}
+	if issueBytes <= 131072 || commentBytes <= 65536 {
+		t.Fatalf("binding metadata did not exceed removed schema ceilings: issue_bytes=%d comment_bytes=%d", issueBytes, commentBytes)
+	}
 }
 
 func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T) {
 	fixture := newPlanningExternalBindingFixture(t, "complete-frames")
-	comments := make([]ExternalComment, 40)
+	comments := make([]ExternalComment, 12)
 	for i := range comments {
 		comments[i] = ExternalComment{
 			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
-			Author:            strings.Repeat(`author\"界`, 80),
-			Body:              strings.Repeat("quoted \\\" multibyte 界 ", 40),
-			CanonicalURL:      "https://example.test/" + strings.Repeat("metadata/", 80) + fmt.Sprint(i),
+			Author:            strings.Repeat(`author\"界`, 20),
+			Body:              strings.Repeat("quoted \\\" multibyte 界 ", 8),
+			CanonicalURL:      "https://example.test/" + strings.Repeat("metadata/", 20) + fmt.Sprint(i),
 			CreatedAt:         fixture.at,
 			UpdatedAt:         fixture.at,
 		}
@@ -619,7 +723,7 @@ func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(contextText) > MaxPlannerExternalBytes || !utf8.ValidString(contextText) {
+	if !utf8.ValidString(contextText) {
 		t.Fatalf("assembled bytes=%d valid_utf8=%v", len(contextText), utf8.ValidString(contextText))
 	}
 	if got := strings.Count(contextText, "\n\n"); got != 1 {
@@ -647,47 +751,39 @@ func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T)
 	}
 }
 
-func TestPlanningOperationExternalContextFillsExactWholePromptBoundary(t *testing.T) {
-	fixture := newPlanningExternalBindingFixture(t, "exact-boundary")
-	snapshot := fixture.capture(t, "source-boundary", "snapshot-boundary", "100", "Boundary", strings.Repeat("x", MaxPlannerExternalBytes), nil, fixture.at)
-	fixture.link(t, "link-boundary", snapshot, "adopt-boundary", fixture.at)
-	fixture.createOperation(t, "operation-boundary")
-	contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-boundary")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(contextText) != MaxPlannerExternalBytes {
-		t.Fatalf("assembled bytes=%d, want exact boundary %d", len(contextText), MaxPlannerExternalBytes)
-	}
-	assertExternalContextJSONValid(t, contextText)
-}
-
-func TestPlanningOperationExternalContextOmitsUnsafeFrameButKeepsBinding(t *testing.T) {
-	fixture := newPlanningExternalBindingFixture(t, "omitted-frame")
-	firstID := "snapshot-a-" + strings.Repeat("a", 70*1024)
-	secondID := "snapshot-b-" + strings.Repeat("b", 70*1024)
+func TestPlanningOperationExternalContextKeepsCompleteFramesBeyondFormerBudget(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "large-frame")
+	firstID := "snapshot-a-" + strings.Repeat("a", 7*1024)
+	secondID := "snapshot-b-" + strings.Repeat("b", 7*1024)
 	first := fixture.capture(t, "source-a", firstID, "100", "A", "body", nil, fixture.at)
 	second := fixture.capture(t, "source-b", secondID, "101", "B", "body", nil, fixture.at)
 	fixture.link(t, "link-a", first, "adopt-a", fixture.at)
 	fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-	fixture.createOperation(t, "operation-omitted-frame")
-	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-omitted-frame")
+	fixture.createOperation(t, "operation-large-frame")
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-large-frame")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshotIDs) != 2 || snapshotIDs[0] != firstID || snapshotIDs[1] != secondID {
-		t.Fatal("omitted frame changed immutable snapshot bindings")
+		t.Fatalf("large frames changed immutable snapshot bindings: %#v", snapshotIDs)
 	}
-	if strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE") != 0 || len(contextText) > MaxPlannerExternalBytes {
-		t.Fatalf("unexpected emitted context bytes=%d", len(contextText))
+	if got := strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE"); got != 2 || !strings.Contains(contextText, firstID) || !strings.Contains(contextText, secondID) {
+		t.Fatalf("large snapshot frames were omitted: frames=%d bytes=%d", got, len(contextText))
 	}
-	var omittedDigest string
-	var issueBytes, commentBytes int
-	if err := fixture.db.QueryRow(`SELECT context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-omitted-frame' AND snapshot_id=?`, secondID).Scan(&omittedDigest, &issueBytes, &commentBytes); err != nil {
-		t.Fatal(err)
+	if !utf8.ValidString(contextText) {
+		t.Fatal("assembled large frames are not valid UTF-8")
 	}
-	if omittedDigest != digest(nil) || issueBytes != 0 || commentBytes != 0 {
-		t.Fatalf("omitted binding metadata digest=%q issue=%d comments=%d", omittedDigest, issueBytes, commentBytes)
+	assertExternalContextJSONValid(t, contextText)
+	sections := strings.Split(contextText, "\n\n")
+	for i, snapshotID := range snapshotIDs {
+		var storedDigest string
+		var issueBytes, commentBytes int
+		if err := fixture.db.QueryRow(`SELECT context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-large-frame' AND snapshot_id=?`, snapshotID).Scan(&storedDigest, &issueBytes, &commentBytes); err != nil {
+			t.Fatal(err)
+		}
+		if storedDigest != digest([]byte(sections[i])) || issueBytes == 0 || commentBytes != len("[]") {
+			t.Fatalf("large frame %d binding digest=%q issue=%d comments=%d", i, storedDigest, issueBytes, commentBytes)
+		}
 	}
 }
 
@@ -704,12 +800,14 @@ func TestPlanningOperationExternalContextRejectsBindingMetadataTampering(t *test
 	}
 	mustExec(t, fixture.db, `DROP TRIGGER planning_operation_external_no_update`)
 	tests := []struct {
-		name     string
-		column   string
-		tampered any
-		original any
+		name                string
+		column              string
+		tampered            any
+		original            any
+		wantVersionMismatch bool
 	}{
-		{name: "assembler version", column: "assembler_version", tampered: "unknown", original: version},
+		{name: "legacy v2 assembler binding", column: "assembler_version", tampered: "external-context-v2", original: version, wantVersionMismatch: true},
+		{name: "unknown assembler version", column: "assembler_version", tampered: "unknown", original: version, wantVersionMismatch: true},
 		{name: "digest", column: "context_digest", tampered: strings.Repeat("0", 64), original: contextDigest},
 		{name: "issue bytes", column: "issue_bytes", tampered: issueBytes + 1, original: issueBytes},
 		{name: "comment bytes", column: "comment_bytes", tampered: commentBytes + 1, original: commentBytes},
@@ -717,8 +815,17 @@ func TestPlanningOperationExternalContextRejectsBindingMetadataTampering(t *test
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			mustExecArgs(t, fixture.db, `UPDATE planning_operation_external_snapshots SET `+test.column+`=? WHERE operation_id='operation-tamper'`, test.tampered)
-			if _, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-tamper"); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+			contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-tamper")
+			var versionErr *UnsupportedPlanningExternalContextVersionError
+			if test.wantVersionMismatch {
+				if !errors.As(err, &versionErr) || versionErr.BoundVersion != test.tampered || versionErr.CurrentVersion != ExternalAssemblerVersion {
+					t.Fatalf("tampered %s error=%v, want typed context-version mismatch", test.column, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "metadata mismatch") || !strings.Contains(err.Error(), snapshot.SnapshotID) {
 				t.Fatalf("tampered %s was accepted: %v", test.column, err)
+			}
+			if contextText != "" || len(snapshotIDs) != 0 {
+				t.Fatalf("tampered %s returned partial context: bytes=%d snapshots=%#v", test.column, len(contextText), snapshotIDs)
 			}
 			mustExecArgs(t, fixture.db, `UPDATE planning_operation_external_snapshots SET `+test.column+`=? WHERE operation_id='operation-tamper'`, test.original)
 		})
@@ -777,15 +884,6 @@ func (f planningExternalBindingFixture) createOperation(t *testing.T, operationI
 	if _, err := f.planning.CreateOperation(f.ctx, CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: f.sessionID, Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: f.at}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func planningBindingByteTotals(t *testing.T, db *sql.DB, operationID string) (int, int) {
-	t.Helper()
-	var issueBytes, commentBytes int
-	if err := db.QueryRow(`SELECT COALESCE(SUM(issue_bytes),0),COALESCE(SUM(comment_bytes),0) FROM planning_operation_external_snapshots WHERE operation_id=?`, operationID).Scan(&issueBytes, &commentBytes); err != nil {
-		t.Fatal(err)
-	}
-	return issueBytes, commentBytes
 }
 
 func assertExternalContextJSONValid(t *testing.T, contextText string) {
@@ -1016,6 +1114,74 @@ func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.
 	published, err := store.GetCredentialPublication(context.Background(), connection.ConnectionID)
 	if err != nil || published.CredentialStrategy != "user_access_token" || published.CredentialGeneration != 2 {
 		t.Fatalf("published generation=%#v err=%v", published, err)
+	}
+}
+
+func TestUpdateConnectionConfirmsDurableCommitError(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-24T14:00:00Z"
+	connection, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-update-commit-ambiguous", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom",
+		Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-update-commit-ambiguous",
+		ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-update-commit-create",
+	}})
+	if err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	displayName := "Renamed App"
+	enabled := false
+	commitErr := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return commitErr
+	}
+	updated, err := store.UpdateConnection(ctx, connection.ConnectionID, UpdateExternalConnectionRequest{
+		Enabled: &enabled, DisplayName: &displayName, ActorID: "local-operator", UpdatedAt: "2026-08-24T14:01:00Z", AuditEventID: "audit-update-commit-ambiguous",
+	})
+	if err != nil {
+		t.Fatalf("confirm exact update after durable commit error: %v", err)
+	}
+	if updated.RowVersion != connection.RowVersion+1 || updated.DisplayName != displayName || updated.Lifecycle != "disabled" || updated.HealthClass != "disabled" {
+		t.Fatalf("unexpected confirmed update projection: %#v", updated)
+	}
+}
+
+func TestUpdateConnectionRejectsMismatchedDurableCommitReadback(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-24T15:00:00Z"
+	connection, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-update-commit-mismatch", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom",
+		Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-update-commit-mismatch",
+		ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-update-mismatch-create",
+	}})
+	if err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	displayName := "Renamed App"
+	commitErr := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE external_connections SET display_name = 'Later Mutation', row_version = row_version + 1 WHERE connection_id = ?`, connection.ConnectionID); err != nil {
+			return err
+		}
+		return commitErr
+	}
+	_, err = store.UpdateConnection(ctx, connection.ConnectionID, UpdateExternalConnectionRequest{
+		DisplayName: &displayName, ActorID: "local-operator", UpdatedAt: "2026-08-24T15:01:00Z", AuditEventID: "audit-update-commit-mismatch",
+	})
+	var unknown *CommitOutcomeUnknownError
+	if !errors.As(err, &unknown) || !errors.Is(err, commitErr) {
+		t.Fatalf("mismatched durable update readback error=%v, want unknown outcome preserving commit error", err)
 	}
 }
 
@@ -1606,6 +1772,26 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	}
 	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: link.LinkID, ChangeID: "change-detach-repeat", ActorID: "local-operator", DetachedAt: detachedAt, AuditEventID: "audit-detach-repeat"}); !errors.Is(err, ErrExternalSourceNotAttached) {
 		t.Fatalf("repeat detach error=%v", err)
+	}
+	var adoptionsBefore, auditEventsBefore int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, link.LinkID).Scan(&adoptionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&auditEventsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdoptLatest(ctx, link.LinkID, "adoption-detached-rejected", "local-operator", detachedAt, "audit-detached-rejected"); !errors.Is(err, ErrExternalSourceNotAttached) {
+		t.Fatalf("adopting a detached source error=%v, want ErrExternalSourceNotAttached", err)
+	}
+	var adoptionsAfter, auditEventsAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, link.LinkID).Scan(&adoptionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&auditEventsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if adoptionsAfter != adoptionsBefore || auditEventsAfter != auditEventsBefore {
+		t.Fatalf("rejected adoption changed durable history: adoptions=%d (before %d), audit events=%d (before %d)", adoptionsAfter, adoptionsBefore, auditEventsAfter, auditEventsBefore)
 	}
 
 	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-after-detach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: detachedAt}); err != nil {

@@ -9,15 +9,21 @@ afterEach(() => {
 });
 
 describe("GitHub setup window", () => {
-  it("opens external GitHub hops with noopener", () => {
-    const open = vi.spyOn(window, "open").mockReturnValue(null);
+  it("opens external GitHub hops in a named tab with a severed opener", () => {
+    const target = { focus: vi.fn(), opener: window, location: { href: "" } } as unknown as Window;
+    const open = vi.spyOn(window, "open").mockReturnValue(target);
 
     expect(openSetupWindow("https://github.com/apps/kingdom/installations/new")).toBe(true);
-    expect(open).toHaveBeenCalledWith(
-      "https://github.com/apps/kingdom/installations/new",
-      "kingdom-github-setup",
-      "noopener",
-    );
+    expect(open).toHaveBeenCalledWith("https://github.com/apps/kingdom/installations/new", "kingdom-github-setup");
+    expect(target.opener).toBeNull();
+    expect(target.focus).toHaveBeenCalledOnce();
+  });
+
+  it("reports a blocked external GitHub hop", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+
+    expect(openSetupWindow("https://github.com/apps/kingdom/installations/new")).toBe(false);
+    expect(open).toHaveBeenCalledWith("https://github.com/apps/kingdom/installations/new", "kingdom-github-setup");
   });
 
   it("keeps the initial named tab available for the deferred manifest POST", () => {

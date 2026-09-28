@@ -276,11 +276,25 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 			if publicationErr == nil && published {
 				return nil
 			}
+			if connection.ConnectionID == connectionID && !errors.Is(publicationErr, state.ErrExternalNotFound) {
+				return &state.CommitOutcomeUnknownError{
+					Operation: "finalize GitHub manifest connection", ResourceID: connectionID,
+					Cause: errors.Join(finalizeErr, publicationErr),
+				}
+			}
 		}
 		return finalizeErr
 	})
 	if err != nil {
-		s.manifestFlows.Fail(flowID, "Kingdom could not save the validated connection. Start a new setup flow.")
+		s.manifestFlows.Fail(flowID, "The connection outcome could not be confirmed. Check saved connections before starting a new setup flow.")
+		var commitErr *state.CommitOutcomeUnknownError
+		if errors.As(err, &commitErr) {
+			connectionID := strings.TrimSpace(commitErr.ResourceID)
+			writeCommitOutcomePending(w, r, "api.github_manifest.complete",
+				"GitHub connection outcome is still being confirmed; retry later with the same idempotency key",
+				map[string]any{"connection_id": connectionID})
+			return
+		}
 		if isUniqueConstraintError(err) {
 			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "this GitHub installation is already connected", "api.github_manifest.complete", nil)
 			return

@@ -249,6 +249,15 @@ func (c *Client) assertRepositoriesBelongToInstallation(ctx context.Context, con
 	if err != nil {
 		return err
 	}
+	return assertRepositoriesBelongToAccount(items, accountID)
+}
+
+// Health validation supplies an unpinned candidate account ID; repository
+// listing supplies the saved, already-pinned installation identity.
+func assertRepositoriesBelongToAccount(items []external.Repository, accountID string) error {
+	if accountID == "" {
+		return &external.ProviderError{Class: external.FailureAuthentication}
+	}
 	for _, repository := range items {
 		if repository.AccountID == "" || repository.AccountID != accountID {
 			return &external.ProviderError{Class: external.FailureAuthentication}
@@ -541,9 +550,10 @@ func (c *Client) installationRepositoryPage(ctx context.Context, conn state.Exte
 
 // ListRepositories walks the connection's installations in a stable order,
 // accumulating a Kingdom page rather than handing back whatever one provider
-// page happened to hold. The cursor carries which installation it is on as well
-// as the page within it, so paging cannot repeat or skip a grant when a
-// connection covers several accounts.
+// page happened to hold. The cursor carries the installation, provider page,
+// and position within that page, so the bounded result can resume without
+// repeating or skipping the remainder when a connection covers several
+// accounts.
 //
 // One provider page per request was a leaked implementation detail with two
 // operator-visible costs. A connection covering several accounts that each
@@ -563,7 +573,7 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 	if len(installations) == 0 {
 		return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
-	index, page := decodeRepositoryCursor(cursor)
+	index, page, offset := decodeRepositoryCursor(cursor)
 	query := strings.ToLower(strings.TrimSpace(search))
 
 	out := external.RepositoryPage{Items: make([]external.Repository, 0, repositoryPageSize)}
@@ -573,8 +583,8 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 	// malformed response, so it is absorbed rather than failed.
 	seen := make(map[string]struct{}, repositoryPageSize)
 	for requests := 0; index < len(installations); {
-		if requests >= repositoryRequestBudget || len(out.Items) >= repositoryPageSize {
-			out.NextCursor = encodeRepositoryCursor(index, page)
+		if requests >= repositoryRequestBudget {
+			out.NextCursor = encodeRepositoryCursor(index, page, offset)
 			return out, nil
 		}
 		installation := installations[index]
@@ -582,9 +592,19 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 		if err != nil {
 			return external.RepositoryPage{}, err
 		}
+		if err := assertRepositoriesBelongToAccount(items, installation.AccountID); err != nil {
+			return external.RepositoryPage{}, err
+		}
 		requests++
 		c.rememberRepositories(conn, items)
-		for _, item := range items {
+		if offset > len(items) {
+			offset = len(items)
+		}
+		for itemIndex := 0; itemIndex < offset; itemIndex++ {
+			seen[items[itemIndex].ID] = struct{}{}
+		}
+		for itemIndex := offset; itemIndex < len(items); itemIndex++ {
+			item := items[itemIndex]
 			if _, duplicate := seen[item.ID]; duplicate {
 				continue
 			}
@@ -592,13 +612,31 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 			if query == "" || strings.Contains(strings.ToLower(item.Locator), query) {
 				out.Items = append(out.Items, item)
 			}
+			if len(out.Items) == repositoryPageSize {
+				nextIndex, nextPage, nextOffset := index, page, itemIndex+1
+				if nextOffset >= len(items) {
+					nextOffset = 0
+					if more {
+						nextPage++
+					} else {
+						nextIndex++
+						nextPage = 1
+					}
+				}
+				if nextIndex < len(installations) {
+					out.NextCursor = encodeRepositoryCursor(nextIndex, nextPage, nextOffset)
+				}
+				return out, nil
+			}
 		}
 		if more {
 			page++
+			offset = 0
 			continue
 		}
 		index++
 		page = 1
+		offset = 0
 	}
 	return out, nil
 }
@@ -650,10 +688,32 @@ func (c *Client) indexedRepository(conn state.ExternalConnection, id string) (ex
 // repository resolves a repository ID back to the locator and installation that
 // grants it. The cache is the normal picker-to-issue path; a cold lookup checks
 // one bounded discovery page before probing every covered installation through
-// GitHub's direct repository endpoint.
+// GitHub's direct repository endpoint. A shared user token is probed once and
+// its returned owner is rebound to the matching installation in the saved set.
 func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id, installationID string) (external.Repository, error) {
 	if installationID != "" {
-		return c.directRepository(ctx, conn, id, "", installationID)
+		repository, err := c.directRepository(ctx, conn, id, "", installationID)
+		if err == nil || !isProviderNotFound(err) || strings.TrimSpace(conn.CredentialStrategy) == "user_access_token" {
+			return repository, err
+		}
+		lastNotFound := err
+		// The stored installation is the first choice, but a transferred
+		// repository may now be visible only through another installation in
+		// this validated connection. Never broaden the search beyond that set.
+		for _, installation := range conn.Installations {
+			if installation.InstallationID == installationID {
+				continue
+			}
+			repository, err = c.directRepository(ctx, conn, id, "", installation.InstallationID)
+			if err == nil {
+				return repository, nil
+			}
+			if !isProviderNotFound(err) {
+				return external.Repository{}, err
+			}
+			lastNotFound = err
+		}
+		return external.Repository{}, lastNotFound
 	}
 	if item, ok := c.indexedRepository(conn, id); ok {
 		return item, nil
@@ -668,6 +728,11 @@ func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, 
 		}
 	}
 	return c.directRepository(ctx, conn, id, "", "")
+}
+
+func isProviderNotFound(err error) bool {
+	var providerErr *external.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Class == external.FailureInaccessibleOrMissing && providerErr.Status == http.StatusNotFound
 }
 
 func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, repositoryID, stateFilter, search, cursor string) (external.IssuePage, error) {
@@ -976,7 +1041,12 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 	if strategy == "" {
 		strategy = "app_private_key"
 	}
-	if installationID != "" {
+	if strategy == "user_access_token" {
+		// A shared user token is not scoped to one installation. Use it once,
+		// then bind the returned repository to whichever saved grant currently
+		// owns the account (which may have changed after a repository transfer).
+		installations = installations[:1]
+	} else if installationID != "" {
 		installations = nil
 		for _, installation := range conn.Installations {
 			if installation.InstallationID == installationID {
@@ -987,9 +1057,8 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 		if len(installations) == 0 {
 			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 		}
-	} else if strategy == "user_access_token" {
-		installations = installations[:1]
 	}
+	var lastNotFound error
 	for _, installation := range installations {
 		token, err := c.accessToken(ctx, conn, installation.InstallationID)
 		if err != nil {
@@ -997,8 +1066,8 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 		}
 		var response githubRepository
 		if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, path, token, nil, &response, ""); err != nil {
-			var providerErr *external.ProviderError
-			if errors.As(err, &providerErr) && providerErr.Status == http.StatusNotFound {
+			if isProviderNotFound(err) {
+				lastNotFound = err
 				continue
 			}
 			return external.Repository{}, err
@@ -1008,12 +1077,30 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 			return external.Repository{}, err
 		}
 		repository := items[0]
-		if id != "" && repository.ID != id || locator != "" && !strings.EqualFold(repository.Locator, locator) || installation.AccountID != "" && repository.AccountID != installation.AccountID {
+		if id != "" && repository.ID != id || locator != "" && !strings.EqualFold(repository.Locator, locator) {
 			return external.Repository{}, &external.ProviderError{Class: external.FailureMalformedResponse}
 		}
-		repository.InstallationID = installation.InstallationID
+		if strategy == "user_access_token" {
+			for _, granted := range conn.Installations {
+				if strings.TrimSpace(granted.AccountID) != "" && granted.AccountID == repository.AccountID {
+					repository.InstallationID = granted.InstallationID
+					break
+				}
+			}
+			if repository.InstallationID == "" {
+				return external.Repository{}, &external.ProviderError{Class: external.FailureAuthentication}
+			}
+		} else {
+			if installation.AccountID != "" && repository.AccountID != installation.AccountID {
+				return external.Repository{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			repository.InstallationID = installation.InstallationID
+		}
 		c.rememberRepositories(conn, []external.Repository{repository})
 		return repository, nil
+	}
+	if lastNotFound != nil {
+		return external.Repository{}, lastNotFound
 	}
 	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 }
@@ -1448,24 +1535,24 @@ func decodeCursor(v string) int {
 }
 
 // Repository paging walks the connection's installations as well as the pages
-// within each, so its cursor carries both.
-func encodeRepositoryCursor(index, page int) string {
-	raw, _ := json.Marshal(map[string]int{"installation": index, "page": page})
+// within each, so its cursor carries the installation, page, and item offset.
+func encodeRepositoryCursor(index, page, offset int) string {
+	raw, _ := json.Marshal(map[string]int{"installation": index, "page": page, "offset": offset})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
-func decodeRepositoryCursor(v string) (index int, page int) {
+func decodeRepositoryCursor(v string) (index int, page int, offset int) {
 	if v == "" {
-		return 0, 1
+		return 0, 1, 0
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(v)
 	if err != nil {
-		return 0, 1
+		return 0, 1, 0
 	}
 	var p map[string]int
-	if json.Unmarshal(raw, &p) != nil || p["page"] < 1 || p["installation"] < 0 {
-		return 0, 1
+	if json.Unmarshal(raw, &p) != nil || p["page"] < 1 || p["installation"] < 0 || p["offset"] < 0 || p["offset"] > repositoryPageSize {
+		return 0, 1, 0
 	}
-	return p["installation"], p["page"]
+	return p["installation"], p["page"], p["offset"]
 }
 func hasNext(h http.Header) bool { return strings.Contains(h.Get("Link"), `rel="next"`) }
 func transferredIssueCoordinates(v *url.URL) (string, int, error) {

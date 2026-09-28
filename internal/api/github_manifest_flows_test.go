@@ -3,17 +3,20 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
+	"kingdom/internal/state"
 )
 
 func TestGitHubManifestAuthenticationFailureIsNotLocalUnauthorized(t *testing.T) {
@@ -471,6 +474,127 @@ func TestDiscardGitHubManifestFlowEndpointAbandonsResumableSetup(t *testing.T) {
 	}
 	if response := discard("manifest-discard-repeat", true); response.Code != http.StatusNotFound {
 		t.Fatalf("repeat discard status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestManifestConnectionFinalizationPreservesUncertainPublicationOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		readbackFailures int
+		wantStatus       int
+		wantFlowStage    manifestFlowStage
+		wantPending      bool
+	}{
+		{name: "transient publication readback is retried", readbackFailures: 1, wantStatus: http.StatusCreated, wantFlowStage: manifestStageFinalized},
+		{name: "persistent publication readback remains pending", readbackFailures: 2, wantStatus: http.StatusConflict, wantFlowStage: manifestStageFailed, wantPending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runManifestConnectionFinalizationPublicationOutcome(t, test.readbackFailures, test.wantStatus, test.wantFlowStage, test.wantPending)
+		})
+	}
+}
+
+func runManifestConnectionFinalizationPublicationOutcome(t *testing.T, readbackFailures, wantStatus int, wantFlowStage manifestFlowStage, wantPending bool) {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			_, _ = w.Write([]byte(`{"access_token":"user-access-token","token_type":"bearer","scope":""}`))
+		case "/user":
+			_, _ = w.Write([]byte(`{"id":10,"login":"octocat"}`))
+		case "/user/installations?per_page=100&page=1", "/user/installations":
+			_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"Iv1","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}]}`))
+		case "/app":
+			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
+		case "/app/installations/2":
+			_, _ = w.Write([]byte(`{"id":2,"app_id":1,"client_id":"Iv1","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}`))
+		case "/app/installations/2/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"token":"installation-access-token","expires_at":%q,"permissions":{"metadata":"read","issues":"read"}}`, now.Add(time.Hour).Format(time.RFC3339))))
+		case "/installation/repositories?per_page=100&page=1", "/installation/repositories":
+			_, _ = w.Write([]byte(`{"total_count":0,"repositories":[]}`))
+		default:
+			t.Errorf("unexpected GitHub setup request %s", r.URL.String())
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(provider.Close)
+	setup, err := githubexternal.NewSetupClient(githubexternal.SetupClientConfig{
+		HTTPClient: provider.Client(), Now: func() time.Time { return now },
+		APIBaseURL: provider.URL, WebBaseURL: provider.URL, AllowTestEndpoints: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := githubexternal.NewKeyStore(filepath.Join(t.TempDir(), "github-keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{
+		Now: func() time.Time { return now }, GitHubSetupClient: setup, GitHubKeyStore: keys,
+	})
+	cookie, session := seedBrowserSessionForTest(t, server, "http://127.0.0.1:9090", now.Add(time.Hour))
+	flowID := "flow_manifest_publication_readback"
+	server.manifestFlows.flows[flowID] = &githubManifestFlow{
+		ID: flowID, SessionID: sessionID(sha256.Sum256([]byte(cookie.Value))), Origin: session.Origin.Serialized,
+		Stage: manifestStageOAuthCodeReceived, ExpiresAt: session.ExpiresAt,
+		PrivateKey: apiTestPrivateKey(t), ClientSecret: []byte("client-secret"), OAuthCode: []byte("oauth-code"), OAuthVerifier: []byte(strings.Repeat("a", 43)),
+		AppID: "1", ClientID: "Iv1", AppSlug: "kingdom", AppName: "Kingdom", ClaimedInstallationID: "2",
+	}
+	connector.failNextCommitAfterExec("INSERT INTO external_integration_audit_events", &runCreationCommitTestFault{
+		durable: true,
+		afterCommit: func() {
+			connector.failNextQueries("select credential_strategy,lifecycle,credential_generation from external_connections where connection_id=?", readbackFailures)
+		},
+	})
+	idempotencyKey := testIdempotencyKey(t, "manifest-publication-readback", now)
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9090/api/v1/connections/github/manifest-flows/"+flowID+"/completion", nil)
+		req.RemoteAddr, req.Host = "127.0.0.1:49152", "127.0.0.1:9090"
+		req.Header.Set("Origin", "http://127.0.0.1:9090")
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+		req.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, req)
+		return response
+	}
+
+	response := request()
+	if response.Code != wantStatus {
+		t.Fatalf("manifest completion status=%d, want %d; body=%s", response.Code, wantStatus, response.Body.String())
+	}
+	flow := server.manifestFlows.flows[flowID]
+	if flow.Stage != wantFlowStage {
+		t.Fatalf("manifest flow stage=%q, want %q: %#v", flow.Stage, wantFlowStage, flow)
+	}
+	if wantPending {
+		assertCanonicalError(t, response.Body.Bytes(), "idempotency_pending", "api.github_manifest.complete", "control_plane", true)
+		assertPendingCommitReservation(t, db, idempotencyKey)
+		var connectionCount int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM external_connections`).Scan(&connectionCount); err != nil || connectionCount != 1 {
+			t.Fatalf("durable connection count=%d err=%v, want one committed but unresolved connection", connectionCount, err)
+		}
+		return
+	}
+	if flow.ConnectionID == "" {
+		t.Fatal("finalized manifest flow has no connection id")
+	}
+	connection, err := server.externalStore.GetConnection(context.Background(), flow.ConnectionID)
+	if err != nil || !connection.HasCurrentValidation() {
+		t.Fatalf("finalized manifest connection=%#v err=%v", connection, err)
+	}
+	if _, _, err := keys.Load(connection.ConnectionID, 1); err != nil {
+		t.Fatalf("durable manifest key missing: %v", err)
+	}
+	var reservationStatus string
+	if err := db.QueryRow(`SELECT status FROM idempotency_keys WHERE client_key=?`, idempotencyKey).Scan(&reservationStatus); err != nil || reservationStatus != state.IdempotencyStatusCompleted {
+		t.Fatalf("manifest idempotency reservation status=%q err=%v, want completed", reservationStatus, err)
+	}
+	if replay := request(); replay.Code != response.Code || replay.Body.String() != response.Body.String() {
+		t.Fatalf("manifest completion replay status=%d body=%s, original status=%d body=%s", replay.Code, replay.Body.String(), response.Code, response.Body.String())
 	}
 }
 

@@ -201,7 +201,10 @@ func installationCandidates(expectedClientID, expectedSlug string, get func(stri
 			return nil, &external.ProviderError{Class: external.FailureMalformedResponse}
 		}
 		for _, installation := range response.Installations {
-			if installation.ClientID != expectedClientID || installation.AppSlug != expectedSlug {
+			// GitHub's installation response allows client_id to be absent. When
+			// it is present, keep the exact client binding; app_slug remains the
+			// required identifier for an installation returned without it.
+			if installation.AppSlug != expectedSlug || (installation.ClientID != "" && installation.ClientID != expectedClientID) {
 				continue
 			}
 			validated, err := validateSetupInstallation(installation, SetupInstallation{InstallationID: strconv.FormatInt(installation.ID, 10), AppID: strconv.FormatInt(installation.AppID, 10), ClientID: expectedClientID, AppSlug: expectedSlug})

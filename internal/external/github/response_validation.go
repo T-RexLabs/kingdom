@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	maxIssueTitleBytes = 1024
-	maxIssueBodyBytes  = 1024 * 1024
+	maxIssueTitleBytes = state.MaxExternalIssueTitleBytes
+	maxIssueBodyBytes  = state.MaxExternalIssueBodyBytes
 )
 
 type githubRepository struct {

@@ -322,7 +322,10 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 			return updateErr
 		})
 		if err != nil && reconciliationErr != nil {
-			s.writeInternalError(w, "reconcile shared GitHub connection publication failed")
+			_ = s.deviceFlows.Fail(lease.deviceOperationLease, "The reconnect outcome could not be confirmed. Check the saved connection before starting another reconnect flow.")
+			writeCommitOutcomePending(w, r, "api.github_device.finalize",
+				"GitHub reconnect outcome is still being confirmed; retry later with the same idempotency key",
+				map[string]any{"connection_id": connectionID})
 			return
 		}
 	} else {
@@ -339,11 +342,25 @@ func (s *Server) handleFinalizeGitHubDeviceFlow(w http.ResponseWriter, r *http.R
 			if publicationErr == nil && published {
 				return nil
 			}
+			if connection.ConnectionID == connectionID && !errors.Is(publicationErr, state.ErrExternalNotFound) {
+				return &state.CommitOutcomeUnknownError{
+					Operation: "finalize shared GitHub connection", ResourceID: connectionID,
+					Cause: errors.Join(finalizeErr, publicationErr),
+				}
+			}
 			return finalizeErr
 		})
 	}
 	if err != nil {
-		_ = s.deviceFlows.Fail(lease.deviceOperationLease, "Kingdom could not save the verified connection. Start again.")
+		_ = s.deviceFlows.Fail(lease.deviceOperationLease, "The connection outcome could not be confirmed. Check saved connections before starting a new connection flow.")
+		var commitErr *state.CommitOutcomeUnknownError
+		if errors.As(err, &commitErr) {
+			connectionID := strings.TrimSpace(commitErr.ResourceID)
+			writeCommitOutcomePending(w, r, "api.github_device.finalize",
+				"GitHub connection outcome is still being confirmed; retry later with the same idempotency key",
+				map[string]any{"connection_id": connectionID})
+			return
+		}
 		if isUniqueConstraintError(err) || errors.Is(err, state.ErrExternalConflict) {
 			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "one of these GitHub installations is already connected", "api.github_device.finalize", nil)
 			return
@@ -366,11 +383,24 @@ func (s *Server) sharedReauthorizationPublished(ctx context.Context, connectionI
 }
 
 func (s *Server) connectionCredentialPublished(ctx context.Context, connectionID, strategy string, targetGeneration int) (bool, error) {
-	publication, err := s.externalStore.GetCredentialPublication(ctx, connectionID)
-	if err != nil {
-		return false, err
+	readbackCtx, cancel := commitOutcomeReadbackContext(ctx)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		publication, err := s.externalStore.GetCredentialPublication(readbackCtx, connectionID)
+		if errors.Is(err, state.ErrExternalNotFound) {
+			return false, err
+		}
+		if err != nil {
+			lastErr = err
+			if readbackCtx.Err() != nil {
+				break
+			}
+			continue
+		}
+		return publication.CredentialStrategy == strategy && publication.CredentialGeneration == targetGeneration, nil
 	}
-	return publication.CredentialStrategy == strategy && publication.CredentialGeneration == targetGeneration, nil
+	return false, lastErr
 }
 
 func installationSetDifference(expected, actual []string) (missing, extra []string) {
