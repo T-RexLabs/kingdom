@@ -1,6 +1,7 @@
 GO ?= go
 COREPACK ?= corepack
 PNPM ?= $(COREPACK) pnpm
+WEB_PNPM = cd web && $(PNPM)
 GOBIN ?= $(shell $(GO) env GOBIN)
 
 ifeq ($(strip $(GOBIN)),)
@@ -11,7 +12,7 @@ endif
 
 GO_VERSION ?= 1.27.0
 NODE_VERSION ?= 26.2.0
-PNPM_VERSION ?= 11.2.2
+PNPM_VERSION ?= 12.3.4
 OAPI_CODEGEN_VERSION ?= v2.4.1
 GOLANG_MIGRATE_VERSION ?= v4.18.2
 
@@ -45,17 +46,17 @@ install: $(WEB_DIST_INDEX) ## Install `kd` with the embedded web UI
 build: $(KD_BINARY) ## Build the local `kd` binary into `bin/`
 
 dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
-	$(PNPM) --dir web dev
+	$(WEB_PNPM) dev
 
 ##@ Verification
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
 	$(GO) test ./...
 
 test-web: $(WEB_NODE_MODULES_STAMP) ## Run the frontend unit test suite
-	$(PNPM) --dir web test
+	$(WEB_PNPM) test
 
 lint-web: $(WEB_NODE_MODULES_STAMP) ## Run frontend lint with zero warnings
-	$(PNPM) --dir web lint
+	$(WEB_PNPM) lint
 
 # test-race exercises the planning + state packages under the race detector.
 # Critical for the streaming sequence cursor and lease-fenced terminal writes -
@@ -94,13 +95,13 @@ verify: test test-web lint-web test-race vet coverage-core contracts-check ## Ru
 contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date
 	@tmp_dir="$$(mktemp -d)"; trap 'rm -rf "$$tmp_dir"' EXIT; \
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o "$$tmp_dir/types.gen.go" $(OPENAPI_SPEC); \
-	$(PNPM) --dir web exec openapi-typescript ../$(OPENAPI_SPEC) -o "$$tmp_dir/schema.ts"; \
+	($(WEB_PNPM) exec openapi-typescript ../$(OPENAPI_SPEC) -o "$$tmp_dir/schema.ts"); \
 	cmp -s "$$tmp_dir/types.gen.go" $(OPENAPI_GENERATED) || { diff -u $(OPENAPI_GENERATED) "$$tmp_dir/types.gen.go"; exit 1; }; \
 	cmp -s "$$tmp_dir/schema.ts" $(WEB_OPENAPI_GENERATED) || { diff -u $(WEB_OPENAPI_GENERATED) "$$tmp_dir/schema.ts"; exit 1; }; \
 	printf 'Generated OpenAPI contracts are current.\n'
 
 openapi-lint: $(WEB_NODE_MODULES_STAMP) ## Lint the OpenAPI spec with Redocly
-	$(PNPM) --dir web exec redocly lint ../$(OPENAPI_SPEC)
+	$(WEB_PNPM) exec redocly lint ../$(OPENAPI_SPEC)
 
 ##@ Utilities
 tool-versions: ## Print the pinned local tool versions
@@ -112,11 +113,11 @@ contracts-generate: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
 
 $(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml Makefile
 	rm -rf web/node_modules
-	$(PNPM) --dir web install --frozen-lockfile
+	$(WEB_PNPM) install --frozen-lockfile
 	touch $@
 
 $(WEB_DIST_INDEX): $(WEB_BUILD_INPUTS) $(WEB_NODE_MODULES_STAMP)
-	$(PNPM) --dir web build
+	$(WEB_PNPM) build
 
 $(KD_BINARY): $(KD_GO_SOURCES) $(BOOTSTRAP_ASSETS) $(DB_MIGRATIONS) go.mod go.sum $(WEB_DIST_INDEX)
 	mkdir -p bin
@@ -126,4 +127,4 @@ $(OPENAPI_GENERATED): $(OPENAPI_SPEC) Makefile
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o $(OPENAPI_GENERATED) $(OPENAPI_SPEC)
 
 $(WEB_OPENAPI_GENERATED): $(OPENAPI_SPEC) $(WEB_NODE_MODULES_STAMP)
-	$(PNPM) --dir web exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts
+	$(WEB_PNPM) exec openapi-typescript ../$(OPENAPI_SPEC) -o src/api/schema.ts
