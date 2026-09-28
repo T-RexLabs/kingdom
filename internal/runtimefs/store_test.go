@@ -234,6 +234,97 @@ func TestRecoverQuarantinedExecutionTargetDiscardsDirtyGeneration(t *testing.T) 
 	}
 }
 
+func TestRecoverQuarantinedExecutionTargetRemainsUnknownAcrossBatchesAndRestart(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	const runID = "run_quarantined_target_batches"
+	const capturedAt = "2026-03-01T12:00:00Z"
+	seedRuntimeFSRun(t, db, runID)
+	runtimeRoot := t.TempDir()
+	store, err := NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "baseline.txt", "trusted baseline")
+	snapshot, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_quarantined_target_batches", RunID: runID, SnapshotKind: "baseline", RootPath: sourceRoot, CreatedAt: capturedAt,
+	})
+	if err != nil {
+		t.Fatalf("capture trusted snapshot: %v", err)
+	}
+	targetRoot := store.RunTargetRoot(runID)
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create runtime target: %v", err)
+	}
+	const dirtyFileCount = executionTargetRemovalBatchSize*2 + 7
+	for index := range dirtyFileCount {
+		path := filepath.Join(targetRoot, fmt.Sprintf("provider-%03d.txt", index))
+		if err := os.WriteFile(path, []byte("provider-owned content"), 0o600); err != nil {
+			t.Fatalf("write provider file %d: %v", index, err)
+		}
+	}
+	if _, err := store.EnsureExecutionTarget(context.Background(), EnsureExecutionTargetRequest{
+		RunID: runID, TargetMode: "direct", SourceRoot: sourceRoot, ExecutionRoot: targetRoot, PublishRoot: sourceRoot,
+		SourceSnapshotID: snapshot.SnapshotID, TrustedSnapshotID: snapshot.SnapshotID, PublishedSnapshotID: snapshot.SnapshotID,
+		State: "unknown", CreatedAt: capturedAt, UpdatedAt: capturedAt,
+	}); err != nil {
+		t.Fatalf("create quarantined execution target: %v", err)
+	}
+
+	progressStore, err := NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("reopen runtime fs store: %v", err)
+	}
+	recovered, err := progressStore.RecoverQuarantinedExecutionTarget(context.Background(), runID, "2026-03-01T12:01:00Z")
+	if err != nil {
+		t.Fatalf("run first bounded recovery batch: %v", err)
+	}
+	if recovered.State != "unknown" {
+		t.Fatalf("target state after incomplete removal=%q, want unknown", recovered.State)
+	}
+	persisted, err := progressStore.GetExecutionTarget(context.Background(), runID)
+	if err != nil || persisted.State != "unknown" {
+		t.Fatalf("persisted target after incomplete removal=%#v err=%v, want unknown", persisted, err)
+	}
+	remaining, err := os.ReadDir(targetRoot)
+	if err != nil {
+		t.Fatalf("read partially removed target: %v", err)
+	}
+	if len(remaining) == 0 || len(remaining) >= dirtyFileCount {
+		t.Fatalf("first cleanup batch removed %d of %d files; expected bounded partial progress", dirtyFileCount-len(remaining), dirtyFileCount)
+	}
+
+	calls := 1
+	for recovered.State == "unknown" {
+		progressStore, err = NewStore(db, runtimeRoot)
+		if err != nil {
+			t.Fatalf("reopen runtime fs store for recovery: %v", err)
+		}
+		recovered, err = progressStore.RecoverQuarantinedExecutionTarget(context.Background(), runID, "2026-03-01T12:02:00Z")
+		if err != nil {
+			t.Fatalf("resume recovery batch %d: %v", calls+1, err)
+		}
+		calls++
+		if calls > 8 {
+			t.Fatal("quarantined target did not finish within the expected number of batches")
+		}
+	}
+	if calls < 2 || recovered.State != "trusted" {
+		t.Fatalf("recovery calls=%d target=%#v, want multiple batches and final trusted state", calls, recovered)
+	}
+	assertTestFile(t, targetRoot, "baseline.txt", "trusted baseline")
+	entries, err := os.ReadDir(targetRoot)
+	if err != nil {
+		t.Fatalf("read restored target: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "baseline.txt" {
+		t.Fatalf("restored target contains unexpected entries: %#v", entries)
+	}
+}
+
 func TestResolveSnapshotManifestDropsNewlyProtectedHistoricalPaths(t *testing.T) {
 	t.Parallel()
 

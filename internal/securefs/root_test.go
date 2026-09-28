@@ -209,9 +209,36 @@ func TestRemoveTreeUnlinksNestedSymlinksWithoutFollowingThem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open secure root: %v", err)
 	}
-	defer root.Close()
-	if err := root.RemoveTree("target"); err != nil {
-		t.Fatalf("remove target tree: %v", err)
+	defer func() { _ = root.Close() }()
+	cursor := ""
+	complete := false
+	removalCalls := 0
+	for !complete {
+		progress, removeErr := root.RemoveTreeBatch("target", cursor, 2)
+		if removeErr != nil {
+			t.Fatalf("remove target tree batch: %v", removeErr)
+		}
+		if progress.EntriesProcessed > 2 {
+			t.Fatalf("processed %d entries in a two-entry batch", progress.EntriesProcessed)
+		}
+		if !progress.Complete && progress.EntriesProcessed == 0 {
+			t.Fatal("incomplete tree removal made no bounded progress")
+		}
+		removalCalls++
+		cursor = progress.Cursor
+		complete = progress.Complete
+		if !complete {
+			if err := root.Close(); err != nil {
+				t.Fatalf("close secure root between batches: %v", err)
+			}
+			root, err = OpenRoot(rootPath)
+			if err != nil {
+				t.Fatalf("reopen secure root between batches: %v", err)
+			}
+		}
+	}
+	if removalCalls < 2 {
+		t.Fatalf("tree removal calls=%d, want multiple resumable batches", removalCalls)
 	}
 	if _, err := os.Lstat(targetPath); !os.IsNotExist(err) {
 		t.Fatalf("target tree remains: %v", err)

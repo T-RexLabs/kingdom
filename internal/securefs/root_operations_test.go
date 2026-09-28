@@ -133,6 +133,109 @@ func TestEnsureDirRejectsSymlinkParent(t *testing.T) {
 	}
 }
 
+func TestOpenDirCreateRetriesBothSyncsAfterSyncFailure(t *testing.T) {
+	t.Parallel()
+
+	parent, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open parent root: %v", err)
+	}
+	defer parent.Close()
+	component := Directory{Name: "secrets", Mode: 0o700, Create: true, ExactMode: true}
+	syncErr := errors.New("injected directory sync failure")
+	syncCalls := 0
+	if child, err := openDirWithSync(parent, component, func(*os.Root) error {
+		syncCalls++
+		return syncErr
+	}); !errors.Is(err, syncErr) {
+		if child != nil {
+			_ = child.Close()
+		}
+		t.Fatalf("create directory error=%v, want injected parent-sync failure", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("sync calls before injected failure=%d, want one", syncCalls)
+	}
+
+	syncCalls = 0
+	child, err := openDirWithSync(parent, component, func(*os.Root) error {
+		syncCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retry open after sync failure: %v", err)
+	}
+	defer child.Close()
+	if syncCalls != 2 {
+		t.Fatalf("retry sync calls=%d, want parent and child sync", syncCalls)
+	}
+}
+
+func TestOpenParentSyncsEveryNewAncestorDirectory(t *testing.T) {
+	t.Parallel()
+
+	root, err := OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	syncCount := 0
+	parentFD, leaf, err := openParentWithSync(root, filepath.Join("a", "b", "receipt.json"), true, 0o700, func(fd int) error {
+		syncCount++
+		return unix.Fsync(fd)
+	})
+	if err != nil {
+		t.Fatalf("open nested parent: %v", err)
+	}
+	if err := unix.Close(parentFD); err != nil {
+		t.Fatalf("close nested parent: %v", err)
+	}
+	if leaf != "receipt.json" || syncCount != 2 {
+		t.Fatalf("leaf=%q parent syncs=%d, want receipt.json and one sync per new ancestor", leaf, syncCount)
+	}
+}
+
+func TestOpenParentStopsWhenAncestorSyncFails(t *testing.T) {
+	t.Parallel()
+
+	root, err := OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("open root: %v", err)
+	}
+	defer root.Close()
+
+	syncErr := errors.New("injected directory sync failure")
+	if parentFD, _, err := openParentWithSync(root, filepath.Join("a", "b", "receipt.json"), true, 0o700, func(int) error {
+		return syncErr
+	}); !errors.Is(err, syncErr) {
+		if parentFD >= 0 {
+			_ = unix.Close(parentFD)
+		}
+		t.Fatalf("open nested parent error=%v, want injected sync failure", err)
+	}
+	if _, err := root.ReadEntry("a"); err != nil {
+		t.Fatalf("first ancestor was not created before the injected failure: %v", err)
+	}
+	if _, err := root.ReadEntry(filepath.Join("a", "b")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("later ancestor was created after its parent sync failed: %v", err)
+	}
+	syncCalls := 0
+	parentFD, leaf, err := openParentWithSync(root, filepath.Join("a", "b", "receipt.json"), true, 0o700, func(fd int) error {
+		syncCalls++
+		return unix.Fsync(fd)
+	})
+	if err != nil {
+		t.Fatalf("retry nested parent after sync failure: %v", err)
+	}
+	if err := unix.Close(parentFD); err != nil {
+		t.Fatalf("close retried nested parent: %v", err)
+	}
+	if leaf != "receipt.json" || syncCalls != 2 {
+		t.Fatalf("retry leaf=%q sync calls=%d, want receipt.json and each ancestor synced", leaf, syncCalls)
+	}
+}
+
 func TestRemoveEmptyDirNeverRecursivelyDeletes(t *testing.T) {
 	t.Parallel()
 

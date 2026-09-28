@@ -14,7 +14,10 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/nodeattempt"
 	"kingdom/internal/sqlitex"
+	"kingdom/internal/workspace"
 )
+
+const executionStartReadbackTimeout = time.Second
 
 type QueuedNodeAttempt struct {
 	NodeID       string
@@ -227,7 +230,7 @@ func (s *TransitionService) ReplayTerminalRun(ctx context.Context, req ReplayTer
 		if err == nil {
 			return queued, nil
 		}
-		if !IsUniqueViolation(err) {
+		if !IsUniqueViolation(err) && !sqlitex.IsBusy(err) {
 			return nil, err
 		}
 		lastErr = err
@@ -1003,6 +1006,9 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 			return nil, &ReplayNotQuiescentError{RunID: req.RunID, Blockers: blockers}
 		}
 	}
+	if err := prepareRunWorktreeForTerminalReplayTx(ctx, tx, req.RunID); err != nil {
+		return nil, err
+	}
 
 	reasonText := strings.TrimSpace(req.Reason)
 	if reasonText == "" {
@@ -1139,6 +1145,54 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	}
 	committed = true
 	return queued, nil
+}
+
+func prepareRunWorktreeForTerminalReplayTx(ctx context.Context, tx *sql.Tx, runID string) error {
+	trimmedRunID := strings.TrimSpace(runID)
+	_, err := tx.ExecContext(ctx, `
+UPDATE run_worktrees
+SET state = CASE WHEN cleanup_started = 0 THEN ? ELSE state END,
+    cleanup_cursor = CASE WHEN cleanup_started = 0 THEN '' ELSE cleanup_cursor END,
+    cleanup_owner = CASE WHEN cleanup_started = 0 THEN '' ELSE cleanup_owner END,
+    cleanup_owner_pid = CASE WHEN cleanup_started = 0 THEN 0 ELSE cleanup_owner_pid END,
+    cleanup_owner_identity_token = CASE WHEN cleanup_started = 0 THEN '' ELSE cleanup_owner_identity_token END,
+    cleanup_fence = CASE WHEN cleanup_started = 0 THEN cleanup_fence + 1 ELSE cleanup_fence END,
+    cleanup_started = CASE WHEN cleanup_started = 0 THEN 0 ELSE cleanup_started END,
+    cleanup_after = CASE WHEN cleanup_started = 0 THEN NULL ELSE cleanup_after END,
+    cleaned_at = CASE WHEN cleanup_started = 0 THEN NULL ELSE cleaned_at END,
+    failure_reason = CASE WHEN cleanup_started = 0 THEN '' ELSE failure_reason END
+WHERE run_id = ?
+  AND state IN (?, ?)
+  AND EXISTS (
+    SELECT 1 FROM workflow_runs wr
+    WHERE wr.run_id = run_worktrees.run_id
+      AND wr.run_status IN ('failed', 'cancelled')
+  )`,
+		workspace.RunWorktreeStateActive,
+		trimmedRunID,
+		workspace.RunWorktreeStateCleanupPending,
+		workspace.RunWorktreeStateCleanupFailed,
+	)
+	if err != nil {
+		return fmt.Errorf("prepare managed run worktree for terminal replay: %w", err)
+	}
+
+	var cleanupState string
+	var cleanupStarted int
+	err = tx.QueryRowContext(ctx, `SELECT state, cleanup_started FROM run_worktrees WHERE run_id = ?`, trimmedRunID).Scan(&cleanupState, &cleanupStarted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load managed run worktree cleanup state for terminal replay: %w", err)
+	}
+	if (cleanupState == workspace.RunWorktreeStateCleanupPending || cleanupState == workspace.RunWorktreeStateCleanupFailed) && cleanupStarted != 0 {
+		return &RunWorktreeCleanupInProgressError{RunID: trimmedRunID}
+	}
+	if cleanupState == workspace.RunWorktreeStateCleanupPending || cleanupState == workspace.RunWorktreeStateCleanupFailed {
+		return fmt.Errorf("managed run worktree cleanup for run %q could not be cancelled", trimmedRunID)
+	}
+	return nil
 }
 
 func latestPhysicalAttemptIDForRunNodeTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, error) {
@@ -1614,22 +1668,179 @@ func (s *TransitionService) RecordExecutionStart(ctx context.Context, req Execut
 	if err := validateExecutionStartTransition(transition); err != nil {
 		return err
 	}
-	err := s.applyWithEffects(ctx, transition, func(ctx context.Context, tx *sql.Tx) error {
-		switch transition.ToState {
-		case "starting":
-			if err := markAttemptExecutionStartingTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
-				return err
+	if s == nil || s.db == nil {
+		return fmt.Errorf("transition service database is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	applyStart := func() error {
+		return s.applyWithEffects(ctx, transition, func(ctx context.Context, tx *sql.Tx) error {
+			switch transition.ToState {
+			case "starting":
+				if err := markAttemptExecutionStartingTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
+					return err
+				}
+			case "running":
+				if err := markAttemptExecutionRunningTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("execution start does not support to_state %q", transition.ToState)
 			}
-		case "running":
-			if err := markAttemptExecutionRunningTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.OccurredAt); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("execution start does not support to_state %q", transition.ToState)
+			return insertAttemptExecutionEventTx(ctx, tx, transition)
+		})
+	}
+	var (
+		writeErr     error
+		writeErrs    []error
+		readbackErrs []error
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		writeErr = applyStart()
+		if writeErr == nil {
+			return nil
 		}
-		return insertAttemptExecutionEventTx(ctx, tx, transition)
-	})
-	return err
+		writeErrs = append(writeErrs, writeErr)
+		committed, readbackErr := s.confirmExecutionStartCommit(ctx, transition)
+		if committed {
+			return nil
+		}
+		if readbackErr == nil {
+			return writeErr
+		}
+		readbackErrs = append(readbackErrs, readbackErr)
+	}
+	return &ExecutionStartOutcomeUnknownError{
+		AttemptID: strings.TrimSpace(transition.AttemptID),
+		Cause:     errors.Join(errors.Join(writeErrs...), errors.Join(readbackErrs...)),
+	}
+}
+
+func (s *TransitionService) confirmExecutionStartCommit(ctx context.Context, transition TransitionRequest) (bool, error) {
+	readbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), executionStartReadbackTimeout)
+	defer cancel()
+
+	var (
+		storedTransitionRunID, storedTransitionEntity, storedTransitionFrom, storedTransitionTo            string
+		storedTransitionActorID, storedTransitionRoleID, storedTransitionAuthority                         string
+		storedTransitionReasonCode, storedTransitionReasonText, storedTransitionCorrelationID              string
+		storedTransitionCausationID, storedTransitionCreatedAt                                             string
+		storedTransitionNodeRunID                                                                          sql.NullString
+		storedEventRunID, storedEventAttemptID, storedEventType, storedEventPayload, storedEventCreatedAt  string
+		storedEventSchemaVersion, storedEventActorID, storedEventRoleID                                    string
+		storedEventAuthority, storedEventReasonCode, storedEventReasonText                                 string
+		storedEventCorrelationID, storedEventCausationID                                                   string
+		storedEventNodeRunID                                                                               sql.NullString
+		storedEventSeq                                                                                     int
+		storedAttemptEventID, storedAttemptEventRunID, storedAttemptEventNodeRunID, storedAttemptEventType string
+		storedAttemptEventReasonCode, storedAttemptEventPayload, storedAttemptEventCreatedAt               string
+		storedAttemptEventSeq                                                                              int
+		storedExecutionState, storedLaunchStartedAt, storedStartedAt                                       string
+		storedNodeStatus                                                                                   string
+	)
+	transitionErr := s.db.QueryRowContext(readbackCtx, `SELECT run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, created_at FROM transitions WHERE transition_id = ?`, strings.TrimSpace(transition.TransitionID)).Scan(
+		&storedTransitionRunID, &storedTransitionNodeRunID, &storedTransitionEntity, &storedTransitionFrom, &storedTransitionTo,
+		&storedTransitionActorID, &storedTransitionRoleID, &storedTransitionAuthority, &storedTransitionReasonCode, &storedTransitionReasonText,
+		&storedTransitionCorrelationID, &storedTransitionCausationID, &storedTransitionCreatedAt,
+	)
+	eventErr := s.db.QueryRowContext(readbackCtx, `SELECT run_id, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, created_at FROM events WHERE event_id = ?`, strings.TrimSpace(transition.EventID)).Scan(
+		&storedEventRunID, &storedEventNodeRunID, &storedEventAttemptID, &storedEventSchemaVersion, &storedEventType, &storedEventSeq, &storedEventPayload,
+		&storedEventActorID, &storedEventRoleID, &storedEventAuthority, &storedEventReasonCode, &storedEventReasonText,
+		&storedEventCorrelationID, &storedEventCausationID, &storedEventCreatedAt,
+	)
+	attemptEventID := fmt.Sprintf("attempt_event:%s:%d", strings.TrimSpace(transition.AttemptID), transition.EventSeq)
+	attemptEventErr := s.db.QueryRowContext(readbackCtx, `SELECT attempt_event_id, run_id, node_run_id, seq, event_type, reason_code, payload_json, created_at FROM attempt_event_log WHERE attempt_event_id = ?`, attemptEventID).Scan(
+		&storedAttemptEventID, &storedAttemptEventRunID, &storedAttemptEventNodeRunID, &storedAttemptEventSeq, &storedAttemptEventType, &storedAttemptEventReasonCode, &storedAttemptEventPayload, &storedAttemptEventCreatedAt,
+	)
+	var executionErr error
+	var storedExecutionNodeRunID, storedExecutionRunID string
+	executionErr = s.db.QueryRowContext(readbackCtx, `SELECT run_id, node_run_id, state, COALESCE(launch_started_at, ''), COALESCE(started_at, '') FROM attempt_executions WHERE attempt_id = ?`, strings.TrimSpace(transition.AttemptID)).Scan(
+		&storedExecutionRunID, &storedExecutionNodeRunID, &storedExecutionState, &storedLaunchStartedAt, &storedStartedAt,
+	)
+	nodeErr := s.db.QueryRowContext(readbackCtx, `SELECT node_status FROM node_runs WHERE run_id = ? AND node_run_id = ?`, strings.TrimSpace(transition.RunID), strings.TrimSpace(transition.NodeRunID.String)).Scan(&storedNodeStatus)
+
+	for name, err := range map[string]error{
+		"transition":    transitionErr,
+		"event":         eventErr,
+		"attempt event": attemptEventErr,
+		"attempt state": executionErr,
+		"node state":    nodeErr,
+	} {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("read back execution start %s: %w", name, err)
+		}
+	}
+
+	transitionPresent := transitionErr == nil
+	eventPresent := eventErr == nil
+	attemptEventPresent := attemptEventErr == nil
+	if !transitionPresent && !eventPresent && !attemptEventPresent && executionErr == nil &&
+		storedExecutionRunID == strings.TrimSpace(transition.RunID) && storedExecutionNodeRunID == strings.TrimSpace(transition.NodeRunID.String) &&
+		storedExecutionState == "queued" && storedLaunchStartedAt == "" && storedStartedAt == "" &&
+		nodeErr == nil && storedNodeStatus == "ready" {
+		return false, nil
+	}
+
+	transitionMatches := transitionPresent &&
+		storedTransitionRunID == strings.TrimSpace(transition.RunID) &&
+		storedTransitionNodeRunID.Valid == transition.NodeRunID.Valid &&
+		storedTransitionNodeRunID.String == strings.TrimSpace(transition.NodeRunID.String) &&
+		storedTransitionEntity == string(transition.Entity) &&
+		storedTransitionFrom == strings.TrimSpace(transition.FromState) &&
+		storedTransitionTo == strings.TrimSpace(transition.ToState) &&
+		storedTransitionActorID == strings.TrimSpace(transition.ActorID) &&
+		storedTransitionRoleID == strings.TrimSpace(transition.RoleID) &&
+		storedTransitionAuthority == strings.TrimSpace(transition.AuthoritySource) &&
+		storedTransitionReasonCode == strings.TrimSpace(transition.ReasonCode) &&
+		storedTransitionReasonText == strings.TrimSpace(transition.ReasonText) &&
+		storedTransitionCorrelationID == strings.TrimSpace(transition.CorrelationID) &&
+		storedTransitionCausationID == strings.TrimSpace(transition.CausationID) &&
+		storedTransitionCreatedAt == strings.TrimSpace(transition.OccurredAt)
+	eventMatches := eventPresent &&
+		storedEventRunID == strings.TrimSpace(transition.RunID) &&
+		storedEventNodeRunID.Valid == transition.NodeRunID.Valid &&
+		storedEventNodeRunID.String == strings.TrimSpace(transition.NodeRunID.String) &&
+		storedEventAttemptID == strings.TrimSpace(transition.AttemptID) &&
+		storedEventSchemaVersion == strings.TrimSpace(transition.SchemaVersion) &&
+		storedEventType == strings.TrimSpace(transition.EventType) &&
+		storedEventSeq == transition.EventSeq &&
+		(transition.EventType == "attempt.started" || storedEventPayload == strings.TrimSpace(transition.PayloadJSON)) &&
+		storedEventActorID == strings.TrimSpace(transition.ActorID) &&
+		storedEventRoleID == strings.TrimSpace(transition.RoleID) &&
+		storedEventAuthority == strings.TrimSpace(transition.AuthoritySource) &&
+		storedEventReasonCode == strings.TrimSpace(transition.ReasonCode) &&
+		storedEventReasonText == strings.TrimSpace(transition.ReasonText) &&
+		storedEventCorrelationID == strings.TrimSpace(transition.CorrelationID) &&
+		storedEventCausationID == strings.TrimSpace(transition.CausationID) &&
+		storedEventCreatedAt == strings.TrimSpace(transition.OccurredAt)
+	attemptEventMatches := attemptEventPresent &&
+		storedAttemptEventID == attemptEventID &&
+		storedAttemptEventRunID == strings.TrimSpace(transition.RunID) &&
+		storedAttemptEventNodeRunID == strings.TrimSpace(transition.NodeRunID.String) &&
+		storedAttemptEventSeq == transition.EventSeq &&
+		storedAttemptEventType == strings.TrimSpace(transition.EventType) &&
+		storedAttemptEventReasonCode == strings.TrimSpace(transition.ReasonCode) &&
+		storedAttemptEventPayload == strings.TrimSpace(transition.PayloadJSON) &&
+		storedAttemptEventCreatedAt == strings.TrimSpace(transition.OccurredAt)
+	if !transitionMatches || !eventMatches || !attemptEventMatches || executionErr != nil || nodeErr != nil ||
+		storedExecutionRunID != strings.TrimSpace(transition.RunID) || storedExecutionNodeRunID != strings.TrimSpace(transition.NodeRunID.String) {
+		return false, fmt.Errorf("durable execution start records are incomplete or do not match transition %q", strings.TrimSpace(transition.TransitionID))
+	}
+
+	switch strings.TrimSpace(transition.ToState) {
+	case "starting":
+		if storedExecutionState != "starting" || storedLaunchStartedAt != strings.TrimSpace(transition.OccurredAt) || storedStartedAt != "" || storedNodeStatus != "starting" {
+			return false, fmt.Errorf("durable provider execution start does not match transition %q", strings.TrimSpace(transition.TransitionID))
+		}
+	case "running":
+		if storedExecutionState != "running" || storedStartedAt != strings.TrimSpace(transition.OccurredAt) || storedNodeStatus != "running" {
+			return false, fmt.Errorf("durable runtime-owned execution start does not match transition %q", strings.TrimSpace(transition.TransitionID))
+		}
+	default:
+		return false, fmt.Errorf("unsupported execution start state %q during commit readback", strings.TrimSpace(transition.ToState))
+	}
+	return true, nil
 }
 
 func (s *TransitionService) RecordExecutionLaunch(ctx context.Context, req ExecutionLaunchRecordRequest) error {

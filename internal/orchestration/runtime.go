@@ -539,6 +539,10 @@ func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRu
 	cancel := func() {
 		cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) })
 	}
+	stdinErr := handle.Stdin().Close()
+	if stdinErr != nil {
+		cancel()
+	}
 	go func() {
 		defer stdoutStream.Close()
 		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
@@ -566,6 +570,9 @@ func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRu
 	}
 	if stderr.err != nil {
 		return output, stderr.err
+	}
+	if stdinErr != nil {
+		return output, fmt.Errorf("close guarded validation stdin: %w", stdinErr)
 	}
 	if waitErr != nil {
 		return output, waitErr
@@ -606,6 +613,15 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 	r.beginStartupRecovery()
+	if r.orchestrator != nil && r.orchestrator.runWorktrees != nil {
+		reclaimedAt := time.Now().UTC()
+		if r.orchestrator.now != nil {
+			reclaimedAt = r.orchestrator.now().UTC()
+		}
+		if err := r.orchestrator.runWorktrees.ReclaimAbandonedCleanupClaims(ctx, reclaimedAt.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("startup run worktree cleanup claim recovery: %w", err)
+		}
+	}
 
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
@@ -1621,6 +1637,12 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"worktree_name",
 			"seed_commit_oid",
 			"state",
+			"cleanup_cursor",
+			"cleanup_owner",
+			"cleanup_owner_pid",
+			"cleanup_owner_identity_token",
+			"cleanup_fence",
+			"cleanup_started",
 			"created_at",
 			"last_used_at",
 			"cleanup_after",

@@ -197,12 +197,7 @@ func (s *KeyStore) install(connectionID string, generation int, raw []byte, rota
 		_ = dir.Remove(destination)
 		return "", fmt.Errorf("install github private key: %w", err)
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	if err != nil {
+	if err = securefs.SyncDirectory(dir); err != nil {
 		return "", err
 	}
 	der := x509.MarshalPKCS1PublicKey(&key.PublicKey)
@@ -431,12 +426,7 @@ func removeKeyGenerations(dir *os.Root, selected int) error {
 	if !changed {
 		return nil
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }
 
 func validateReconcileTemp(file *os.File, name string) error {

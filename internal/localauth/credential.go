@@ -65,17 +65,8 @@ func EnsureCredential(kingdomHome string) (string, error) {
 	if closeErr != nil {
 		return "", fmt.Errorf("close local operator credential: %w", closeErr)
 	}
-	directory, err := secrets.Open(".")
-	if err != nil {
-		return "", fmt.Errorf("open local secrets directory for sync: %w", err)
-	}
-	syncErr := directory.Sync()
-	closeErr = directory.Close()
-	if syncErr != nil {
-		return "", fmt.Errorf("sync local secrets directory: %w", syncErr)
-	}
-	if closeErr != nil {
-		return "", fmt.Errorf("close local secrets directory: %w", closeErr)
+	if err := securefs.SyncDirectory(secrets); err != nil {
+		return "", fmt.Errorf("sync local secrets directory: %w", err)
 	}
 	return path, nil
 }

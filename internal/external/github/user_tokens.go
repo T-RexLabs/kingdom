@@ -299,12 +299,7 @@ func (s *UserTokenStore) storeRaw(connectionID string, generation int, raw []byt
 	if err != nil {
 		return fmt.Errorf("install github user tokens: %w", err)
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }
 
 // ReconcileGenerations removes temporary, stale, and unowned token generations.
@@ -470,10 +465,5 @@ func removeTokenGenerations(dir *os.Root, selected int) error {
 	if !changed {
 		return nil
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }

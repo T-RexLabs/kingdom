@@ -170,6 +170,47 @@ func readRootDirBounded(root *Root, path string, maxEntries int) ([]Entry, error
 	return entries, nil
 }
 
+func readRootEntry(root *Root, path string) (Entry, error) {
+	parentFD, leaf, err := openParent(root, path, false, 0)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unix.Close(parentFD)
+	var info unix.Stat_t
+	if err := unix.Fstatat(parentFD, leaf, &info, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return Entry{}, fmt.Errorf("inspect secure entry %q: %w", path, err)
+	}
+	return Entry{Name: leaf, Type: entryType(uint32(info.Mode)), SizeBytes: info.Size, Identity: fileIdentity(info)}, nil
+}
+
+func rootTreeCursorUnavailable(err error) bool {
+	return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP)
+}
+
+func rootDirectoryNotEmpty(err error) bool {
+	return errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST)
+}
+
+func createOSRootDirectory(root *os.Root, name string, mode fs.FileMode) (bool, error) {
+	if err := root.Mkdir(name, mode.Perm()); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func syncOSRootDirectory(root *os.Root) error {
+	directory, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
+}
+
 func ensureRootDir(root *Root, path string, mode fs.FileMode) error {
 	if root == nil || root.fd < 0 {
 		return fmt.Errorf("secure root is closed")
@@ -183,14 +224,69 @@ func ensureRootDir(root *Root, path string, mode fs.FileMode) error {
 		return fmt.Errorf("duplicate secure root %q: %w", root.name, err)
 	}
 	defer func() { _ = unix.Close(fd) }()
+	relativePath := ""
 	for _, component := range components {
 		childFD, err := openOrCreateDirectoryAt(fd, component, mode)
 		if err != nil {
 			return fmt.Errorf("ensure secure directory component %q: %w", component, err)
 		}
+		if relativePath == "" {
+			relativePath = component
+		} else {
+			relativePath += "/" + component
+		}
+		if err := root.syncDirectoryEntry(fd, childFD, relativePath, unix.Fsync); err != nil {
+			_ = unix.Close(childFD)
+			return fmt.Errorf("sync secure directory component %q: %w", component, err)
+		}
 		unix.Close(fd)
 		fd = childFD
 	}
+	return nil
+}
+
+func (r *Root) syncDirectoryEntry(parentFD, childFD int, relativePath string, syncParent func(int) error) error {
+	if r == nil || parentFD < 0 || childFD < 0 || relativePath == "" || syncParent == nil {
+		return fmt.Errorf("secure directory entry identity and sync operation are required")
+	}
+	var parentStat, childStat unix.Stat_t
+	if err := unix.Fstat(parentFD, &parentStat); err != nil {
+		return fmt.Errorf("identify secure directory parent: %w", err)
+	}
+	if err := unix.Fstat(childFD, &childStat); err != nil {
+		return fmt.Errorf("identify secure directory child: %w", err)
+	}
+	parentIdentity := fileIdentity(parentStat)
+	childIdentity := fileIdentity(childStat)
+	key := directorySyncCacheKey{
+		path:                relativePath,
+		parentDevice:        parentIdentity.Device,
+		parentInode:         parentIdentity.Inode,
+		parentChangeSeconds: parentIdentity.ChangeTimeSeconds,
+		parentChangeNanos:   parentIdentity.ChangeTimeNanoseconds,
+		childDevice:         childIdentity.Device,
+		childInode:          childIdentity.Inode,
+	}
+	r.syncMu.Lock()
+	if _, ok := r.syncedDirs[key]; ok {
+		r.syncMu.Unlock()
+		return nil
+	}
+	r.syncMu.Unlock()
+	if err := syncParent(parentFD); err != nil {
+		return fmt.Errorf("sync secure parent for %q: %w", relativePath, err)
+	}
+	r.syncMu.Lock()
+	if r.syncedDirs == nil {
+		r.syncedDirs = make(map[directorySyncCacheKey]struct{})
+	}
+	if len(r.syncedDirs) >= 8192 {
+		for existing := range r.syncedDirs {
+			delete(r.syncedDirs, existing)
+		}
+	}
+	r.syncedDirs[key] = struct{}{}
+	r.syncMu.Unlock()
 	return nil
 }
 
@@ -503,87 +599,6 @@ func removeRootEmptyDir(root *Root, path string) error {
 	return nil
 }
 
-func removeRootTree(root *Root, path string) error {
-	parentFD, leaf, err := openParent(root, path, false, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(parentFD)
-	if err := removeTreeEntryAt(parentFD, leaf, path); err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return nil
-		}
-		return err
-	}
-	if err := unix.Fsync(parentFD); err != nil {
-		return fmt.Errorf("sync secure parent after removing tree %q: %w", path, err)
-	}
-	return nil
-}
-
-func removeTreeEntryAt(parentFD int, name, path string) error {
-	for attempt := 0; attempt < 16; attempt++ {
-		var info unix.Stat_t
-		err := unix.Fstatat(parentFD, name, &info, unix.AT_SYMLINK_NOFOLLOW)
-		if err != nil {
-			return err
-		}
-		if info.Mode&unix.S_IFMT != unix.S_IFDIR {
-			if err := unix.Unlinkat(parentFD, name, 0); err == nil || errors.Is(err, unix.ENOENT) {
-				return nil
-			} else if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.ENOTDIR) {
-				continue
-			} else {
-				return fmt.Errorf("remove secure entry %q: %w", path, err)
-			}
-		}
-
-		childFD, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		if err != nil {
-			if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
-				continue
-			}
-			return fmt.Errorf("open secure directory %q for removal: %w", path, err)
-		}
-		err = removeTreeDirectoryAt(childFD, path)
-		_ = unix.Close(childFD)
-		if err != nil {
-			return err
-		}
-		if err := unix.Unlinkat(parentFD, name, unix.AT_REMOVEDIR); err == nil || errors.Is(err, unix.ENOENT) {
-			return nil
-		} else if errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) || errors.Is(err, unix.ENOTDIR) {
-			continue
-		} else {
-			return fmt.Errorf("remove secure directory %q: %w", path, err)
-		}
-	}
-	return fmt.Errorf("secure tree %q kept changing during removal", path)
-}
-
-func removeTreeDirectoryAt(directoryFD int, path string) error {
-	readFD, err := unix.Dup(directoryFD)
-	if err != nil {
-		return fmt.Errorf("duplicate secure directory %q for removal: %w", path, err)
-	}
-	directory := os.NewFile(uintptr(readFD), path)
-	if directory == nil {
-		_ = unix.Close(readFD)
-		return fmt.Errorf("open secure directory %q for removal: invalid descriptor", path)
-	}
-	defer directory.Close()
-	entries, err := directory.ReadDir(-1)
-	if err != nil {
-		return fmt.Errorf("read secure directory %q for removal: %w", path, err)
-	}
-	for _, entry := range entries {
-		if err := removeTreeEntryAt(directoryFD, entry.Name(), path+"/"+entry.Name()); err != nil && !errors.Is(err, unix.ENOENT) {
-			return err
-		}
-	}
-	return nil
-}
-
 func openRootDir(root *Root, path string) (int, error) {
 	if root == nil || root.fd < 0 {
 		return -1, fmt.Errorf("secure root is closed")
@@ -623,9 +638,6 @@ func openOrCreateDirectoryAt(parentFD int, component string, mode fs.FileMode) (
 	if err := unix.Mkdirat(parentFD, component, uint32(mode.Perm())); err != nil && !errors.Is(err, unix.EEXIST) {
 		return -1, err
 	}
-	if err := unix.Fsync(parentFD); err != nil {
-		return -1, err
-	}
 	return unix.Openat(parentFD, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 }
 
@@ -649,8 +661,15 @@ func entryType(mode uint32) EntryType {
 }
 
 func openParent(root *Root, path string, create bool, mode fs.FileMode) (int, string, error) {
+	return openParentWithSync(root, path, create, mode, unix.Fsync)
+}
+
+func openParentWithSync(root *Root, path string, create bool, mode fs.FileMode, syncParent func(int) error) (int, string, error) {
 	if root == nil || root.fd < 0 {
 		return -1, "", fmt.Errorf("secure root is closed")
+	}
+	if create && syncParent == nil {
+		return -1, "", fmt.Errorf("secure directory sync operation is required")
 	}
 	components, err := splitRelativePath(path)
 	if err != nil {
@@ -660,11 +679,24 @@ func openParent(root *Root, path string, create bool, mode fs.FileMode) (int, st
 	if err != nil {
 		return -1, "", fmt.Errorf("duplicate secure root %q: %w", root.name, err)
 	}
+	relativePath := ""
 	for _, component := range components[:len(components)-1] {
 		childFD, openErr := openDirectoryAt(parentFD, component, create, mode)
 		if openErr != nil {
 			unix.Close(parentFD)
 			return -1, "", fmt.Errorf("open secure directory component %q: %w", component, openErr)
+		}
+		if relativePath == "" {
+			relativePath = component
+		} else {
+			relativePath += "/" + component
+		}
+		if create {
+			if syncErr := root.syncDirectoryEntry(parentFD, childFD, relativePath, syncParent); syncErr != nil {
+				_ = unix.Close(childFD)
+				_ = unix.Close(parentFD)
+				return -1, "", fmt.Errorf("sync secure parent for %q: %w", relativePath, syncErr)
+			}
 		}
 		unix.Close(parentFD)
 		parentFD = childFD

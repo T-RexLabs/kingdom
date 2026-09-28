@@ -60,10 +60,33 @@ type ReplayNotQuiescentError struct {
 	Blockers []string
 }
 
+type RunWorktreeCleanupInProgressError struct {
+	RunID string
+}
+
 type AttemptStopRetryUnavailableError struct {
 	RunID     string
 	AttemptID string
 	Reason    string
+}
+
+type ExecutionStartOutcomeUnknownError struct {
+	AttemptID string
+	Cause     error
+}
+
+func (e *ExecutionStartOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "execution start outcome is unknown"
+	}
+	return fmt.Sprintf("execution start outcome is unknown for attempt %q: %v", strings.TrimSpace(e.AttemptID), e.Cause)
+}
+
+func (e *ExecutionStartOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
 }
 
 func (e *AttemptStopRetryUnavailableError) Error() string {
@@ -72,6 +95,10 @@ func (e *AttemptStopRetryUnavailableError) Error() string {
 
 func (e *ReplayNotQuiescentError) Error() string {
 	return fmt.Sprintf("cancelled run %q is still settling: %s", e.RunID, strings.Join(e.Blockers, ", "))
+}
+
+func (e *RunWorktreeCleanupInProgressError) Error() string {
+	return fmt.Sprintf("managed worktree cleanup for run %q has started; wait for cleanup to finish before submitting a new Retry or Rerun request", e.RunID)
 }
 
 func (e *ReplayWaveActiveError) Error() string {

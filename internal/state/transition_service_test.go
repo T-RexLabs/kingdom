@@ -11,7 +11,78 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/testutil"
 )
+
+func TestTransitionServiceRecordExecutionStartConfirmsDurableCommitError(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		toState        string
+		executionMode  string
+		completionMode string
+		eventType      string
+		payloadJSON    string
+	}{
+		{name: "provider starting", toState: "starting", executionMode: "provider_backed", completionMode: "server_response", eventType: "node.state_changed", payloadJSON: `{"state":"starting"}`},
+		{name: "runtime-owned running", toState: "running", executionMode: "runtime_owned", completionMode: "not_applicable", eventType: "attempt.started", payloadJSON: `{"state":"running"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connector := testutil.NewSQLiteCommitFaultConnector(":memory:")
+			db := connector.OpenDB()
+			db.SetMaxOpenConns(1)
+			t.Cleanup(func() { _ = db.Close() })
+			mustExec(t, db, `PRAGMA foreign_keys = ON`)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL, finished_at = NULL WHERE node_run_id = 'nr_1'`)
+			const attemptID = "run_1:decree_intake:commit_ambiguous"
+			mustExecArgs(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, 'run_1', 'nr_1', 'queued', ?, ?, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, attemptID, tc.executionMode, tc.completionMode)
+
+			req := TransitionRequest{
+				TransitionID:    "tr_execution_start_commit_ambiguous_" + tc.toState,
+				EventID:         "evt_execution_start_commit_ambiguous_" + tc.toState,
+				RunID:           "run_1",
+				NodeRunID:       sql.NullString{String: "nr_1", Valid: true},
+				Entity:          EntityTypeNode,
+				FromState:       "ready",
+				ToState:         tc.toState,
+				ActorID:         "runtime_orchestrator",
+				RoleID:          "king",
+				AuthoritySource: "runtime.orchestrator",
+				ReasonCode:      "orchestration_progress",
+				ReasonText:      "execution launch prepared",
+				CorrelationID:   "corr_orch_run_1",
+				CausationID:     "caus_orch_execution_start_commit_ambiguous",
+				OccurredAt:      "2026-03-01T12:00:02Z",
+				AttemptID:       attemptID,
+				SchemaVersion:   "v1",
+				EventType:       tc.eventType,
+				EventSeq:        1,
+				PayloadJSON:     tc.payloadJSON,
+			}
+			connector.FailNextDurableCommit(func() {
+				connector.FailNextQueryContaining("FROM transitions WHERE transition_id")
+			})
+			if err := NewTransitionService(db, nil).RecordExecutionStart(context.Background(), ExecutionStartRecordRequest{Transition: req}); err != nil {
+				t.Fatalf("confirm execution start after durable commit error: %v", err)
+			}
+
+			var state, launchStartedAt, startedAt string
+			if err := db.QueryRow(`SELECT state, COALESCE(launch_started_at, ''), COALESCE(started_at, '') FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state, &launchStartedAt, &startedAt); err != nil {
+				t.Fatalf("read back execution start: %v", err)
+			}
+			if tc.toState == "starting" && (state != "starting" || launchStartedAt != req.OccurredAt || startedAt != "") {
+				t.Fatalf("provider start state=%q launch_started_at=%q started_at=%q", state, launchStartedAt, startedAt)
+			}
+			if tc.toState == "running" && (state != "running" || startedAt != req.OccurredAt) {
+				t.Fatalf("runtime-owned start state=%q started_at=%q", state, startedAt)
+			}
+			if !queryTransitionByID(t, db, req.TransitionID) || !queryEventExists(t, db, req.EventID) {
+				t.Fatal("durable execution start is missing its transition or event")
+			}
+		})
+	}
+}
 
 func TestTransitionServiceRejectsIllegalTransition(t *testing.T) {
 	t.Parallel()

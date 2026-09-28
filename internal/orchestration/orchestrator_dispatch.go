@@ -72,6 +72,9 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		unlockWorkspace := o.lockRunWorkspace(run.RunID)
 		workspaceErr := o.recoverQuarantinedExecutionTargetBeforeDispatch(ctx, run.RunID, attempt.NodeRunID)
 		unlockWorkspace()
+		if errors.Is(workspaceErr, errExecutionTargetRecoveryInProgress) {
+			return nil
+		}
 		if workspaceErr != nil {
 			return workspaceErr
 		}
@@ -212,7 +215,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		delegatorInstruction := o.delegatorInstructionForDispatchForClass(ctx, run.RunID, node.NodeID, node.NodeClass, attempt.Attempt, delegatorID, attempt.AgentID)
 		scopedDelegatorInstruction = strings.TrimSpace(stripControlCommandLines(o.latestScopedInstructionForNode(ctx, run.RunID, node.NodeID, delegatorID, attempt.AgentID)))
 		if strings.TrimSpace(delegatorInstruction) == "" {
-			delegatorInstruction = defaultDelegatorInstructionForDispatch(node.NodeID, node.RequiredRole, decreeText)
+			delegatorInstruction = defaultDelegatorInstructionForDispatch(node.NodeID, node.RequiredRole)
 			if scopedDelegatorInstruction == "" {
 				scopedDelegatorInstruction = strings.TrimSpace(stripControlCommandLines(delegatorInstruction))
 			}
@@ -257,6 +260,10 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 
 	if executionSpec.Mode == executionstore.ExecutionModeRuntimeOwned {
 		if err := o.recordExecutionStart(ctx, run, node, attempt, attemptID, "execution started", startPayloadRaw, now); err != nil {
+			var outcomeUnknown *state.ExecutionStartOutcomeUnknownError
+			if errors.As(err, &outcomeUnknown) {
+				return fmt.Errorf("runtime-owned execution start outcome is unresolved for attempt %q: %w", attemptID, err)
+			}
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node running", err, now)
 		}
 		attempt.NodeStatus = "running"
@@ -311,6 +318,10 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	}
 	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
 	if invocationErr != nil {
+		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
+		if errors.As(invocationErr, &outcomeUnknown) {
+			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
+		}
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
 	}
 
@@ -335,6 +346,23 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		InstructionFull:   providerOutputPrompt,
 	})
 	if err := o.recordExecutionPreparation(ctx, run, node, attempt, attemptID, "execution launch prepared", startingPayloadRaw, now); err != nil {
+		var outcomeUnknown *state.ExecutionStartOutcomeUnknownError
+		if errors.As(err, &outcomeUnknown) {
+			return fmt.Errorf("provider execution start outcome is unresolved for attempt %q: %w", attemptID, err)
+		}
+		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		rollbackErr := o.executionStore.InvalidateUnlaunchedProviderInvocation(rollbackCtx, executionstore.InvalidateUnlaunchedProviderInvocationRequest{
+			ProviderInvocationID: providerInvocationID,
+			InvalidReason:        "execution_start_persistence_failed",
+			UpdatedAt:            now,
+		})
+		cancelRollback()
+		if rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("record provider execution start: %w", err),
+				fmt.Errorf("invalidate unlaunched provider invocation: %w", rollbackErr),
+			)
+		}
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node starting", err, now)
 	}
 	attempt.NodeStatus = "starting"

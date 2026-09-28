@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/runtimefs"
+	"kingdom/internal/state"
+	"kingdom/internal/testutil"
 	"kingdom/internal/workspace"
 )
 
@@ -404,6 +407,11 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err := os.WriteFile(filepath.Join(worktreePath, "dirty.txt"), []byte("provider-owned"), 0o600); err != nil {
 		t.Fatalf("write dirty worktree content: %v", err)
 	}
+	for index := range runWorktreeRemovalBatchSize*2 + 5 {
+		if err := os.WriteFile(filepath.Join(worktreePath, "nested", fmt.Sprintf("provider-%03d.txt", index)), []byte("provider-owned"), 0o600); err != nil {
+			t.Fatalf("write provider worktree file %d: %v", index, err)
+		}
+	}
 	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outsidePath, []byte("outside"), 0o600); err != nil {
 		t.Fatalf("write outside guard: %v", err)
@@ -417,7 +425,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	}
 
 	registered := true
-	removals := 0
+	prunes := 0
 	adds := 0
 	fakeRunner := &fakeGitCommandRunner{}
 	fakeRunner.runFn = func(projectRootArg string, args ...string) (string, error) {
@@ -441,11 +449,15 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 			}
 			return main, nil
 		case "worktree prune --expire now":
-			return "", nil
-		}
-		if len(args) == 4 && args[0] == "worktree" && args[1] == "remove" && args[2] == "--force" && args[3] == worktreePath {
-			registered = false
-			removals++
+			if _, err := os.Lstat(worktreePath); err == nil {
+				return "", fmt.Errorf("git prune was reached before bounded tree removal completed")
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
+			if registered {
+				registered = false
+				prunes++
+			}
 			return "", nil
 		}
 		if len(args) == 5 && args[0] == "worktree" && args[1] == "add" && args[2] == "--detach" && args[3] == worktreePath && args[4] == "1111111111111111111111111111111111111111" {
@@ -504,8 +516,8 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
 		t.Fatalf("automatic recovery err=%v, want explicit-replay rejection", err)
 	}
-	if removals != 0 || adds != 0 {
-		t.Fatalf("automatic recovery touched managed worktree: removals=%d adds=%d", removals, adds)
+	if prunes != 0 || adds != 0 {
+		t.Fatalf("automatic recovery touched managed worktree: prunes=%d adds=%d", prunes, adds)
 	}
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'king', 'api.retry', 'manual_retry_requested', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'king', 'api.retry', 'internal_error', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
@@ -517,15 +529,42 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "waiting for provider process quiescence") {
 		t.Fatalf("manual recovery before quiescence err=%v, want quiescence rejection", err)
 	}
-	if removals != 0 || adds != 0 {
-		t.Fatalf("pre-quiescence recovery touched managed worktree: removals=%d adds=%d", removals, adds)
+	if prunes != 0 || adds != 0 {
+		t.Fatalf("pre-quiescence recovery touched managed worktree: prunes=%d adds=%d", prunes, adds)
 	}
 	mustExec(t, db, `UPDATE provider_process_guards SET lifecycle='quiescent', quiescent_at='`+quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)+`', quiescence_evidence_sha256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', quiescence_evidence_json='{}' WHERE guard_id='guard_worktree_quiescence'`)
-	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("recover managed worktree after explicit retry: %v", err)
+	recovered, recoveryErr := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano))
+	if !errors.Is(recoveryErr, errExecutionTargetRecoveryInProgress) {
+		t.Fatalf("first bounded recovery error=%v, want recovery-in-progress", recoveryErr)
 	}
-	if removals != 1 || adds != 1 {
-		t.Fatalf("managed worktree lifecycle calls: removals=%d adds=%d, want one each", removals, adds)
+	if recovered.State != "unknown" || prunes != 0 || adds != 0 {
+		t.Fatalf("target or Git state changed before worktree removal completed: target=%#v prunes=%d adds=%d", recovered, prunes, adds)
+	}
+	calls := 1
+	for {
+		target, err = fsStore.GetExecutionTarget(context.Background(), runID)
+		if err != nil || target.State != "unknown" {
+			t.Fatalf("target lost quarantine during recovery: target=%#v err=%v", target, err)
+		}
+		recovered, recoveryErr = loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano))
+		if errors.Is(recoveryErr, errExecutionTargetRecoveryInProgress) {
+			calls++
+			if calls > 8 {
+				t.Fatal("managed worktree recovery did not complete within expected batches")
+			}
+			continue
+		}
+		if recoveryErr != nil {
+			t.Fatalf("resume managed worktree recovery: %v", recoveryErr)
+		}
+		target = recovered
+		break
+	}
+	if calls < 2 {
+		t.Fatalf("managed worktree recovery calls=%d, want multiple batches", calls)
+	}
+	if prunes != 1 || adds != 1 {
+		t.Fatalf("managed worktree lifecycle calls: prunes=%d adds=%d, want one each", prunes, adds)
 	}
 	newWorktree, err := os.Stat(worktreePath)
 	if err != nil {
@@ -562,8 +601,8 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, prunedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("recover absent unregistered managed worktree: %v", err)
 	}
-	if removals != 1 || adds != 2 {
-		t.Fatalf("absent unregistered recovery lifecycle calls: removals=%d adds=%d, want one removal and two adds", removals, adds)
+	if prunes != 1 || adds != 2 {
+		t.Fatalf("absent unregistered recovery lifecycle calls: prunes=%d adds=%d, want one prune and two adds", prunes, adds)
 	}
 	assertRuntimeTestFile(t, worktreePath, "baseline.txt", "trusted baseline")
 	recreatedRecord, err := worktreeStore.GetByRun(context.Background(), runID)
@@ -813,9 +852,11 @@ func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 				"branch refs/heads/main",
 			), nil
 		case "worktree prune --expire now":
-			return "", nil
-		}
-		if len(args) == 4 && args[0] == "worktree" && args[1] == "remove" && args[2] == "--force" && args[3] == worktreePath {
+			if _, err := os.Lstat(worktreePath); err == nil {
+				return "", fmt.Errorf("git prune was reached before bounded tree removal completed")
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
 			registered = false
 			return "", nil
 		}
@@ -870,12 +911,833 @@ func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 	}
 }
 
+func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
+
+	mainWorktreeRoot := t.TempDir()
+	worktreeName := workspace.RunPathName("D1", "run_1")
+	worktreePath := workspace.ManagedRunWorktreePath(mainWorktreeRoot, worktreeName)
+	providerDataRoot := filepath.Join(worktreePath, "provider-data")
+	if err := os.MkdirAll(providerDataRoot, 0o755); err != nil {
+		t.Fatalf("create managed provider directory: %v", err)
+	}
+	const providerFileCount = runWorktreeRemovalBatchSize*2 + 5
+	for index := range providerFileCount {
+		if err := os.WriteFile(filepath.Join(providerDataRoot, fmt.Sprintf("file-%03d.txt", index)), []byte("provider-owned"), 0o600); err != nil {
+			t.Fatalf("write provider file %d: %v", index, err)
+		}
+	}
+
+	registered := true
+	pruneCalls := 0
+	fakeRunner := &fakeGitCommandRunner{}
+	fakeRunner.runFn = func(_ string, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "worktree list --porcelain -z":
+			main := worktreePorcelainZ("worktree "+mainWorktreeRoot, "HEAD 1111111111111111111111111111111111111111", "branch refs/heads/main")
+			if registered {
+				return main + worktreePorcelainZ("worktree "+worktreePath, "HEAD 1111111111111111111111111111111111111111", "detached"), nil
+			}
+			return main, nil
+		case "worktree prune --expire now":
+			if _, err := os.Lstat(worktreePath); err == nil {
+				return "", fmt.Errorf("git prune was reached before bounded tree removal completed")
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
+			registered = false
+			pruneCalls++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
+		}
+	}
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(context.Background(), "run_1", filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	loop := orchestrationLoop{db: db, runWorktrees: store, gitRunner: fakeRunner, now: func() time.Time { return now }}
+	record, err := store.GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load managed worktree: %v", err)
+	}
+	complete, err := loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
+	if err != nil || complete {
+		t.Fatalf("first cleanup batch complete=%t err=%v, want incomplete progress", complete, err)
+	}
+	progress, err := workspace.NewRunWorktreeStore(db).GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load persisted cleanup progress: %v", err)
+	}
+	if progress.State != workspace.RunWorktreeStateCleanupPending || progress.CleanupCursor != "provider-data" || progress.CleanedAt.Valid {
+		t.Fatalf("worktree cleanup state after first batch=%#v, want pending cursor and no cleaned time", progress)
+	}
+	remaining, err := os.ReadDir(providerDataRoot)
+	if err != nil {
+		t.Fatalf("read partially cleaned provider data: %v", err)
+	}
+	if len(remaining) == 0 || len(remaining) >= providerFileCount {
+		t.Fatalf("first batch removed %d of %d files, want bounded partial progress", providerFileCount-len(remaining), providerFileCount)
+	}
+	if pruneCalls != 0 || !registered {
+		t.Fatalf("Git registration changed before tree removal completed: pruneCalls=%d registered=%t", pruneCalls, registered)
+	}
+
+	calls := 1
+	for !complete {
+		store = workspace.NewRunWorktreeStore(db)
+		record, err = store.GetByRun(context.Background(), "run_1")
+		if err != nil {
+			t.Fatalf("reload worktree before batch %d: %v", calls+1, err)
+		}
+		loop.runWorktrees = store
+		complete, err = loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
+		if err != nil {
+			t.Fatalf("resume cleanup batch %d: %v", calls+1, err)
+		}
+		calls++
+		if calls > 8 {
+			t.Fatal("worktree cleanup did not complete within expected batches")
+		}
+	}
+	if calls < 2 || pruneCalls != 1 || registered {
+		t.Fatalf("cleanup calls=%d pruneCalls=%d registered=%t, want multiple batches and one completed prune", calls, pruneCalls, registered)
+	}
+	cleaned, err := store.GetByRun(context.Background(), "run_1")
+	if err != nil || cleaned.State != workspace.RunWorktreeStateCleaned || cleaned.CleanupCursor != "" || !cleaned.CleanedAt.Valid {
+		t.Fatalf("cleaned worktree record=%#v err=%v", cleaned, err)
+	}
+	if _, err := os.Lstat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("managed worktree path remains after cleanup: %v", err)
+	}
+}
+
+func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name            string
+		runReasonCode   string
+		runEventType    string
+		nodeEventType   string
+		authoritySource string
+		eventPrefix     string
+	}{
+		{name: "retry", runReasonCode: "manual_retry_requested", runEventType: "run.retry_reopened", nodeEventType: "attempt.retry_queued", authoritySource: "api.retry_node", eventPrefix: "retry"},
+		{name: "rerun", runReasonCode: "manual_rerun_requested", runEventType: "run.rerun_reopened", nodeEventType: "attempt.rerun_queued", authoritySource: "api.rerun_from_node", eventPrefix: "rerun"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db)
+			seedMinimumGraph(t, db)
+			mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+			mainWorktreeRoot := t.TempDir()
+			worktreeName := workspace.RunPathName("D1", "run_1")
+			worktreePath := workspace.ManagedRunWorktreePath(mainWorktreeRoot, worktreeName)
+			providerDataRoot := filepath.Join(worktreePath, "provider-data")
+			if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+				t.Fatalf("create managed worktree directory: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: managed"), 0o600); err != nil {
+				t.Fatalf("write managed git marker: %v", err)
+			}
+			if err := os.MkdirAll(providerDataRoot, 0o755); err != nil {
+				t.Fatalf("create provider data directory: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(worktreePath, "dirty.txt"), []byte("provider-owned"), 0o600); err != nil {
+				t.Fatalf("write dirty worktree file: %v", err)
+			}
+			for index := range runWorktreeRemovalBatchSize*2 + 5 {
+				if err := os.WriteFile(filepath.Join(providerDataRoot, fmt.Sprintf("file-%03d.txt", index)), []byte("provider-owned"), 0o600); err != nil {
+					t.Fatalf("write provider file %d: %v", index, err)
+				}
+			}
+
+			registered := true
+			pruneCalls := 0
+			worktreeAdds := 0
+			const seedCommit = "1111111111111111111111111111111111111111"
+			fakeRunner := &fakeGitCommandRunner{}
+			fakeRunner.runFn = func(_ string, args ...string) (string, error) {
+				switch strings.Join(args, " ") {
+				case "rev-parse --is-inside-work-tree":
+					return "true", nil
+				case "rev-parse --is-bare-repository":
+					return "false", nil
+				case "rev-parse --path-format=absolute --show-toplevel":
+					return mainWorktreeRoot, nil
+				case "rev-parse --show-prefix":
+					return "", nil
+				case "rev-parse --path-format=absolute --git-common-dir":
+					return filepath.Join(mainWorktreeRoot, ".git"), nil
+				case "rev-parse --verify HEAD^{commit}":
+					return seedCommit, nil
+				case "worktree list --porcelain -z":
+					main := worktreePorcelainZ("worktree "+mainWorktreeRoot, "HEAD "+seedCommit, "branch refs/heads/main")
+					if registered {
+						return main + worktreePorcelainZ("worktree "+worktreePath, "HEAD "+seedCommit, "detached"), nil
+					}
+					return main, nil
+				case "worktree prune --expire now":
+					if _, err := os.Lstat(worktreePath); err == nil {
+						return "", fmt.Errorf("git prune was reached before bounded tree removal completed")
+					} else if !os.IsNotExist(err) {
+						return "", err
+					}
+					registered = false
+					pruneCalls++
+					return "", nil
+				}
+				if len(args) == 5 && args[0] == "worktree" && args[1] == "add" && args[2] == "--detach" && args[4] == seedCommit {
+					registered = true
+					worktreeAdds++
+					if err := os.MkdirAll(args[3], 0o755); err != nil {
+						return "", err
+					}
+					if err := os.WriteFile(filepath.Join(args[3], ".git"), []byte("gitdir: fresh"), 0o600); err != nil {
+						return "", err
+					}
+					if err := os.WriteFile(filepath.Join(args[3], "fresh.txt"), []byte("clean seed"), 0o600); err != nil {
+						return "", err
+					}
+					return args[3], nil
+				}
+				return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
+			}
+
+			now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+			store := workspace.NewRunWorktreeStore(db)
+			if err := store.UpsertActive(context.Background(), "run_1", filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, seedCommit, now.Format(time.RFC3339)); err != nil {
+				t.Fatalf("persist managed worktree: %v", err)
+			}
+			if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+				t.Fatalf("schedule managed worktree cleanup: %v", err)
+			}
+			loop := orchestrationLoop{db: db, runWorktrees: store, gitRunner: fakeRunner, yoloRoot: mainWorktreeRoot, now: func() time.Time { return now }}
+			record, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil {
+				t.Fatalf("load due managed worktree: %v", err)
+			}
+			complete, err := loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
+			if err != nil || complete {
+				t.Fatalf("first cleanup batch complete=%t err=%v, want incomplete progress", complete, err)
+			}
+			progress, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil {
+				t.Fatalf("load persisted cleanup progress: %v", err)
+			}
+			if progress.State != workspace.RunWorktreeStateCleanupPending || !progress.CleanupStarted || progress.CleanupOwner != "" || progress.CleanupCursor == "" {
+				t.Fatalf("first cleanup batch did not persist a started, unowned cursor: %#v", progress)
+			}
+			cursorAfterFirstBatch := progress.CleanupCursor
+			var nodesBefore int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = 'run_1'`).Scan(&nodesBefore); err != nil {
+				t.Fatalf("count node runs before rejected replay: %v", err)
+			}
+
+			var generated int
+			replayReq := state.ReplayTerminalRunRequest{
+				RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"},
+				Reason: "reopen after managed cleanup", ActorID: "local-operator", RoleID: "king",
+				AuthoritySource: tc.authoritySource, RunEventType: tc.runEventType, RunReasonCode: tc.runReasonCode,
+				NodeEventType: tc.nodeEventType, EventPrefix: tc.eventPrefix, OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
+				GenerateID: func(prefix string) string {
+					generated++
+					return fmt.Sprintf("%s_worktree_%s_%d", prefix, tc.name, generated)
+				},
+			}
+			_, replayErr := state.NewTransitionService(db, nil).ReplayTerminalRun(context.Background(), replayReq)
+			var cleanupInProgress *state.RunWorktreeCleanupInProgressError
+			if !errors.As(replayErr, &cleanupInProgress) {
+				t.Fatalf("%s during bounded cleanup error=%v, want cleanup-in-progress conflict", tc.name, replayErr)
+			}
+			var runStatus string
+			if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_1'`).Scan(&runStatus); err != nil {
+				t.Fatalf("read run status after rejected replay: %v", err)
+			}
+			if runStatus != "failed" {
+				t.Fatalf("rejected %s changed run status to %q", tc.name, runStatus)
+			}
+			var nodesAfter int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = 'run_1'`).Scan(&nodesAfter); err != nil {
+				t.Fatalf("count node runs after rejected replay: %v", err)
+			}
+			if nodesAfter != nodesBefore {
+				t.Fatalf("rejected %s queued node attempts: before=%d after=%d", tc.name, nodesBefore, nodesAfter)
+			}
+			afterRejectedReplay, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil || afterRejectedReplay.CleanupCursor != cursorAfterFirstBatch || !afterRejectedReplay.CleanupStarted || afterRejectedReplay.State != workspace.RunWorktreeStateCleanupPending {
+				t.Fatalf("rejected %s lost cleanup ownership state or cursor: record=%#v err=%v", tc.name, afterRejectedReplay, err)
+			}
+			if err := store.UpsertActive(context.Background(), "run_1", filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, seedCommit, now.Format(time.RFC3339)); err == nil {
+				t.Fatalf("UpsertActive cleared cleanup state during %s", tc.name)
+			}
+			stillStarted, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil || stillStarted.CleanupCursor != cursorAfterFirstBatch || !stillStarted.CleanupStarted {
+				t.Fatalf("failed activation changed cleanup cursor: record=%#v err=%v", stillStarted, err)
+			}
+
+			complete = false
+			batches := 1
+			for !complete {
+				record, err = store.GetByRun(context.Background(), "run_1")
+				if err != nil {
+					t.Fatalf("reload worktree before cleanup batch %d: %v", batches+1, err)
+				}
+				complete, err = loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
+				if err != nil {
+					t.Fatalf("resume cleanup batch %d: %v", batches+1, err)
+				}
+				batches++
+				if batches > 8 {
+					t.Fatal("managed worktree cleanup did not finish within the expected bounded batches")
+				}
+			}
+			if pruneCalls != 1 || registered {
+				t.Fatalf("cleanup pruneCalls=%d registered=%t, want one prune after removal", pruneCalls, registered)
+			}
+			cleaned, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil || cleaned.State != workspace.RunWorktreeStateCleaned || cleaned.CleanupStarted || cleaned.CleanupCursor != "" {
+				t.Fatalf("managed worktree did not reach cleaned state: record=%#v err=%v", cleaned, err)
+			}
+			if _, err := os.Lstat(worktreePath); !os.IsNotExist(err) {
+				t.Fatalf("old managed checkout remains after cleanup: %v", err)
+			}
+
+			if _, err := state.NewTransitionService(db, nil).ReplayTerminalRun(context.Background(), replayReq); err != nil {
+				t.Fatalf("replay after complete cleanup: %v", err)
+			}
+			if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_1'`).Scan(&runStatus); err != nil || runStatus != "running" {
+				t.Fatalf("run status after accepted %s = %q err=%v, want running", tc.name, runStatus, err)
+			}
+			fresh, err := loop.ensureRunWorktree(context.Background(), mainWorktreeRoot, "run_1")
+			if err != nil {
+				t.Fatalf("recreate clean worktree before dispatch: %v", err)
+			}
+			if fresh.CheckoutRoot != worktreePath {
+				t.Fatalf("fresh checkout path=%q want=%q", fresh.CheckoutRoot, worktreePath)
+			}
+			if raw, err := os.ReadFile(filepath.Join(worktreePath, ".git")); err != nil || string(raw) != "gitdir: fresh" {
+				t.Fatalf("fresh checkout did not restore Git metadata: bytes=%q err=%v", raw, err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(worktreePath, "fresh.txt")); err != nil || string(raw) != "clean seed" {
+				t.Fatalf("fresh checkout content=%q err=%v", raw, err)
+			}
+			if _, err := os.Lstat(filepath.Join(worktreePath, "dirty.txt")); !os.IsNotExist(err) {
+				t.Fatalf("partial checkout content was reused after %s: %v", tc.name, err)
+			}
+			activated, err := store.GetByRun(context.Background(), "run_1")
+			if err != nil || activated.State != workspace.RunWorktreeStateActive || activated.CleanupStarted || activated.CleanupCursor != "" || activated.CleanupOwner != "" {
+				t.Fatalf("fresh worktree activation left cleanup state: record=%#v err=%v", activated, err)
+			}
+			if worktreeAdds != 1 {
+				t.Fatalf("fresh worktree add calls=%d, want exactly one", worktreeAdds)
+			}
+		})
+	}
+}
+
+func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	mainWorktreeRoot := t.TempDir()
+	worktreeName := workspace.RunPathName("D1", "run_1")
+	worktreePath := workspace.ManagedRunWorktreePath(mainWorktreeRoot, worktreeName)
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatalf("create managed worktree: %v", err)
+	}
+	gitMarker := filepath.Join(worktreePath, ".git")
+	if err := os.WriteFile(gitMarker, []byte("gitdir: managed"), 0o600); err != nil {
+		t.Fatalf("write managed git marker: %v", err)
+	}
+	marker := filepath.Join(worktreePath, "untouched.txt")
+	if err := os.WriteFile(marker, []byte("must survive retry"), 0o600); err != nil {
+		t.Fatalf("write worktree sentinel: %v", err)
+	}
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	seedCommit := "1111111111111111111111111111111111111111"
+	if err := store.UpsertActive(context.Background(), "run_1", filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, seedCommit, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	claimed, claim, ok, err := store.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_before_delete")
+	if err != nil || !ok || claimed.CleanupStarted {
+		t.Fatalf("claim pre-deletion cleanup: record=%#v claim=%#v claimed=%t err=%v", claimed, claim, ok, err)
+	}
+
+	var generated int
+	_, err = state.NewTransitionService(db, nil).ReplayTerminalRun(context.Background(), state.ReplayTerminalRunRequest{
+		RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"},
+		Reason: "retry before worktree deletion starts", ActorID: "local-operator", RoleID: "king",
+		AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened", RunReasonCode: "manual_retry_requested",
+		NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
+		GenerateID: func(prefix string) string {
+			generated++
+			return fmt.Sprintf("%s_predelete_retry_%d", prefix, generated)
+		},
+	})
+	if err != nil {
+		t.Fatalf("retry should cancel a claim before deletion starts: %v", err)
+	}
+	started, err := store.BeginCleanupDeletion(context.Background(), claim)
+	if err != nil || started {
+		t.Fatalf("stale cleanup owner began deletion after retry: started=%t err=%v", started, err)
+	}
+	if updated, err := store.SaveCleanupProgress(context.Background(), claim, "untouched.txt", now.Format(time.RFC3339)); err != nil || updated {
+		t.Fatalf("stale cleanup owner saved progress after retry: updated=%t err=%v", updated, err)
+	}
+	if updated, err := store.MarkCleanupFailed(context.Background(), claim, now.Format(time.RFC3339), "stale cleanup failure"); err != nil || updated {
+		t.Fatalf("stale cleanup owner overwrote activation: updated=%t err=%v", updated, err)
+	}
+	if updated, err := store.MarkCleaned(context.Background(), claim, now.Format(time.RFC3339)); err != nil || updated {
+		t.Fatalf("stale cleanup owner marked active worktree cleaned: updated=%t err=%v", updated, err)
+	}
+	loop := orchestrationLoop{db: db, runWorktrees: store, now: func() time.Time { return now }}
+	if err := loop.drainRunWorktreeCleanup(context.Background()); err != nil {
+		t.Fatalf("drain cleanup after retry: %v", err)
+	}
+	if raw, err := os.ReadFile(gitMarker); err != nil || string(raw) != "gitdir: managed" {
+		t.Fatalf("active managed Git metadata was removed: bytes=%q err=%v", raw, err)
+	}
+	if raw, err := os.ReadFile(marker); err != nil || string(raw) != "must survive retry" {
+		t.Fatalf("active worktree sentinel changed: bytes=%q err=%v", raw, err)
+	}
+	active, err := store.GetByRun(context.Background(), "run_1")
+	if err != nil || active.State != workspace.RunWorktreeStateActive || active.CleanupStarted || active.CleanupOwner != "" || active.CleanupFence <= claim.Fence {
+		t.Fatalf("pre-deletion retry did not invalidate the old cleanup fence: record=%#v claim=%#v err=%v", active, claim, err)
+	}
+}
+
+func TestRunWorktreeCleanupReclaimsAbandonedOwnerWithoutLosingCursor(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(context.Background(), "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	_, firstClaim, claimed, err := store.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_completed_batch")
+	if err != nil || !claimed {
+		t.Fatalf("claim first cleanup batch: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := store.BeginCleanupDeletion(context.Background(), firstClaim); err != nil || !started {
+		t.Fatalf("start first cleanup batch: started=%t err=%v", started, err)
+	}
+	if saved, err := store.SaveCleanupProgress(context.Background(), firstClaim, "provider-data", now.Format(time.RFC3339)); err != nil || !saved {
+		t.Fatalf("persist completed cleanup batch: saved=%t err=%v", saved, err)
+	}
+
+	_, interruptedClaim, claimed, err := store.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_interrupted_batch")
+	if err != nil || !claimed {
+		t.Fatalf("claim interrupted cleanup batch: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := store.BeginCleanupDeletion(context.Background(), interruptedClaim); err != nil || !started {
+		t.Fatalf("start interrupted cleanup batch: started=%t err=%v", started, err)
+	}
+	mustExec(t, db, `UPDATE run_worktrees SET cleanup_owner_identity_token = 'previous-process-generation' WHERE run_id = 'run_1'`)
+
+	if err := store.ReclaimAbandonedCleanupClaims(context.Background(), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("reclaim cleanup claims after restart: %v", err)
+	}
+	restarted := workspace.NewRunWorktreeStore(db)
+	resumed, err := restarted.GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load cleanup state after restart: %v", err)
+	}
+	if resumed.CleanupOwner != "" || resumed.CleanupFence <= interruptedClaim.Fence || !resumed.CleanupStarted || resumed.CleanupCursor != "provider-data" {
+		t.Fatalf("restart did not fence the abandoned owner and preserve bounded progress: record=%#v old_claim=%#v", resumed, interruptedClaim)
+	}
+	if saved, err := restarted.SaveCleanupProgress(context.Background(), interruptedClaim, "stale", now.Format(time.RFC3339)); err != nil || saved {
+		t.Fatalf("abandoned cleanup owner advanced the cursor after restart: saved=%t err=%v", saved, err)
+	}
+	_, resumedClaim, claimed, err := restarted.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_resumed_after_restart")
+	if err != nil || !claimed || resumedClaim.Fence <= interruptedClaim.Fence {
+		t.Fatalf("claim cleanup after restart: claim=%#v claimed=%t err=%v", resumedClaim, claimed, err)
+	}
+	if err := restarted.ReleaseCleanupClaim(context.Background(), resumedClaim); err != nil {
+		t.Fatalf("release resumed cleanup claim: %v", err)
+	}
+}
+
+func TestRunWorktreeCleanupDoesNotReclaimLiveOwnerForSecondRuntime(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	firstRuntime := workspace.NewRunWorktreeStore(db)
+	if err := firstRuntime.UpsertActive(context.Background(), "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := firstRuntime.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	_, claim, claimed, err := firstRuntime.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_live_runtime")
+	if err != nil || !claimed {
+		t.Fatalf("claim live cleanup batch: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := firstRuntime.BeginCleanupDeletion(context.Background(), claim); err != nil || !started {
+		t.Fatalf("start live cleanup batch: started=%t err=%v", started, err)
+	}
+
+	secondRuntime := workspace.NewRunWorktreeStore(db)
+	if err := secondRuntime.ReclaimAbandonedCleanupClaims(context.Background(), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("inspect cleanup owner from second runtime: %v", err)
+	}
+	current, err := secondRuntime.GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("load cleanup claim from second runtime: %v", err)
+	}
+	if current.CleanupOwner != claim.Owner || current.CleanupFence != claim.Fence || !current.CleanupStarted || current.CleanupOwnerPID <= 0 || current.CleanupOwnerIdentityToken == "" {
+		t.Fatalf("second runtime changed a live cleanup claim: record=%#v claim=%#v", current, claim)
+	}
+	if _, _, claimed, err := secondRuntime.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_second_runtime"); err != nil || claimed {
+		t.Fatalf("second runtime claimed active cleanup: claimed=%t err=%v", claimed, err)
+	}
+}
+
+func TestRunWorktreeCleanupReclaimsOwnerThatExitedAfterStartup(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	cleanupAfter := now.Add(time.Hour).Format(time.RFC3339)
+	firstRuntime := workspace.NewRunWorktreeStore(db)
+	if err := firstRuntime.UpsertActive(context.Background(), "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := firstRuntime.ScheduleTerminalCleanup(context.Background(), cleanupAfter, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	_, claim, claimed, err := firstRuntime.ClaimDueForCleanup(context.Background(), "run_1", cleanupAfter, "cleanup_exited_after_startup")
+	if err != nil || !claimed {
+		t.Fatalf("claim cleanup before owner exit: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := firstRuntime.BeginCleanupDeletion(context.Background(), claim); err != nil || !started {
+		t.Fatalf("start cleanup before owner exit: started=%t err=%v", started, err)
+	}
+	mustExec(t, db, `UPDATE run_worktrees SET cleanup_owner_identity_token = 'previous-process-generation' WHERE run_id = 'run_1'`)
+
+	secondRuntime := workspace.NewRunWorktreeStore(db)
+	loop := orchestrationLoop{db: db, runWorktrees: secondRuntime, now: func() time.Time { return now }}
+	if err := loop.drainRunWorktreeCleanup(context.Background()); err != nil {
+		t.Fatalf("drain cleanup after owner exit: %v", err)
+	}
+	current, err := secondRuntime.GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("read cleanup state after owner exit: %v", err)
+	}
+	if current.CleanupOwner != "" || current.CleanupOwnerPID != 0 || current.CleanupOwnerIdentityToken != "" || current.CleanupFence <= claim.Fence || !current.CleanupStarted {
+		t.Fatalf("periodic cleanup tick did not reclaim the exited owner: record=%#v claim=%#v", current, claim)
+	}
+}
+
+func TestManualWorktreeCleanupProgressSurvivesRunTerminalization(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(ctx, "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	_, claim, claimed, err := store.ClaimManualRecoveryCleanup(ctx, "run_1", "manual_cleanup_terminal_transition")
+	if err != nil || !claimed {
+		t.Fatalf("claim manual cleanup: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := store.BeginCleanupDeletion(ctx, claim); err != nil || !started {
+		t.Fatalf("begin manual cleanup deletion: started=%t err=%v", started, err)
+	}
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	saved, err := store.SaveCleanupProgress(ctx, claim, "provider-data", now.Format(time.RFC3339))
+	if err != nil || !saved {
+		t.Fatalf("save manual cleanup progress after terminalization: saved=%t err=%v", saved, err)
+	}
+	progress, err := store.GetByRun(ctx, "run_1")
+	if err != nil || progress.State != workspace.RunWorktreeStateCleanupPending || progress.CleanupCursor != "provider-data" || progress.CleanupOwner != "" || !progress.CleanupStarted || !progress.CleanupAfter.Valid {
+		t.Fatalf("terminalized manual cleanup did not become resumable: record=%#v err=%v", progress, err)
+	}
+	if due, err := store.ListDueForCleanup(ctx, now.Format(time.RFC3339), 1); err != nil || len(due) != 1 {
+		t.Fatalf("terminalized manual cleanup is not visible to the periodic drain: due=%#v err=%v", due, err)
+	}
+	_, terminalClaim, claimed, err := store.ClaimDueForCleanup(ctx, "run_1", now.Format(time.RFC3339), "terminal_cleanup_resume")
+	if err != nil || !claimed {
+		t.Fatalf("claim terminal cleanup continuation: claimed=%t err=%v", claimed, err)
+	}
+	if cleaned, err := store.MarkCleaned(ctx, terminalClaim, now.Format(time.RFC3339)); err != nil || !cleaned {
+		t.Fatalf("finish terminal cleanup continuation: cleaned=%t err=%v", cleaned, err)
+	}
+	completed, err := store.GetByRun(ctx, "run_1")
+	if err != nil || completed.State != workspace.RunWorktreeStateCleaned || completed.CleanupStarted || completed.CleanupOwner != "" {
+		t.Fatalf("terminal cleanup continuation did not release Retry/Rerun gate: record=%#v err=%v", completed, err)
+	}
+}
+
+func TestAbandonedManualCleanupTerminalizationBecomesDue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(ctx, "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	_, claim, claimed, err := store.ClaimManualRecoveryCleanup(ctx, "run_1", "manual_cleanup_crash_terminal_transition")
+	if err != nil || !claimed {
+		t.Fatalf("claim manual cleanup: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := store.BeginCleanupDeletion(ctx, claim); err != nil || !started {
+		t.Fatalf("begin manual cleanup deletion: started=%t err=%v", started, err)
+	}
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE run_worktrees SET cleanup_owner_identity_token = 'previous-process-generation' WHERE run_id = 'run_1'`)
+
+	if err := store.ReclaimAbandonedCleanupClaims(ctx, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("reclaim cleanup owner after crash: %v", err)
+	}
+	resumed, err := store.GetByRun(ctx, "run_1")
+	if err != nil {
+		t.Fatalf("read reclaimed manual cleanup: %v", err)
+	}
+	if resumed.CleanupOwner != "" || resumed.CleanupOwnerPID != 0 || resumed.CleanupOwnerIdentityToken != "" || !resumed.CleanupStarted || !resumed.CleanupAfter.Valid || resumed.CleanupAfter.String != now.Format(time.RFC3339) {
+		t.Fatalf("terminalized manual cleanup was not made due after owner exit: record=%#v", resumed)
+	}
+	if due, err := store.ListDueForCleanup(ctx, now.Format(time.RFC3339), 1); err != nil || len(due) != 1 {
+		t.Fatalf("reclaimed manual cleanup is not visible to the terminal drain: due=%#v err=%v", due, err)
+	}
+}
+
+func TestReclaimedManualCleanupBecomesDueAfterLaterTerminalization(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(ctx, "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	_, claim, claimed, err := store.ClaimManualRecoveryCleanup(ctx, "run_1", "manual_cleanup_reclaimed_before_terminal")
+	if err != nil || !claimed {
+		t.Fatalf("claim manual cleanup: claimed=%t err=%v", claimed, err)
+	}
+	if started, err := store.BeginCleanupDeletion(ctx, claim); err != nil || !started {
+		t.Fatalf("begin manual cleanup deletion: started=%t err=%v", started, err)
+	}
+	mustExec(t, db, `UPDATE run_worktrees SET cleanup_cursor = 'provider-data', cleanup_owner_identity_token = 'previous-process-generation' WHERE run_id = 'run_1'`)
+	if err := store.ReclaimAbandonedCleanupClaims(ctx, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("reclaim manual cleanup while run is active: %v", err)
+	}
+
+	active, err := store.GetByRun(ctx, "run_1")
+	if err != nil || active.CleanupOwner != "" || active.CleanupStarted == false || active.CleanupAfter.Valid || active.CleanupCursor != "provider-data" {
+		t.Fatalf("reclaimed active manual cleanup state=%#v err=%v", active, err)
+	}
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+	if err := store.ScheduleTerminalCleanup(ctx, now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule terminal continuation: %v", err)
+	}
+	terminal, err := store.GetByRun(ctx, "run_1")
+	if err != nil || terminal.CleanupOwner != "" || !terminal.CleanupStarted || !terminal.CleanupAfter.Valid || terminal.CleanupCursor != "provider-data" {
+		t.Fatalf("terminalization did not make reclaimed manual cleanup due: record=%#v err=%v", terminal, err)
+	}
+	if due, err := store.ListDueForCleanup(ctx, now.Format(time.RFC3339), 1); err != nil || len(due) != 1 {
+		t.Fatalf("terminal cleanup continuation not due: due=%#v err=%v", due, err)
+	}
+}
+
+func TestRunWorktreeCleanupClaimCommitErrorIsReconciled(t *testing.T) {
+	t.Parallel()
+
+	connector := testutil.NewSQLiteCommitFaultConnector(":memory:")
+	db := connector.OpenDB()
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	mustExec(t, db, "PRAGMA foreign_keys = ON")
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
+
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(context.Background(), "run_1", "/repo/.git", "/repo", ".", "managed-run", "1111111111111111111111111111111111111111", now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+
+	connector.FailNextDurableCommit(nil)
+	record, claim, claimed, err := store.ClaimDueForCleanup(context.Background(), "run_1", now.Format(time.RFC3339), "cleanup_commit_uncertain")
+	if err != nil || !claimed {
+		t.Fatalf("reconcile durable cleanup claim: record=%#v claim=%#v claimed=%t err=%v", record, claim, claimed, err)
+	}
+	if record.CleanupOwner != claim.Owner || record.CleanupFence != claim.Fence || record.CleanupStarted {
+		t.Fatalf("reconciled cleanup claim does not match durable row: record=%#v claim=%#v", record, claim)
+	}
+	if err := store.ReleaseCleanupClaim(context.Background(), claim); err != nil {
+		t.Fatalf("release reconciled cleanup claim: %v", err)
+	}
+	if due, err := store.ListDueForCleanup(context.Background(), now.Format(time.RFC3339), 1); err != nil || len(due) != 1 {
+		t.Fatalf("cleanup row after releasing reconciled claim: due=%#v err=%v, want one retryable row", due, err)
+	}
+}
+
+func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
+	ctx := context.Background()
+	runner := workspace.ExecGitRunner{}
+	if err := runner.LookPath(); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+
+	repoRoot := t.TempDir()
+	repoRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatalf("resolve canonical git repository root: %v", err)
+	}
+	if _, err := runner.Run(repoRoot, "init"); err != nil {
+		t.Fatalf("initialize git repository: %v", err)
+	}
+	for _, args := range [][]string{{"config", "user.name", "Kingdom Tests"}, {"config", "user.email", "kingdom-tests@example.invalid"}} {
+		if _, err := runner.Run(repoRoot, args...); err != nil {
+			t.Fatalf("configure git identity %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	if _, err := runner.Run(repoRoot, "add", "README.md"); err != nil {
+		t.Fatalf("stage seed file: %v", err)
+	}
+	if _, err := runner.Run(repoRoot, "commit", "-m", "seed"); err != nil {
+		t.Fatalf("commit seed file: %v", err)
+	}
+	seedCommit, err := runner.Run(repoRoot, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		t.Fatalf("resolve seed commit: %v", err)
+	}
+	commonDir, err := runner.Run(repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		t.Fatalf("resolve git common directory: %v", err)
+	}
+
+	const runID = "run_1"
+	worktreeName := workspace.RunPathName("D1", runID)
+	worktreePath := workspace.ManagedRunWorktreePath(repoRoot, worktreeName)
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		t.Fatalf("create managed worktree parent: %v", err)
+	}
+	if _, err := runner.Run(repoRoot, "worktree", "add", "--detach", worktreePath, seedCommit); err != nil {
+		t.Fatalf("create detached run worktree: %v", err)
+	}
+	providerDataRoot := filepath.Join(worktreePath, "provider-data")
+	if err := os.MkdirAll(providerDataRoot, 0o755); err != nil {
+		t.Fatalf("create provider data directory: %v", err)
+	}
+	for index := range runWorktreeRemovalBatchSize + 3 {
+		if err := os.WriteFile(filepath.Join(providerDataRoot, fmt.Sprintf("file-%03d.txt", index)), []byte("provider-owned"), 0o600); err != nil {
+			t.Fatalf("write provider file %d: %v", index, err)
+		}
+	}
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
+	store := workspace.NewRunWorktreeStore(db)
+	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	if err := store.UpsertActive(ctx, runID, commonDir, repoRoot, ".", worktreeName, seedCommit, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("persist managed worktree: %v", err)
+	}
+	if err := store.ScheduleTerminalCleanup(ctx, now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
+	loop := orchestrationLoop{runWorktrees: store, gitRunner: runner, now: func() time.Time { return now }}
+	complete := false
+	for batches := 0; !complete; batches++ {
+		if batches > 8 {
+			record, recordErr := store.GetByRun(ctx, runID)
+			registered, listErr := workspace.ListRegisteredWorktrees(repoRoot, runner)
+			t.Fatalf("worktree cleanup exceeded expected bounded batches: record=%#v recordErr=%v registered=%#v listErr=%v", record, recordErr, registered.Ordered, listErr)
+		}
+		record, err := store.GetByRun(ctx, runID)
+		if err != nil {
+			t.Fatalf("load worktree before cleanup batch: %v", err)
+		}
+		complete, err = loop.cleanupRunWorktree(ctx, record, now.Format(time.RFC3339))
+		if err != nil {
+			t.Fatalf("cleanup worktree batch: %v", err)
+		}
+	}
+	registered, err := workspace.ListRegisteredWorktrees(repoRoot, runner)
+	if err != nil {
+		t.Fatalf("list worktrees after cleanup: %v", err)
+	}
+	if _, ok := registered.Lookup(worktreePath); ok {
+		t.Fatal("Git still lists the managed worktree after bounded removal and prune")
+	}
+	if _, err := os.Lstat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("managed worktree path remains after Git prune: %v", err)
+	}
+}
+
 func TestCleanupRunWorktreeRefusesUnregisteredSymlinkPath(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 	const runID = "run_1"
 	now := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
 	mainWorktreeRoot := t.TempDir()
@@ -896,6 +1758,9 @@ func TestCleanupRunWorktreeRefusesUnregisteredSymlinkPath(t *testing.T) {
 	if err := store.UpsertActive(context.Background(), runID, filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, "1111111111111111111111111111111111111111", now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("persist managed worktree: %v", err)
 	}
+	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("schedule managed worktree cleanup: %v", err)
+	}
 	record, err := store.GetByRun(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("load managed worktree: %v", err)
@@ -907,14 +1772,14 @@ func TestCleanupRunWorktreeRefusesUnregisteredSymlinkPath(t *testing.T) {
 		return worktreePorcelainZ("worktree "+mainWorktreeRoot, "HEAD 1111111111111111111111111111111111111111", "branch refs/heads/main"), nil
 	}}
 	loop := orchestrationLoop{runWorktrees: store, gitRunner: fakeRunner, now: func() time.Time { return now }}
-	if err := loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("defer unsafe cleanup: %v", err)
 	}
 	record, err = store.GetByRun(context.Background(), runID)
 	if err != nil || record.State != workspace.RunWorktreeStateCleanupFailed {
 		t.Fatalf("unregistered worktree cleanup state=%#v err=%v, want cleanup_failed", record, err)
 	}
-	if err := loop.discardQuarantinedManagedWorktreeForManualRecovery(context.Background(), record, now.Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "present but not registered") {
+	if _, err := loop.discardQuarantinedManagedWorktreeForManualRecovery(context.Background(), record, now.Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "present but not registered") {
 		t.Fatalf("manual recovery err=%v, want present-unregistered refusal", err)
 	}
 	if raw, err := os.ReadFile(outsidePath); err != nil || string(raw) != "outside" {

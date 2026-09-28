@@ -51,7 +51,7 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 	projectedDecree := projectDecreeForNode(classID, decreeText)
 	approvedPlan = stripControlCommandLines(approvedPlan)
 	delegatorInstruction = stripControlCommandLines(delegatorInstruction)
-	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID, projectedDecree)
+	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID)
 	planningConstraints := ""
 	if classID == "plan_drafting" {
 		planningConstraints = strings.Join([]string{
@@ -288,17 +288,16 @@ func sanitizeFailureContextText(text string) string {
 	return strings.TrimSpace(rewritten)
 }
 
-func (o *orchestrationLoop) renderSystemPrompt(roleID, runID, nodeID, nodeRunID, decreeText string) string {
+func (o *orchestrationLoop) renderSystemPrompt(roleID, runID, nodeID, nodeRunID string) string {
 	rendered := strings.TrimSpace(renderRoleTemplateOrFallback(
 		o.roleComm,
 		roleID,
 		func(cfg rolecomm.RoleTemplate) string { return cfg.SystemPromptTemplate },
 		map[string]string{
-			"RoleID":     strings.TrimSpace(roleID),
-			"RunID":      strings.TrimSpace(runID),
-			"NodeID":     strings.TrimSpace(nodeID),
-			"NodeRunID":  strings.TrimSpace(nodeRunID),
-			"DecreeText": strings.TrimSpace(decreeText),
+			"RoleID":    strings.TrimSpace(roleID),
+			"RunID":     strings.TrimSpace(runID),
+			"NodeID":    strings.TrimSpace(nodeID),
+			"NodeRunID": strings.TrimSpace(nodeRunID),
 		},
 		"You are a Kingdom agent. Execute your assigned role with discipline and return valid output.",
 	))
@@ -959,14 +958,9 @@ func joinInstructionBlocks(parts ...string) string {
 	return strings.Join(trimmed, "\n\n"+instructionSectionSeparator+"\n\n")
 }
 
-func defaultDelegatorInstructionForDispatch(nodeID, roleID, decreeText string) string {
+func defaultDelegatorInstructionForDispatch(nodeID, roleID string) string {
 	if nodeClassForNodeID(nodeID) != "advisor_consultation" {
 		return ""
-	}
-	decreeSummary := strings.TrimSpace(decreeText)
-	decreeSummary = strings.TrimSpace(stripControlCommandLines(decreeSummary))
-	if decreeSummary == "" {
-		decreeSummary = "No decree text was provided."
 	}
 	roleLens := strings.TrimSpace(roleID)
 	if roleLens == "" {
@@ -990,6 +984,5 @@ func defaultDelegatorInstructionForDispatch(nodeID, roleID, decreeText string) s
 - %s
 - If key evidence is missing, say what uncertainty materially affects the recommendation.
 
-Decree focus:
-%s`, roleLens, lensGuidance, decreeSummary)
+Use the complete decree in the current run context when making your recommendation.`, roleLens, lensGuidance)
 }

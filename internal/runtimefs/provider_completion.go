@@ -322,8 +322,8 @@ func (s *Store) RemoveProviderCompletionInbox(invocationID string) error {
 	return nil
 }
 
-// SyncProviderCompletionInbox durably publishes provider-created directory
-// entry changes for one invocation inbox.
+// SyncProviderCompletionInbox requests the platform directory sync operation
+// after provider-created entry changes for one invocation inbox.
 func (s *Store) SyncProviderCompletionInbox(invocationID string) error {
 	relative, err := completionReceiptDir(invocationID)
 	if err != nil {

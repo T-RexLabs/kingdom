@@ -683,9 +683,12 @@ func (s *Server) writeRunTransitionApplyError(w http.ResponseWriter, err error, 
 	var stateConflictErr *state.StateConflictError
 	var replayWaveActiveErr *state.ReplayWaveActiveError
 	var replayNotQuiescentErr *state.ReplayNotQuiescentError
+	var worktreeCleanupInProgressErr *state.RunWorktreeCleanupInProgressError
 	switch {
 	case errors.As(err, &replayNotQuiescentErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, replayNotQuiescentErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"settling": replayNotQuiescentErr.Blockers}))
+	case errors.As(err, &worktreeCleanupInProgressErr):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, worktreeCleanupInProgressErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"cleanup_started": true}))
 	case errors.As(err, &illegalTransitionErr), errors.As(err, &stateConflictErr), errors.As(err, &replayWaveActiveErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, blockedMessage, operation, details)
 	default:

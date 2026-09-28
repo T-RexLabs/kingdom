@@ -38,9 +38,12 @@ type RunExecutionTarget struct {
 	TrustedSnapshotID   string
 	PublishedSnapshotID string
 	State               string
+	CleanupCursor       string
 	CreatedAt           string
 	UpdatedAt           string
 }
+
+const executionTargetRemovalBatchSize = 128
 
 type SnapshotRecord struct {
 	SnapshotID       string
@@ -151,6 +154,7 @@ ON CONFLICT(run_id) DO UPDATE SET
   trusted_snapshot_id = CASE WHEN TRIM(excluded.trusted_snapshot_id) = '' THEN run_execution_targets.trusted_snapshot_id ELSE excluded.trusted_snapshot_id END,
   published_snapshot_id = CASE WHEN TRIM(excluded.published_snapshot_id) = '' THEN run_execution_targets.published_snapshot_id ELSE excluded.published_snapshot_id END,
   state = excluded.state,
+  cleanup_cursor = CASE WHEN excluded.state = 'unknown' THEN run_execution_targets.cleanup_cursor ELSE '' END,
   updated_at = excluded.updated_at`,
 		record.RunID,
 		record.TargetMode,
@@ -175,7 +179,7 @@ func (s *Store) GetExecutionTarget(ctx context.Context, runID string) (RunExecut
 		return RunExecutionTarget{}, fmt.Errorf("runtime fs store is required")
 	}
 	var record RunExecutionTarget
-	err := s.db.QueryRowContext(ctx, `SELECT run_id, target_mode, source_root, execution_root, publish_root, source_snapshot_id, trusted_snapshot_id, published_snapshot_id, state, created_at, updated_at FROM run_execution_targets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(
+	err := s.db.QueryRowContext(ctx, `SELECT run_id, target_mode, source_root, execution_root, publish_root, source_snapshot_id, trusted_snapshot_id, published_snapshot_id, state, cleanup_cursor, created_at, updated_at FROM run_execution_targets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(
 		&record.RunID,
 		&record.TargetMode,
 		&record.SourceRoot,
@@ -185,6 +189,7 @@ func (s *Store) GetExecutionTarget(ctx context.Context, runID string) (RunExecut
 		&record.TrustedSnapshotID,
 		&record.PublishedSnapshotID,
 		&record.State,
+		&record.CleanupCursor,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -203,10 +208,32 @@ UPDATE run_execution_targets
 SET state = ?,
     trusted_snapshot_id = CASE WHEN TRIM(?) = '' THEN trusted_snapshot_id ELSE ? END,
     published_snapshot_id = CASE WHEN TRIM(?) = '' THEN published_snapshot_id ELSE ? END,
+    cleanup_cursor = CASE WHEN ? = 'unknown' THEN cleanup_cursor ELSE '' END,
     updated_at = ?
-WHERE run_id = ?`, strings.TrimSpace(state), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(updatedAt), strings.TrimSpace(runID))
+WHERE run_id = ?`, strings.TrimSpace(state), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(state), strings.TrimSpace(updatedAt), strings.TrimSpace(runID))
 	if err != nil {
 		return fmt.Errorf("update execution target state: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateExecutionTargetCleanupCursor(ctx context.Context, runID, cursor string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE run_execution_targets
+SET cleanup_cursor = ?
+WHERE run_id = ? AND state = 'unknown'`, cursor, strings.TrimSpace(runID))
+	if err != nil {
+		return fmt.Errorf("persist execution target cleanup cursor: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify execution target cleanup cursor: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("execution target %q is not quarantined for cleanup", strings.TrimSpace(runID))
 	}
 	return nil
 }
@@ -245,8 +272,16 @@ func (s *Store) RecoverQuarantinedExecutionTarget(ctx context.Context, runID, re
 		return RunExecutionTarget{}, fmt.Errorf("open runtime target root: %w", err)
 	}
 	defer runRoot.Close()
-	if err := runRoot.RemoveTree("target"); err != nil {
+	progress, err := runRoot.RemoveTreeBatch("target", record.CleanupCursor, executionTargetRemovalBatchSize)
+	if err != nil {
 		return RunExecutionTarget{}, fmt.Errorf("discard unsafe execution target: %w", err)
+	}
+	if err := s.UpdateExecutionTargetCleanupCursor(ctx, record.RunID, progress.Cursor); err != nil {
+		return RunExecutionTarget{}, err
+	}
+	record.CleanupCursor = progress.Cursor
+	if !progress.Complete {
+		return record, nil
 	}
 	if err := runRoot.EnsureDir("target", 0o755); err != nil {
 		return RunExecutionTarget{}, fmt.Errorf("create fresh execution target: %w", err)

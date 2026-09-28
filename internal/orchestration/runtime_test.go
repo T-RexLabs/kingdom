@@ -9091,18 +9091,18 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisPreservesScopedInstruct
 func TestDefaultDelegatorInstructionForDispatchAdvisorProvidesAdviceOnlyFallback(t *testing.T) {
 	t.Parallel()
 
-	fallback := defaultDelegatorInstructionForDispatch("advisor_consultation_peasant", "peasant-delegate", "Build a whimsical homepage")
+	fallback := defaultDelegatorInstructionForDispatch("advisor_consultation_peasant", "peasant-delegate")
 	if !strings.Contains(fallback, "peasant-delegate lens") {
 		t.Fatalf("expected advisor fallback to include role lens, got %q", fallback)
 	}
 	if !strings.Contains(fallback, "Do not claim implementation work") {
 		t.Fatalf("expected advisor fallback to forbid implementation claims, got %q", fallback)
 	}
-	if !strings.Contains(fallback, "Build a whimsical homepage") {
-		t.Fatalf("expected advisor fallback to include decree focus, got %q", fallback)
+	if strings.Contains(fallback, "Build a whimsical homepage") || !strings.Contains(fallback, "Use the complete decree in the current run context") {
+		t.Fatalf("expected advisor fallback to reference, not duplicate, the canonical decree context, got %q", fallback)
 	}
 
-	nonAdvisor := defaultDelegatorInstructionForDispatch("plan_drafting", "council-member", "Build a whimsical homepage")
+	nonAdvisor := defaultDelegatorInstructionForDispatch("plan_drafting", "council-member")
 	if nonAdvisor != "" {
 		t.Fatalf("expected non-advisor node fallback to stay empty, got %q", nonAdvisor)
 	}
@@ -10219,6 +10219,61 @@ func TestDispatchNodeAttemptSetupFailureAfterProviderClaimClearsLeaseWithoutLaun
 	}
 	if invocationCount != 0 {
 		t.Fatalf("setup failure created %d provider invocations", invocationCount)
+	}
+}
+
+func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocation(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID:        "run_dispatch_start_persist_failure",
+		DecreeID:     "decree_dispatch_start_persist_failure",
+		WorkflowID:   "wfdef_dispatch_start_persist_failure",
+		NodeRunID:    "nr_dispatch_start_persist_failure_1",
+		NodeID:       "plan_drafting",
+		NodeClass:    workflow.NodeClassPlanDrafting,
+		RequiredRole: "council-member",
+		AgentID:      "agent_dispatch_start_persist_failure",
+		RoleIDs:      []string{"council-member", "chancellor"},
+		ExtraAgents: []readyDispatchAgentSeed{{
+			AgentID: "agent_chancellor_dispatch_start_persist_failure",
+			RoleID:  "chancellor",
+		}},
+	})
+	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
+	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	const attemptID = "run_dispatch_start_persist_failure:plan_drafting:1"
+	mustExec(t, db, `CREATE TRIGGER fail_provider_start_persist BEFORE INSERT ON attempt_event_log WHEN NEW.attempt_id = '`+attemptID+`' AND NEW.event_type = 'node.state_changed' BEGIN SELECT RAISE(FAIL, 'provider start state write failed'); END`)
+
+	attempt := nodeAttempt{NodeRunID: "nr_dispatch_start_persist_failure_1", NodeID: "plan_drafting", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "council-member", AgentID: "agent_dispatch_start_persist_failure"}
+	err = rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_start_persist_failure", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: workflow.NodeClassPlanDrafting}, attempt, "2026-03-01T12:00:02Z")
+	if err != nil {
+		t.Fatalf("dispatch should reconcile a failed start-state write: %v", err)
+	}
+	if adapter.callsCount() != 0 {
+		t.Fatalf("start-state persistence failure invoked provider %d times", adapter.callsCount())
+	}
+
+	var attemptState, leaseOwner string
+	var leaseExpiresAt, activeInvocationID sql.NullString
+	if err := db.QueryRow(`SELECT state, lease_owner, lease_expires_at, active_provider_invocation_id FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &leaseOwner, &leaseExpiresAt, &activeInvocationID); err != nil {
+		t.Fatalf("query reconciled attempt execution: %v", err)
+	}
+	if attemptState != "committed_failure" || leaseOwner != "" || leaseExpiresAt.Valid || activeInvocationID.Valid {
+		t.Fatalf("start-state failure left execution blocked: state=%q lease_owner=%q lease_expires_at=%#v active_invocation=%#v", attemptState, leaseOwner, leaseExpiresAt, activeInvocationID)
+	}
+	var invocationState string
+	var invocationCount int
+	if err := db.QueryRow(`SELECT invocation_state, COUNT(1) OVER() FROM provider_invocations WHERE attempt_id = ?`, attemptID).Scan(&invocationState, &invocationCount); err != nil {
+		t.Fatalf("query invalidated provider invocation: %v", err)
+	}
+	if invocationCount != 1 || invocationState != string(executionstore.ProviderInvocationStateInvalidHandshake) {
+		t.Fatalf("unlaunched provider invocation state=%q count=%d, want invalidated single invocation", invocationState, invocationCount)
 	}
 }
 
@@ -12137,7 +12192,9 @@ func TestRuntimeDispatchLoopCompletesRoyalClosureWhenValidationNodeMissing(t *te
 	}()
 
 	manualApprovalRequired := false
-	awaitRunState(t, db, "run_closure_no_validation", 5*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
+	// The dispatch loop is asynchronous and the repository verification runs
+	// package tests concurrently; leave scheduler and SQLite contention headroom.
+	awaitRunState(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
 		switch planState {
 		case "awaiting_king_decision":
 			manualApprovalRequired = true
@@ -12151,7 +12208,7 @@ func TestRuntimeDispatchLoopCompletesRoyalClosureWhenValidationNodeMissing(t *te
 	if manualApprovalRequired {
 		approvePlanStateForRuntimeTest(t, db, "run_closure_no_validation")
 	}
-	awaitRunStatus(t, db, "run_closure_no_validation", 5*time.Second, 25*time.Millisecond, func(status string) error {
+	awaitRunStatus(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(status string) error {
 		if status == "failed" {
 			var closureStatus string
 			_ = db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_closure_no_validation' AND node_id = 'royal_closure'`).Scan(&closureStatus)
@@ -12285,14 +12342,23 @@ func TestRuntimeAutonomousApprovalsFalsePausesAtPlanAndFinalGatesOnFullWorkflow(
 		}
 	}()
 
-	awaitRunState(t, db, "run_dispatch", 12*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
+	// These periodic dispatch assertions must tolerate cross-package test load.
+	planProgressDiagnostics := ""
+	awaitRunState(t, db, "run_dispatch", 45*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
 		if planState != "awaiting_king_decision" {
-			return fmt.Errorf("plan_state=%s", planState)
+			if planProgressDiagnostics == "" {
+				var nodeStatus, attemptState, failureCode string
+				var activeInvocation sql.NullString
+				nodeErr := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus)
+				attemptErr := db.QueryRow(`SELECT state, failure_code, active_provider_invocation_id FROM attempt_executions WHERE attempt_id = 'run_dispatch:plan_drafting:1'`).Scan(&attemptState, &failureCode, &activeInvocation)
+				planProgressDiagnostics = fmt.Sprintf("plan_node=%s node_err=%v attempt_state=%s failure_code=%s active_invocation=%s attempt_err=%v", nodeStatus, nodeErr, attemptState, failureCode, activeInvocation.String, attemptErr)
+			}
+			return fmt.Errorf("plan_state=%s %s", planState, planProgressDiagnostics)
 		}
 		return nil
 	})
 	approvePlanStateAsAllfatherForRuntimeTest(t, db, "run_dispatch")
-	awaitRunStatus(t, db, "run_dispatch", 12*time.Second, 25*time.Millisecond, func(status string) error {
+	awaitRunStatus(t, db, "run_dispatch", 45*time.Second, 25*time.Millisecond, func(status string) error {
 		if status == "succeeded" {
 			return fmt.Errorf("expected run to wait for final allfather approval when autonomous approvals are disabled")
 		}

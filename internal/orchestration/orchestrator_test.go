@@ -180,6 +180,21 @@ func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *te
 	}
 }
 
+func TestAdvisorPromptIncludesFullDecreeOnce(t *testing.T) {
+	t.Parallel()
+
+	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
+	loop := &orchestrationLoop{roleComm: policy}
+	decree := "unique-decree-marker " + strings.Repeat("complete decree content ", 1024)
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "advisor_consultation_noble", "nr_1", "noble-delegate", "advisor_consultation", decree, "king", "", "Advise through the architecture lens.", "")
+	if got := strings.Count(prompt, strings.TrimSpace(decree)); got != 1 {
+		t.Fatalf("complete decree copy count=%d, want 1", got)
+	}
+	if !strings.Contains(prompt, "Current Decree:") || !strings.Contains(prompt, "architecture") {
+		t.Fatal("advisor prompt lost canonical decree context or role-specific guidance")
+	}
+}
+
 func TestBuildNodePromptExecutionKickoffOmitsPlanningGuardrail(t *testing.T) {
 	t.Parallel()
 
@@ -316,7 +331,7 @@ func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "advisor_consultation", "nr_1", "Improve decree flow")
+			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "advisor_consultation", "nr_1")
 			if !strings.Contains(prompt, tc.expected) {
 				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
 			}
@@ -355,7 +370,7 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			instruction := defaultDelegatorInstructionForDispatch("advisor_consultation_noble", tc.roleID, "Tighten decree handling")
+			instruction := defaultDelegatorInstructionForDispatch("advisor_consultation_noble", tc.roleID)
 			if !strings.Contains(instruction, tc.expected) {
 				t.Fatalf("expected fallback instruction for %s to include %q, got:\n%s", tc.roleID, tc.expected, instruction)
 			}
@@ -368,7 +383,7 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 		})
 	}
 
-	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "noble-delegate", "ignored"); got != "" {
+	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "noble-delegate"); got != "" {
 		t.Fatalf("expected non-advisor node fallback instruction to stay empty, got %q", got)
 	}
 }
@@ -379,7 +394,7 @@ func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("chancellor", "run_1", "advisory_synthesis", "nr_1", "Refine decree scope")
+	prompt := loop.renderSystemPrompt("chancellor", "run_1", "advisory_synthesis", "nr_1")
 
 	for _, expected := range []string{
 		"marshal of coordination",
@@ -405,7 +420,7 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("council-member", "run_1", "plan_drafting", "nr_1", "Refine decree scope")
+	prompt := loop.renderSystemPrompt("council-member", "run_1", "plan_drafting", "nr_1")
 
 	for _, expected := range []string{
 		"the planning voice at the war-table",
@@ -435,7 +450,7 @@ func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("builder-berserker", "run_1", "delegated_execution_berserker", "nr_1", "Implement decree scope")
+	prompt := loop.renderSystemPrompt("builder-berserker", "run_1", "delegated_execution_berserker", "nr_1")
 
 	for _, expected := range []string{
 		"the Kingdom's implementation specialist",
@@ -489,7 +504,7 @@ func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "validation_node", "nr_1", "Inspect decree scope")
+			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "validation_node", "nr_1")
 			if !strings.Contains(prompt, tc.expected) {
 				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
 			}

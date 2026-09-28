@@ -39,6 +39,14 @@ func generateExecutionLeaseOwner() (string, error) {
 	return "dispatch_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
+func generateRunWorktreeCleanupOwner() (string, error) {
+	raw := make([]byte, 18)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate run worktree cleanup owner: %w", err)
+	}
+	return "cleanup_" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
 func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
 	if o == nil || o.executionStore == nil {
 		return "", "", "", "", fmt.Errorf("execution store is required for provider invocation activation")
@@ -79,6 +87,10 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		ExpectedLeaseOwner:           attempt.LeaseOwner,
 		ExpectedLeaseVersion:         attempt.LeaseVersion,
 	}); err != nil {
+		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
+		if errors.As(err, &outcomeUnknown) {
+			return providerInvocationID, issuedAt, completionCapability, receiptDir, err
+		}
 		if receiptDir != "" {
 			_ = o.fsStore.RemoveProviderCompletionInbox(providerInvocationID)
 		}

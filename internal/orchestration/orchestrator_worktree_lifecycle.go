@@ -14,13 +14,15 @@ import (
 )
 
 const runWorktreeCleanupBatchSize = 20
+const runWorktreeRemovalBatchSize = 128
 
 func (o *orchestrationLoop) scheduleRunWorktreeCleanup(ctx context.Context) error {
 	if o == nil || o.runWorktrees == nil || workspace.RunWorktreeCleanupDisabled(o.worktreeRetention) {
 		return nil
 	}
-	cleanupAfter := o.now().UTC().Add(o.worktreeRetention).Format(time.RFC3339)
-	if err := o.runWorktrees.ScheduleTerminalCleanup(ctx, cleanupAfter); err != nil {
+	cleanupAt := o.now().UTC()
+	cleanupAfter := cleanupAt.Add(o.worktreeRetention).Format(time.RFC3339)
+	if err := o.runWorktrees.ScheduleTerminalCleanup(ctx, cleanupAfter, cleanupAt.Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("schedule terminal run worktree cleanup: %w", err)
 	}
 	return nil
@@ -31,113 +33,232 @@ func (o *orchestrationLoop) drainRunWorktreeCleanup(ctx context.Context) error {
 		return nil
 	}
 	now := o.now().UTC().Format(time.RFC3339)
+	if err := o.runWorktrees.ReclaimAbandonedCleanupClaims(ctx, now); err != nil {
+		return fmt.Errorf("reclaim abandoned run worktree cleanup claims: %w", err)
+	}
 	records, err := o.runWorktrees.ListDueForCleanup(ctx, now, runWorktreeCleanupBatchSize)
 	if err != nil {
 		return fmt.Errorf("list due run worktrees for cleanup: %w", err)
 	}
 	for _, record := range records {
-		if err := o.cleanupRunWorktree(ctx, record, now); err != nil {
+		if _, err := o.cleanupRunWorktree(ctx, record, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (o *orchestrationLoop) cleanupRunWorktree(ctx context.Context, record workspace.RunWorktreeRecord, now string) error {
+func (o *orchestrationLoop) cleanupRunWorktree(ctx context.Context, record workspace.RunWorktreeRecord, now string) (bool, error) {
+	return o.cleanupManagedRunWorktree(ctx, record.RunID, now, false)
+}
+
+func (o *orchestrationLoop) cleanupRunWorktreeForManualRecovery(ctx context.Context, record workspace.RunWorktreeRecord, now string) (bool, error) {
+	return o.cleanupManagedRunWorktree(ctx, record.RunID, now, true)
+}
+
+func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID, now string, manualRecovery bool) (complete bool, returnErr error) {
+	if o == nil || o.runWorktrees == nil {
+		return false, fmt.Errorf("run worktree store is required")
+	}
+	owner, err := generateRunWorktreeCleanupOwner()
+	if err != nil {
+		return false, err
+	}
+	var (
+		record  workspace.RunWorktreeRecord
+		claim   workspace.RunWorktreeCleanupClaim
+		claimed bool
+	)
+	if manualRecovery {
+		record, claim, claimed, err = o.runWorktrees.ClaimManualRecoveryCleanup(ctx, runID, owner)
+	} else {
+		record, claim, claimed, err = o.runWorktrees.ClaimDueForCleanup(ctx, runID, now, owner)
+	}
+	if err != nil {
+		return false, fmt.Errorf("claim managed run worktree cleanup: %w", err)
+	}
+	if !claimed {
+		return false, nil
+	}
+
+	claimReleased := false
+	defer func() {
+		if claimReleased {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := o.runWorktrees.ReleaseCleanupClaim(releaseCtx, claim); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("release managed run worktree cleanup claim: %w", err)
+		}
+	}()
+	failCleanup := func(reason string) (bool, error) {
+		updated, err := o.markRunWorktreeCleanupFailed(ctx, claim, reason)
+		if err != nil {
+			return false, err
+		}
+		if updated {
+			claimReleased = true
+		}
+		return false, nil
+	}
+
 	trimmedMainWorktreeRoot := strings.TrimSpace(record.MainWorktreeRoot)
 	trimmedPath := strings.TrimSpace(record.WorktreePath)
 	if trimmedMainWorktreeRoot == "" || trimmedPath == "" {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "run worktree record is incomplete")
+		return failCleanup("run worktree record is incomplete")
 	}
 	if err := validateManagedRunWorktreeBoundary(record); err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("managed worktree boundary is invalid: %v", err))
+		return failCleanup(fmt.Sprintf("managed worktree boundary is invalid: %v", err))
 	}
 	if o.executionStore != nil {
 		quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, record.RunID)
 		if err != nil {
-			return err
+			_, markErr := failCleanup(fmt.Sprintf("inspect managed provider process quiescence failed: %v", err))
+			return false, errors.Join(err, markErr)
 		}
 		if !quiescent {
-			return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "managed provider process quiescence has not been proven")
+			return failCleanup("managed provider process quiescence has not been proven")
 		}
+	}
+	pathExists, err := managedWorktreePathExists(trimmedPath)
+	if err != nil {
+		return failCleanup(fmt.Sprintf("inspect worktree path failed: %v", err))
 	}
 	registeredBefore, err := workspace.ListRegisteredWorktrees(trimmedMainWorktreeRoot, o.git())
 	if err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("registered git worktrees could not be listed: %v", err))
+		return failCleanup(fmt.Sprintf("registered git worktrees could not be listed: %v", err))
 	}
 	entry, wasRegistered := registeredBefore.Lookup(trimmedPath)
 	if !wasRegistered {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "managed worktree is not registered with git; refusing to remove an unregistered path")
-	}
-	if wasRegistered && entry.Locked {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "managed git worktree is locked and cannot be cleaned automatically")
-	}
-	if wasRegistered && entry.Prunable {
-		if err := o.pruneWorktreesNow(trimmedMainWorktreeRoot); err != nil {
-			return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("git worktree prune failed: %v", err))
+		if pathExists {
+			return failCleanup("managed worktree path is present but not registered with git; refusing to remove an unregistered path")
 		}
-		registeredBefore, err = workspace.ListRegisteredWorktrees(trimmedMainWorktreeRoot, o.git())
+		pathExists, err = managedWorktreePathExists(trimmedPath)
+		if err != nil || pathExists {
+			if err == nil {
+				err = fmt.Errorf("managed worktree path appeared during cleanup")
+			}
+			return failCleanup(fmt.Sprintf("verify absent deregistered worktree path: %v", err))
+		}
+		updated, err := o.runWorktrees.MarkCleaned(ctx, claim, now)
 		if err != nil {
-			return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("registered git worktrees could not be listed after prune: %v", err))
+			return false, fmt.Errorf("mark absent deregistered worktree cleaned: %w", err)
 		}
-		entry, wasRegistered = registeredBefore.Lookup(trimmedPath)
-		if !wasRegistered {
-			return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "managed worktree is no longer registered with git; refusing to remove an unregistered path")
+		if !updated {
+			return false, nil
 		}
+		claimReleased = true
+		return true, nil
 	}
-	if _, err := o.runGitCommand(trimmedMainWorktreeRoot, "worktree", "remove", "--force", trimmedPath); err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("git worktree remove failed: %v", err))
+	if entry.Locked {
+		return failCleanup("managed git worktree is locked and cannot be cleaned automatically")
 	}
-	if err := o.pruneWorktreesNow(trimmedMainWorktreeRoot); err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("git worktree prune failed: %v", err))
+	if entry.Prunable && pathExists {
+		return failCleanup("managed git worktree is prunable while its path is present; refusing cleanup")
 	}
-	registeredAfter, err := workspace.ListRegisteredWorktrees(trimmedMainWorktreeRoot, o.git())
+	started, err := o.runWorktrees.BeginCleanupDeletion(ctx, claim)
 	if err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("registered git worktrees could not be listed after cleanup: %v", err))
+		return false, fmt.Errorf("start managed run worktree deletion: %w", err)
 	}
-	if _, stillRegistered := registeredAfter.Lookup(trimmedPath); stillRegistered {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "git worktree is still registered after cleanup")
+	if !started {
+		return false, nil
 	}
-	if err := removeManagedWorktreePath(trimmedPath); err != nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("remove worktree directory failed: %v", err))
+	if entry.Prunable {
+		return o.pruneAndMarkRunWorktreeCleaned(ctx, claim, trimmedMainWorktreeRoot, trimmedPath, now, failCleanup)
 	}
-	if _, err := os.Stat(trimmedPath); err == nil {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, "managed worktree path still exists after cleanup")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return o.markRunWorktreeCleanupFailed(ctx, record.RunID, now, fmt.Sprintf("inspect worktree directory failed: %v", err))
+
+	progress, err := removeManagedWorktreePathBatch(trimmedPath, record.CleanupCursor, runWorktreeRemovalBatchSize)
+	if err != nil {
+		return failCleanup(fmt.Sprintf("remove worktree directory batch failed: %v", err))
 	}
-	if err := o.runWorktrees.MarkCleaned(ctx, record.RunID, now); err != nil {
-		return fmt.Errorf("mark run worktree cleaned: %w", err)
+	if !progress.Complete {
+		updated, err := o.runWorktrees.SaveCleanupProgress(ctx, claim, progress.Cursor, now)
+		if err != nil {
+			return false, fmt.Errorf("save run worktree removal progress: %w", err)
+		}
+		if !updated {
+			return false, nil
+		}
+		claimReleased = true
+		return false, nil
 	}
-	return nil
+	return o.pruneAndMarkRunWorktreeCleaned(ctx, claim, trimmedMainWorktreeRoot, trimmedPath, now, failCleanup)
+}
+
+func (o *orchestrationLoop) pruneAndMarkRunWorktreeCleaned(ctx context.Context, claim workspace.RunWorktreeCleanupClaim, mainWorktreeRoot, worktreePath, now string, failCleanup func(string) (bool, error)) (bool, error) {
+	pathExists, err := managedWorktreePathExists(worktreePath)
+	if err != nil {
+		return failCleanup(fmt.Sprintf("inspect removed worktree path failed: %v", err))
+	}
+	if pathExists {
+		return failCleanup("managed worktree path still exists before Git prune")
+	}
+	// The checkout is absent before Git is asked to prune its administrative
+	// registration; provider-controlled checkout removal is never delegated to Git.
+	if err := o.pruneWorktreesNow(mainWorktreeRoot); err != nil {
+		return failCleanup(fmt.Sprintf("git worktree prune failed: %v", err))
+	}
+	registeredAfter, err := workspace.ListRegisteredWorktrees(mainWorktreeRoot, o.git())
+	if err != nil {
+		return failCleanup(fmt.Sprintf("registered git worktrees could not be listed after cleanup: %v", err))
+	}
+	if _, stillRegistered := registeredAfter.Lookup(worktreePath); stillRegistered {
+		return failCleanup("git worktree is still registered after cleanup")
+	}
+	pathExists, err = managedWorktreePathExists(worktreePath)
+	if err != nil {
+		return failCleanup(fmt.Sprintf("inspect worktree directory failed: %v", err))
+	}
+	if pathExists {
+		return failCleanup("managed worktree path appeared after deregistration")
+	}
+	updated, err := o.runWorktrees.MarkCleaned(ctx, claim, now)
+	if err != nil {
+		return false, fmt.Errorf("mark run worktree cleaned: %w", err)
+	}
+	return updated, nil
 }
 
 // discardQuarantinedManagedWorktreeForManualRecovery permits a pruned record
 // only after its deterministic path is confirmed absent. Present unregistered
 // paths are not Kingdom-owned and must never be touched by recovery.
-func (o *orchestrationLoop) discardQuarantinedManagedWorktreeForManualRecovery(ctx context.Context, record workspace.RunWorktreeRecord, now string) error {
+func (o *orchestrationLoop) discardQuarantinedManagedWorktreeForManualRecovery(ctx context.Context, record workspace.RunWorktreeRecord, now string) (bool, error) {
 	if o == nil || o.runWorktrees == nil {
-		return fmt.Errorf("run worktree store is required")
+		return false, fmt.Errorf("run worktree store is required")
 	}
 	if err := validateManagedRunWorktreeBoundary(record); err != nil {
-		return fmt.Errorf("managed worktree boundary is invalid: %w", err)
+		return false, fmt.Errorf("managed worktree boundary is invalid: %w", err)
 	}
-	registered, err := workspace.ListRegisteredWorktrees(record.MainWorktreeRoot, o.git())
+	if record.State == workspace.RunWorktreeStateCleaned {
+		registered, err := workspace.ListRegisteredWorktrees(record.MainWorktreeRoot, o.git())
+		if err != nil {
+			return false, fmt.Errorf("registered git worktrees could not be listed: %w", err)
+		}
+		if _, ok := registered.Lookup(record.WorktreePath); ok {
+			return false, fmt.Errorf("cleaned managed worktree is still registered with git")
+		}
+		pathExists, err := managedWorktreePathExists(record.WorktreePath)
+		if err != nil || pathExists {
+			if err == nil {
+				err = fmt.Errorf("cleaned managed worktree path is present")
+			}
+			return false, fmt.Errorf("inspect cleaned managed worktree path: %w", err)
+		}
+		return true, nil
+	}
+	complete, err := o.cleanupRunWorktreeForManualRecovery(ctx, record, now)
+	if err != nil || complete {
+		return complete, err
+	}
+	updated, err := o.runWorktrees.GetByRun(ctx, record.RunID)
 	if err != nil {
-		return fmt.Errorf("registered git worktrees could not be listed: %w", err)
+		return false, fmt.Errorf("reload managed worktree cleanup state: %w", err)
 	}
-	if _, ok := registered.Lookup(record.WorktreePath); ok {
-		return o.cleanupRunWorktree(ctx, record, now)
+	if updated.State == workspace.RunWorktreeStateCleanupFailed {
+		return false, fmt.Errorf("managed worktree cleanup failed: %s", strings.TrimSpace(updated.FailureReason))
 	}
-	if _, err := os.Lstat(record.WorktreePath); err == nil {
-		return fmt.Errorf("managed worktree path is present but not registered with git; refusing to remove an unregistered path")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect unregistered managed worktree path: %w", err)
-	}
-	if err := o.runWorktrees.MarkCleaned(ctx, record.RunID, now); err != nil {
-		return fmt.Errorf("mark absent managed worktree record cleaned: %w", err)
-	}
-	return nil
+	return false, nil
 }
 
 func validateManagedRunWorktreeBoundary(record workspace.RunWorktreeRecord) error {
@@ -151,26 +272,38 @@ func validateManagedRunWorktreeBoundary(record workspace.RunWorktreeRecord) erro
 	return nil
 }
 
-func removeManagedWorktreePath(worktreePath string) error {
+func removeManagedWorktreePathBatch(worktreePath, cursor string, batchSize int) (securefs.TreeRemovalProgress, error) {
 	parent := filepath.Dir(strings.TrimSpace(worktreePath))
 	root, err := securefs.OpenRoot(parent)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return securefs.TreeRemovalProgress{Complete: true}, nil
 	}
 	if err != nil {
-		return err
+		return securefs.TreeRemovalProgress{}, err
 	}
 	defer root.Close()
-	return root.RemoveTree(filepath.Base(worktreePath))
+	return root.RemoveTreeBatch(filepath.Base(worktreePath), cursor, batchSize)
 }
 
-func (o *orchestrationLoop) markRunWorktreeCleanupFailed(ctx context.Context, runID, now, reason string) error {
+func managedWorktreePathExists(worktreePath string) (bool, error) {
+	_, err := os.Lstat(worktreePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (o *orchestrationLoop) markRunWorktreeCleanupFailed(ctx context.Context, claim workspace.RunWorktreeCleanupClaim, reason string) (bool, error) {
 	if o == nil || o.runWorktrees == nil {
-		return fmt.Errorf("run worktree store is required")
+		return false, fmt.Errorf("run worktree store is required")
 	}
 	nextAttemptAt := o.now().UTC().Add(workspace.DefaultCleanupRetryBackoff).Format(time.RFC3339)
-	if err := o.runWorktrees.MarkCleanupFailed(ctx, runID, nextAttemptAt, reason); err != nil {
-		return fmt.Errorf("mark run worktree cleanup failed: %w", err)
+	updated, err := o.runWorktrees.MarkCleanupFailed(ctx, claim, nextAttemptAt, reason)
+	if err != nil {
+		return false, fmt.Errorf("mark run worktree cleanup failed: %w", err)
 	}
-	return nil
+	return updated, nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/state"
+	"kingdom/internal/workspace"
 )
 
 func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
@@ -1518,6 +1520,75 @@ func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 	})
 	if rerunAccepted.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 rerun accepted for failed run, got %d (%s)", rerunAccepted.Code, rerunAccepted.Body.String())
+	}
+}
+
+func TestServerRetryAndRerunRejectStartedManagedWorktreeCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "retry", path: func(runID string) string { return "/api/v1/runs/" + runID + "/nodes/kickoff/retry" }},
+		{name: "rerun", path: func(runID string) string { return "/api/v1/runs/" + runID + "/rerun-from/kickoff" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, db := newAPIServerForTest(t)
+			runID := seedRunViaAPI(t, handler)
+			setRunStatus(t, db, runID, "failed")
+
+			mainWorktreeRoot := t.TempDir()
+			worktreeName := workspace.RunPathName("cleanup-race", runID)
+			worktrees := workspace.NewRunWorktreeStore(db)
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			if err := worktrees.UpsertActive(context.Background(), runID, filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, "1111111111111111111111111111111111111111", now); err != nil {
+				t.Fatalf("persist managed run worktree: %v", err)
+			}
+			if err := worktrees.ScheduleTerminalCleanup(context.Background(), now, now); err != nil {
+				t.Fatalf("schedule managed worktree cleanup: %v", err)
+			}
+			_, claim, claimed, err := worktrees.ClaimDueForCleanup(context.Background(), runID, now, "cleanup_api_"+tc.name)
+			if err != nil || !claimed {
+				t.Fatalf("claim managed worktree cleanup: claimed=%t err=%v", claimed, err)
+			}
+			started, err := worktrees.BeginCleanupDeletion(context.Background(), claim)
+			if err != nil || !started {
+				t.Fatalf("begin managed worktree deletion: started=%t err=%v", started, err)
+			}
+
+			var attemptsBefore int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&attemptsBefore); err != nil {
+				t.Fatalf("count kickoff attempts before replay: %v", err)
+			}
+			res := performJSONRequest(t, handler, requestSpec{
+				method:         http.MethodPost,
+				path:           tc.path(runID),
+				body:           map[string]any{"reason": "wait for managed worktree cleanup"},
+				idempotencyKey: "idem-cleanup-race-" + tc.name,
+			})
+			if res.Code != http.StatusConflict {
+				t.Fatalf("expected 409 while cleanup deletion has started, got %d (%s)", res.Code, res.Body.String())
+			}
+			assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+			if !strings.Contains(res.Body.String(), "wait for cleanup to finish") {
+				t.Fatalf("cleanup conflict did not explain the retry condition: %s", res.Body.String())
+			}
+			var runStatus string
+			if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+				t.Fatalf("read run status after rejected replay: %v", err)
+			}
+			if runStatus != "failed" {
+				t.Fatalf("rejected %s changed run status to %q", tc.name, runStatus)
+			}
+			var attemptsAfter int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&attemptsAfter); err != nil {
+				t.Fatalf("count kickoff attempts after replay: %v", err)
+			}
+			if attemptsAfter != attemptsBefore {
+				t.Fatalf("rejected %s queued an attempt: before=%d after=%d", tc.name, attemptsBefore, attemptsAfter)
+			}
+		})
 	}
 }
 

@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +27,7 @@ import (
 	"kingdom/internal/core/workflow"
 	githubexternal "kingdom/internal/external/github"
 	kingdom "kingdom/internal/orchestration"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
 )
@@ -67,37 +67,44 @@ func TestReadRunningPIDRemovesInvalidPIDFile(t *testing.T) {
 	}
 }
 
-func TestRunSummonStatusDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dummy summon process: %v", err)
+func TestReadRunningPIDRecordPreservesFileWhenIdentityInspectionFails(t *testing.T) {
+	t.Parallel()
+
+	pidPath := filepath.Join(t.TempDir(), defaultPIDFileName)
+	if err := writeSummonPIDRecord(pidPath, summonPIDRecord{
+		PID:                  os.Getpid(),
+		ProcessIdentityToken: "current-generation",
+		StopControlToken:     "current-stop-control",
+	}); err != nil {
+		t.Fatalf("write pid file: %v", err)
 	}
-	processDone := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(processDone)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-processDone:
-		default:
-			_ = cmd.Process.Kill()
-			<-processDone
-		}
+	_, running, err := readRunningPIDRecordWithIdentity(pidPath, func(int, string) (bool, error) {
+		return false, os.ErrPermission
 	})
+	if err == nil || running {
+		t.Fatalf("identity inspection failure returned running=%t err=%v, want an error", running, err)
+	}
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Fatalf("identity inspection failure removed pid file: %v", err)
+	}
+}
+
+func TestRunSummonStatusDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
+	process := startCLIProcessHelper(t)
 
 	if err := registerSummonInstance(summonInstanceRecord{
-		PID:         cmd.Process.Pid,
-		ConfigPath:  "/tmp/old/.kingdom/config.yaml",
-		KingdomHome: "/tmp/old/.kingdom",
-		Listen:      "127.0.0.1:8080",
-		BasePath:    "/api/v1",
-		StartedAt:   "2026-05-30T10:00:00Z",
+		PID:              process.PID(),
+		ConfigPath:       "/tmp/old/.kingdom/config.yaml",
+		KingdomHome:      "/tmp/old/.kingdom",
+		StopControlToken: process.stopControlToken,
+		Listen:           "127.0.0.1:8080",
+		BasePath:         "/api/v1",
+		StartedAt:        "2026-05-30T10:00:00Z",
 	}); err != nil {
 		t.Fatalf("register summon instance: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = unregisterSummonInstance(cmd.Process.Pid)
+		_ = unregisterSummonInstance(process.PID(), process.processIdentityToken, process.stopControlToken)
 	})
 
 	stdout := &bytes.Buffer{}
@@ -121,35 +128,24 @@ func TestRunSummonStatusPrefersLocalSummonStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read install config: %v", err)
 	}
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dummy summon process: %v", err)
+	process := startCLIProcessHelper(t)
+	identity, err := processguardian.ProcessIdentityToken(process.PID())
+	if err != nil {
+		t.Fatalf("identify summon process: %v", err)
 	}
-	processDone := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(processDone)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-processDone:
-		default:
-			_ = cmd.Process.Kill()
-			<-processDone
-		}
-	})
 	statePath := summonStatePath(cfg.KingdomHome)
 	if err := saveSummonState(statePath, summonStateRecord{
-		PID:         cmd.Process.Pid,
-		State:       summonStatusStateStarting,
-		Phase:       "validating OpenCode agents (3/9)",
-		ConfigPath:  configPath,
-		KingdomHome: cfg.KingdomHome,
-		Listen:      cfg.Server.Listen,
-		BasePath:    cfg.Server.BasePath,
-		LogPath:     summonLogPath(cfg.KingdomHome),
-		StartedAt:   "2026-06-10T10:00:00Z",
-		UpdatedAt:   "2026-06-10T10:00:03Z",
+		PID:                  process.PID(),
+		ProcessIdentityToken: identity,
+		State:                summonStatusStateStarting,
+		Phase:                "validating OpenCode agents (3/9)",
+		ConfigPath:           configPath,
+		KingdomHome:          cfg.KingdomHome,
+		Listen:               cfg.Server.Listen,
+		BasePath:             cfg.Server.BasePath,
+		LogPath:              summonLogPath(cfg.KingdomHome),
+		StartedAt:            "2026-06-10T10:00:00Z",
+		UpdatedAt:            "2026-06-10T10:00:03Z",
 	}); err != nil {
 		t.Fatalf("save summon state: %v", err)
 	}
@@ -166,6 +162,45 @@ func TestRunSummonStatusPrefersLocalSummonStateFile(t *testing.T) {
 	}
 	if !strings.Contains(output, "logs: ") {
 		t.Fatalf("expected summon logs path in status, got %q", output)
+	}
+}
+
+func TestRunSummonStatusDoesNotLetStaleTerminalStateHideCurrentGeneration(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	kingdomHome := filepath.Join(projectRoot, ".kingdom")
+	configPath := filepath.Join(kingdomHome, defaultConfigFileName)
+	process := startCLIProcessHelper(t, summonStopRequestPath(kingdomHome))
+	if err := writeSummonPIDRecord(filepath.Join(kingdomHome, "run", defaultPIDFileName), summonPIDRecord{
+		PID:                  process.PID(),
+		ProcessIdentityToken: process.processIdentityToken,
+		StopControlToken:     process.stopControlToken,
+	}); err != nil {
+		t.Fatalf("write current pid record: %v", err)
+	}
+
+	for _, staleState := range []summonStatusState{summonStatusStateStopped, summonStatusStateFailed} {
+		t.Run(string(staleState), func(t *testing.T) {
+			if err := saveSummonState(summonStatePath(kingdomHome), summonStateRecord{
+				PID:                  process.PID(),
+				ProcessIdentityToken: "previous-process-generation",
+				StopControlToken:     "previous-control-generation",
+				State:                staleState,
+				ConfigPath:           configPath,
+				KingdomHome:          kingdomHome,
+				}); err != nil {
+				t.Fatalf("save stale summon state: %v", err)
+			}
+			stdout := &bytes.Buffer{}
+			if err := runSummonStatus(stdout, []string{"--config", configPath}); err != nil {
+				t.Fatalf("run summon status: %v", err)
+			}
+			if !strings.Contains(stdout.String(), fmt.Sprintf("summon status: running (pid=%d)", process.PID())) {
+				t.Fatalf("stale %s state hid current summon generation: %q", staleState, stdout.String())
+			}
+		})
 	}
 }
 
@@ -202,32 +237,41 @@ func TestRunSummonStatusSurfacesFailedLocalState(t *testing.T) {
 	}
 }
 
-func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dummy summon process: %v", err)
+func TestNormalizeSummonStateRejectsAReusedPID(t *testing.T) {
+	process := startCLIProcessHelper(t)
+	state := summonStateRecord{
+		PID:                  process.PID(),
+		ProcessIdentityToken: "previous-process-generation",
+		State:                summonStatusStateRunning,
 	}
-	processDone := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(processDone)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-processDone:
-		default:
-			_ = cmd.Process.Kill()
-			<-processDone
-		}
+	normalized, ok, err := normalizeSummonState(state)
+	if err != nil || !ok || normalized.State != summonStatusStateStopped {
+		t.Fatalf("reused pid state=%#v ok=%t err=%v, want stopped", normalized, ok, err)
+	}
+}
+
+func TestNormalizeSummonStatePreservesIdentityInspectionFailure(t *testing.T) {
+	state := summonStateRecord{PID: 1234, ProcessIdentityToken: "process-generation", State: summonStatusStateRunning}
+	normalized, found, err := normalizeSummonStateWithIdentity(state, func(int, string) (bool, error) {
+		return false, os.ErrPermission
 	})
+	if err == nil || found {
+		t.Fatalf("identity inspection failure normalized to state=%#v found=%t err=%v, want error", normalized, found, err)
+	}
+}
+
+func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
+	process := startCLIProcessHelper(t)
+	processDone := process.Done()
 
 	if err := registerSummonInstance(summonInstanceRecord{
-		PID:         cmd.Process.Pid,
-		ConfigPath:  "/tmp/old/.kingdom/config.yaml",
-		KingdomHome: "/tmp/old/.kingdom",
-		Listen:      "127.0.0.1:8080",
-		BasePath:    "/api/v1",
-		StartedAt:   "2026-05-30T10:00:00Z",
+		PID:              process.PID(),
+		ConfigPath:       "/tmp/old/.kingdom/config.yaml",
+		KingdomHome:      "/tmp/old/.kingdom",
+		StopControlToken: process.stopControlToken,
+		Listen:           "127.0.0.1:8080",
+		BasePath:         "/api/v1",
+		StartedAt:        "2026-05-30T10:00:00Z",
 	}); err != nil {
 		t.Fatalf("register summon instance: %v", err)
 	}
@@ -239,7 +283,7 @@ func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
 	}
 	select {
 	case <-processDone:
-		t.Fatal("expected unrelated summon process to keep running")
+		t.Fatalf("expected unrelated summon process to keep running; child exited: %v", process.Wait())
 	case <-time.After(250 * time.Millisecond):
 	}
 	if stdout.String() != "summon already stopped\n" {
@@ -249,8 +293,36 @@ func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list active summon instances: %v", err)
 	}
-	if len(instances) != 1 || instances[0].PID != cmd.Process.Pid {
+	if len(instances) != 1 || instances[0].PID != process.PID() {
 		t.Fatalf("expected unrelated summon registry entry preserved, got %+v", instances)
+	}
+}
+
+func TestRunSummonStopDoesNotSignalAReusedPIDFromThePIDFile(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	process := startCLIProcessHelper(t)
+	pidPath := filepath.Join(projectRoot, ".kingdom", "run", defaultPIDFileName)
+	if err := writeSummonPIDRecord(pidPath, summonPIDRecord{PID: process.PID(), ProcessIdentityToken: "previous-process-generation", StopControlToken: "previous-control-generation"}); err != nil {
+		t.Fatalf("write stale pid record: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	if err := runSummonStop(stdout, []string{"--config", filepath.Join(projectRoot, ".kingdom", "config.yaml")}); err != nil {
+		t.Fatalf("run summon stop: %v", err)
+	}
+	select {
+	case <-process.Done():
+		t.Fatalf("pid reuse caused summon stop to terminate the unrelated process: %v", process.Wait())
+	case <-time.After(150 * time.Millisecond):
+	}
+	if stdout.String() != "summon already stopped\n" {
+		t.Fatalf("unexpected stale-pid stop output %q", stdout.String())
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("stale pid file was not removed: %v", err)
 	}
 }
 
@@ -699,26 +771,10 @@ func TestRunCleanCommandStopsRunningSummonProcess(t *testing.T) {
 		t.Fatalf("run init command: %v", err)
 	}
 
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dummy summon process: %v", err)
-	}
-	processDone := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(processDone)
-	}()
-	t.Cleanup(func() {
-		select {
-		case <-processDone:
-		default:
-			_ = cmd.Process.Kill()
-			<-processDone
-		}
-	})
+	process := startCLIProcessHelper(t, filepath.Join(projectRoot, ".kingdom", "run", defaultSummonStopRequestFileName))
 
 	pidPath := filepath.Join(projectRoot, ".kingdom", "run", defaultPIDFileName)
-	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o644); err != nil {
+	if err := writeSummonPIDRecord(pidPath, summonPIDRecord{PID: process.PID(), ProcessIdentityToken: process.processIdentityToken, StopControlToken: process.stopControlToken}); err != nil {
 		t.Fatalf("write pid file: %v", err)
 	}
 
@@ -728,7 +784,7 @@ func TestRunCleanCommandStopsRunningSummonProcess(t *testing.T) {
 	}
 
 	select {
-	case <-processDone:
+	case <-process.Done():
 	case <-time.After(5 * time.Second):
 		t.Fatal("expected clean to stop summon-owned process before removing scaffold")
 	}

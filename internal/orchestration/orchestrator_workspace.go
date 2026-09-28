@@ -53,6 +53,8 @@ type runWorktreeContext struct {
 	ProjectRoot  string
 }
 
+var errExecutionTargetRecoveryInProgress = errors.New("execution target recovery is in progress")
+
 func (o *orchestrationLoop) resolveExecutionWorkspaceContext(ctx context.Context, runID string) (executionWorkspaceContext, error) {
 	return o.resolveExecutionWorkspaceContextForMode(ctx, runID, o.publishMode)
 }
@@ -209,6 +211,9 @@ func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx
 	if err != nil {
 		return runtimefs.RunExecutionTarget{}, err
 	}
+	if strings.TrimSpace(recovered.State) == "unknown" {
+		return recovered, errExecutionTargetRecoveryInProgress
+	}
 	return recovered, nil
 }
 
@@ -226,8 +231,12 @@ func (o *orchestrationLoop) recoverQuarantinedManagedWorktree(ctx context.Contex
 	if filepath.Clean(strings.TrimSpace(target.ExecutionRoot)) != filepath.Clean(workspace.ScopedProjectRootInCheckout(record.WorktreePath, workspace.GitProjectTopology{ProjectRelPath: record.ProjectRelPath})) {
 		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target is outside its registered managed worktree")
 	}
-	if err := o.discardQuarantinedManagedWorktreeForManualRecovery(ctx, record, strings.TrimSpace(restoredAt)); err != nil {
+	cleanupComplete, err := o.discardQuarantinedManagedWorktreeForManualRecovery(ctx, record, strings.TrimSpace(restoredAt))
+	if err != nil {
 		return runtimefs.RunExecutionTarget{}, fmt.Errorf("discard quarantined managed worktree: %w", err)
+	}
+	if !cleanupComplete {
+		return target, nil
 	}
 	fresh, err := o.ensureRunWorktree(ctx, o.yoloRoot, runID)
 	if err != nil {
@@ -414,10 +423,6 @@ func (o *orchestrationLoop) ensureRunWorktree(ctx context.Context, projectRoot, 
 	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
 		return runWorktreeContext{}, fmt.Errorf("create worktree root: %w", err)
 	}
-	registeredWorktrees, err := workspace.ListRegisteredWorktrees(topology.MainWorktreeRoot, o.git())
-	if err != nil {
-		return runWorktreeContext{}, newGitWorktreeRuntimeError("registered git worktrees could not be listed")
-	}
 	seedCommitOID := strings.TrimSpace(topology.HeadCommitOID)
 	worktreeName := ""
 	worktreePath := ""
@@ -437,6 +442,13 @@ func (o *orchestrationLoop) ensureRunWorktree(ctx context.Context, projectRoot, 
 			return runWorktreeContext{}, err
 		}
 		worktreePath = workspace.ManagedRunWorktreePath(topology.MainWorktreeRoot, worktreeName)
+	}
+	if record.RunID != "" && (record.CleanupStarted || record.CleanupOwner != "" || (record.State != workspace.RunWorktreeStateActive && record.State != workspace.RunWorktreeStateCleaned)) {
+		return runWorktreeContext{}, fmt.Errorf("managed git worktree cleanup is in progress; dispatch must wait for cleanup to complete")
+	}
+	registeredWorktrees, err := workspace.ListRegisteredWorktrees(topology.MainWorktreeRoot, o.git())
+	if err != nil {
+		return runWorktreeContext{}, newGitWorktreeRuntimeError("registered git worktrees could not be listed")
 	}
 	if entry, ok := registeredWorktrees.Lookup(worktreePath); ok && entry.Prunable {
 		if err := o.pruneWorktreesNow(topology.MainWorktreeRoot); err != nil {

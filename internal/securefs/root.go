@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,16 @@ type Root struct {
 	fd           int
 	name         string
 	platformRoot *os.Root
+	rootFile     *os.File
+	syncMu       sync.Mutex
+	syncedDirs   map[directorySyncCacheKey]struct{}
+}
+
+type directorySyncCacheKey struct {
+	path                                   string
+	parentDevice, parentInode              uint64
+	parentChangeSeconds, parentChangeNanos int64
+	childDevice, childInode                uint64
 }
 
 // ErrLimitExceeded reports that a bounded filesystem operation reached its
@@ -62,12 +73,21 @@ type Entry struct {
 	Identity  FileIdentity
 }
 
+// TreeRemovalProgress reports one bounded batch of a resumable tree removal.
+// Cursor identifies the directory currently being processed, relative to the
+// path passed to RemoveTreeBatch and expressed with slash separators.
+type TreeRemovalProgress struct {
+	Cursor           string
+	EntriesProcessed int
+	EntriesRemoved   int
+	Complete         bool
+}
+
 func splitRelativePath(path string) ([]string, error) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" || filepath.IsAbs(trimmed) {
+	if path == "" || filepath.IsAbs(path) {
 		return nil, fmt.Errorf("relative path is required")
 	}
-	cleaned := filepath.Clean(filepath.FromSlash(trimmed))
+	cleaned := filepath.Clean(filepath.FromSlash(path))
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
 		return nil, fmt.Errorf("path escapes secure root: %q", path)
 	}
@@ -121,6 +141,11 @@ func (r *Root) ReadDirBounded(path string, maxEntries int) ([]Entry, error) {
 	return readRootDirBounded(r, path, maxEntries)
 }
 
+// ReadEntry returns no-follow metadata and identity for one descendant entry.
+func (r *Root) ReadEntry(path string) (Entry, error) {
+	return readRootEntry(r, path)
+}
+
 // EnsureDir creates a descendant directory chain without following or
 // replacing any existing entry.
 func (r *Root) EnsureDir(path string, mode fs.FileMode) error {
@@ -164,14 +189,143 @@ func (r *Root) RemoveEmptyDir(path string) error {
 	return removeRootEmptyDir(r, path)
 }
 
-// RemoveTree removes a descendant directory tree without following symlinks.
-// A final non-directory entry is unlinked rather than traversed.
-func (r *Root) RemoveTree(path string) error {
-	return removeRootTree(r, path)
+// RemoveTreeBatch removes at most maxEntries tree entries or traversal actions
+// from a descendant tree without following symlinks. The returned cursor can
+// be persisted and passed to a later call, including after process restart.
+// Complete is true only when the tree's root entry no longer exists.
+func (r *Root) RemoveTreeBatch(path, cursor string, maxEntries int) (TreeRemovalProgress, error) {
+	if maxEntries <= 0 {
+		return TreeRemovalProgress{}, fmt.Errorf("tree removal batch size must be positive")
+	}
+	if _, err := splitRelativePath(path); err != nil {
+		return TreeRemovalProgress{}, err
+	}
+	cursorParts := []string(nil)
+	if cursor != "" {
+		var err error
+		cursorParts, err = splitRelativePath(cursor)
+		if err != nil {
+			return TreeRemovalProgress{}, fmt.Errorf("invalid tree removal cursor: %w", err)
+		}
+	}
+	progress := TreeRemovalProgress{Cursor: strings.Join(cursorParts, "/")}
+	for progress.EntriesProcessed < maxEntries {
+		currentPath := path
+		if len(cursorParts) > 0 {
+			currentPath = filepath.Join(path, filepath.FromSlash(strings.Join(cursorParts, "/")))
+		}
+		currentEntry, inspectErr := r.ReadEntry(currentPath)
+		if inspectErr != nil {
+			if rootTreeCursorUnavailable(inspectErr) {
+				if len(cursorParts) == 0 {
+					if errors.Is(inspectErr, fs.ErrNotExist) {
+						progress.Cursor = ""
+						progress.Complete = true
+						return progress, nil
+					}
+					return progress, fmt.Errorf("secure tree root %q is not reachable without following links: %w", path, inspectErr)
+				}
+				cursorParts = cursorParts[:len(cursorParts)-1]
+				progress.EntriesProcessed++
+				progress.Cursor = strings.Join(cursorParts, "/")
+				continue
+			}
+			return progress, fmt.Errorf("inspect secure tree entry %q: %w", currentPath, inspectErr)
+		}
+		if currentEntry.Type != EntryTypeDirectory {
+			if len(cursorParts) == 0 {
+				if err := r.RemoveEntryIfIdentity(path, currentEntry.Type, currentEntry.Identity); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return progress, fmt.Errorf("remove secure tree root entry %q: %w", path, err)
+				}
+				progress.EntriesProcessed++
+				progress.EntriesRemoved++
+				progress.Cursor = ""
+				progress.Complete = true
+				return progress, nil
+			}
+			cursorParts = cursorParts[:len(cursorParts)-1]
+			progress.EntriesProcessed++
+			progress.Cursor = strings.Join(cursorParts, "/")
+			continue
+		}
+		entries, err := r.ReadDirBounded(currentPath, 1)
+		if len(entries) > 0 {
+			if err != nil && !errors.Is(err, ErrLimitExceeded) {
+				return progress, fmt.Errorf("read secure directory %q for removal: %w", currentPath, err)
+			}
+			entry := entries[0]
+			progress.EntriesProcessed++
+			if entry.Type == EntryTypeDirectory {
+				cursorParts = append(cursorParts, entry.Name)
+				progress.Cursor = strings.Join(cursorParts, "/")
+				continue
+			}
+			entryPath := filepath.Join(currentPath, entry.Name)
+			if err := r.RemoveEntryIfIdentity(entryPath, entry.Type, entry.Identity); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					progress.EntriesRemoved++
+					continue
+				}
+				return progress, fmt.Errorf("remove secure tree entry %q: %w", entryPath, err)
+			}
+			progress.EntriesRemoved++
+			continue
+		}
+		if err != nil {
+			if !rootTreeCursorUnavailable(err) {
+				return progress, fmt.Errorf("read secure directory %q for removal: %w", currentPath, err)
+			}
+			if len(cursorParts) > 0 {
+				cursorParts = cursorParts[:len(cursorParts)-1]
+			}
+			progress.EntriesProcessed++
+			progress.Cursor = strings.Join(cursorParts, "/")
+			continue
+		}
+		if len(cursorParts) == 0 {
+			if err := r.RemoveEmptyDir(path); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					progress.Cursor = ""
+					progress.Complete = true
+					return progress, nil
+				}
+				if rootDirectoryNotEmpty(err) {
+					progress.EntriesProcessed++
+					continue
+				}
+				return progress, fmt.Errorf("remove empty secure tree root %q: %w", path, err)
+			}
+			progress.EntriesProcessed++
+			progress.EntriesRemoved++
+			progress.Cursor = ""
+			progress.Complete = true
+			return progress, nil
+		}
+		if err := r.RemoveEmptyDir(currentPath); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				cursorParts = cursorParts[:len(cursorParts)-1]
+				progress.EntriesProcessed++
+				progress.Cursor = strings.Join(cursorParts, "/")
+				continue
+			}
+			if rootDirectoryNotEmpty(err) {
+				progress.EntriesProcessed++
+				continue
+			}
+			return progress, fmt.Errorf("remove empty secure directory %q: %w", currentPath, err)
+		}
+		progress.EntriesProcessed++
+		progress.EntriesRemoved++
+		cursorParts = cursorParts[:len(cursorParts)-1]
+		progress.Cursor = strings.Join(cursorParts, "/")
+	}
+	return progress, nil
 }
 
-// SyncDir fsyncs one descendant directory. An empty path or "." syncs the
-// pinned root itself.
+// SyncDir requests the platform's directory-sync operation for one descendant.
+// An empty path or "." targets the pinned root. This is not a portable guarantee
+// that namespace entries are crash-durable; Windows callers needing that
+// property must use a documented write-through publication operation.
 func (r *Root) SyncDir(path string) error {
 	return syncRootDir(r, path)
 }
