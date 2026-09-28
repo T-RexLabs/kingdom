@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/timestamporder"
 )
 
 type PlanningProviderInvocationState string
@@ -186,7 +187,7 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = CASE
 			WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
 			ELSE active_provider_invocation_id
@@ -197,7 +198,8 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 		  AND status = 'running'
 		  AND lease_owner = ?
 		  AND lease_version = ?
-		  AND julianday(lease_expires_at) > julianday(?)`,
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
 		invocation.PlanningSessionID,
@@ -746,14 +748,15 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 }
 
 func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
-	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
 		  AND COALESCE(TRIM(active_provider_invocation_id), '') = ''
 		  AND status = 'running'
 		  AND lease_owner = ?
 		  AND lease_version = ?
-		  AND julianday(lease_expires_at) > julianday(?)`,
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
 		req.LeaseOwner,
@@ -774,14 +777,15 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 }
 
 func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
-	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+	query := fmt.Sprintf(`UPDATE planning_operations
 		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END
 		WHERE operation_id = ?
 		  AND active_provider_invocation_id = ?
 		  AND status = 'running'
 		  AND lease_owner = ?
 		  AND lease_version = ?
-		  AND julianday(lease_expires_at) > julianday(?)`,
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
 		req.ProviderSessionID,
 		req.ProviderSessionID,
 		invocation.PlanningOperationID,

@@ -244,6 +244,30 @@ func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *t
 	}
 }
 
+func TestFindStaleAttemptsKeepsLeaseThatExpiresAfterVariablePrecisionNow(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	const nowText = "2026-09-25T10:00:00.1Z"
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '2026-09-25T09:00:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-09-25T10:00:00.11Z', 1, 'session_1', '2026-09-25T09:00:00Z', '2026-09-25T09:00:00Z')`)
+
+	now, err := time.Parse(time.RFC3339Nano, nowText)
+	if err != nil {
+		t.Fatalf("parse current time: %v", err)
+	}
+	stale, err := findStaleAttemptsWithQuerier(context.Background(), db, now, time.Minute)
+	if err != nil {
+		t.Fatalf("find stale attempts: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("lease expiring at 2026-09-25T10:00:00.11Z was stale at %s: %#v", nowText, stale)
+	}
+}
+
 func TestFindStaleAttemptsRespectsFractionalSecondCutoff(t *testing.T) {
 	t.Parallel()
 
@@ -295,7 +319,7 @@ func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
-	now := "2026-03-01T12:09:50Z"
+	now := "2026-03-01T12:09:50.1Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_lease', 'starting lease', 'starting lease', '{}', '2026-03-01T12:00:00Z')`)
@@ -328,7 +352,7 @@ func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing
 	if heartbeat != now {
 		t.Fatalf("expected starting lease heartbeat to renew to %q, got %q", now, heartbeat)
 	}
-	if expiry != "2026-03-01T12:10:25Z" {
+	if expiry != "2026-03-01T12:10:25.1Z" {
 		t.Fatalf("expected starting lease expiry to extend with the renewal, got %q", expiry)
 	}
 }

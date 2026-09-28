@@ -15,6 +15,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/timestamporder"
 )
 
 const (
@@ -131,7 +132,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 	}
 
 	staleLeases, err := r.sessionManager.FindStaleLeases(ctx, FindStaleSessionLeasesRequest{
-		Now:                     nowTime.UTC().Format(time.RFC3339),
+		Now:                     nowTime.UTC().Format(time.RFC3339Nano),
 		StaleHeartbeatThreshold: staleHeartbeatThreshold,
 	})
 	if err != nil {
@@ -142,7 +143,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 		if _, blocked := blockedAgents[lease.AgentID]; blocked {
 			_, closeErr := r.sessionManager.CloseLease(ctx, CloseSessionLeaseRequest{
 				SessionID: lease.SessionID,
-				UpdatedAt: nowTime.UTC().Format(time.RFC3339),
+				UpdatedAt: nowTime.UTC().Format(time.RFC3339Nano),
 			})
 			if closeErr != nil {
 				var stateErr *SessionLeaseStateConflictError
@@ -162,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 		if !foundAttempt || !executionstore.AttemptRetainsSessionLease(attemptState, launchStartedAt, startedAt) {
 			_, closeErr := r.sessionManager.CloseLease(ctx, CloseSessionLeaseRequest{
 				SessionID: lease.SessionID,
-				UpdatedAt: nowTime.UTC().Format(time.RFC3339),
+				UpdatedAt: nowTime.UTC().Format(time.RFC3339Nano),
 			})
 			if closeErr != nil {
 				var stateErr *SessionLeaseStateConflictError
@@ -180,9 +181,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 
 		_, renewErr := r.sessionManager.RenewLease(ctx, RenewSessionLeaseRequest{
 			SessionID:       lease.SessionID,
-			LeaseExpiresAt:  nowTime.Add(staleHeartbeatThreshold).UTC().Format(time.RFC3339),
-			LastHeartbeatAt: nowTime.UTC().Format(time.RFC3339),
-			UpdatedAt:       nowTime.UTC().Format(time.RFC3339),
+			LeaseExpiresAt:  nowTime.Add(staleHeartbeatThreshold).UTC().Format(time.RFC3339Nano),
+			LastHeartbeatAt: nowTime.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:       nowTime.UTC().Format(time.RFC3339Nano),
 		})
 		if renewErr != nil {
 			var stateErr *SessionLeaseStateConflictError
@@ -1116,11 +1117,14 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		       AND (
 		         COALESCE(ae.execution_mode, 'runtime_owned') <> 'provider_backed' OR
 		         COALESCE(ae.lease_expires_at, '') = '' OR
-		         ae.lease_expires_at <= ?
+		         %s
 		       )
 		     )
 		   )
-		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`, staleActiveSessionLeaseConditionSQL("sl"))
+		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`,
+		staleActiveSessionLeaseConditionSQL("sl"),
+		timestamporder.ComparisonSQL("ae.lease_expires_at", "?", "<="),
+	)
 
 	rows, err := q.QueryContext(ctx,
 		query,

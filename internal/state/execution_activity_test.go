@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"kingdom/internal/timestamporder"
 )
 
 func TestHasRecentTimeoutActivityTracksProviderActivity(t *testing.T) {
@@ -164,13 +166,17 @@ func TestRecentExecutionActivityQueryUsesNodeRunIndex(t *testing.T) {
 	if !indexExists(t, db, indexName) {
 		t.Fatalf("expected index %q to exist", indexName)
 	}
-	assertPlanUsesIndex(t, db,
-		`SELECT created_at, event_type, reason_code, payload_json
+	query := fmt.Sprintf(`SELECT created_at, event_type, reason_code, payload_json
 		 FROM events
 		 WHERE node_run_id = ?
 		   AND event_type IN ('attempt.activity', 'attempt.progress')
-		   AND julianday(created_at) >= julianday(?)
-		 ORDER BY julianday(created_at) DESC, run_event_seq DESC, seq DESC, event_id DESC`,
+		   AND %s
+		 ORDER BY %s, run_event_seq DESC, seq DESC, event_id DESC`,
+		timestamporder.ComparisonSQL("created_at", "?", ">="),
+		timestamporder.OrderBySQL("created_at", true),
+	)
+	assertPlanUsesIndex(t, db,
+		query,
 		[]any{"nr_1", "2026-03-01T12:00:00Z"},
 		indexName,
 	)

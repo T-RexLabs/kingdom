@@ -398,6 +398,46 @@ func TestStoreAcquireLeaseHonorsExpiry(t *testing.T) {
 	}
 }
 
+func TestStoreAcquireLeaseUsesRFC3339NanoChronology(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:nanosecond_lease_order:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
+		AttemptID:      attemptID,
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		CreatedAt:      "2026-09-25T09:00:00Z",
+		CompletionMode: ProviderCompletionModeServerResponse,
+	}); err != nil {
+		t.Fatalf("enqueue attempt: %v", err)
+	}
+
+	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
+		AttemptID:    attemptID,
+		LeaseOwner:   "worker_a",
+		LeaseUntil:   "2026-09-25T10:00:00.11Z",
+		AcquiredAt:   "2026-09-25T10:00:00Z",
+		StateOnLease: "running",
+	}); err != nil || !acquired {
+		t.Fatalf("acquire first lease: acquired=%t err=%v", acquired, err)
+	}
+
+	if acquired, err := s.AcquireLease(ctx, AcquireLeaseRequest{
+		AttemptID:    attemptID,
+		LeaseOwner:   "worker_b",
+		LeaseUntil:   "2026-09-25T10:01:00Z",
+		AcquiredAt:   "2026-09-25T10:00:00.1Z",
+		StateOnLease: "running",
+	}); err != nil || acquired {
+		t.Fatalf("lease expiring after acquisition was stolen: acquired=%t err=%v", acquired, err)
+	}
+}
+
 func activateProviderInvocationForTest(t *testing.T, s *Store, ctx context.Context, req ActivateProviderInvocationRequest) (ProviderInvocation, error) {
 	t.Helper()
 	attempt, found, err := s.GetAttempt(ctx, req.AttemptID)
@@ -1632,6 +1672,143 @@ func TestStoreListRunNodeExecutionsOrdersLogicalNodesByCurrentActivity(t *testin
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected current-activity order %v, got %v", want, got)
 	}
+}
+
+func TestStoreListRunNodeExecutionsOrdersVariablePrecisionActivityChronologically(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	const wholeSecond = "2026-09-25T10:00:00Z"
+	const laterFraction = "2026-09-25T10:00:00.1Z"
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', started_at = NULL, finished_at = NULL WHERE node_run_id = 'nr_1'`)
+	for _, nodeID := range []string{"a_activity_whole", "z_activity_fractional"} {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_%s', 'wfdef_1', '%s', 'king', 'advisory_consultation', '2026-03-01T12:00:00Z')`, nodeID, nodeID))
+	}
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_activity_whole', 'run_1', 'a_activity_whole', 1, 1, 'failed', 'king', 'agent_king', 1, '`+wholeSecond+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_activity_fractional', 'run_1', 'z_activity_fractional', 1, 1, 'failed', 'king', 'agent_king', 1, '`+wholeSecond+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('attempt_activity_fractional', 'run_1', 'nr_activity_fractional', 'queued', 'provider_backed', 'server_response', '`+wholeSecond+`', '`+laterFraction+`')`)
+
+	records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("list logical node executions: %v", err)
+	}
+	positions := make(map[string]int, len(records))
+	foundFractional, foundWhole := false, false
+	for index, record := range records {
+		positions[record.NodeID] = index
+		switch record.NodeID {
+		case "z_activity_fractional":
+			foundFractional = true
+			if !record.LatestActivityAt.Valid || record.LatestActivityAt.String != laterFraction {
+				t.Fatalf("fractional activity MAX=%#v, want %q", record.LatestActivityAt, laterFraction)
+			}
+		case "a_activity_whole":
+			foundWhole = true
+		}
+	}
+	if !foundFractional || !foundWhole {
+		t.Fatalf("activity fixture nodes missing: fractional=%t whole=%t positions=%v", foundFractional, foundWhole, positions)
+	}
+	if positions["z_activity_fractional"] >= positions["a_activity_whole"] {
+		t.Fatalf("later fractional activity sorted after the whole-second activity: positions=%v", positions)
+	}
+}
+
+func TestStoreListRunNodeExecutionsRanksAutomaticRecoveryByRFC3339NanoTime(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	const wholeSecond = "2026-09-25T10:00:00Z"
+	const laterFraction = "2026-09-25T10:00:00.1Z"
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+wholeSecond+`' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_auto_target_2', 'run_1', 'decree_intake', 2, 1, 'ready', 'king', 'agent_king', 1)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_auto_target_3', 'run_1', 'decree_intake', 3, 1, 'ready', 'king', 'agent_king', 1)`)
+	for _, attempt := range []struct {
+		id, nodeRunID string
+	}{
+		{id: "attempt_auto_old", nodeRunID: "nr_1"},
+		{id: "attempt_auto_new", nodeRunID: "nr_auto_target_2"},
+	} {
+		if _, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, 'run_1', ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, attempt.id, attempt.nodeRunID, wholeSecond, wholeSecond); err != nil {
+			t.Fatalf("insert source attempt %q: %v", attempt.id, err)
+		}
+	}
+	insertRetryDecision := func(id, sourceNodeRunID, sourceAttemptID, targetNodeRunID, dispatchedAt, errorCode string, retryIndex int) {
+		t.Helper()
+		_, err := db.Exec(`INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, created_at)
+			VALUES (?, 'decree_attempt', 'run_1', 'decree_intake', ?, ?, ?, 'policy', 'transient_transport', ?, 'retry', 0, 'retry', ?, 3, 0, ?, 'dispatched', ?, 'chancellor', 'pending', ?)`,
+			id, sourceNodeRunID, sourceAttemptID, targetNodeRunID, errorCode, retryIndex, wholeSecond, dispatchedAt, wholeSecond)
+		if err != nil {
+			t.Fatalf("insert retry decision %q: %v", id, err)
+		}
+	}
+	insertRetryDecision("retry_auto_old", "nr_1", "attempt_auto_old", "nr_auto_target_2", wholeSecond, "timeout", 2)
+	insertRetryDecision("retry_auto_new", "nr_auto_target_2", "attempt_auto_new", "nr_auto_target_3", laterFraction, "provider_empty_output", 1)
+
+	records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("list logical node executions: %v", err)
+	}
+	for _, record := range records {
+		if record.NodeID != "decree_intake" {
+			continue
+		}
+		if record.Recovery == nil || record.Recovery.SourceAttemptID != "attempt_auto_new" || record.Recovery.ReasonCode != "provider_empty_output" || record.Recovery.LastUpdatedAt != laterFraction {
+			t.Fatalf("latest automatic recovery=%#v, want the later fractional retry decision", record.Recovery)
+		}
+		return
+	}
+	t.Fatal("decree_intake logical node is missing")
+}
+
+func TestStoreListRunNodeExecutionsRanksManualRecoveryByRFC3339NanoTime(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	const wholeSecond = "2026-09-25T10:00:00Z"
+	const laterFraction = "2026-09-25T10:00:00.1Z"
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('attempt_manual_source', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '`+wholeSecond+`', '`+wholeSecond+`')`)
+	for _, target := range []struct {
+		nodeRunID string
+		attempt   int
+	}{
+		{nodeRunID: "nr_manual_whole", attempt: 2},
+		{nodeRunID: "nr_manual_fractional", attempt: 3},
+	} {
+		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('`+target.nodeRunID+`', 'run_1', 'decree_intake', `+strconv.Itoa(target.attempt)+`, 1, 'pending', 'king', 'agent_king', 1)`)
+	}
+	for _, recovery := range []struct {
+		targetNodeRunID, scheduledAt string
+	}{
+		{targetNodeRunID: "nr_manual_whole", scheduledAt: wholeSecond},
+		{targetNodeRunID: "nr_manual_fractional", scheduledAt: laterFraction},
+	} {
+		_, err := db.Exec(`INSERT INTO node_attempt_recoveries (target_node_run_id, run_id, node_id, source_attempt_id, source_node_run_id, trigger, reason_code, scheduled_at) VALUES (?, 'run_1', 'decree_intake', 'attempt_manual_source', 'nr_1', 'operator_retry', 'manual_retry_requested', ?)`, recovery.targetNodeRunID, recovery.scheduledAt)
+		if err != nil {
+			t.Fatalf("insert manual recovery for %q: %v", recovery.targetNodeRunID, err)
+		}
+	}
+
+	records, err := New(db).ListRunNodeExecutions(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("list logical node executions: %v", err)
+	}
+	for _, record := range records {
+		if record.NodeID != "decree_intake" {
+			continue
+		}
+		if record.Recovery == nil || record.Recovery.Trigger != "operator_retry" || record.Recovery.TargetNodeRunID.String != "nr_manual_fractional" || record.Recovery.ScheduledAt != laterFraction {
+			t.Fatalf("latest manual recovery=%#v, want the later fractional recovery", record.Recovery)
+		}
+		return
+	}
+	t.Fatal("decree_intake logical node is missing")
 }
 
 func TestStoreProjectsAutomaticRetryRunningOnlyAfterTargetRuns(t *testing.T) {

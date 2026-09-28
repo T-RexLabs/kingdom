@@ -9,6 +9,7 @@ import (
 
 	coreworkflow "kingdom/internal/core/workflow"
 	"kingdom/internal/nodeattempt"
+	"kingdom/internal/timestamporder"
 )
 
 // RunNodeExecutionRecord is the durable, canonical projection of a workflow
@@ -73,9 +74,11 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		return nil, fmt.Errorf("run_id is required")
 	}
 
+	// RFC3339Nano strings omit zero fractions and trim trailing zeroes, so
+	// latest activity and recovery rows must rank by parsed timestamp parts.
 	query := fmt.Sprintf(`WITH ranked_node_runs AS (
 		SELECT nr.node_id, nr.node_run_id, nr.attempt, nr.node_status,
-		       ROW_NUMBER() OVER (PARTITION BY nr.node_id ORDER BY %s) AS node_rank
+		       ROW_NUMBER() OVER (PARTITION BY nr.node_id ORDER BY %[1]s) AS node_rank
 		FROM node_runs nr
 		WHERE nr.run_id = ?
 	), visible_node_runs AS (
@@ -98,11 +101,15 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		UNION ALL
 		SELECT rd.node_id, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at)
 		FROM retry_decisions rd WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ?
-	), logical_activity AS (
-		SELECT node_id, MAX(activity_at) AS latest_activity_at
+	), ranked_logical_activity AS (
+		SELECT node_id, activity_at,
+		       ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY %[2]s) AS activity_rank
 		FROM logical_activity_source
 		WHERE activity_at IS NOT NULL AND TRIM(activity_at) <> ''
-		GROUP BY node_id
+	), logical_activity AS (
+		SELECT node_id, activity_at AS latest_activity_at
+		FROM ranked_logical_activity
+		WHERE activity_rank = 1
 	), recovery_candidates AS (
 		SELECT rd.node_id,
 		       CASE
@@ -127,7 +134,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		       rd.operator_text,
 		       ROW_NUMBER() OVER (
 		         PARTITION BY rd.node_id
-		         ORDER BY COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at) DESC, rd.retry_index DESC, rd.retry_decision_id DESC
+		         ORDER BY %[3]s, rd.retry_index DESC, rd.retry_decision_id DESC
 		       ) AS recovery_rank
 		FROM retry_decisions rd
 		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
@@ -155,7 +162,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		       NULL AS operator_text,
 		       ROW_NUMBER() OVER (
 		         PARTITION BY nr.node_id
-		         ORDER BY nrec.scheduled_at DESC, nr.attempt DESC, nr.node_run_id DESC
+		         ORDER BY %[4]s, nr.attempt DESC, nr.node_run_id DESC
 		       ) AS recovery_rank
 		FROM node_attempt_recoveries nrec
 		JOIN node_runs nr ON nr.run_id = nrec.run_id AND nr.node_run_id = nrec.target_node_run_id
@@ -167,7 +174,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		SELECT * FROM manual_recovery_candidates WHERE recovery_rank = 1
 	), current_recovery AS (
 		SELECT *, ROW_NUMBER() OVER (
-		  PARTITION BY node_id ORDER BY last_updated_at DESC, target_node_run_id DESC
+		  PARTITION BY node_id ORDER BY %[5]s, target_node_run_id DESC
 		) AS current_rank
 		FROM ranked_recovery
 	)
@@ -210,8 +217,15 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		WHEN 'ready' THEN 3
 		ELSE 4
 	END ASC,
-	la.latest_activity_at DESC,
-	wn.node_id ASC`, nodeattempt.VisibleNodeAttemptOrderSQL("nr"))
+	%[6]s,
+	wn.node_id ASC`,
+		nodeattempt.VisibleNodeAttemptOrderSQL("nr"),
+		timestamporder.OrderBySQL("activity_at", true),
+		timestamporder.OrderBySQL("COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at)", true),
+		timestamporder.OrderBySQL("nrec.scheduled_at", true),
+		timestamporder.OrderBySQL("last_updated_at", true),
+		timestamporder.OrderBySQL("la.latest_activity_at", true),
+	)
 
 	rows, err := q.QueryContext(ctx, query, runID, runID, runID, runID, runID, runID, runID, runID)
 	if err != nil {

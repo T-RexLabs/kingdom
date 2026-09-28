@@ -247,6 +247,48 @@ func TestSessionManagerReconcileStaleLeasesExpiresAndRecordsRecoveryMetrics(t *t
 	}
 }
 
+func TestSessionManagerFindStaleLeasesUsesRFC3339NanoChronology(t *testing.T) {
+	t.Parallel()
+
+	const now = "2026-09-25T10:00:00.1Z"
+	for _, tc := range []struct {
+		name         string
+		leaseExpires string
+		wantStale    bool
+	}{
+		{name: "expiry after now", leaseExpires: "2026-09-25T10:00:00.11Z"},
+		{name: "expiry before now", leaseExpires: "2026-09-25T10:00:00.05Z", wantStale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedSessionTestAgent(t, db)
+			manager := NewSessionManager(db, NewSessionLifecycleMetrics())
+			if _, err := manager.CreateLease(context.Background(), CreateSessionLeaseRequest{
+				SessionID:       "session_variable_precision",
+				AgentID:         "agent_king",
+				LeaseExpiresAt:  tc.leaseExpires,
+				LastHeartbeatAt: now,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}); err != nil {
+				t.Fatalf("create session lease: %v", err)
+			}
+
+			stale, err := manager.FindStaleLeases(context.Background(), FindStaleSessionLeasesRequest{
+				Now:                     now,
+				StaleHeartbeatThreshold: time.Minute,
+			})
+			if err != nil {
+				t.Fatalf("find stale session leases: %v", err)
+			}
+			if got := len(stale) > 0; got != tc.wantStale {
+				t.Fatalf("lease expiry %s stale=%t, want %t (leases=%#v)", tc.leaseExpires, got, tc.wantStale, stale)
+			}
+		})
+	}
+}
+
 func TestNormalizeStaleLeaseInputsAppliesDefaultThreshold(t *testing.T) {
 	t.Parallel()
 

@@ -17,6 +17,7 @@ import (
 
 	"kingdom/internal/core/verdict"
 	"kingdom/internal/sqlitex"
+	"kingdom/internal/timestamporder"
 )
 
 type Store struct {
@@ -1234,7 +1235,7 @@ func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool
 		return false, fmt.Errorf("attempt_id, lease_owner, and lease_until are required")
 	}
 	if acquiredAt == "" {
-		acquiredAt = time.Now().UTC().Format(time.RFC3339)
+		acquiredAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	if stateOnLease == "" {
 		stateOnLease = "running"
@@ -1242,23 +1243,24 @@ func (s *Store) AcquireLease(ctx context.Context, req AcquireLeaseRequest) (bool
 
 	acquired := false
 	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE attempt_executions
-		 SET lease_owner = ?,
-		     lease_expires_at = ?,
-		     lease_version = lease_version + 1,
-		     state = ?,
-		     started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
-		     updated_at = ?
-		 WHERE attempt_id = ?
-		   AND execution_mode = 'provider_backed'
-		   AND state IN ('queued', 'starting', 'running')
-		   AND (
-		     lease_owner = '' OR
-		     lease_expires_at IS NULL OR
-		     lease_expires_at <= ? OR
-		     lease_owner = ?
-		   )`,
+		query := fmt.Sprintf(`UPDATE attempt_executions
+			SET lease_owner = ?,
+			    lease_expires_at = ?,
+			    lease_version = lease_version + 1,
+			    state = ?,
+			    started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
+			    updated_at = ?
+		WHERE attempt_id = ?
+		  AND execution_mode = 'provider_backed'
+		  AND state IN ('queued', 'starting', 'running')
+		  AND (
+		    lease_owner = '' OR
+		    lease_expires_at IS NULL OR
+		    TRIM(COALESCE(lease_expires_at, '')) = '' OR
+		    %s OR
+		    lease_owner = ?
+		  )`, timestamporder.ComparisonSQL("lease_expires_at", "?", "<="))
+		res, err := tx.ExecContext(ctx, query,
 			owner,
 			leaseUntil,
 			stateOnLease,
