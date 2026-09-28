@@ -16,6 +16,7 @@ export function PopoverSurface({
 	floatingProps,
 	initialFocus = 0,
 	className,
+	onKeyDownCapture,
 	children,
 }: {
 	context: FloatingContext;
@@ -26,6 +27,7 @@ export function PopoverSurface({
 	/** -1 focuses the panel itself; use it when the panel owns its own focus. */
 	initialFocus?: number;
 	className?: string;
+	onKeyDownCapture?: React.KeyboardEventHandler<HTMLDivElement>;
 	children: React.ReactNode;
 }) {
 	return (
@@ -37,6 +39,7 @@ export function PopoverSurface({
 					data-popover-placement={context.placement}
 					className={className ?? "flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"}
 					{...floatingProps}
+					onKeyDownCapture={onKeyDownCapture}
 				>
 					{children}
 				</div>

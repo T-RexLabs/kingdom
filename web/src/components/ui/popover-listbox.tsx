@@ -259,12 +259,17 @@ export function PopoverListbox({
       </button>
       {open ? (
         <PopoverSurface
-          context={floatingContext}
-          panelRef={setPanel}
-          style={panelStyle}
-          modalOwned={modalOwned}
-          floatingProps={getFloatingProps()}
-          initialFocus={search ? -1 : 0}
+			context={floatingContext}
+			panelRef={setPanel}
+			style={panelStyle}
+			modalOwned={modalOwned}
+			floatingProps={getFloatingProps()}
+			onKeyDownCapture={(event) => {
+				if (triggerRole === "combobox" && !search && event.target === event.currentTarget) {
+					handleListboxKeyDown(event, false);
+				}
+			}}
+			initialFocus={search ? -1 : 0}
           className={panelClassName}
         >
               {search ? (

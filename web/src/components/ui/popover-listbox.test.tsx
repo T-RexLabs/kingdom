@@ -117,7 +117,7 @@ describe("popover listbox", () => {
 
 		const trigger = screen.getByRole("combobox", { name: "Step" });
 		await user.click(trigger);
-		trigger.focus();
+		await waitFor(() => expect(screen.getAllByRole("listbox")[0]).toHaveFocus());
 		await user.keyboard("{ArrowDown}{Enter}");
 
 		expect(onSelect).toHaveBeenCalledOnce();
