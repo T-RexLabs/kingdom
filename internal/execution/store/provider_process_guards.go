@@ -276,31 +276,77 @@ func (s *Store) MarkProviderProcessGuardEvidenceCleaned(ctx context.Context, gua
 	return err
 }
 
-// AttemptProcessGuardsQuiescent accepts a pre-launch attempt or requires every
-// durable guard for a launched attempt's active invocation to be quiescent.
+// AttemptProcessGuardsQuiescent accepts a pre-launch attempt, a lease-fenced
+// terminal observation for a no-guardian attempt, or requires every durable
+// guard for a launched attempt's active invocation to be quiescent.
 func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
 	}
-	var state, launchStartedAt, startedAt, providerSessionID string
-	if err := s.db.QueryRowContext(ctx, `SELECT state, COALESCE(launch_started_at, ''), COALESCE(started_at, ''), provider_session_id FROM attempt_executions WHERE attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&state, &launchStartedAt, &startedAt, &providerSessionID); err != nil {
+	var state, launchStartedAt, startedAt, providerSessionID, activeProviderInvocationID string
+	var leaseOwner, leaseExpiresAt, pendingMarkedAt, pendingLeaseOwner, invocationState string
+	var recoveryMarkedAt, recoveryLeaseOwner string
+	var leaseVersion, pendingLeaseVersion, recoveryLeaseVersion int64
+	var pendingProcessQuiescent, recoveryProcessQuiescent int
+	if err := s.db.QueryRowContext(ctx, `SELECT ae.state, COALESCE(ae.launch_started_at, ''), COALESCE(ae.started_at, ''), ae.provider_session_id,
+		COALESCE(ae.active_provider_invocation_id, ''), ae.lease_owner, ae.lease_version, COALESCE(ae.lease_expires_at, ''),
+		COALESCE(pi.terminal_handoff_pending_at, ''), COALESCE(pi.terminal_handoff_pending_lease_owner, ''), COALESCE(pi.terminal_handoff_pending_lease_version, 0), COALESCE(pi.terminal_handoff_pending_process_quiescent, 0),
+		COALESCE(pi.terminal_recovery_required_at, ''), COALESCE(pi.terminal_recovery_required_lease_owner, ''), COALESCE(pi.terminal_recovery_required_lease_version, 0), COALESCE(pi.terminal_recovery_required_process_quiescent, 0), COALESCE(pi.invocation_state, '')
+		FROM attempt_executions ae
+		LEFT JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
+		WHERE ae.attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(
+		&state, &launchStartedAt, &startedAt, &providerSessionID, &activeProviderInvocationID,
+		&leaseOwner, &leaseVersion, &leaseExpiresAt, &pendingMarkedAt, &pendingLeaseOwner, &pendingLeaseVersion,
+		&pendingProcessQuiescent, &recoveryMarkedAt, &recoveryLeaseOwner, &recoveryLeaseVersion, &recoveryProcessQuiescent, &invocationState,
+	); err != nil {
 		return false, fmt.Errorf("load attempt launch state: %w", err)
 	}
-	if strings.TrimSpace(launchStartedAt) == "" && strings.TrimSpace(startedAt) == "" && strings.TrimSpace(providerSessionID) == "" {
-		return true, nil
-	}
 	var total, pending int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(ppg.guard_id), COALESCE(SUM(CASE WHEN ppg.lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
-		FROM attempt_executions ae
-		JOIN provider_process_guards ppg ON ppg.provider_invocation_id = ae.active_provider_invocation_id AND ppg.owner_kind = 'decree_attempt'
-		WHERE ae.attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&total, &pending)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(guard_id), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
+		FROM provider_process_guards
+		WHERE provider_invocation_id = ? AND owner_kind = 'decree_attempt'`, strings.TrimSpace(activeProviderInvocationID)).Scan(&total, &pending)
 	if err != nil {
 		return false, fmt.Errorf("load attempt process guard quiescence: %w", err)
 	}
-	if total == 0 && state == "starting" && strings.TrimSpace(startedAt) == "" && strings.TrimSpace(providerSessionID) == "" {
+	if pending != 0 {
+		return false, nil
+	}
+	if total > 0 {
 		return true, nil
 	}
-	return total > 0 && pending == 0, nil
+	if (state == "queued" || state == "starting" || state == "committed_success" || state == "committed_failure" || state == "committed_cancelled") &&
+		strings.TrimSpace(launchStartedAt) == "" && strings.TrimSpace(startedAt) == "" && strings.TrimSpace(providerSessionID) == "" {
+		return true, nil
+	}
+	// A durable handoff or recovery marker can stand in for missing guardian
+	// rows only when it attests completion under this exact lease generation.
+	if providerTerminalMarkerProvesQuiescence(state, activeProviderInvocationID, leaseOwner, leaseVersion, leaseExpiresAt, invocationState, pendingMarkedAt, pendingLeaseOwner, pendingLeaseVersion, pendingProcessQuiescent) ||
+		providerTerminalMarkerProvesQuiescence(state, activeProviderInvocationID, leaseOwner, leaseVersion, leaseExpiresAt, invocationState, recoveryMarkedAt, recoveryLeaseOwner, recoveryLeaseVersion, recoveryProcessQuiescent) {
+		return true, nil
+	}
+	return false, nil
+}
+
+func providerTerminalMarkerProvesQuiescence(attemptState, activeInvocationID, leaseOwner string, leaseVersion int64, leaseExpiresAt, invocationState, markerAt, markerLeaseOwner string, markerLeaseVersion int64, markerProcessQuiescent int) bool {
+	if strings.TrimSpace(activeInvocationID) == "" || strings.TrimSpace(markerAt) == "" || strings.TrimSpace(markerLeaseOwner) == "" || markerLeaseVersion <= 0 || markerLeaseVersion != leaseVersion {
+		return false
+	}
+	if markerProcessQuiescent != 1 {
+		return false
+	}
+	switch attemptState {
+	case "starting", "running":
+		if markerLeaseOwner != leaseOwner || (invocationState != "issued" && invocationState != "open") {
+			return false
+		}
+		markedAt, markErr := time.Parse(time.RFC3339Nano, markerAt)
+		leaseExpiry, expiryErr := time.Parse(time.RFC3339Nano, leaseExpiresAt)
+		return markErr == nil && expiryErr == nil && markedAt.Before(leaseExpiry)
+	case "committed_success", "committed_failure", "committed_cancelled":
+		return invocationState == "settled_success" || invocationState == "settled_failed" || invocationState == "settled_cancelled"
+	default:
+		return false
+	}
 }
 
 // RunProviderProcessGuardsQuiescent requires every durable provider process
@@ -738,7 +784,10 @@ func sameProviderProcessGuardAcknowledgement(existing, candidate ProviderProcess
 }
 
 func sameProviderProcessGuardQuiescence(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {
-	return guard.Lifecycle == ProviderProcessGuardLifecycleQuiescent && guard.TerminationRequestedAt == req.TerminationRequestedAt && guard.ExitedAt == req.ExitedAt && guard.QuiescentAt == req.QuiescentAt && guard.ExitCode.Valid && guard.ExitCode.Int64 == req.ExitCode && guard.ExitSignal.Valid && guard.ExitSignal.Int64 == req.ExitSignal && guard.TerminationForced == req.TerminationForced && guard.FailureCode == req.FailureCode && guard.FailureText == req.FailureText && guard.QuiescenceEvidenceSHA256 == req.EvidenceSHA256 && guard.QuiescenceEvidenceJSON == req.EvidenceJSON
+	// The guardian's immutable result is the proof. The caller-supplied
+	// termination/exit/quiescence timestamps describe when a copy of that proof
+	// was observed and can differ when the live callback races startup replay.
+	return guard.Lifecycle == ProviderProcessGuardLifecycleQuiescent && guard.ExitCode.Valid && guard.ExitCode.Int64 == req.ExitCode && guard.ExitSignal.Valid && guard.ExitSignal.Int64 == req.ExitSignal && guard.TerminationForced == req.TerminationForced && guard.FailureCode == req.FailureCode && guard.FailureText == req.FailureText && guard.QuiescenceEvidenceSHA256 == req.EvidenceSHA256 && guard.QuiescenceEvidenceJSON == req.EvidenceJSON
 }
 
 func nullableProviderProcessGuardTime(value string) any {
@@ -763,7 +812,7 @@ func isLowercaseSHA256(value string) bool {
 	return err == nil && value == strings.ToLower(value)
 }
 
-func validateProviderProcessGuardsForSettlementTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, outcome ProviderCompletionOutcome, attemptState string) error {
+func validateProviderProcessGuardsForSettlementTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, outcome ProviderCompletionOutcome, attemptState string, recoveredGuardQuiescence, terminalHandoffProcessQuiescent bool, expectedLeaseOwner string, expectedLeaseVersion int64) error {
 	var total, nonQuiescent, forced int64
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1),
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
@@ -780,8 +829,74 @@ func validateProviderProcessGuardsForSettlementTx(ctx context.Context, tx *sql.T
 	if nonQuiescent != 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_not_quiescent", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
 	}
+	if total == 0 {
+		quiescent, err := providerTerminalQuiescenceMarkerMatchesTx(ctx, tx, invocation, attemptState, expectedLeaseOwner, expectedLeaseVersion)
+		if err != nil {
+			return err
+		}
+		if !quiescent && !recoveredGuardQuiescence && terminalHandoffProcessQuiescent {
+			quiescent = true
+		}
+		if !quiescent {
+			return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_not_quiescent", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
+		}
+	}
 	if outcome == ProviderCompletionOutcomeSuccess && forced != 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_forced", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
 	}
 	return nil
+}
+
+func providerTerminalQuiescenceMarkerMatchesTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, attemptState, expectedLeaseOwner string, expectedLeaseVersion int64) (bool, error) {
+	var state, leaseOwner, leaseExpiresAt, activeInvocationID, launchStartedAt, startedAt, providerSessionID, invocationState string
+	var leaseVersion int64
+	var pendingAt, pendingLeaseOwner, recoveryAt, recoveryLeaseOwner string
+	var pendingLeaseVersion, recoveryLeaseVersion int64
+	var pendingProcessQuiescent, recoveryProcessQuiescent int
+	if err := tx.QueryRowContext(ctx, `SELECT ae.state, ae.lease_owner, ae.lease_version, COALESCE(ae.lease_expires_at, ''),
+		COALESCE(ae.active_provider_invocation_id, ''), COALESCE(ae.launch_started_at, ''), COALESCE(ae.started_at, ''), ae.provider_session_id,
+		pi.invocation_state, COALESCE(pi.terminal_handoff_pending_at, ''), pi.terminal_handoff_pending_lease_owner,
+		pi.terminal_handoff_pending_lease_version, pi.terminal_handoff_pending_process_quiescent,
+		COALESCE(pi.terminal_recovery_required_at, ''), pi.terminal_recovery_required_lease_owner,
+		pi.terminal_recovery_required_lease_version, pi.terminal_recovery_required_process_quiescent
+		FROM attempt_executions ae
+		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
+		WHERE ae.attempt_id = ? AND pi.provider_invocation_id = ?`, invocation.AttemptID, invocation.ProviderInvocationID).Scan(
+		&state, &leaseOwner, &leaseVersion, &leaseExpiresAt, &activeInvocationID, &launchStartedAt, &startedAt, &providerSessionID,
+		&invocationState, &pendingAt, &pendingLeaseOwner, &pendingLeaseVersion, &pendingProcessQuiescent,
+		&recoveryAt, &recoveryLeaseOwner, &recoveryLeaseVersion, &recoveryProcessQuiescent,
+	); err != nil {
+		return false, fmt.Errorf("load lease-fenced terminal quiescence marker: %w", err)
+	}
+	if state != attemptState || activeInvocationID != invocation.ProviderInvocationID || leaseOwner != expectedLeaseOwner || leaseVersion != expectedLeaseVersion {
+		return false, nil
+	}
+	if state == "starting" && launchStartedAt == "" && startedAt == "" && providerSessionID == "" {
+		return true, nil
+	}
+	if invocationState != string(ProviderInvocationStateIssued) && invocationState != string(ProviderInvocationStateOpen) {
+		return false, nil
+	}
+	leaseExpiry, expiryErr := time.Parse(time.RFC3339Nano, leaseExpiresAt)
+	if expiryErr != nil {
+		return false, nil
+	}
+	for _, marker := range []struct {
+		at        string
+		owner     string
+		version   int64
+		quiescent int
+	}{
+		{at: pendingAt, owner: pendingLeaseOwner, version: pendingLeaseVersion, quiescent: pendingProcessQuiescent},
+		{at: recoveryAt, owner: recoveryLeaseOwner, version: recoveryLeaseVersion, quiescent: recoveryProcessQuiescent},
+	} {
+		if marker.at == "" || marker.owner != expectedLeaseOwner || marker.version != expectedLeaseVersion || marker.quiescent != 1 {
+			continue
+		}
+		markedAt, parseErr := time.Parse(time.RFC3339Nano, marker.at)
+		if parseErr == nil && markedAt.Before(leaseExpiry) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

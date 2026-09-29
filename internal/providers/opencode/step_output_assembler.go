@@ -3,7 +3,7 @@ package opencode
 import "strings"
 
 // stepOutputAssembler keeps provisional provider text separate from the text
-// that can settle a no-receipt turn. A tool-call step is real progress, but its
+// that can settle a server-response turn. A tool-call step is real progress, but its
 // prose is not the terminal assistant answer.
 type stepOutputAssembler struct {
 	currentStep  []string

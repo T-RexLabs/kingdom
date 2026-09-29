@@ -4,7 +4,7 @@ import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
-import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
+import { operatorFacingExecutionFailureText } from "./execution-failure-copy";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { formatElapsedDuration } from "@/lib/utils";
@@ -60,6 +60,7 @@ function RunExecutionsPanelContent({ detail, failure }: { detail: PresentedExecu
 	const outcomeBody = outcomeText(detail, failure);
 	const outcomeTone = outcomeToneForDetail(detail);
 	const diagnosticsFields = diagnosticsFieldsForDetail(detail, failure);
+	const outputText = detail.settlement_status === "pending" ? undefined : detail.output_text;
 
 	return (
 		<div className="space-y-3">
@@ -80,9 +81,9 @@ function RunExecutionsPanelContent({ detail, failure }: { detail: PresentedExecu
 							{outcomeBody.note}
 						</div>
 					) : null}
-					{detail.output_text ? (
+					{outputText ? (
 						<pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-surface px-3 py-3 text-wrap-anywhere text-xs leading-relaxed text-foreground">
-							{detail.output_text}
+							{outputText}
 						</pre>
 					) : null}
 				</div>
@@ -215,8 +216,8 @@ function outcomeText(detail: PresentedExecutionDetail, failure?: RunExecutionFai
 	}
 	if (detail.settlement_status === "pending") {
 		return {
-			body: detail.output_text ? undefined : operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
-			note: detail.output_text ? "The output below may still change." : undefined,
+			body: operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
+			note: undefined,
 		};
 	}
 	if (isQueuedExecutionStatus(detail.status)) {
@@ -267,7 +268,7 @@ function outcomeToneForDetail(detail: PresentedExecutionDetail): "neutral" | "ru
 }
 
 function operatorFacingFailureText(detail: PresentedExecutionDetail): string | null {
-	return operatorFacingExecutionFailureText(detail.failure_code, detail.completion_invalid_reason, detail.failure_text);
+	return operatorFacingExecutionFailureText(detail.failure_code, detail.failure_text);
 }
 
 function missingOutputNote(detail: PresentedExecutionDetail): string | undefined {

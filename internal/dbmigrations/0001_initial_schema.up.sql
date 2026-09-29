@@ -463,7 +463,7 @@ CREATE TABLE attempt_executions (
   node_run_id TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('queued', 'starting', 'running', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')),
   execution_mode TEXT NOT NULL DEFAULT 'provider_backed' CHECK (execution_mode IN ('provider_backed', 'runtime_owned')),
-  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('not_applicable', 'server_response', 'receipt_required')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('not_applicable', 'server_response')),
   provider_timeout_ms INTEGER NOT NULL DEFAULT 0 CHECK (provider_timeout_ms >= 0),
   lease_owner TEXT NOT NULL DEFAULT '',
   lease_expires_at TEXT,
@@ -517,31 +517,19 @@ CREATE TABLE provider_invocations (
   node_run_id TEXT NOT NULL,
   logical_session_id TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
-  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalid_handshake')),
-  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('server_response', 'receipt_required')),
-  completion_capability_hash TEXT NOT NULL DEFAULT '',
-  completion_capability_issued_at TEXT NOT NULL DEFAULT '',
-  completion_capability_used_at TEXT,
-  completion_capability_revoked_at TEXT,
+  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalidated')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
   opened_at TEXT,
-  receipt_seen_count INTEGER NOT NULL DEFAULT 0 CHECK (receipt_seen_count >= 0),
-  first_receipt_seen_at TEXT,
-  last_receipt_seen_at TEXT,
-  last_receipt_disposition TEXT NOT NULL DEFAULT '' CHECK (last_receipt_disposition IN ('', 'accepted', 'rejected', 'invalidated', 'idempotent_duplicate', 'error')),
-  receipt_persisted_at TEXT,
-  receipt_inbox_cleaned_at TEXT,
   settled_at TEXT,
   superseded_by_invocation_id TEXT,
   invalid_reason TEXT NOT NULL DEFAULT '',
   failure_reason_code TEXT NOT NULL DEFAULT '',
   failure_reason_text TEXT NOT NULL DEFAULT '',
+  terminal_handoff_pending_at TEXT,
+  terminal_recovery_required_at TEXT,
+  terminal_handoff_file_cleanup_pending_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK (
-    (completion_mode = 'server_response' AND completion_capability_hash = '' AND completion_capability_issued_at = '')
-    OR
-    (completion_mode = 'receipt_required' AND completion_capability_hash <> '' AND completion_capability_issued_at <> '')
-  ),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
@@ -558,10 +546,6 @@ ON provider_invocations (invocation_state, updated_at DESC, provider_invocation_
 
 CREATE INDEX idx_provider_invocations_run_node_created
 ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocation_id);
-
-CREATE INDEX idx_provider_invocations_receipt_ingestion
-ON provider_invocations (provider_invocation_id)
-WHERE completion_mode = 'receipt_required' AND receipt_inbox_cleaned_at IS NULL;
 
 CREATE TABLE provider_process_guards (
   guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
@@ -598,7 +582,6 @@ CREATE TABLE provider_process_guards (
   quiescence_evidence_sha256 TEXT NOT NULL DEFAULT '' CHECK (quiescence_evidence_sha256 = '' OR (LENGTH(quiescence_evidence_sha256) = 64 AND quiescence_evidence_sha256 NOT GLOB '*[^0-9a-f]*')),
   quiescence_evidence_json TEXT NOT NULL DEFAULT '{}',
   quiescence_evidence_lost_at TEXT,
-  terminal_recovery_required_at TEXT,
   evidence_cleaned_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -646,7 +629,7 @@ CREATE TABLE provider_completion_evidence (
   attempt_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   node_run_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'completion_receipt_attempt', 'stream_observation', 'export_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),

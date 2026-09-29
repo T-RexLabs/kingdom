@@ -22,7 +22,6 @@ var Required = []Descriptor{
 	{Name: "event_v1", FileName: "event_v1.schema.json", Version: "v1"},
 	{Name: "retry_policy", FileName: "retry_policy.schema.json", Version: "v1"},
 	{Name: "worker_output", FileName: "worker_output.schema.json", Version: "v1"},
-	{Name: "completion_receipt", FileName: "completion_receipt.schema.json", Version: "v1"},
 }
 
 type Set struct {

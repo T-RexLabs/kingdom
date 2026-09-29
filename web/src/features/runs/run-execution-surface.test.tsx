@@ -44,6 +44,14 @@ describe("run execution surface", () => {
 		expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
 	});
 
+	it("announces provider settlement verification to assistive technology", () => {
+		renderSurface({ nodes: [node({ current_execution: execution({ status: "verifying" }) })] });
+
+		const announcement = screen.getByRole("status");
+		expect(announcement).toHaveAttribute("aria-live", "polite");
+		expect(announcement).toHaveTextContent("Kingdom is still confirming the final result for this step.");
+	});
+
 	it("keeps attempt history collapsed until the page-owned disclosure is opened", () => {
 		renderSurface();
 		const history = screen.getByRole("button", { name: "Attempt History (2)" });

@@ -303,9 +303,9 @@ func runGraphNodeState(nodeStatus string, failureCodes ...sql.NullString) gen.Ru
 	return state
 }
 
-func canonicalFailedNodeReason(failureText, failureCode, completionInvalidReason sql.NullString) (string, bool) {
+func canonicalFailedNodeReason(failureText, failureCode sql.NullString) (string, bool) {
 	if failureCode.Valid {
-		if trimmed := operatorFailureReasonForCode(failureCode.String, completionInvalidReason); trimmed != "" {
+		if trimmed := operatorFailureReasonForCode(failureCode.String); trimmed != "" {
 			return trimmed, true
 		}
 	}
@@ -323,16 +323,12 @@ func canonicalFailedNodeReason(failureText, failureCode, completionInvalidReason
 }
 
 const (
-	completionReceiptConflictFailureText = "Kingdom detected conflicting completion receipts for this step and could not safely accept the result."
-	providerIncompleteTurnFailureText    = "Kingdom could not confirm a clean finish for this step."
+	providerIncompleteTurnFailureText = "Kingdom could not confirm a clean finish for this step."
 )
 
-func operatorFailureReasonForCode(code string, completionInvalidReason sql.NullString) string {
+func operatorFailureReasonForCode(code string) string {
 	switch strings.ToLower(strings.TrimSpace(code)) {
 	case "provider_incomplete_turn":
-		if completionInvalidReason.Valid && strings.ToLower(strings.TrimSpace(completionInvalidReason.String)) == "completion_receipt_conflict" {
-			return completionReceiptConflictFailureText
-		}
 		return providerIncompleteTurnFailureText
 	default:
 		return ""
@@ -1112,9 +1108,6 @@ func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutio
 	if record.FailureText.Valid {
 		item.FailureText = &record.FailureText.String
 	}
-	if record.CompletionInvalidReason.Valid {
-		item.CompletionInvalidReason = &record.CompletionInvalidReason.String
-	}
 	if record.CancellationHandoffState.Valid {
 		item.HandoffState = &record.CancellationHandoffState.String
 	}
@@ -1174,9 +1167,6 @@ func buildGeneratedRunExecution(record executionstore.RunExecutionRecord) gen.Ru
 	}
 	if value := nullableString(record.FailureText); value != nil {
 		item.FailureText = value
-	}
-	if value := nullableString(record.CompletionInvalidReason); value != nil {
-		item.CompletionInvalidReason = value
 	}
 	if value := nullableString(record.CancellationHandoffState); value != nil {
 		handoff := gen.RunExecutionHandoffState(*value)
@@ -1239,9 +1229,6 @@ func buildRunNodeAttemptHistoryItem(record executionstore.RunNodeAttemptHistoryR
 	}
 	if value := nullableString(record.FailureText); value != nil {
 		item.FailureText = value
-	}
-	if value := nullableString(record.CompletionInvalidReason); value != nil {
-		item.CompletionInvalidReason = value
 	}
 	if value := nullableString(record.CancellationHandoffState); value != nil {
 		handoff := gen.RunNodeAttemptHistoryItemHandoffState(*value)
@@ -1668,7 +1655,7 @@ func buildRunGraphNode(record executionstore.RunNodeExecutionRecord) gen.RunGrap
 		node.Attempt = &attempt
 	}
 	if record.NodeStatus == string(gen.RunGraphNodeStateFailed) && record.Current != nil {
-		if reason, ok := canonicalFailedNodeReason(record.Current.FailureText, record.Current.FailureCode, record.Current.CompletionInvalidReason); ok {
+		if reason, ok := canonicalFailedNodeReason(record.Current.FailureText, record.Current.FailureCode); ok {
 			node.FailureReason = &reason
 		}
 	}

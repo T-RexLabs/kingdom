@@ -1187,6 +1187,49 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 	}
 }
 
+func TestTransitionServiceDoesNotFenceProviderAttemptAfterLeaseRenewal(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, created_at, updated_at)
+		VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'starting', 'provider_backed', 'server_response', 'worker_1', '2026-09-28T12:20:00Z', 1, 'session_1', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z')`)
+
+	svc := NewTransitionService(db, nil)
+	_, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
+		Attempt: staleAttempt{
+			NodeRunID: "nr_1", RunID: "run_1", NodeID: "decree_intake", Attempt: 1, Wave: 1,
+			RequiredRole: "king", AgentID: "agent_king", AttemptState: "starting",
+			ExecutionMode: executionstore.ExecutionModeProviderBacked,
+			LeaseOwner:    "worker_1", LeaseVersion: 1, LeaseExpiresAt: "2026-09-28T12:12:00Z",
+			CurrentStatus: "starting", StartedAt: "2026-09-28T12:00:00Z",
+		},
+		ReplacementAgentID: "agent_king",
+		OccurredAt:         "2026-09-28T12:13:00Z",
+		CurrentAttemptID:   "run_1:decree_intake:1",
+		CurrentEventSeq:    1,
+	})
+	if !errors.Is(err, errStaleAttemptExecutionLeaseChanged) {
+		t.Fatalf("stale retry error=%v, want a changed-lease conflict", err)
+	}
+	if got := queryNodeStatus(t, db, "nr_1"); got != "starting" {
+		t.Fatalf("renewed provider attempt node status=%q, want starting", got)
+	}
+	var state, leaseOwner, leaseExpiresAt string
+	if err := db.QueryRow(`SELECT state, lease_owner, lease_expires_at FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&state, &leaseOwner, &leaseExpiresAt); err != nil {
+		t.Fatalf("load renewed provider attempt: %v", err)
+	}
+	if state != "starting" || leaseOwner != "worker_1" || leaseExpiresAt != "2026-09-28T12:20:00Z" {
+		t.Fatalf("stale retry revoked renewed attempt authority: state=%q owner=%q expires=%q", state, leaseOwner, leaseExpiresAt)
+	}
+	if count := countRowsForReconcilerTest(t, db, `SELECT COUNT(1) FROM node_runs WHERE handoff_source_attempt_id = 'run_1:decree_intake:1'`); count != 0 {
+		t.Fatalf("renewed attempt created %d stale retry successors", count)
+	}
+}
+
 func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterStatusDrift(t *testing.T) {
 	t.Parallel()
 
@@ -1626,7 +1669,7 @@ func TestTransitionServiceRecordDirectExecutionTerminalRejectsActiveUnsettledPro
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
-		CompletionMode: executionstore.ProviderCompletionModeReceiptRequired,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 		CreatedAt:      "2026-03-01T12:00:00Z",
 	}); err != nil {
 		t.Fatalf("enqueue provider-backed attempt: %v", err)
@@ -1636,8 +1679,7 @@ func TestTransitionServiceRecordDirectExecutionTerminalRejectsActiveUnsettledPro
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		CompletionMode:       executionstore.ProviderCompletionModeReceiptRequired,
-		CompletionCapability: "capability-direct-terminal-guard",
+		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		CreatedAt:            "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("create provider invocation: %v", err)
@@ -1921,12 +1963,39 @@ func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomical
 		t.Fatalf("run cancellation revoked provider settlement authority early: %#v", attempt)
 	}
 
-	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses_run_cancel", Cancelled: true, Tokens: providerexecution.TokenUsage{InputTokens: 9, OutputTokens: 3, TotalTokens: 12, ReasoningTokens: 2}}
+	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses_run_cancel", Cancelled: true, ProcessQuiescent: true, Tokens: providerexecution.TokenUsage{InputTokens: 9, OutputTokens: 3, TotalTokens: 12, ReasoningTokens: 2}}
+	if err := execStore.MarkProviderTerminalHandoffPending(ctx, executionstore.MarkProviderTerminalHandoffPendingRequest{
+		ProviderInvocationID: invocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		ProcessQuiescent:     true,
+		MarkedAt:             "2026-03-01T12:00:03Z",
+	}); err != nil {
+		t.Fatalf("mark cancelled provider handoff pending: %v", err)
+	}
+	handoff, err := execStore.PersistProviderTerminalHandoff(ctx, executionstore.PersistProviderTerminalHandoffRequest{
+		ProviderInvocationID: invocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		StreamObservation:    observation,
+		PayloadJSON:          `{}`,
+		CreatedAt:            "2026-03-01T12:00:03Z",
+	})
+	if err != nil {
+		t.Fatalf("persist cancellation terminal handoff: %v", err)
+	}
 	settlement, err := svc.SettleProviderExecution(ctx, executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement:           executionstore.FinalizeProviderCompletionSettlementRequest{SettlementID: executionstore.ProviderCompletionSettlementID(invocationID), ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: executionstore.ProviderCompletionOutcomeCancelled, ProviderDiagnosticsJSON: `{}`, FailureReasonCode: "provider_cancelled", FailureReasonText: "run cancelled by user", SettledAt: "2026-03-01T12:00:04Z"},
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   "worker_run_cancel",
 		ExpectedLeaseVersion: claim.LeaseVersion,
+		TerminalHandoffID:    handoff.Handoff.HandoffID,
 		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "king", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
 		Terminal:             executionstore.CommitTerminalRequest{OutboxID: "outbox_run_cancel", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_cancelled", PayloadJSON: `{}`, CommittedAt: "2026-03-01T12:00:04Z", TerminalReasonCode: "provider_cancelled", FailureCode: "provider_cancelled", FailureText: "run cancelled by user", ProviderSessionID: "ses_run_cancel"},
 	})

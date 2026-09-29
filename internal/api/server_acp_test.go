@@ -753,7 +753,7 @@ func (a *retryOutputPlannerAgent) ContinueTurnStream(_ context.Context, input pl
 		}
 		return planning.AgentTurn{}, &planning.AgentExecutionError{Metadata: planning.ProviderExecutionMetadata{FinalText: "failed partial response", OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timeout"}, Err: errors.New("timeout")}
 	}
-	metadata, err := apiTestReceiptMetadata(input, "current successful response")
+	metadata, err := apiTestTerminalMetadata(input, "current successful response")
 	if err != nil {
 		return planning.AgentTurn{}, err
 	}

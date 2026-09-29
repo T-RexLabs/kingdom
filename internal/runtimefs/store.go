@@ -43,6 +43,12 @@ type RunExecutionTarget struct {
 	UpdatedAt           string
 }
 
+type ResponseOnlyWorkspaceCleanupCandidate struct {
+	RunID     string
+	AttemptID string
+	MarkedAt  string
+}
+
 const executionTargetRemovalBatchSize = 128
 
 type SnapshotRecord struct {
@@ -117,6 +123,188 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 
 func (s *Store) RunTargetRoot(runID string) string {
 	return filepath.Join(s.root, "run-targets", sanitizeToken(runID), "target")
+}
+
+func (s *Store) ResponseOnlyWorkspaceRoot(runID, attemptID string) string {
+	if s == nil || strings.TrimSpace(s.root) == "" {
+		return ""
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(s.root, filepath.FromSlash(relative))
+}
+
+// PrepareResponseOnlyWorkspace records cleanup debt before resetting an
+// attempt-scoped isolated copy path. It deliberately creates no execution
+// target or filesystem snapshot rows.
+func (s *Store) PrepareResponseOnlyWorkspace(ctx context.Context, runID, attemptID, markedAt string) (string, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(s.root) == "" {
+		return "", fmt.Errorf("runtime fs store is required")
+	}
+	runID = strings.TrimSpace(runID)
+	attemptID = strings.TrimSpace(attemptID)
+	markedAt = strings.TrimSpace(markedAt)
+	if runID == "" || attemptID == "" || markedAt == "" {
+		return "", fmt.Errorf("run_id, attempt_id, and cleanup marker time are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, markedAt); err != nil {
+		return "", fmt.Errorf("parse response-only workspace cleanup marker time: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET response_only_workspace_cleanup_pending_at = ?, updated_at = ?
+		WHERE attempt_id = ? AND run_id = ? AND execution_mode = 'provider_backed'
+		  AND state IN ('queued', 'starting', 'running')`, markedAt, markedAt, attemptID, runID)
+	if err != nil {
+		return "", fmt.Errorf("mark response-only workspace cleanup pending: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("read response-only workspace cleanup marker: %w", err)
+	}
+	if rows != 1 {
+		return "", fmt.Errorf("attempt %q is not active for a response-only workspace", attemptID)
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return "", err
+	}
+	root, err := securefs.OpenRoot(s.root)
+	if err != nil {
+		return "", fmt.Errorf("open runtime fs root for response-only workspace: %w", err)
+	}
+	defer root.Close()
+	if err := removeResponseOnlyWorkspaceTree(root, relative); err != nil {
+		return "", err
+	}
+	if err := root.EnsureDir(relative, 0o700); err != nil {
+		return "", fmt.Errorf("create response-only workspace: %w", err)
+	}
+	if err := root.SyncDir(filepath.Dir(relative)); err != nil {
+		return "", fmt.Errorf("sync response-only workspace parent: %w", err)
+	}
+	return s.ResponseOnlyWorkspaceRoot(runID, attemptID), nil
+}
+
+func (s *Store) ListPendingResponseOnlyWorkspaceCleanups(ctx context.Context, afterAttemptID string, limit int) ([]ResponseOnlyWorkspaceCleanupCandidate, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("runtime fs store is required")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ae.run_id, ae.attempt_id, ae.response_only_workspace_cleanup_pending_at
+		FROM attempt_executions ae
+		LEFT JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
+		WHERE ae.attempt_id > ? AND ae.response_only_workspace_cleanup_pending_at IS NOT NULL
+		  AND (
+		    ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
+		    OR EXISTS (
+		      SELECT 1 FROM node_runs nr
+		      WHERE nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+		        AND nr.node_status IN ('succeeded', 'failed', 'cancelled', 'skipped')
+		    )
+		    OR (
+		      ae.state IN ('starting', 'running')
+		      AND (
+		        EXISTS (SELECT 1 FROM provider_process_guards ppg WHERE ppg.attempt_id = ae.attempt_id AND ppg.owner_kind = 'decree_attempt')
+		        OR (pi.terminal_handoff_pending_at IS NOT NULL
+		            AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner
+		            AND pi.terminal_handoff_pending_lease_version = ae.lease_version)
+		        OR (pi.terminal_recovery_required_at IS NOT NULL
+		            AND pi.terminal_recovery_required_lease_owner = ae.lease_owner
+		            AND pi.terminal_recovery_required_lease_version = ae.lease_version)
+	      )
+	    )
+	  )
+	ORDER BY ae.attempt_id ASC
+	LIMIT ?`, strings.TrimSpace(afterAttemptID), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending response-only workspace cleanups: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]ResponseOnlyWorkspaceCleanupCandidate, 0, limit)
+	for rows.Next() {
+		var candidate ResponseOnlyWorkspaceCleanupCandidate
+		if err := rows.Scan(&candidate.RunID, &candidate.AttemptID, &candidate.MarkedAt); err != nil {
+			return nil, fmt.Errorf("scan response-only workspace cleanup candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate response-only workspace cleanup candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func (s *Store) ClearResponseOnlyWorkspaceCleanupPending(ctx context.Context, attemptID, expectedMarkedAt, updatedAt string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	expectedMarkedAt = strings.TrimSpace(expectedMarkedAt)
+	updatedAt = strings.TrimSpace(updatedAt)
+	if attemptID == "" || expectedMarkedAt == "" || updatedAt == "" {
+		return fmt.Errorf("attempt_id, expected marker time, and updated_at are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, expectedMarkedAt); err != nil {
+		return fmt.Errorf("parse expected response-only workspace cleanup marker time: %w", err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return fmt.Errorf("parse response-only workspace cleanup update time: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET response_only_workspace_cleanup_pending_at = NULL, updated_at = ?
+		WHERE attempt_id = ? AND response_only_workspace_cleanup_pending_at = ?`, updatedAt, attemptID, expectedMarkedAt)
+	if err != nil {
+		return fmt.Errorf("clear response-only workspace cleanup marker: %w", err)
+	}
+	return nil
+}
+
+// RemoveResponseOnlyWorkspace removes one attempt-scoped isolated copy without
+// following provider-created links.
+func (s *Store) RemoveResponseOnlyWorkspace(runID, attemptID string) error {
+	if s == nil || strings.TrimSpace(s.root) == "" {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(s.root)
+	if err != nil {
+		return fmt.Errorf("open runtime fs root for response-only workspace cleanup: %w", err)
+	}
+	defer root.Close()
+	if err := removeResponseOnlyWorkspaceTree(root, relative); err != nil {
+		return err
+	}
+	if err := root.SyncDir(filepath.Dir(relative)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sync response-only workspace cleanup: %w", err)
+	}
+	return nil
+}
+
+func responseOnlyWorkspaceRelativePath(runID, attemptID string) (string, error) {
+	runID = strings.TrimSpace(runID)
+	attemptID = strings.TrimSpace(attemptID)
+	if runID == "" || attemptID == "" {
+		return "", fmt.Errorf("run_id and attempt_id are required for a response-only workspace")
+	}
+	return filepath.ToSlash(filepath.Join("response-only", sanitizeToken(runID), sanitizeToken(attemptID))), nil
+}
+
+func removeResponseOnlyWorkspaceTree(root *securefs.Root, relative string) error {
+	progress, err := root.RemoveTreeBatch(relative, "", providerlimits.TrackedWorkspaceEntries+128)
+	if err != nil {
+		return fmt.Errorf("remove stale response-only workspace: %w", err)
+	}
+	if !progress.Complete {
+		return fmt.Errorf("response-only workspace cleanup exceeded the bounded removal limit")
+	}
+	return nil
 }
 
 func (s *Store) EnsureExecutionTarget(ctx context.Context, req EnsureExecutionTargetRequest) (RunExecutionTarget, error) {

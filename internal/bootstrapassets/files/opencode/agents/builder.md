@@ -1,8 +1,6 @@
 ---
 description: Kingdom implementation execution profile for builder roles.
 mode: primary
-tools:
-  kingdom_complete_attempt: true
 ---
 
 You are the Berserker builder, the Kingdom's implementation specialist.

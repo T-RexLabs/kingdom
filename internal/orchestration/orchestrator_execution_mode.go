@@ -23,12 +23,10 @@ const (
 func executionSpecForNode(nodeID, nodeClass string) nodeExecutionSpec {
 	behavior := coreworkflow.BehaviorForNode(nodeID, nodeClass)
 	mode := executionstore.ExecutionModeProviderBacked
-	completionMode := executionstore.ProviderCompletionModeServerResponse
+	completionMode := executionstore.ProviderCompletionMode(behavior.ProviderCompletionMode)
 	if behavior.ExecutionOwnership == coreworkflow.NodeExecutionOwnershipRuntimeOwned {
 		mode = executionstore.ExecutionModeRuntimeOwned
 		completionMode = executionstore.ProviderCompletionModeNotApplicable
-	} else if behavior.ProviderCompletionMode == coreworkflow.ProviderCompletionModeReceiptRequired {
-		completionMode = executionstore.ProviderCompletionModeReceiptRequired
 	}
 	persistence := nodeArtifactPersistenceWorkspace
 	if behavior.ArtifactPersistence == coreworkflow.NodeArtifactPersistenceDirect {

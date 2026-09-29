@@ -12,7 +12,6 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/core/errorcatalog"
-	"kingdom/internal/core/executionoutput"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
@@ -23,33 +22,31 @@ import (
 )
 
 type executionOutboxPayload struct {
-	Run                             runSnapshot                           `json:"run"`
-	Node                            nodeDefinition                        `json:"node"`
-	Attempt                         nodeAttempt                           `json:"attempt"`
-	AttemptID                       string                                `json:"attempt_id"`
-	CompletionMode                  executionstore.ProviderCompletionMode `json:"completion_mode"`
-	LogicalSessionID                string                                `json:"logical_session_id"`
-	ProviderSessionID               string                                `json:"provider_session_id,omitempty"`
-	ProviderInvocationID            string                                `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt            string                                `json:"provider_invocation_at,omitempty"`
-	ExpectedLeaseOwner              string                                `json:"expected_lease_owner,omitempty"`
-	ExpectedLeaseVersion            int64                                 `json:"expected_lease_version,omitempty"`
-	CompletionReceiptEvidenceID     string                                `json:"completion_receipt_evidence_id,omitempty"`
-	CompletionStructuredPayloadJSON string                                `json:"completion_structured_payload_json,omitempty"`
-	ProviderDiagnosticsJSON         string                                `json:"provider_diagnostics_json,omitempty"`
-	ProviderStreamObservation       opencode.InvocationStreamObservation  `json:"provider_stream_observation"`
-	BaseSnapshotID                  string                                `json:"base_snapshot_id,omitempty"`
-	ResultSnapshotID                string                                `json:"result_snapshot_id,omitempty"`
-	WorkspaceID                     string                                `json:"workspace_id"`
-	Workspace                       string                                `json:"workspace_path"`
-	Delegator                       string                                `json:"delegator"`
-	Model                           string                                `json:"model"`
-	Variant                         string                                `json:"variant"`
-	Agent                           string                                `json:"agent"`
-	OccurredAt                      string                                `json:"occurred_at"`
-	OutputText                      string                                `json:"output_text"`
-	Tokens                          opencode.TokenUsage                   `json:"tokens"`
-	Outcome                         opencode.ExecutionOutcome             `json:"outcome,omitempty"`
+	Run                       runSnapshot                           `json:"run"`
+	Node                      nodeDefinition                        `json:"node"`
+	Attempt                   nodeAttempt                           `json:"attempt"`
+	AttemptID                 string                                `json:"attempt_id"`
+	CompletionMode            executionstore.ProviderCompletionMode `json:"completion_mode"`
+	LogicalSessionID          string                                `json:"logical_session_id"`
+	ProviderSessionID         string                                `json:"provider_session_id,omitempty"`
+	ProviderInvocationID      string                                `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt      string                                `json:"provider_invocation_at,omitempty"`
+	ExpectedLeaseOwner        string                                `json:"expected_lease_owner,omitempty"`
+	ExpectedLeaseVersion      int64                                 `json:"expected_lease_version,omitempty"`
+	ProviderDiagnosticsJSON   string                                `json:"provider_diagnostics_json,omitempty"`
+	ProviderStreamObservation opencode.InvocationStreamObservation  `json:"provider_stream_observation"`
+	BaseSnapshotID            string                                `json:"base_snapshot_id,omitempty"`
+	ResultSnapshotID          string                                `json:"result_snapshot_id,omitempty"`
+	WorkspaceID               string                                `json:"workspace_id"`
+	Workspace                 string                                `json:"workspace_path"`
+	Delegator                 string                                `json:"delegator"`
+	Model                     string                                `json:"model"`
+	Variant                   string                                `json:"variant"`
+	Agent                     string                                `json:"agent"`
+	OccurredAt                string                                `json:"occurred_at"`
+	OutputText                string                                `json:"output_text"`
+	Tokens                    opencode.TokenUsage                   `json:"tokens"`
+	Outcome                   opencode.ExecutionOutcome             `json:"outcome,omitempty"`
 }
 
 type completionProjectionDecision struct {
@@ -126,34 +123,36 @@ func executionOutboxObservationResult(rec executionstore.OutboxRecord) asyncExec
 }
 
 func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutboxPayload {
+	workspacePath := result.workspacePath
+	if result.ephemeralWorkspace {
+		workspacePath = ""
+	}
 	return executionOutboxPayload{
-		Run:                             result.run,
-		Node:                            result.node,
-		Attempt:                         result.attempt,
-		AttemptID:                       result.attemptID,
-		CompletionMode:                  result.completionMode,
-		LogicalSessionID:                result.sessionID,
-		ProviderSessionID:               strings.TrimSpace(result.providerSessionID),
-		ProviderInvocationID:            strings.TrimSpace(result.providerInvocationID),
-		ProviderInvocationAt:            strings.TrimSpace(result.providerInvocationAt),
-		ExpectedLeaseOwner:              strings.TrimSpace(result.expectedLeaseOwner),
-		ExpectedLeaseVersion:            result.expectedLeaseVersion,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(result.completionReceiptEvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(result.completionStructuredPayloadJSON),
-		ProviderDiagnosticsJSON:         strings.TrimSpace(result.providerDiagnosticsJSON),
-		ProviderStreamObservation:       result.providerStreamObservation,
-		BaseSnapshotID:                  strings.TrimSpace(result.baseSnapshotID),
-		ResultSnapshotID:                strings.TrimSpace(result.resultSnapshotID),
-		WorkspaceID:                     result.workspaceID,
-		Workspace:                       result.workspacePath,
-		Delegator:                       result.delegator,
-		Model:                           result.model,
-		Variant:                         result.variant,
-		Agent:                           result.agent,
-		OccurredAt:                      result.occurredAt,
-		OutputText:                      strings.TrimSpace(result.outputText),
-		Tokens:                          result.tokens,
-		Outcome:                         result.outcome,
+		Run:                       result.run,
+		Node:                      result.node,
+		Attempt:                   result.attempt,
+		AttemptID:                 result.attemptID,
+		CompletionMode:            result.completionMode,
+		LogicalSessionID:          result.sessionID,
+		ProviderSessionID:         strings.TrimSpace(result.providerSessionID),
+		ProviderInvocationID:      strings.TrimSpace(result.providerInvocationID),
+		ProviderInvocationAt:      strings.TrimSpace(result.providerInvocationAt),
+		ExpectedLeaseOwner:        strings.TrimSpace(result.expectedLeaseOwner),
+		ExpectedLeaseVersion:      result.expectedLeaseVersion,
+		ProviderDiagnosticsJSON:   strings.TrimSpace(result.providerDiagnosticsJSON),
+		ProviderStreamObservation: result.providerStreamObservation,
+		BaseSnapshotID:            strings.TrimSpace(result.baseSnapshotID),
+		ResultSnapshotID:          strings.TrimSpace(result.resultSnapshotID),
+		WorkspaceID:               result.workspaceID,
+		Workspace:                 workspacePath,
+		Delegator:                 result.delegator,
+		Model:                     result.model,
+		Variant:                   result.variant,
+		Agent:                     result.agent,
+		OccurredAt:                result.occurredAt,
+		OutputText:                strings.TrimSpace(result.outputText),
+		Tokens:                    result.tokens,
+		Outcome:                   result.outcome,
 	}
 }
 
@@ -340,33 +339,31 @@ func decodeExecutionPayloadJSON(raw, source string) (asyncExecutionResult, error
 		return asyncExecutionResult{}, fmt.Errorf("decode %s: missing attempt_id", source)
 	}
 	result := asyncExecutionResult{
-		run:                             payload.Run,
-		node:                            payload.Node,
-		attempt:                         payload.Attempt,
-		attemptID:                       payload.AttemptID,
-		completionMode:                  payload.CompletionMode,
-		sessionID:                       strings.TrimSpace(payload.LogicalSessionID),
-		providerSessionID:               payload.ProviderSessionID,
-		providerInvocationID:            payload.ProviderInvocationID,
-		providerInvocationAt:            payload.ProviderInvocationAt,
-		expectedLeaseOwner:              payload.ExpectedLeaseOwner,
-		expectedLeaseVersion:            payload.ExpectedLeaseVersion,
-		completionReceiptEvidenceID:     payload.CompletionReceiptEvidenceID,
-		completionStructuredPayloadJSON: payload.CompletionStructuredPayloadJSON,
-		providerDiagnosticsJSON:         payload.ProviderDiagnosticsJSON,
-		providerStreamObservation:       payload.ProviderStreamObservation,
-		baseSnapshotID:                  payload.BaseSnapshotID,
-		resultSnapshotID:                payload.ResultSnapshotID,
-		workspaceID:                     payload.WorkspaceID,
-		workspacePath:                   payload.Workspace,
-		delegator:                       payload.Delegator,
-		model:                           payload.Model,
-		variant:                         payload.Variant,
-		agent:                           payload.Agent,
-		occurredAt:                      payload.OccurredAt,
-		outputText:                      strings.TrimSpace(payload.OutputText),
-		tokens:                          payload.Tokens,
-		outcome:                         payload.Outcome,
+		run:                       payload.Run,
+		node:                      payload.Node,
+		attempt:                   payload.Attempt,
+		attemptID:                 payload.AttemptID,
+		completionMode:            payload.CompletionMode,
+		sessionID:                 strings.TrimSpace(payload.LogicalSessionID),
+		providerSessionID:         payload.ProviderSessionID,
+		providerInvocationID:      payload.ProviderInvocationID,
+		providerInvocationAt:      payload.ProviderInvocationAt,
+		expectedLeaseOwner:        payload.ExpectedLeaseOwner,
+		expectedLeaseVersion:      payload.ExpectedLeaseVersion,
+		providerDiagnosticsJSON:   payload.ProviderDiagnosticsJSON,
+		providerStreamObservation: payload.ProviderStreamObservation,
+		baseSnapshotID:            payload.BaseSnapshotID,
+		resultSnapshotID:          payload.ResultSnapshotID,
+		workspaceID:               payload.WorkspaceID,
+		workspacePath:             payload.Workspace,
+		delegator:                 payload.Delegator,
+		model:                     payload.Model,
+		variant:                   payload.Variant,
+		agent:                     payload.Agent,
+		occurredAt:                payload.OccurredAt,
+		outputText:                strings.TrimSpace(payload.OutputText),
+		tokens:                    payload.Tokens,
+		outcome:                   payload.Outcome,
 	}
 	result.outcome = normalizeExecutionOutcome(result.outcome, nil)
 	result.err = errorFromExecutionOutcome(result.outcome)
@@ -611,33 +608,6 @@ func hydrateExecutionOutcomeFromDurableState(outcome opencode.ExecutionOutcome, 
 	}
 	outcome.FailureText = firstNonEmptyString(strings.TrimSpace(durable.FailureText), strings.TrimSpace(outcome.FailureText))
 	return outcome
-}
-
-func receiptDecisionFailureOutcome(nodeID, nodeClass, finalText, structuredPayloadJSON string) (opencode.ExecutionOutcome, bool, error) {
-	resolvedClass := resolvedNodeClass(nodeID, nodeClass)
-	if resolvedClass != workflow.NodeClassExecutionReview && resolvedClass != workflow.NodeClassValidationGates {
-		return opencode.ExecutionOutcome{}, false, nil
-	}
-	validated, err := executionoutput.Validate(nodeID, nodeClass, finalText, structuredPayloadJSON)
-	if err != nil {
-		var validationErr *executionoutput.ValidationError
-		if errors.As(err, &validationErr) {
-			return opencode.ExecutionOutcome{
-				State:       "failed",
-				ReasonCode:  strings.TrimSpace(validationErr.ReasonCode),
-				FailureText: strings.TrimSpace(validationErr.Error()),
-			}, true, nil
-		}
-		return opencode.ExecutionOutcome{}, true, err
-	}
-	if strings.TrimSpace(validated.WorkflowFailureCode) == "" {
-		return opencode.ExecutionOutcome{}, true, nil
-	}
-	return opencode.ExecutionOutcome{
-		State:       "failed",
-		ReasonCode:  strings.TrimSpace(validated.WorkflowFailureCode),
-		FailureText: strings.TrimSpace(validated.WorkflowFailureText),
-	}, true, nil
 }
 
 func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncExecutionResult) error {

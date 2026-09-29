@@ -411,17 +411,21 @@ LIMIT 1`, strings.TrimSpace(sessionID)).Scan(&state, &launchStartedAt, &startedA
 }
 
 type staleAttempt struct {
-	NodeRunID     string
-	RunID         string
-	NodeID        string
-	Attempt       int
-	Wave          int
-	RequiredRole  string
-	AgentID       string
-	SessionRef    string
-	AttemptState  string
-	CurrentStatus string
-	StartedAt     string
+	NodeRunID      string
+	RunID          string
+	NodeID         string
+	Attempt        int
+	Wave           int
+	RequiredRole   string
+	AgentID        string
+	SessionRef     string
+	AttemptState   string
+	ExecutionMode  executionstore.ExecutionMode
+	LeaseOwner     string
+	LeaseVersion   int64
+	LeaseExpiresAt string
+	CurrentStatus  string
+	StartedAt      string
 }
 
 type recoveryOutcome struct {
@@ -520,6 +524,9 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			RetryDecision:      retryDecision,
 		})
 		if err != nil {
+			if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
+				return recoveryOutcome{}, nil
+			}
 			return recoveryOutcome{}, err
 		}
 		if queued.NodeRunID == "" {
@@ -527,10 +534,6 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 		}
 
 		return recoveryOutcome{reassigned: true, agentBlocked: hasReplacement}, nil
-	}
-
-	if err := r.blockAgentIfNeeded(ctx, attempt.AgentID, nowTime); err != nil {
-		return recoveryOutcome{}, err
 	}
 
 	staleSeconds := 0
@@ -604,7 +607,8 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			retryIndex = plan.MaxRetries
 		}
 		if err := r.transition.RecordDirectExecutionTerminalWithRetry(ctx, DirectExecutionTerminalWithRetryRequest{
-			Transition: terminalTransition,
+			Transition:   terminalTransition,
+			StaleAttempt: &attempt,
 			Decision: RetryDecisionCreateRequest{
 				DecisionID:         fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(currentAttemptID, ":", "_")),
 				SubjectKind:        RetrySubjectKindDecreeAttempt,
@@ -627,9 +631,18 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			},
 			EscalationFromAgentID: attempt.AgentID,
 		}); err != nil {
+			if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
+				return recoveryOutcome{}, nil
+			}
 			return recoveryOutcome{}, err
 		}
-	} else if err := r.transition.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: terminalTransition}); err != nil {
+	} else if err := r.transition.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: terminalTransition, StaleAttempt: &attempt}); err != nil {
+		if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
+			return recoveryOutcome{}, nil
+		}
+		return recoveryOutcome{}, err
+	}
+	if err := r.blockAgentIfNeeded(ctx, attempt.AgentID, nowTime); err != nil {
 		return recoveryOutcome{}, err
 	}
 
@@ -796,25 +809,32 @@ func (r *Reconciler) shouldSkipStaleRecovery(ctx context.Context, attempt staleA
 	case "terminal_observed", "committed_success", "committed_failure", "committed_cancelled":
 		return true, nil
 	}
-	var invocationState string
-	err = r.db.QueryRowContext(ctx, `SELECT invocation_state
-		FROM provider_invocations
-		WHERE provider_invocation_id = (
+	var providerInvocationID string
+	err = r.db.QueryRowContext(ctx, `SELECT pi.provider_invocation_id
+		FROM provider_invocations pi
+		WHERE pi.provider_invocation_id = (
 			SELECT active_provider_invocation_id
 			FROM attempt_executions
 			WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
-		)
-		LIMIT 1`, trimmedAttemptID, strings.TrimSpace(attempt.RunID), strings.TrimSpace(attempt.NodeRunID)).Scan(&invocationState)
+		) LIMIT 1`, trimmedAttemptID, strings.TrimSpace(attempt.RunID), strings.TrimSpace(attempt.NodeRunID)).Scan(&providerInvocationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("load provider invocation state for stale recovery: %w", err)
 	}
-	switch strings.TrimSpace(invocationState) {
-	case string(executionstore.ProviderInvocationStateReceiptPersisted), string(executionstore.ProviderInvocationStateInvalidHandshake):
-		// Receipt evidence cannot authorize stale recovery without the matching
-		// terminal process observation, and an invalid handshake is already fenced.
+	var handoffPending int
+	if err := r.db.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM provider_terminal_handoffs WHERE provider_invocation_id = ?)
+		OR EXISTS(SELECT 1 FROM provider_invocations WHERE provider_invocation_id = ? AND (terminal_handoff_pending_at IS NOT NULL OR terminal_recovery_required_at IS NOT NULL))`,
+		providerInvocationID, providerInvocationID,
+	).Scan(&handoffPending); err != nil {
+		return false, fmt.Errorf("check provider terminal handoff before stale recovery: %w", err)
+	}
+	if handoffPending != 0 {
+		// A pending handoff or durable pre-publication recovery marker carries
+		// terminal process evidence that must settle before stale recovery can
+		// revoke this invocation.
 		return true, nil
 	}
 	return false, nil
@@ -1091,6 +1111,10 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		        n.agent_id,
 		        COALESCE(ae.session_ref, ''),
 		        COALESCE(ae.state, ''),
+	        COALESCE(ae.execution_mode, 'runtime_owned'),
+	        COALESCE(ae.lease_owner, ''),
+	        COALESCE(ae.lease_version, 0),
+	        COALESCE(ae.lease_expires_at, ''),
 		        n.node_status,
 		        CASE
 		          WHEN n.node_status = 'starting' THEN COALESCE(ae.launch_started_at, '')
@@ -1110,25 +1134,32 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		         sl.session_id IS NULL OR
 		         %s
 		       )
+		       AND (
+		         COALESCE(ae.execution_mode, 'runtime_owned') <> 'provider_backed' OR
+		         (COALESCE(TRIM(ae.lease_owner), '') = '' AND COALESCE(TRIM(ae.lease_expires_at), '') = '') OR
+		         (COALESCE(TRIM(ae.lease_owner), '') <> '' AND COALESCE(TRIM(ae.lease_expires_at), '') <> '' AND %s)
+		       )
 		     ) OR (
 		       n.node_status = 'running'
 		       AND n.started_at IS NOT NULL
 		       AND COALESCE(ae.state, '') NOT IN ('starting', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')
 		       AND (
 		         COALESCE(ae.execution_mode, 'runtime_owned') <> 'provider_backed' OR
-		         COALESCE(ae.lease_expires_at, '') = '' OR
-		         %s
+		         (COALESCE(TRIM(ae.lease_owner), '') = '' AND COALESCE(TRIM(ae.lease_expires_at), '') = '') OR
+		         (COALESCE(TRIM(ae.lease_owner), '') <> '' AND COALESCE(TRIM(ae.lease_expires_at), '') <> '' AND %s)
 		       )
 		     )
 		   )
-		 ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`,
+		ORDER BY n.run_id ASC, n.node_id ASC, n.attempt ASC`,
 		staleActiveSessionLeaseConditionSQL("sl"),
+		timestamporder.ComparisonSQL("ae.lease_expires_at", "?", "<="),
 		timestamporder.ComparisonSQL("ae.lease_expires_at", "?", "<="),
 	)
 
 	rows, err := q.QueryContext(ctx,
 		query,
 		cutoff.Format(time.RFC3339Nano),
+		nowTime.UTC().Format(time.RFC3339Nano),
 		nowTime.UTC().Format(time.RFC3339Nano),
 		nowTime.UTC().Format(time.RFC3339Nano),
 	)
@@ -1140,6 +1171,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 	candidates := make([]staleAttempt, 0)
 	for rows.Next() {
 		var candidate staleAttempt
+		var executionMode string
 		if err := rows.Scan(
 			&candidate.NodeRunID,
 			&candidate.RunID,
@@ -1150,11 +1182,16 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 			&candidate.AgentID,
 			&candidate.SessionRef,
 			&candidate.AttemptState,
+			&executionMode,
+			&candidate.LeaseOwner,
+			&candidate.LeaseVersion,
+			&candidate.LeaseExpiresAt,
 			&candidate.CurrentStatus,
 			&candidate.StartedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan stale attempt: %w", err)
 		}
+		candidate.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
 		candidates = append(candidates, candidate)
 	}
 

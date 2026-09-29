@@ -60,9 +60,6 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 		ProviderInvocationAt: req.InvocationIssuedAt,
 		StreamObservation:    testSuccessfulExecuteObservation(req, step.output),
 	}
-	if err := writeTestCompletionReceipt(req, step.output, scriptedStructuredPayload(step.output)); err != nil {
-		return opencode.ExecuteResponse{}, err
-	}
 	return response, nil
 }
 
@@ -76,24 +73,6 @@ func (a *scriptedExecutionAdapter) Stream(context.Context, opencode.StreamReques
 	close(eventCh)
 	close(errCh)
 	return eventCh, errCh, nil
-}
-
-func scriptedStructuredPayload(output string) string {
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		switch trimmed {
-		case "VERDICT: PASS":
-			return `{"verdict":"PASS"}`
-		case "VERDICT: REWORK":
-			return `{"verdict":"REWORK"}`
-		default:
-			return `{}`
-		}
-	}
-	return `{}`
 }
 
 func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t *testing.T) {

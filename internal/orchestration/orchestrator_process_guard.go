@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -178,16 +179,24 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 		return cursor, 0, nil
 	}
 	rows, err := o.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, ae.completion_mode, ae.session_ref,
-		pi.provider_invocation_id, ppg.lease_owner, ppg.lease_version, nr.node_id, nr.required_role
+		pi.provider_invocation_id, ae.lease_owner, ae.lease_version, nr.node_id, nr.required_role,
+		nr.attempt, nr.agent_id, nr.wave, nr.node_status, COALESCE(nr.started_at, ''), wn.node_class,
+		ae.state, ae.provider_timeout_ms, ae.provider_session_id, ae.base_snapshot_id, ae.result_snapshot_id
 		FROM attempt_executions ae
 		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
 		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
-		JOIN provider_process_guards ppg ON ppg.provider_invocation_id = pi.provider_invocation_id AND ppg.owner_kind = 'decree_attempt'
+		JOIN workflow_runs wr ON wr.run_id = ae.run_id
+		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		WHERE ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL AND pi.provider_invocation_id > ?
+		AND (
+		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
+		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'decree_attempt')
+		)
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
 		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
-		AND (? = 0 OR EXISTS (SELECT 1 FROM provider_process_guards marked WHERE marked.provider_invocation_id = pi.provider_invocation_id AND marked.terminal_recovery_required_at IS NOT NULL))
-		GROUP BY pi.provider_invocation_id ORDER BY pi.provider_invocation_id LIMIT ?`, cursor, boolToQueryInt(onlyMarked), limit)
+		AND (? = 0 OR (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version))
+		ORDER BY pi.provider_invocation_id LIMIT ?`, cursor, boolToQueryInt(onlyMarked), limit)
 	if err != nil {
 		return cursor, 0, err
 	}
@@ -195,23 +204,67 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 	var candidates []asyncExecutionResult
 	for rows.Next() {
 		var result asyncExecutionResult
-		if err := rows.Scan(&result.attemptID, &result.run.RunID, &result.attempt.NodeRunID, &result.completionMode, &result.sessionID, &result.providerInvocationID, &result.expectedLeaseOwner, &result.expectedLeaseVersion, &result.node.NodeID, &result.node.RequiredRole); err != nil {
+		var startedAt, nodeClass, attemptState, providerSessionID, baseSnapshotID, resultSnapshotID string
+		if err := rows.Scan(
+			&result.attemptID, &result.run.RunID, &result.attempt.NodeRunID, &result.completionMode, &result.sessionID,
+			&result.providerInvocationID, &result.expectedLeaseOwner, &result.expectedLeaseVersion,
+			&result.node.NodeID, &result.node.RequiredRole,
+			&result.attempt.Attempt, &result.attempt.AgentID, &result.attempt.Wave, &result.attempt.NodeStatus, &startedAt,
+			&nodeClass, &attemptState, &result.attempt.ProviderTimeoutMillis, &providerSessionID, &baseSnapshotID, &resultSnapshotID,
+		); err != nil {
 			return cursor, 0, err
 		}
-		result.node.NodeClass = result.node.NodeID
+		result.node.NodeClass = strings.TrimSpace(nodeClass)
+		result.attempt.NodeID = result.node.NodeID
+		result.attempt.RequiredRole = result.node.RequiredRole
+		result.attempt.StartedAt = sql.NullString{String: startedAt, Valid: startedAt != ""}
+		result.attempt.SessionRef = result.sessionID
+		result.attempt.ProviderSessionID = providerSessionID
+		result.attempt.DurableState = attemptState
+		result.attempt.HasExecutionRecord = true
 		result.attempt.ExecutionMode = executionstore.ExecutionModeProviderBacked
 		result.attempt.CompletionMode = result.completionMode
+		result.attempt.ProviderInvocationID = result.providerInvocationID
+		result.attempt.LeaseOwner = result.expectedLeaseOwner
+		result.attempt.LeaseVersion = result.expectedLeaseVersion
+		result.providerSessionID = providerSessionID
+		result.baseSnapshotID = strings.TrimSpace(baseSnapshotID)
+		result.resultSnapshotID = strings.TrimSpace(resultSnapshotID)
 		result.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation was lost before durable handoff.", EvidenceSource: "process_guard"}
 		result.providerDiagnosticsJSON = `{}`
-		result.completionStructuredPayloadJSON = `{}`
-		result.providerStreamObservation = opencode.InvocationStreamObservation{ProcessExited: true, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}
+		result.providerStreamObservation = opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, ProcessExited: true, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}
 		candidates = append(candidates, result)
 	}
 	if err := rows.Err(); err != nil {
 		return cursor, 0, err
 	}
+	if err := rows.Close(); err != nil {
+		return cursor, 0, fmt.Errorf("close lost terminal handoff candidates: %w", err)
+	}
 	visited := 0
 	for _, result := range candidates {
+		run, found, err := o.loadRunSnapshotForRepair(ctx, result.run.RunID)
+		if err != nil {
+			return cursor, visited, err
+		}
+		if !found {
+			return cursor, visited, fmt.Errorf("run %q disappeared during lost terminal handoff recovery", result.run.RunID)
+		}
+		result.run = run
+		if executionSpecForNode(result.node.NodeID, result.node.NodeClass).RequiresWorkspace {
+			if o.fsStore == nil {
+				return cursor, visited, fmt.Errorf("runtime filesystem store is required to recover workspace-owned attempt %q", result.attemptID)
+			}
+			target, err := o.fsStore.GetExecutionTarget(ctx, result.run.RunID)
+			if err != nil {
+				return cursor, visited, fmt.Errorf("load workspace target for lost attempt %q: %w", result.attemptID, err)
+			}
+			if strings.TrimSpace(result.baseSnapshotID) == "" || strings.TrimSpace(target.ExecutionRoot) == "" {
+				return cursor, visited, fmt.Errorf("workspace lineage is incomplete for lost attempt %q", result.attemptID)
+			}
+			result.workspaceID = result.run.RunID
+			result.workspacePath = target.ExecutionRoot
+		}
 		if err := o.commitRecoveredGuardFailure(ctx, result); err != nil {
 			return cursor, visited, err
 		}
@@ -230,8 +283,12 @@ func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context)
 		SELECT 1
 		FROM attempt_executions ae
 		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
-		JOIN provider_process_guards ppg ON ppg.provider_invocation_id = pi.provider_invocation_id AND ppg.owner_kind = 'decree_attempt'
 		WHERE ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL
+		AND (
+		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
+		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'decree_attempt')
+		)
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
 		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
 	)`).Scan(&found)

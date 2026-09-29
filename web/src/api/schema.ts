@@ -2831,7 +2831,6 @@ export interface components {
             committed_at?: string;
             failure_code?: string;
             failure_text?: string;
-            completion_invalid_reason?: string;
             /** @enum {string} */
             handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
             stop_retry_available: boolean;
@@ -2967,7 +2966,6 @@ export interface components {
             committed_at?: string;
             failure_code?: string;
             failure_text?: string;
-            completion_invalid_reason?: string;
             /** @enum {string} */
             handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
             stop_retry_available: boolean;

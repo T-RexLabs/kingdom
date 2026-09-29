@@ -298,7 +298,7 @@ func TestIntegrationReconcilerFailurePathDoesNotUseNodeAttemptOrdinalForExhausti
 	}
 }
 
-func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTargets(t *testing.T) {
+func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithIsolatedResponseWorkspace(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
@@ -334,7 +334,13 @@ func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTarg
 				return fmt.Errorf("expected persisted artifacts for dispatch run, got %d", artifacts)
 			}
 			if targets := queryInt(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch"); targets != 0 {
-				return fmt.Errorf("expected response-first dispatch run to avoid execution targets, got %d", targets)
+				return fmt.Errorf("response-only dispatch persisted %d execution targets before workspace ownership", targets)
+			}
+			if snapshots := queryInt(t, db, `SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = ? AND snapshot_kind = 'baseline'`, "run_dispatch"); snapshots != 0 {
+				return fmt.Errorf("response-only dispatch persisted %d filesystem snapshots before workspace ownership", snapshots)
+			}
+			if cleanup := queryInt(t, db, `SELECT COUNT(1) FROM attempt_executions WHERE run_id = ? AND response_only_workspace_cleanup_pending_at IS NOT NULL`, "run_dispatch"); cleanup != 0 {
+				return fmt.Errorf("response-only dispatch left %d workspace cleanup markers", cleanup)
 			}
 			return nil
 		}

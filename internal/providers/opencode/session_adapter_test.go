@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -266,6 +267,145 @@ func TestSessionAdapterPassesWorkspaceDirFlagForRunExecution(t *testing.T) {
 	}
 }
 
+func TestSessionAdapterConstrainsGitDiscoveryToExecutionProjectRoot(t *testing.T) {
+	sourceRoot := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", sourceRoot).CombinedOutput(); err != nil {
+		t.Fatalf("initialize source repository: %v: %s", err, output)
+	}
+	sourceRoot, err := filepath.EvalSymlinks(sourceRoot)
+	if err != nil {
+		t.Fatalf("resolve source repository path: %v", err)
+	}
+	workspacePath := filepath.Join(sourceRoot, ".kingdom", "runtime", "run-targets", "run_1", "target")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create isolated execution target: %v", err)
+	}
+
+	withoutBoundary := exec.Command("git", "-C", workspacePath, "rev-parse", "--show-toplevel")
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(name, "GIT_CEILING_DIRECTORIES") {
+			withoutBoundary.Env = append(withoutBoundary.Env, entry)
+		}
+	}
+	if output, err := withoutBoundary.Output(); err != nil || strings.TrimSpace(string(output)) != sourceRoot {
+		t.Fatalf("expected target to discover source repository before boundary, root=%q err=%v", output, err)
+	}
+	if output, err := exec.Command("git", "init", "--quiet", workspacePath).CombinedOutput(); err != nil {
+		t.Fatalf("initialize exact execution project root: %v: %s", err, output)
+	}
+
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	t.Setenv("GIT_CEILING_DIRECTORIES", sourceRoot)
+
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:      CompletionModeServerResponse,
+		SessionID:           "session_project_root_boundary",
+		AttemptID:           "attempt_project_root_boundary",
+		RunID:               "run_1",
+		NodeRunID:           "nr_1",
+		WorkspacePath:       workspacePath,
+		ProjectRootBoundary: workspacePath,
+		Prompt:              "verify the execution project boundary",
+		OccurredAt:          "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	envRaw, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read environment log: %v", err)
+	}
+	gotCeiling := parseFakeOpenCodeEnvLog(string(envRaw))["GIT_CEILING_DIRECTORIES"]
+	wantCeiling := filepath.Dir(workspacePath)
+	if gotCeiling != wantCeiling {
+		t.Fatalf("expected Git discovery ceiling %q, got %q", wantCeiling, gotCeiling)
+	}
+
+	withBoundary := exec.Command("git", "-C", workspacePath, "rev-parse", "--show-toplevel")
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(name, "GIT_CEILING_DIRECTORIES") {
+			withBoundary.Env = append(withBoundary.Env, entry)
+		}
+	}
+	withBoundary.Env = append(withBoundary.Env, "GIT_CEILING_DIRECTORIES="+gotCeiling)
+	if output, err := withBoundary.Output(); err != nil || strings.TrimSpace(string(output)) != workspacePath {
+		t.Fatalf("expected Git discovery to stop at execution root %q, got %q: %v", workspacePath, strings.TrimSpace(string(output)), err)
+	}
+}
+
+func TestSessionAdapterUsesTheSelectedExecutionProjectBoundaryWithinGitWorktree(t *testing.T) {
+	root := t.TempDir()
+	if output, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
+		t.Fatalf("initialize selected Git worktree: %v: %s", err, output)
+	}
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve selected Git worktree path: %v", err)
+	}
+	workspacePath := filepath.Join(root, "apps", "service")
+	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
+		t.Fatalf("create scoped project directory: %v", err)
+	}
+	if output, err := exec.Command("git", "init", "--quiet", workspacePath).CombinedOutput(); err != nil {
+		t.Fatalf("initialize scoped execution project root: %v: %s", err, output)
+	}
+
+	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
+	envLogPath := filepath.Join(t.TempDir(), "env.log")
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binaryPath})
+	if err != nil {
+		t.Fatalf("new session adapter: %v", err)
+	}
+	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
+	t.Setenv("FAKE_OPENCODE_ENV_LOG", envLogPath)
+	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+		CompletionMode:      CompletionModeServerResponse,
+		SessionID:           "session_git_worktree_boundary",
+		AttemptID:           "attempt_git_worktree_boundary",
+		RunID:               "run_1",
+		NodeRunID:           "nr_1",
+		WorkspacePath:       workspacePath,
+		ProjectRootBoundary: workspacePath,
+		Prompt:              "verify the selected Git worktree boundary",
+		OccurredAt:          "2026-03-02T10:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	envRaw, err := os.ReadFile(envLogPath)
+	if err != nil {
+		t.Fatalf("read environment log: %v", err)
+	}
+	gotCeiling := parseFakeOpenCodeEnvLog(string(envRaw))["GIT_CEILING_DIRECTORIES"]
+	wantCeiling := filepath.Dir(workspacePath)
+	if gotCeiling != wantCeiling {
+		t.Fatalf("expected Git discovery ceiling %q, got %q", wantCeiling, gotCeiling)
+	}
+
+	command := exec.Command("git", "-C", workspacePath, "rev-parse", "--show-toplevel")
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !strings.EqualFold(name, "GIT_CEILING_DIRECTORIES") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	command.Env = append(command.Env, "GIT_CEILING_DIRECTORIES="+gotCeiling)
+	output, err := command.Output()
+	if err != nil || strings.TrimSpace(string(output)) != workspacePath {
+		t.Fatalf("expected Git to retain execution project root %q, got %q: %v", workspacePath, strings.TrimSpace(string(output)), err)
+	}
+}
+
 func TestSessionAdapterRequestConfigDirOverridesDefault(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	envLogPath := filepath.Join(t.TempDir(), "env.log")
@@ -437,17 +577,13 @@ func TestSessionAdapterReturnsProviderDiagnosticsOnProcessFailure(t *testing.T) 
 		t.Fatal("expected provider diagnostics json on process failure")
 	}
 	var diagnostics struct {
-		CompletionReceiptModeEnabled bool   `json:"completion_receipt_mode_enabled"`
-		StderrTail                   string `json:"stderr_tail"`
-		ExecutionPathDiagnostics     struct {
+		StderrTail               string `json:"stderr_tail"`
+		ExecutionPathDiagnostics struct {
 			WaitError string `json:"wait_error"`
 		} `json:"execution_path_diagnostics"`
 	}
 	if err := json.Unmarshal([]byte(res.ProviderDiagnosticsJSON), &diagnostics); err != nil {
 		t.Fatalf("decode provider diagnostics json: %v", err)
-	}
-	if diagnostics.CompletionReceiptModeEnabled {
-		t.Fatal("expected receipt mode to be disabled in provider diagnostics")
 	}
 	if !strings.Contains(diagnostics.StderrTail, "missing FAKE_OPENCODE_TOOL_CALLS_STATE_DIR") {
 		t.Fatalf("expected stderr tail to include missing state dir error, got %q", diagnostics.StderrTail)
@@ -2398,19 +2534,9 @@ if [ -n "$FAKE_OPENCODE_ENV_LOG" ]; then
   printf 'OPENCODE_CONFIG_DIR=%s\n' "$OPENCODE_CONFIG_DIR" >> "$FAKE_OPENCODE_ENV_LOG"
   printf 'OPENCODE_CONFIG_CONTENT=%s\n' "$OPENCODE_CONFIG_CONTENT" >> "$FAKE_OPENCODE_ENV_LOG"
   printf 'OPENCODE_DB=%s\n' "$OPENCODE_DB" >> "$FAKE_OPENCODE_ENV_LOG"
-  if [ "${KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION+x}" = "x" ]; then
-    printf 'KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION" >> "$FAKE_OPENCODE_ENV_LOG"
+  if [ "${GIT_CEILING_DIRECTORIES+x}" = "x" ]; then
+    printf 'GIT_CEILING_DIRECTORIES=%s\n' "$GIT_CEILING_DIRECTORIES" >> "$FAKE_OPENCODE_ENV_LOG"
   fi
-  if [ "${KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID+x}" = "x" ]; then
-    printf 'KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID" >> "$FAKE_OPENCODE_ENV_LOG"
-  fi
-  if [ "${KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID+x}" = "x" ]; then
-    printf 'KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID" >> "$FAKE_OPENCODE_ENV_LOG"
-  fi
-  if [ "${KINGDOM_COMPLETE_ATTEMPT_CAPABILITY+x}" = "x" ]; then
-    printf 'KINGDOM_COMPLETE_ATTEMPT_CAPABILITY=%s\n' "$KINGDOM_COMPLETE_ATTEMPT_CAPABILITY" >> "$FAKE_OPENCODE_ENV_LOG"
-  fi
-
 fi
 
 if [ "$1" = "export" ]; then

@@ -35,11 +35,10 @@ import (
 
 type testPlannerAgent struct{}
 
-// apiTestReceiptMetadata models a planner turn that settles server-side: the
+// apiTestTerminalMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
-// final text. There is no model-invoked completion receipt; the API tests just
-// surface the provider session so the invocation opens.
-func apiTestReceiptMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
+// final text. The API tests surface the provider session so the invocation opens.
+func apiTestTerminalMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
 		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
 			return planning.ProviderExecutionMetadata{}, err
@@ -98,7 +97,7 @@ func (a *testPlannerAgent) OpeningTurnStream(_ context.Context, input planning.A
 }
 
 func (a *testPlannerAgent) ContinueTurnStream(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.AgentTurn, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.ContinueContent)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.ContinueContent)
 	if err != nil {
 		return planning.AgentTurn{}, err
 	}
@@ -113,7 +112,7 @@ func (a *testPlannerAgent) ContinueTurnStream(_ context.Context, input planning.
 }
 
 func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.FormalizedPlan, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.FormalizedText)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.FormalizedText)
 	if err != nil {
 		return planning.FormalizedPlan{}, err
 	}
@@ -125,7 +124,7 @@ func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning
 }
 
 func (a *testPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.GeneratedTitle, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.GeneratedTitle)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.GeneratedTitle)
 	if err != nil {
 		return planning.GeneratedTitle{}, err
 	}
@@ -152,7 +151,7 @@ func (a *testStreamingPlannerAgent) ContinueTurnStream(_ context.Context, input 
 			onChunk(chunk)
 		}
 	}
-	metadata, err := apiTestReceiptMetadata(input, a.final)
+	metadata, err := apiTestTerminalMetadata(input, a.final)
 	if err != nil {
 		return planning.AgentTurn{}, err
 	}

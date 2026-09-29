@@ -92,12 +92,6 @@ func TestEmitActivityObservationStreamsToolUse(t *testing.T) {
 	}
 }
 
-func TestEmitActivityObservationSkipsInternalCompletionTool(t *testing.T) {
-	if _, emitted := observeActivityFromWire(t, `{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"kingdom_complete_attempt","id":"prt_done_1","state":{"status":"completed"}}}`); emitted {
-		t.Fatal("expected internal kingdom_complete_attempt tool to be skipped as live activity")
-	}
-}
-
 func TestEmitActivityObservationEmitsProgressForStepStart(t *testing.T) {
 	observed, emitted := observeActivityFromWire(t, `{"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","id":"prt_step_1"}}`)
 	if !emitted {

@@ -15,6 +15,7 @@ import (
 
 const runWorktreeCleanupBatchSize = 20
 const runWorktreeRemovalBatchSize = 128
+const runWorktreeCleanupWaitingForExecutionReason = "run execution projection or cancellation handoff is still pending"
 
 func (o *orchestrationLoop) scheduleRunWorktreeCleanup(ctx context.Context) error {
 	if o == nil || o.runWorktrees == nil || workspace.RunWorktreeCleanupDisabled(o.worktreeRetention) {
@@ -102,6 +103,35 @@ func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID
 		}
 		return false, nil
 	}
+	if o.db != nil {
+		var pendingExecutionWork int
+		query := `SELECT EXISTS(
+			SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending'
+		) OR EXISTS(
+			SELECT 1 FROM attempt_cancel_outbox WHERE run_id = ? AND status = 'pending'
+		) OR EXISTS(
+			SELECT 1 FROM provider_terminal_handoffs pth
+			WHERE pth.run_id = ? AND NOT EXISTS (
+				SELECT 1 FROM provider_completion_settlements pcs WHERE pcs.provider_invocation_id = pth.provider_invocation_id
+			)
+		) OR EXISTS(
+			SELECT 1 FROM provider_invocations pi
+			JOIN attempt_executions ae ON ae.active_provider_invocation_id = pi.provider_invocation_id
+			WHERE ae.run_id = ? AND ae.state IN ('starting', 'running', 'terminal_observed')
+			  AND (pi.terminal_handoff_pending_at IS NOT NULL OR pi.terminal_recovery_required_at IS NOT NULL)
+		)`
+		args := []any{runID, runID, runID, runID}
+		if !manualRecovery {
+			query += ` OR EXISTS(SELECT 1 FROM attempt_executions WHERE run_id = ? AND state IN ('starting', 'running', 'terminal_observed'))`
+			args = append(args, runID)
+		}
+		if err := o.db.QueryRowContext(ctx, query, args...).Scan(&pendingExecutionWork); err != nil {
+			return failCleanup(fmt.Sprintf("inspect pending run execution work failed: %v", err))
+		}
+		if pendingExecutionWork != 0 {
+			return failCleanup(runWorktreeCleanupWaitingForExecutionReason)
+		}
+	}
 
 	trimmedMainWorktreeRoot := strings.TrimSpace(record.MainWorktreeRoot)
 	trimmedPath := strings.TrimSpace(record.WorktreePath)
@@ -117,7 +147,7 @@ func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID
 			_, markErr := failCleanup(fmt.Sprintf("inspect managed provider process quiescence failed: %v", err))
 			return false, errors.Join(err, markErr)
 		}
-		if !quiescent {
+		if !quiescent || o.hasInflightRunExecution(record.RunID) {
 			return failCleanup("managed provider process quiescence has not been proven")
 		}
 	}
@@ -256,6 +286,9 @@ func (o *orchestrationLoop) discardQuarantinedManagedWorktreeForManualRecovery(c
 		return false, fmt.Errorf("reload managed worktree cleanup state: %w", err)
 	}
 	if updated.State == workspace.RunWorktreeStateCleanupFailed {
+		if strings.TrimSpace(updated.FailureReason) == runWorktreeCleanupWaitingForExecutionReason {
+			return false, nil
+		}
 		return false, fmt.Errorf("managed worktree cleanup failed: %s", strings.TrimSpace(updated.FailureReason))
 	}
 	return false, nil

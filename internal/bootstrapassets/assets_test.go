@@ -194,87 +194,95 @@ func TestWriteScaffoldIncludesOpenCodeAgentProfiles(t *testing.T) {
 	}
 }
 
-func TestWriteScaffoldIncludesManagedOpenCodeCompletionTool(t *testing.T) {
+func TestWriteScaffoldForceRemovesRetiredManagedOpenCodeToolFromProjectAndRunTargets(t *testing.T) {
 	t.Parallel()
 
-	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
-	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
-		t.Fatalf("scaffold write: %v", err)
+	projectRoot, kingdomHome, overlayRoot := newScaffoldPaths(t)
+	runTargetToolPath := filepath.Join(kingdomHome, "runtime", "run-targets", "run-1", "target", kingdomDirName, opencodeDirName, "tools", retiredManagedOpenCodeToolName)
+	for _, toolPath := range []string{
+		filepath.Join(overlayRoot, "tools", retiredManagedOpenCodeToolName),
+		runTargetToolPath,
+	} {
+		if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
+			t.Fatalf("create retired tool directory %s: %v", toolPath, err)
+		}
+		if err := os.WriteFile(toolPath, []byte("retired managed tool"), 0o644); err != nil {
+			t.Fatalf("write retired tool %s: %v", toolPath, err)
+		}
+	}
+	profiles, err := ListManagedOpenCodeAgentProfiles()
+	if err != nil {
+		t.Fatalf("list managed profiles: %v", err)
+	}
+	for _, profile := range profiles {
+		profilePath := filepath.Join(overlayRoot, "agents", profile)
+		if err := os.MkdirAll(filepath.Dir(profilePath), 0o755); err != nil {
+			t.Fatalf("create stale profile directory %s: %v", profilePath, err)
+		}
+		if err := os.WriteFile(profilePath, []byte("tools:\n  kingdom_complete_attempt: false\n"), 0o644); err != nil {
+			t.Fatalf("write stale profile %s: %v", profilePath, err)
+		}
 	}
 
-	toolPath := filepath.Join(kingdomHome, "opencode", "tools", "kingdom_complete_attempt.ts")
-	raw, err := os.ReadFile(toolPath)
+	if err := WriteScaffold(kingdomHome, projectRoot, true); err != nil {
+		t.Fatalf("forced scaffold write: %v", err)
+	}
+
+	for _, toolPath := range []string{
+		filepath.Join(overlayRoot, "tools", retiredManagedOpenCodeToolName),
+		runTargetToolPath,
+	} {
+		if _, err := os.Stat(toolPath); !os.IsNotExist(err) {
+			t.Fatalf("expected retired managed tool %s to be removed, stat err=%v", toolPath, err)
+		}
+	}
+	for _, profile := range profiles {
+		profilePath := filepath.Join(overlayRoot, "agents", profile)
+		raw, err := os.ReadFile(profilePath)
+		if err != nil {
+			t.Fatalf("read refreshed profile %s: %v", profilePath, err)
+		}
+		if strings.Contains(string(raw), "kingdom_complete_attempt") {
+			t.Fatalf("forced scaffold retained the retired tool toggle in %s", profilePath)
+		}
+	}
+}
+
+func TestWriteManagedOpenCodeAssetsForceRemovesRetiredToolFromTargetOverlay(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	overlayRoot := ManagedOpenCodeRoot(workspaceRoot)
+	toolPath := filepath.Join(overlayRoot, "tools", retiredManagedOpenCodeToolName)
+	if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
+		t.Fatalf("create retired tool directory: %v", err)
+	}
+	if err := os.WriteFile(toolPath, []byte("retired managed tool"), 0o644); err != nil {
+		t.Fatalf("write retired managed tool: %v", err)
+	}
+
+	if err := WriteManagedOpenCodeAssets(overlayRoot, true); err != nil {
+		t.Fatalf("force managed assets into target overlay: %v", err)
+	}
+	if _, err := os.Stat(toolPath); !os.IsNotExist(err) {
+		t.Fatalf("expected retired managed tool to be removed, stat err=%v", err)
+	}
+}
+
+func TestManagedOpenCodeAgentProfilesOmitRetiredToolToggle(t *testing.T) {
+	t.Parallel()
+
+	profiles, err := ListManagedOpenCodeAgentProfiles()
 	if err != nil {
-		t.Fatalf("read managed completion tool: %v", err)
+		t.Fatalf("list managed profiles: %v", err)
 	}
-	content := string(raw)
-	for _, token := range []string{
-		"Finalize the current Kingdom attempt for the active invocation",
-		"Provide the full final canonical response in `final_text`.",
-		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION",
-		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID",
-		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID",
-		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY",
-		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR",
-		"final_text: tool.schema.string().describe(\"The full final canonical response text for this attempt.\")",
-		"protocol_version: protocolVersion",
-		"attempt_id: attemptID",
-		"invocation_id: invocationID",
-		"completion_capability: completionCapability",
-		"final_text: finalText",
-		"const finalText = args.final_text.trim()",
-		"const RECEIPT_WIRE_LIMIT_BYTES = 1024 * 1024",
-		"const serialized = JSON.stringify(payload)",
-		"Buffer.byteLength(serialized, \"utf8\")",
-		"await open(temporaryPath, \"wx\", 0o600)",
-		"process.platform === \"win32\" ? \"r+\" : \"r\"",
-		"await temporaryFile.sync()",
-		"await temporaryFile.close()",
-		"await link(temporaryPath, receiptPath)",
-		"await unlink(temporaryPath)",
-		"await syncDirectory(receiptDir)",
-	} {
-		if !strings.Contains(content, token) {
-			t.Fatalf("expected managed completion tool to include %q", token)
+	for _, profile := range profiles {
+		raw, err := readAssetFile("files/opencode/agents", "", profile)
+		if err != nil {
+			t.Fatalf("read managed profile %s: %v", profile, err)
 		}
-	}
-	publicationSteps := []string{
-		"await temporaryFile.writeFile(serialized, \"utf8\")",
-		"await temporaryFile.sync()",
-		"await temporaryFile.close()",
-		"await link(temporaryPath, receiptPath)",
-		"await unlink(temporaryPath)",
-		"temporaryExists = false",
-		"await syncDirectory(receiptDir)",
-	}
-	position := -1
-	for _, step := range publicationSteps {
-		next := strings.Index(content[position+1:], step)
-		if next < 0 {
-			t.Fatalf("expected managed completion publication source to include %q after byte %d", step, position)
-		}
-		position += next + 1
-	}
-	linkPosition := strings.Index(content, "await link(temporaryPath, receiptPath)")
-	unlinkPosition := strings.Index(content, "await unlink(temporaryPath)")
-	if strings.Contains(content[linkPosition:unlinkPosition], "syncDirectory(receiptDir)") {
-		t.Fatal("completion publication must unlink staging before its final directory sync")
-	}
-	for _, token := range []string{
-		"attempt_id`, `invocation_id`, and `completion_capability` exactly as provided",
-		"protocol_version: tool.schema.string()",
-		"attempt_id: tool.schema.string()",
-		"invocation_id: tool.schema.string()",
-		"completion_capability: tool.schema.string()",
-		"protocol_version: args.protocol_version",
-		"attempt_id: args.attempt_id",
-		"invocation_id: args.invocation_id",
-		"completion_capability: args.completion_capability",
-		"mkdir(",
-		"JSON.stringify(payload, null",
-	} {
-		if strings.Contains(content, token) {
-			t.Fatalf("expected managed completion tool not to include %q", token)
+		if strings.Contains(string(raw), "kingdom_complete_attempt") {
+			t.Errorf("managed profile %s still configures the retired completion tool", profile)
 		}
 	}
 }
@@ -292,9 +300,6 @@ func TestValidateManagedOpenCodeAssetsSucceedsAfterScaffold(t *testing.T) {
 	}
 	if err := ValidateManagedOpenCodePlannerAssets(overlayRoot); err != nil {
 		t.Fatalf("validate managed opencode planner assets: %v", err)
-	}
-	if err := ValidateManagedOpenCodeTools(overlayRoot); err != nil {
-		t.Fatalf("validate managed opencode tools: %v", err)
 	}
 }
 
@@ -328,14 +333,14 @@ func TestValidateManagedOpenCodeAssetsFailsWhenManagedFileDrifts(t *testing.T) {
 		t.Fatalf("scaffold write: %v", err)
 	}
 
-	toolPath := filepath.Join(overlayRoot, "tools", "kingdom_complete_attempt.ts")
-	if err := os.WriteFile(toolPath, []byte("stale"), 0o644); err != nil {
-		t.Fatalf("overwrite managed tool: %v", err)
+	plannerPath := filepath.Join(overlayRoot, "agents", "planner.md")
+	if err := os.WriteFile(plannerPath, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("overwrite managed planner profile: %v", err)
 	}
 
 	err := ValidateManagedOpenCodePlannerAssets(overlayRoot)
 	if err == nil {
-		t.Fatal("expected planner asset validation to fail when managed tool drifts")
+		t.Fatal("expected planner asset validation to fail when managed profile drifts")
 	}
 	if !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("expected stale asset validation error, got %v", err)
@@ -355,6 +360,9 @@ func TestValidateManagedOpenCodeAssetsIgnoresUnknownFiles(t *testing.T) {
 		t.Fatalf("write custom profile: %v", err)
 	}
 	customToolPath := filepath.Join(overlayRoot, "tools", "custom.ts")
+	if err := os.MkdirAll(filepath.Dir(customToolPath), 0o755); err != nil {
+		t.Fatalf("create custom tool directory: %v", err)
+	}
 	if err := os.WriteFile(customToolPath, []byte("custom"), 0o644); err != nil {
 		t.Fatalf("write custom tool: %v", err)
 	}
@@ -420,7 +428,6 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"task: false",
 		"todowrite: false",
 		"todoread: false",
-		"kingdom_complete_attempt: false",
 		`"*": deny`,
 	)
 	assertContains(
@@ -462,57 +469,6 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"glob: true",
 		"grep: true",
 	)
-}
-
-func TestWriteScaffoldRestrictsCompletionToolToBuilder(t *testing.T) {
-	t.Parallel()
-
-	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
-	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
-		t.Fatalf("scaffold write: %v", err)
-	}
-
-	completionAuthority := map[string]bool{
-		"advisor.md":    false,
-		"builder.md":    true,
-		"chancellor.md": false,
-		"council.md":    false,
-		"king.md":       false,
-		"nightraven.md": false,
-		"planner.md":    false,
-		"qa_scout.md":   false,
-		"reviewer.md":   false,
-		"tester.md":     false,
-	}
-
-	managedProfiles, err := ListManagedOpenCodeAgentProfiles()
-	if err != nil {
-		t.Fatalf("list managed profiles: %v", err)
-	}
-	if len(managedProfiles) != len(completionAuthority) {
-		t.Fatalf("expected completion authority for every managed profile: got %d profiles, want %d", len(managedProfiles), len(completionAuthority))
-	}
-
-	for _, profile := range managedProfiles {
-		allowed, known := completionAuthority[profile]
-		if !known {
-			t.Fatalf("managed profile %s has no completion authority contract", profile)
-		}
-		profilePath := filepath.Join(kingdomHome, "opencode", "agents", profile)
-		raw, err := os.ReadFile(profilePath)
-		if err != nil {
-			t.Fatalf("read managed profile %s: %v", profile, err)
-		}
-		content := string(raw)
-
-		want := "kingdom_complete_attempt: false"
-		if allowed {
-			want = "kingdom_complete_attempt: true"
-		}
-		if strings.Count(content, "kingdom_complete_attempt:") != 1 || !strings.Contains(content, want) {
-			t.Fatalf("expected managed profile %s to declare %q", profile, want)
-		}
-	}
 }
 
 func TestWriteScaffoldNonBuilderProfilesDenyMarkdownEdits(t *testing.T) {

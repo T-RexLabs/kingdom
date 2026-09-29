@@ -26,8 +26,7 @@ func TestParseSessionActivityExportIncludesReasoningAndExternalTools(t *testing.
 				"parts": [
 					{"type": "step-start", "id": "step_1"},
 					{"type": "reasoning", "id": "reason_1", "text": "Thinking through golf references", "time": {"end": 1781181493336}},
-					{"type": "tool", "id": "tool_1", "tool": "webfetch", "state": {"status": "completed", "input": {"url": "https://example.com"}, "output": "fetched"}},
-					{"type": "tool", "id": "tool_2", "tool": "kingdom_complete_attempt", "state": {"status": "completed"}}
+					{"type": "tool", "id": "tool_1", "tool": "webfetch", "state": {"status": "completed", "input": {"url": "https://example.com"}, "output": "fetched"}}
 				]
 			}
 		]
@@ -234,27 +233,17 @@ func TestSessionDiagnosticExportRunnableDeadlineCapsLongCallerDeadline(t *testin
 	}
 }
 
-func TestDiagnosticExportEnvironmentIsManaged(t *testing.T) {
-	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", `{"messages":[]}`)
-	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION", CompletionProtocolVersion)
-	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID", "ambient_export_attempt")
-	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID", "ambient_export_invocation")
-	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_CAPABILITY", "ambient_export_capability")
-	t.Setenv("KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR", t.TempDir())
-
+func TestOpencodeProcessEnvironmentAppliesManagedConfigAndDatabase(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), ".kingdom", "opencode")
 	databasePath := filepath.Join(configDir, "opencode.db")
+	t.Setenv("OPENCODE_CONFIG_DIR", filepath.Join(t.TempDir(), "ambient-config"))
+	t.Setenv("OPENCODE_DB", filepath.Join(t.TempDir(), "ambient.db"))
 	envLog := parseFakeOpenCodeEnvLog(strings.Join(opencodeProcessEnvironment(ConfigDirEnvironment(configDir), DatabasePathEnvironment(databasePath)), "\n"))
 	if envLog["OPENCODE_CONFIG_DIR"] != configDir {
 		t.Fatalf("expected OPENCODE_CONFIG_DIR %q, got %q", configDir, envLog["OPENCODE_CONFIG_DIR"])
 	}
 	if envLog["OPENCODE_DB"] != databasePath {
 		t.Fatalf("expected OPENCODE_DB %q, got %q", databasePath, envLog["OPENCODE_DB"])
-	}
-	for key, value := range envLog {
-		if strings.HasPrefix(key, "KINGDOM_COMPLETE_ATTEMPT_") {
-			t.Fatalf("expected no inherited completion attempt env, got %s=%q in env log %#v", key, value, envLog)
-		}
 	}
 }
 

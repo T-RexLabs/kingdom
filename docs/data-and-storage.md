@@ -20,12 +20,12 @@ The current control plane uses SQLite with explicit startup pragmas.
 
 ## Durable Execution Tables
 
-- `provider_invocations`: runtime-owned invocation identity, completion capability lifecycle, provider session linkage, and supersession state for each provider-backed decree execution attempt dispatch.
-- `provider_completion_evidence`: append-only settlement evidence for provider-backed decree execution attempts, including accepted receipts and diagnostic observations.
+- `provider_invocations`: runtime-owned invocation identity, provider session linkage, supersession state, lease-generation-fenced terminal-handoff publication/recovery markers, and replayable handoff-file cleanup debt for each provider-backed decree execution attempt dispatch.
+- `provider_completion_evidence`: append-only stream-observation and diagnostic evidence for provider-backed decree execution attempts.
 - `provider_completion_settlements`: canonical invocation-scoped settlement truth for provider-backed decree execution attempts (`success`, `failed`, or `cancelled`) with evidence linkage.
-- `provider_terminal_handoffs`: durable lease-fenced terminal observations for receipt-required builder invocations, written after terminal process observation and before receipt ingestion.
+- `provider_terminal_handoffs`: durable lease-fenced terminal observations for provider-backed decree invocations, written after the pending marker and before settlement; file-only observations are replayed before lost-handoff recovery.
 - `provider_process_guards`: durable provider-command guardian ownership, lease lineage, and acknowledged/quiescent lifecycle. Quiescence evidence is file-backed under the runtime root before ingestion, then retained in SQLite for recovery.
-- `attempt_executions`: durable attempt lifecycle and latest execution projection consumed by orchestration and UI (`queued` -> `starting` -> `running` -> `terminal_observed` -> `committed_*`). For provider-backed decree execution attempts, it references the active invocation and canonical runtime settlement; it does not own settlement truth itself.
+- `attempt_executions`: durable attempt lifecycle and latest execution projection consumed by orchestration and UI (`queued` -> `starting` -> `running` -> `terminal_observed` -> `committed_*`). For provider-backed decree execution attempts, it references the active invocation and canonical runtime settlement; it does not own settlement truth itself. It also carries replayable cleanup debt for attempt-scoped response-only workspaces, which are isolated copies rather than execution targets or snapshots.
 - `attempt_event_log`: canonical per-attempt execution event stream with monotonic `seq`.
 - `attempt_outbox`: durable completion handoff queue consumed by orchestration for terminal projection.
   - `pending`: awaiting replay/projection.

@@ -761,9 +761,7 @@ func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 		cfg.WorkspaceRoot = t.TempDir()
 	}
 	if cfg.Adapter == nil {
-		cfg.Adapter = &receiptPublishingTestAdapter{Adapter: opencode.NewMemoryAdapter()}
-	} else if _, ok := cfg.Adapter.(*opencode.MemoryAdapter); ok {
-		cfg.Adapter = &receiptPublishingTestAdapter{Adapter: cfg.Adapter}
+		cfg.Adapter = opencode.NewMemoryAdapter()
 	}
 	if strings.TrimSpace(cfg.ProviderEngine) == "" {
 		cfg.ProviderEngine = "opencode"
@@ -1078,10 +1076,15 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	dispatchDone := make(chan error)
 	close(dispatchDone)
 	dispatchCtx, cancelDispatch := context.WithCancel(context.Background())
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 	loop := &orchestrationLoop{
 		db:             db,
 		adapter:        adapter,
 		executionStore: execStore,
+		fsStore:        fsStore,
 		inflightExec:   make(map[string]struct{}),
 		asyncDrain:     newExecutionDrainTracker(),
 		now: func() time.Time {
@@ -1102,7 +1105,7 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	loop.startAsyncExecution(dispatchCtx, asyncExecutionResult{
 		run:                  runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
 		node:                 nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt:              nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, AgentID: "agent_king", RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attempt:              nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, AgentID: "agent_king", RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:            attemptID,
 		sessionID:            sessionIDForAttempt(attemptID),
 		providerInvocationID: providerInvocationID,
@@ -1113,6 +1116,7 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 		model:                "github-copilot/gpt-5.4-mini",
 		variant:              "low",
 		agent:                "king",
+		occurredAt:           "2026-03-01T12:00:02Z",
 	})
 
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
@@ -1272,14 +1276,11 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 	}
 }
 
-func TestRuntimeStartDefersStaleRecoveryUntilReceiptAndHandoffReplayCatchesUp(t *testing.T) {
-	h := newReceiptIngestionHarness(t)
+func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
 	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
-		invocation, capability, inbox := h.addInvocation(t, index)
+		invocation := h.addInvocation(t, index)
 		h.persistHandoffJob(t, invocation, index)
-		if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, invocation.AttemptID, invocation.ProviderInvocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
-			t.Fatalf("write startup receipt %d: %v", index, err)
-		}
 	}
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -1341,7 +1342,8 @@ func TestRuntimeStartDefersStaleRecoveryUntilReceiptAndHandoffReplayCatchesUp(t 
 		return nil
 	})
 
-	deferredAttemptID := fmt.Sprintf("run_receipt_ingestion:delegated_execution_berserker:%d", providerlimits.StartupReplayMaxItems+1)
+	deferredAttemptID := fmt.Sprintf("run_terminal_handoff:delegated_execution_berserker:%d", providerlimits.StartupReplayMaxItems+1)
+	deferredInvocationID := fmt.Sprintf("pinv_terminal_handoff_%03d", providerlimits.StartupReplayMaxItems+1)
 	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
 		attempt, found, err := h.store.GetAttempt(context.Background(), deferredAttemptID)
 		if err != nil {
@@ -1350,8 +1352,8 @@ func TestRuntimeStartDefersStaleRecoveryUntilReceiptAndHandoffReplayCatchesUp(t 
 		if !found || attempt.State != "committed_success" {
 			return fmt.Errorf("deferred attempt state=%q found=%t", attempt.State, found)
 		}
-		if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), fmt.Sprintf("pinv_receipt_ingestion_%03d", providerlimits.StartupReplayMaxItems+1)); err != nil || !found {
-			return fmt.Errorf("deferred receipt and handoff not settled: found=%t err=%v", found, err)
+		if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), deferredInvocationID); err != nil || !found {
+			return fmt.Errorf("deferred terminal handoff not settled: found=%t err=%v", found, err)
 		}
 		return nil
 	})
@@ -1361,102 +1363,81 @@ func TestRuntimeStartDefersStaleRecoveryUntilReceiptAndHandoffReplayCatchesUp(t 
 		t.Fatalf("count stale cancellation releases: %v", err)
 	}
 	if staleCancelCount != 0 {
-		t.Fatalf("deferred receipt attempt was stale-fenced before settlement: cancel rows=%d", staleCancelCount)
+		t.Fatalf("deferred handoff attempt was stale-fenced before settlement: cancel rows=%d", staleCancelCount)
 	}
 }
 
-func TestDeferredStartupRecoveryDoesNotIngestReceiptsBeforeGuardStageCompletes(t *testing.T) {
-	h := newReceiptIngestionHarness(t)
-	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
-		h.addPendingGuardEvidence(t, index)
+func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
+	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
+	if err != nil || !found {
+		t.Fatalf("load first guarded invocation: found=%t err=%v", found, err)
 	}
-	const (
-		invocationID = "pinv_receipt_ingestion_001"
-		attemptID    = "run_receipt_ingestion:delegated_execution_berserker:1"
-		capability   = "capability-001"
-	)
-	inbox, err := h.fsStore.EnsureProviderCompletionInbox(invocationID)
-	if err != nil {
-		t.Fatalf("ensure receipt inbox: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, attemptID, invocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
-		t.Fatalf("write ready receipt: %v", err)
-	}
+	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 1, "2026-03-01T12:00:04Z")
 
-	rt, err := NewRuntime(Config{
-		DB:            h.db,
-		Paths:         DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:       opencode.NewMemoryAdapter(),
-		WorkspaceRoot: h.runtimeDir,
-	})
-	if err != nil {
-		t.Fatalf("new runtime: %v", err)
-	}
+	rt := &Runtime{orchestrator: h.loop}
 	rt.beginStartupRecovery()
-	if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
-		t.Fatalf("recover durable execution state: %v", err)
-	}
+	rt.setStartupRecoveryPending(true, true, true)
 	if stage := rt.pendingStartupRecoveryStage(); stage != startupRecoveryStageGuards {
 		t.Fatalf("startup recovery stage=%d, want guards", stage)
 	}
-	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
-		t.Fatalf("guard-deferred startup ingested receipt: found=%t err=%v", found, err)
+	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("terminal handoff reached SQLite before guardian replay finished: rows=%d", count)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("guardian-deferred startup settled handoff early: found=%t err=%v", found, err)
+	}
+	if _, err := os.Stat(providerTerminalHandoffTestPath(h.runtimeDir, invocation.ProviderInvocationID)); err != nil {
+		t.Fatalf("guardian-deferred startup removed file-only handoff: %v", err)
 	}
 
 	caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
 	if err != nil {
 		t.Fatalf("finish deferred guard stage: %v", err)
 	}
-	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageReceipts {
-		t.Fatalf("guard end-of-page did not advance only to receipts: caught_up=%t stage=%d", caughtUp, rt.pendingStartupRecoveryStage())
+	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageHandoffs {
+		t.Fatalf("guardian stage did not advance to terminal handoffs: caught_up=%t stage=%d", caughtUp, rt.pendingStartupRecoveryStage())
 	}
-	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
-		t.Fatalf("receipt ingested before guard end-of-page returned: found=%t err=%v", found, err)
+	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("handoff stage ran before guard stage returned: rows=%d", count)
 	}
 
-	if _, err := rt.replayPendingStartupRecovery(context.Background()); err != nil {
-		t.Fatalf("replay receipt stage: %v", err)
+	caughtUp, err = rt.replayPendingStartupRecovery(context.Background())
+	if err != nil {
+		t.Fatalf("replay terminal handoff stage: %v", err)
 	}
-	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || !found {
-		t.Fatalf("receipt was not ingested after guard stage completed: found=%t err=%v", found, err)
+	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageLostHandoffs {
+		t.Fatalf("handoff stage did not advance to lost-handoff settlement: caught_up=%t stage=%d", caughtUp, rt.pendingStartupRecoveryStage())
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
+		t.Fatalf("file-only handoff did not settle before lost-handoff stage: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+
+	caughtUp, err = rt.replayPendingStartupRecovery(context.Background())
+	if err != nil || !caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageComplete {
+		t.Fatalf("lost-handoff stage completion: caught_up=%t stage=%d err=%v", caughtUp, rt.pendingStartupRecoveryStage(), err)
 	}
 }
 
-func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksGateAndReceiptIngestion(t *testing.T) {
-	h := newReceiptIngestionHarness(t)
-	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
-		h.addPendingGuardEvidence(t, index)
-	}
-
-	const blockedGuardID = "guard_startup_replay_002"
-	blockedSum := sha256.Sum256([]byte(blockedGuardID))
-	blockedEvidence := filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence", fmt.Sprintf("%x.json", blockedSum[:]))
-	if err := os.Remove(blockedEvidence); err != nil {
+func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
+	h.addPendingGuardEvidence(t, 2)
+	const blockedGuardID = "guard_terminal_handoff_002"
+	if err := os.Remove(providerGuardEvidencePath(h.runtimeDir, blockedGuardID)); err != nil {
 		t.Fatalf("remove blocked guard evidence: %v", err)
 	}
+	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
+	if err != nil || !found {
+		t.Fatalf("load first guarded invocation: found=%t err=%v", found, err)
+	}
+	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 1, "2026-03-01T12:00:04Z")
 
-	const (
-		invocationID = "pinv_receipt_ingestion_001"
-		attemptID    = "run_receipt_ingestion:delegated_execution_berserker:1"
-		capability   = "capability-001"
-	)
-	inbox, err := h.fsStore.EnsureProviderCompletionInbox(invocationID)
-	if err != nil {
-		t.Fatalf("ensure receipt inbox: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(inbox, "completion.json"), receiptWire(t, attemptID, invocationID, capability, "Builder complete.", `{}`), 0o600); err != nil {
-		t.Fatalf("write ready receipt: %v", err)
-	}
-
-	rt, err := NewRuntime(Config{
-		DB:            h.db,
-		Paths:         DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:       opencode.NewMemoryAdapter(),
-		WorkspaceRoot: h.runtimeDir,
-	})
-	if err != nil {
-		t.Fatalf("new runtime: %v", err)
-	}
+	rt := &Runtime{orchestrator: h.loop}
 	rt.orchestrator.processGuardAbsent = func(guard executionstore.ProviderProcessGuard) bool {
 		return guard.GuardID != blockedGuardID
 	}
@@ -1464,51 +1445,81 @@ func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksGateAndReceiptIngestion(t 
 	if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
 		t.Fatalf("recover durable execution state: %v", err)
 	}
-
 	if stage := rt.pendingStartupRecoveryStage(); stage != startupRecoveryStageGuards {
 		t.Fatalf("startup recovery stage=%d, want guards", stage)
 	}
 	if rt.startupRecoveryIsOpen() {
 		t.Fatal("live unproven guard opened the startup gate")
 	}
-	if rt.startupGuardCursor != "guard_startup_replay_001" {
+	if rt.startupGuardCursor != "guard_terminal_handoff_001" {
 		t.Fatalf("startup guard cursor=%q, want preceding guard", rt.startupGuardCursor)
 	}
-	if got := countReceiptRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`); got != 1 {
+	if got := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`); got != 1 {
 		t.Fatalf("startup guard replay passed blocked guard: quiescent=%d, want 1", got)
 	}
-	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
-		t.Fatalf("blocked guard allowed receipt ingestion: found=%t err=%v", found, err)
+	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
+		t.Fatalf("blocked guardian stage replayed handoff into SQLite: rows=%d", count)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("blocked guardian stage settled handoff: found=%t err=%v", found, err)
 	}
 
 	caughtUp, err := rt.replayPendingStartupRecovery(context.Background())
 	if err != nil {
 		t.Fatalf("replay blocked guard stage: %v", err)
 	}
-	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageGuards || rt.startupRecoveryIsOpen() || rt.startupGuardCursor != "guard_startup_replay_001" {
+	if caughtUp || rt.pendingStartupRecoveryStage() != startupRecoveryStageGuards || rt.startupRecoveryIsOpen() || rt.startupGuardCursor != "guard_terminal_handoff_001" {
 		t.Fatalf("blocked guard advanced startup recovery: caught_up=%t stage=%d open=%t cursor=%q", caughtUp, rt.pendingStartupRecoveryStage(), rt.startupRecoveryIsOpen(), rt.startupGuardCursor)
-	}
-	if _, found, err := h.store.GetProviderCompletionReceiptEvidence(context.Background(), invocationID); err != nil || found {
-		t.Fatalf("repeated blocked guard replay allowed receipt ingestion: found=%t err=%v", found, err)
 	}
 }
 
-func TestDeferredStartupRecoveryUsesBoundedPassesBeforeOpeningGate(t *testing.T) {
+func persistFileOnlyHandoffForRuntimeTest(t *testing.T, h terminalHandoffHarness, invocation executionstore.ProviderInvocation, index int, createdAt string) {
+	t.Helper()
+	job := h.baseHandoffJob(invocation, index)
+	configureSuccessfulHandoff(&job, "Builder complete.")
+	payloadJSON, err := marshalExecutionOutboxPayload(job)
+	if err != nil {
+		t.Fatalf("marshal runtime test handoff payload: %v", err)
+	}
+	wire, err := json.Marshal(providerTerminalHandoffWire{
+		Version:              providerTerminalHandoffWireVersion,
+		ProviderInvocationID: invocation.ProviderInvocationID,
+		AttemptID:            invocation.AttemptID,
+		RunID:                invocation.RunID,
+		NodeRunID:            invocation.NodeRunID,
+		ExpectedLeaseOwner:   job.expectedLeaseOwner,
+		ExpectedLeaseVersion: job.expectedLeaseVersion,
+		StreamObservation:    job.providerStreamObservation,
+		ExecutionPayloadJSON: payloadJSON,
+		CreatedAt:            createdAt,
+	})
+	if err != nil {
+		t.Fatalf("marshal runtime test handoff file: %v", err)
+	}
+	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, wire); err != nil {
+		t.Fatalf("persist runtime test handoff file: %v", err)
+	}
+}
+
+func TestDeferredStartupRecoveryUsesBoundedGuardianHandoffAndLostPasses(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
-		seed                func(*testing.T, receiptIngestionHarness, int)
-		count               func(*testing.T, receiptIngestionHarness) int
+		seed                func(*testing.T, terminalHandoffHarness, int)
+		count               func(*testing.T, terminalHandoffHarness) int
+		processGuardRoot    bool
 		wantAfterInitial    int
 		wantAfterFirstCycle int
 	}{
 		{
-			name: "provider process guards",
-			seed: func(t *testing.T, h receiptIngestionHarness, items int) {
+			name:             "provider process guards",
+			processGuardRoot: true,
+			seed: func(t *testing.T, h terminalHandoffHarness, items int) {
+				h.loop.processGuardRuntimeRoot = h.runtimeDir
 				for index := 1; index <= items; index++ {
 					h.addPendingGuardEvidence(t, index)
 				}
 			},
-			count: func(t *testing.T, h receiptIngestionHarness) int {
+			count: func(t *testing.T, h terminalHandoffHarness) int {
 				var count int
 				if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&count); err != nil {
 					t.Fatalf("count quiescent process guards: %v", err)
@@ -1519,28 +1530,24 @@ func TestDeferredStartupRecoveryUsesBoundedPassesBeforeOpeningGate(t *testing.T)
 			wantAfterFirstCycle: providerlimits.StartupReplayMaxItems + providerlimits.StartupReplayBatchItems,
 		},
 		{
-			name: "lost provider terminal handoffs",
-			seed: func(t *testing.T, h receiptIngestionHarness, items int) {
+			name: "provider terminal handoffs",
+			seed: func(t *testing.T, h terminalHandoffHarness, items int) {
 				for index := 1; index <= items; index++ {
-					invocation, _, _ := h.addInvocation(t, index)
-					h.runningHandoffJob(t, invocation, "", "", index)
+					invocation := h.addInvocation(t, index)
+					h.persistHandoffJob(t, invocation, index)
 				}
 			},
-			count: func(t *testing.T, h receiptIngestionHarness) int {
-				var count int
-				if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`).Scan(&count); err != nil {
-					t.Fatalf("count settled lost handoffs: %v", err)
-				}
-				return count
+			count: func(t *testing.T, h terminalHandoffHarness) int {
+				return countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements WHERE outcome = 'success'`)
 			},
-			wantAfterInitial:    0,
-			wantAfterFirstCycle: 0,
+			wantAfterInitial:    providerlimits.StartupReplayMaxItems,
+			wantAfterFirstCycle: providerlimits.StartupReplayMaxItems + providerlimits.StartupReplayBatchItems,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const extraBatches = 1
 			items := providerlimits.StartupReplayMaxItems + extraBatches*providerlimits.StartupReplayBatchItems + 1
-			h := newReceiptIngestionHarness(t)
+			h := newTerminalHandoffHarness(t)
 			tc.seed(t, h, items)
 
 			rt, err := NewRuntime(Config{
@@ -1551,6 +1558,11 @@ func TestDeferredStartupRecoveryUsesBoundedPassesBeforeOpeningGate(t *testing.T)
 			})
 			if err != nil {
 				t.Fatalf("new runtime: %v", err)
+			}
+			if tc.processGuardRoot {
+				rt.orchestrator.processGuardRuntimeRoot = h.runtimeDir
+			} else {
+				rt.orchestrator.processGuardRuntimeRoot = ""
 			}
 			rt.beginStartupRecovery()
 			if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
@@ -1647,11 +1659,16 @@ func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 
 	loop := &orchestrationLoop{
 		db:             db,
 		transition:     state.NewTransitionService(db, nil),
 		executionStore: store,
+		fsStore:        fsStore,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC)
 		},
@@ -2164,7 +2181,7 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_reviewer_restore', 'wfdef_1', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_restore', 'run_1', 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent_builder_restore', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_reviewer_restore', 'run_1', 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent_reviewer_restore', 1, '`+now+`', NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, base_snapshot_id, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_restore', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session_builder_restore', 'snap_attempt_base', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, base_snapshot_id, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_restore', 'snap_attempt_base', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, created_at, updated_at) VALUES ('run_1:execution_review_shieldmaiden:1', 'run_1', 'nr_reviewer_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_reviewer_restore', 'ses_reviewer_restore', '`+now+`', '`+now+`', '`+now+`')`)
 	if err := executionstore.New(db).QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{CancelOutboxID: "cancel_reviewer_restore", AttemptID: "run_1:execution_review_shieldmaiden:1", RunID: "run_1", NodeRunID: "nr_reviewer_restore", SessionID: "session_reviewer_restore", ReasonCode: "agent_unresponsive", RequestedAt: now, CreatedAt: now}); err != nil {
 		t.Fatalf("queue active reviewer cancellation: %v", err)
@@ -2995,6 +3012,7 @@ func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testi
 		err:                       errors.New("provider transport failed"),
 		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, FinalTurnID: "turn_workspace_limit", FinalStepID: "step_workspace_limit", FinalSequence: 1, RawFinishReason: "error", NormalizedFinishReason: "error", CanonicalTerminalText: "Provider transport failed after modifying the workspace.", ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true, ProcessGuards: []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_workspace_limit", GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}}},
 	}
+	persistProviderTerminalHandoffForTest(t, &loop, &result)
 	if err := loop.commitExecutionCompletion(context.Background(), result); err != nil {
 		t.Fatalf("commit execution completion: %v", err)
 	}
@@ -3724,7 +3742,7 @@ func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntrie
 	}
 }
 
-func TestPrepareExecutionWorkspaceInstallsManagedOpenCodeOverlay(t *testing.T) {
+func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -3740,110 +3758,77 @@ func TestPrepareExecutionWorkspaceInstallsManagedOpenCodeOverlay(t *testing.T) {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(workspaceRoot, ".kingdom", "opencode", "tools", "kingdom_complete_attempt.ts"))
-	if err != nil {
-		t.Fatalf("read managed completion tool: %v", err)
-	}
-	content := string(raw)
-	for _, token := range []string{
-		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION",
-		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID",
-		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID",
-		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY",
-		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR",
-		"final_text: tool.schema.string().describe(\"The full final canonical response text for this attempt.\")",
-		"protocol_version: protocolVersion",
-		"attempt_id: attemptID",
-		"invocation_id: invocationID",
-		"completion_capability: completionCapability",
-		"const finalText = args.final_text.trim()",
+	profilesRoot := filepath.Join(workspaceRoot, ".kingdom", "opencode", "agents")
+	for _, profile := range []string{
+		"advisor.md",
+		"builder.md",
+		"chancellor.md",
+		"council.md",
+		"king.md",
+		"nightraven.md",
+		"planner.md",
+		"qa_scout.md",
+		"reviewer.md",
+		"tester.md",
 	} {
-		if !strings.Contains(content, token) {
-			t.Fatalf("expected installed managed completion tool to include %q, got %q", token, content)
+		if _, err := os.Stat(filepath.Join(profilesRoot, profile)); err != nil {
+			t.Fatalf("expected managed profile %q to be installed: %v", profile, err)
 		}
 	}
-	for _, token := range []string{
-		"attempt_id`, `invocation_id`, and `completion_capability` exactly as provided",
-		"protocol_version: tool.schema.string()",
-		"attempt_id: tool.schema.string()",
-		"invocation_id: tool.schema.string()",
-		"completion_capability: tool.schema.string()",
-		"protocol_version: args.protocol_version",
-		"attempt_id: args.attempt_id",
-		"invocation_id: args.invocation_id",
-		"completion_capability: args.completion_capability",
-	} {
-		if strings.Contains(content, token) {
-			t.Fatalf("expected installed managed completion tool to ignore caller-supplied handshake field %q", token)
-		}
-	}
-	if !strings.Contains(content, "return `Kingdom completion receipt recorded for invocation ${invocationID}.`") {
-		t.Fatalf("expected installed managed completion tool to acknowledge the runtime invocation id, got %q", content)
-	}
-	if _, err := os.Stat(filepath.Join(workspaceRoot, ".kingdom", "opencode", "agents", "advisor.md")); err != nil {
-		t.Fatalf("expected managed agent overlay to be installed, stat err=%v", err)
+	retiredTool := filepath.Join(workspaceRoot, ".kingdom", "opencode", "tools", "kingdom_complete_attempt.ts")
+	if _, err := os.Stat(retiredTool); err == nil {
+		t.Fatalf("retired completion tool was installed at %q", retiredTool)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat retired completion tool: %v", err)
 	}
 }
 
-func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptDir(t *testing.T) {
+func TestActivateProviderInvocationForExecutionPersistsOpenServerResponseInvocation(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db)
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_receipt_setup', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_receipt_setup', 'Receipt setup', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_receipt_setup', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_receipt_setup_1', 'wfdef_receipt_setup', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_receipt_setup', NULL, 'decree_receipt_setup', 'wfdef_receipt_setup', 'running', 'approved', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_receipt_setup_1', 'run_receipt_setup', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_receipt_setup', 1, '%s', NULL)`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_server_response_setup', 'builder-berserker', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_server_response_setup', 'Server response setup', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_server_response_setup', 'royal-decree-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_server_response_setup_1', 'wfdef_server_response_setup', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_server_response_setup', NULL, 'decree_server_response_setup', 'wfdef_server_response_setup', 'running', 'approved', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_server_response_setup_1', 'run_server_response_setup', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_server_response_setup', 1, '%s', NULL)`, now))
 	store := executionstore.New(db)
-	attemptID := "run_receipt_setup:delegated_execution_berserker:1"
+	attemptID := "run_server_response_setup:delegated_execution_berserker:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
-		RunID:                 "run_receipt_setup",
-		NodeRunID:             "nr_receipt_setup_1",
+		RunID:                 "run_server_response_setup",
+		NodeRunID:             "nr_server_response_setup_1",
 		ExecutionMode:         executionstore.ExecutionModeProviderBacked,
-		CompletionMode:        executionstore.ProviderCompletionModeReceiptRequired,
+		CompletionMode:        executionstore.ProviderCompletionModeServerResponse,
 		ProviderTimeoutMillis: 60000,
-		SessionRef:            "session_receipt_setup",
+		SessionRef:            "session_server_response_setup",
 		CreatedAt:             now,
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
 	claim, acquired, err := store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
 		AttemptID:  attemptID,
-		LeaseOwner: "receipt-setup-worker",
+		LeaseOwner: "server-response-setup-worker",
 		LeaseUntil: "2026-03-01T12:01:00Z",
 		ClaimedAt:  now,
 	})
 	if err != nil || !acquired {
 		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
-	runtimeRoot := t.TempDir()
-	fsStore, err := runtimefs.NewStore(db, runtimeRoot)
-	if err != nil {
-		t.Fatalf("new runtime fs store: %v", err)
-	}
-	loop := orchestrationLoop{executionStore: store, fsStore: fsStore, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
-	workspaceRoot := t.TempDir()
-
-	providerInvocationID, providerInvocationAt, completionCapability, receiptDir, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_receipt_setup"}, nodeAttempt{NodeRunID: "nr_receipt_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_receipt_setup", executionstore.ProviderCompletionModeReceiptRequired, "2026-03-01T12:00:00Z", "")
+	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
+	providerInvocationID, providerInvocationAt, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_server_response_setup"}, nodeAttempt{NodeRunID: "nr_server_response_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_server_response_setup", executionstore.ProviderCompletionModeServerResponse, "2026-03-01T12:00:00Z", "")
 	if err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	if strings.TrimSpace(providerInvocationID) == "" || strings.TrimSpace(completionCapability) == "" {
-		t.Fatalf("expected provider invocation id and completion capability, got invocation=%q capability=%q", providerInvocationID, completionCapability)
+	if strings.TrimSpace(providerInvocationID) == "" {
+		t.Fatal("expected provider invocation id")
 	}
 	if providerInvocationAt != "2026-03-01T12:00:00Z" {
 		t.Fatalf("expected provider invocation timestamp to round-trip, got %q", providerInvocationAt)
-	}
-	if _, err := os.Stat(receiptDir); err != nil {
-		t.Fatalf("expected receipt dir to exist: %v", err)
-	}
-	if strings.HasPrefix(receiptDir, workspaceRoot+string(filepath.Separator)) {
-		t.Fatalf("receipt inbox %q must be independent of execution workspace %q", receiptDir, workspaceRoot)
 	}
 	invocation, found, err := store.GetProviderInvocation(context.Background(), providerInvocationID)
 	if err != nil {
@@ -3854,6 +3839,9 @@ func TestActivateProviderInvocationForExecutionPersistsOpenInvocationAndReceiptD
 	}
 	if invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
 		t.Fatalf("expected open provider invocation, got %q", invocation.InvocationState)
+	}
+	if invocation.CompletionMode != executionstore.ProviderCompletionModeServerResponse {
+		t.Fatalf("completion mode=%q, want server_response", invocation.CompletionMode)
 	}
 }
 
@@ -4489,6 +4477,9 @@ func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 	}
 	if !ctxInfo.WorkspaceEmpty {
 		t.Fatal("expected empty project root to report workspace_empty=true")
+	}
+	if ctxInfo.ProjectRootBoundary != ctxInfo.ExecutionRoot {
+		t.Fatalf("expected direct-mode OpenCode boundary to be the isolated execution target %q, got %q", ctxInfo.ExecutionRoot, ctxInfo.ProjectRootBoundary)
 	}
 
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed"), 0o644); err != nil {
@@ -5885,12 +5876,17 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 
 	clockNow := time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC)
 	loop := orchestrationLoop{
 		db:             db,
 		transition:     state.NewTransitionService(db, nil),
 		executionStore: store,
+		fsStore:        fsStore,
 		now: func() time.Time {
 			return clockNow
 		},
@@ -5899,7 +5895,7 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 	result := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_1", RunStatus: "running"},
 		node:                      nodeDefinition{NodeID: "decree_intake", NodeClass: "decree_intake", RequiredRole: "king"},
-		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king"},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		providerInvocationID:      invocationID,
 		completionMode:            executionstore.ProviderCompletionModeServerResponse,
@@ -5908,6 +5904,9 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 		outputText:                `{"summary":"first canonical response"}`,
 		providerStreamObservation: testSuccessfulExecuteObservation(opencode.ExecuteRequest{InvocationID: invocationID}, `{"summary":"first canonical response"}`),
 		outcome:                   opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed", EvidenceSource: "stream"},
+	}
+	if err := loop.persistProviderTerminalHandoff(ctx, &result); err != nil {
+		t.Fatalf("persist provider terminal handoff: %v", err)
 	}
 	if err := loop.commitProviderExecutionCompletion(ctx, result); err != nil {
 		t.Fatalf("commit canonical provider result: %v", err)
@@ -9976,7 +9975,7 @@ func TestDispatchNodeAttemptRuntimeOwnedDecreeIntakeIgnoresGitWorktreePublishMod
 	}
 }
 
-func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t *testing.T) {
+func TestDispatchNodeAttemptResponseFirstPlanDraftingUsesIsolatedWorkspaceWithoutAttemptArtifacts(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -10005,7 +10004,6 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t
 		t.Fatalf("drain decree_intake completion outbox: %v", err)
 	}
 
-	rt.orchestrator.fsStore = nil
 	if err := rt.orchestrator.Tick(context.Background()); err != nil {
 		t.Fatalf("tick response-first plan_drafting: %v", err)
 	}
@@ -10036,7 +10034,7 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t
 		t.Fatalf("count response-first run execution targets: %v", err)
 	}
 	if executionTargetCount != 0 {
-		t.Fatalf("expected response-first plan_drafting to avoid execution target creation, got %d", executionTargetCount)
+		t.Fatalf("response-first plan_drafting persisted %d execution targets before workspace ownership", executionTargetCount)
 	}
 
 	var snapshotCount int
@@ -10044,8 +10042,18 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t
 		t.Fatalf("count response-first filesystem snapshots: %v", err)
 	}
 	if snapshotCount != 0 {
-		t.Fatalf("expected response-first plan_drafting to avoid filesystem snapshots, got %d", snapshotCount)
+		t.Fatalf("response-first plan_drafting persisted %d filesystem snapshots before workspace ownership", snapshotCount)
 	}
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		var pendingCleanup int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND response_only_workspace_cleanup_pending_at IS NOT NULL`).Scan(&pendingCleanup); err != nil {
+			return fmt.Errorf("query response-only workspace cleanup debt: %w", err)
+		}
+		if pendingCleanup != 0 {
+			return fmt.Errorf("response-only workspace cleanup debt remains: %d", pendingCleanup)
+		}
+		return nil
+	})
 
 	var baseSnapshotID string
 	var resultSnapshotID string
@@ -10068,8 +10076,12 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingSkipsWorkspacePreparation(t
 	if len(requests) != 1 {
 		t.Fatalf("expected one provider request for plan_drafting, got %d", len(requests))
 	}
-	if requests[0].WorkspacePath != projectRoot {
-		t.Fatalf("expected response-first plan_drafting workspace path %q, got %q", projectRoot, requests[0].WorkspacePath)
+	expectedWorkspacePath := rt.orchestrator.fsStore.ResponseOnlyWorkspaceRoot("run_dispatch", "run_dispatch:plan_drafting:1")
+	if requests[0].WorkspacePath != expectedWorkspacePath {
+		t.Fatalf("expected response-first plan_drafting attempt-scoped workspace path %q, got %q", expectedWorkspacePath, requests[0].WorkspacePath)
+	}
+	if filepath.Clean(expectedWorkspacePath) == filepath.Clean(rt.orchestrator.fsStore.RunTargetRoot("run_dispatch")) {
+		t.Fatalf("response-only workspace reused the durable execution target %q", expectedWorkspacePath)
 	}
 	var evidencePayload string
 	if err := db.QueryRow(`SELECT pce.payload_json
@@ -10272,7 +10284,7 @@ func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocati
 	if err := db.QueryRow(`SELECT invocation_state, COUNT(1) OVER() FROM provider_invocations WHERE attempt_id = ?`, attemptID).Scan(&invocationState, &invocationCount); err != nil {
 		t.Fatalf("query invalidated provider invocation: %v", err)
 	}
-	if invocationCount != 1 || invocationState != string(executionstore.ProviderInvocationStateInvalidHandshake) {
+	if invocationCount != 1 || invocationState != string(executionstore.ProviderInvocationStateInvalidated) {
 		t.Fatalf("unlaunched provider invocation state=%q count=%d, want invalidated single invocation", invocationState, invocationCount)
 	}
 }
@@ -10917,11 +10929,16 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 	if err := closedEventsDB.Close(); err != nil {
 		t.Fatalf("close event ingestor db: %v", err)
 	}
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
 
 	loop := orchestrationLoop{
 		db:             db,
 		events:         state.NewAttemptEventIngestor(closedEventsDB, nil),
 		executionStore: execStore,
+		fsStore:        fsStore,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 5, 0, time.UTC)
 		},
@@ -10929,7 +10946,7 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 	job := asyncExecutionResult{
 		run:                  runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
 		node:                 nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt:              nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attempt:              nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:            attemptID,
 		providerInvocationID: providerInvocationID,
 		providerInvocationAt: "2026-03-01T12:00:00Z",
@@ -10947,6 +10964,7 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 			InvocationID: providerInvocationID,
 		}, "Decree intake completed despite telemetry failure."),
 	}
+	persistProviderTerminalHandoffForTest(t, &loop, &job)
 
 	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
 		t.Fatalf("commit execution completion: %v", err)
@@ -11676,6 +11694,20 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		ProcessQuiescent:       true,
 		ProcessGuards:          []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_" + sanitizeFileToken(providerInvocationID), GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}},
 	}
+	handoff, err := store.PersistProviderTerminalHandoff(context.Background(), executionstore.PersistProviderTerminalHandoffRequest{
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		RunID:                runID,
+		NodeRunID:            nodeRunID,
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		StreamObservation:    observation,
+		PayloadJSON:          `{}`,
+		CreatedAt:            createdAt,
+	})
+	if err != nil {
+		t.Fatalf("persist canonical execution terminal handoff %q: %v", attemptID, err)
+	}
 	outboxID := fmt.Sprintf("outbox_exec_%s", sanitizeFileToken(attemptID))
 	if _, err := store.SettleProviderCompletionAndTerminal(context.Background(), executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement: executionstore.FinalizeProviderCompletionSettlementRequest{
@@ -11694,6 +11726,7 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   claim.LeaseOwner,
 		ExpectedLeaseVersion: claim.LeaseVersion,
+		TerminalHandoffID:    handoff.Handoff.HandoffID,
 		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: requiredRole},
 		Terminal: executionstore.CommitTerminalRequest{
 			OutboxID:           outboxID,
@@ -11745,6 +11778,36 @@ func attachQuiescentProviderProcessGuard(t *testing.T, store *executionstore.Sto
 	}
 }
 
+func recordTestQuiescentProviderProcessGuard(store *executionstore.Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64, occurredAt string) error {
+	guardID := "fixture_guard_" + sanitizeFileToken(invocationID)
+	capability := "fixture-guardian-capability"
+	acknowledged, err := store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
+		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
+		CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child",
+		QuiescenceCapability: capability, ExpectedLeaseOwner: leaseOwner, ExpectedLeaseVersion: leaseVersion, StartedAt: occurredAt, AcknowledgedAt: occurredAt,
+	})
+	if err != nil || acknowledged.Idempotent {
+		return fmt.Errorf("acknowledge fixture process guard %q: result=%#v err=%v", invocationID, acknowledged, err)
+	}
+	result := processguardian.Result{Ownership: processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: 2, TreeIdentityToken: "fixture-child", Platform: "unix_process_group", QuiescenceCapability: capability}, ExitCode: 0, Quiescent: true}
+	evidence, err := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: result})
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(evidence)
+	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
+		Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child", QuiescenceCapability: capability,
+		ExitedAt: occurredAt, QuiescentAt: occurredAt, EvidenceSHA256: fmt.Sprintf("%x", sum[:]), EvidenceJSON: string(evidence),
+	}); err != nil {
+		return fmt.Errorf("ingest fixture process guard %q: %w", invocationID, err)
+	}
+	return nil
+}
+
 func seedPendingCanonicalExecutionOutbox(t *testing.T, db *sql.DB, result asyncExecutionResult, terminalState, createdAt string) {
 	t.Helper()
 	store := executionstore.New(db)
@@ -11787,10 +11850,6 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 	if !found {
 		t.Fatalf("expected attempt %q before creating provider invocation", attemptID)
 	}
-	completionCapability := ""
-	if attempt.CompletionMode == executionstore.ProviderCompletionModeReceiptRequired {
-		completionCapability = fmt.Sprintf("cap_%s", sanitizeFileToken(attemptID))
-	}
 	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
@@ -11798,7 +11857,6 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     sessionID,
 		ProviderSessionID:    providerSessionID,
-		CompletionCapability: completionCapability,
 		IssuedAt:             issuedAt,
 		CreatedAt:            issuedAt,
 		CompletionMode:       attempt.CompletionMode,
@@ -12661,6 +12719,7 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
 	adapter := &timeoutCancelObserverAdapter{}
+	attachTimeoutCancellationQuiescence(adapter, db)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
@@ -12687,7 +12746,11 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 
 	awaitRunStatus(t, db, "run_timeout_diag", 3*time.Second, 25*time.Millisecond, func(status string) error {
 		if status != "succeeded" {
-			return fmt.Errorf("run_timeout_diag status=%s", status)
+			var totalGuards, unresolvedGuards int
+			var handoffPending, recoveryRequired string
+			_ = db.QueryRow(`SELECT COUNT(1), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0) FROM provider_process_guards WHERE attempt_id = 'run_timeout_diag:decree_intake:1'`).Scan(&totalGuards, &unresolvedGuards)
+			_ = db.QueryRow(`SELECT COALESCE(terminal_handoff_pending_at, ''), COALESCE(terminal_recovery_required_at, '') FROM provider_invocations WHERE provider_invocation_id = ?`, timeoutDiagnosticProviderInvocationID).Scan(&handoffPending, &recoveryRequired)
+			return fmt.Errorf("run_timeout_diag status=%s guards=%d unresolved=%d pending=%q recovery=%q", status, totalGuards, unresolvedGuards, handoffPending, recoveryRequired)
 		}
 		if adapter.cancelCalls() == 0 {
 			return fmt.Errorf("expected cancel call after recent activity went inactive")
@@ -12703,6 +12766,7 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "runtime_observation", `{"execution_diagnostics":{"event_count":3,"execution_path_diagnostics_snapshot":{"stdout_event_count":7,"step_finish_seen":true,"last_stdout_event_at":"2026-03-01T12:00:00Z"}}}`, time.Now().UTC().Format(time.RFC3339Nano))
 
 	adapter := &timeoutCancelObserverAdapter{}
+	attachTimeoutCancellationQuiescence(adapter, db)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
@@ -12778,7 +12842,7 @@ func TestRuntimeSkipsTimeoutForTerminalObservedDurableAttempt(t *testing.T) {
 	}
 }
 
-func TestProviderActivityTimeoutRecencyUsesRuntimeReceiptTime(t *testing.T) {
+func TestProviderActivityTimeoutRecencyUsesRuntimeObservationTime(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedRunForTimeoutDiagnostics(t, db)
@@ -12828,7 +12892,7 @@ func TestProviderActivityTimeoutRecencyUsesRuntimeReceiptTime(t *testing.T) {
 		t.Fatalf("query provider activity created_at: %v", err)
 	}
 	if createdAt != receivedAt.Format(time.RFC3339Nano) {
-		t.Fatalf("expected provider activity event created_at to use runtime receipt time %q, got %q", receivedAt.Format(time.RFC3339Nano), createdAt)
+		t.Fatalf("expected provider activity event created_at to use runtime observation time %q, got %q", receivedAt.Format(time.RFC3339Nano), createdAt)
 	}
 }
 
@@ -12925,6 +12989,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	seedRunForTimeoutDiagnostics(t, db)
 
 	adapter := &timeoutCancelObserverAdapter{}
+	attachTimeoutCancellationQuiescence(adapter, db)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
@@ -13751,6 +13816,7 @@ type timeoutCancelObserverAdapter struct {
 	mu             sync.Mutex
 	cancelCount    int
 	cancelRequests []opencode.CancelRequest
+	onCancel       func() error
 }
 
 type attemptNotFoundTimeoutAdapter struct {
@@ -13805,11 +13871,22 @@ type errorMetadataExecutionAdapter struct {
 }
 
 func callOnProcessStarted(req opencode.ExecuteRequest) {
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		_ = req.OnProcessGuardOwnership(context.Background(), ownership)
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		_ = req.OnProcessGuardQuiescence(context.Background(), quiescence)
+	}
+}
+
+func testProcessGuardCallbacks(req opencode.ExecuteRequest) (opencode.ProcessGuardOwnership, opencode.ProcessGuardQuiescence) {
 	guardID := "test_guard_" + sanitizeFileToken(req.InvocationID)
 	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 101, GuardianIdentityToken: "test-guardian", ChildPID: 102, ChildIdentityToken: "test-child", TreeID: 102, TreeIdentityToken: "test-child", Platform: "unix_process_group", QuiescenceCapability: "test-guardian-capability"}
-	if req.OnProcessGuardOwnership != nil {
-		_ = req.OnProcessGuardOwnership(context.Background(), opencode.ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership})
-	}
+	ownershipEvent := opencode.ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}
 	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
 	evidence, _ := json.Marshal(struct {
 		Type   string                 `json:"type"`
@@ -13818,12 +13895,8 @@ func callOnProcessStarted(req opencode.ExecuteRequest) {
 	sum := sha256.Sum256(evidence)
 	result.EvidenceJSON = string(evidence)
 	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
-	if req.OnProcessGuardQuiescence != nil {
-		_ = req.OnProcessGuardQuiescence(context.Background(), opencode.ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result})
-	}
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
+	quiescenceEvent := opencode.ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}
+	return ownershipEvent, quiescenceEvent
 }
 
 func testSuccessfulExecuteObservation(req opencode.ExecuteRequest, outputText string) opencode.InvocationStreamObservation {
@@ -13856,7 +13929,6 @@ func (a *timeoutCancelObserverAdapter) Execute(_ context.Context, req opencode.E
 
 func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.CancelRequest) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.cancelCount++
 	a.cancelRequests = append(a.cancelRequests, opencode.CancelRequest{
 		SessionID:  strings.TrimSpace(req.SessionID),
@@ -13864,6 +13936,11 @@ func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.Ca
 		Reason:     strings.TrimSpace(req.Reason),
 		OccurredAt: strings.TrimSpace(req.OccurredAt),
 	})
+	onCancel := a.onCancel
+	a.mu.Unlock()
+	if onCancel != nil {
+		return onCancel()
+	}
 	return nil
 }
 
@@ -13948,9 +14025,6 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	outputText := ""
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
-	}
-	if err := writeTestCompletionReceipt(req, outputText, structuredPayloadJSONForTestOutput(outputText)); err != nil {
-		return opencode.ExecuteResponse{}, err
 	}
 	return opencode.ExecuteResponse{
 		Accepted:             true,
@@ -14060,9 +14134,6 @@ func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req openco
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	if err := writeTestCompletionReceipt(req, outputText, structuredPayloadJSONForTestOutput(outputText)); err != nil {
-		return opencode.ExecuteResponse{}, err
-	}
 	return opencode.ExecuteResponse{
 		Accepted:             true,
 		OutputText:           outputText,
@@ -14112,11 +14183,6 @@ func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencod
 	if strings.TrimSpace(resp.Outcome.State) == "" || strings.TrimSpace(resp.Outcome.State) == "success" {
 		resp.StreamObservation = testSuccessfulExecuteObservation(req, resp.OutputText)
 	}
-	if shouldAcceptTestReceipt(resp) {
-		if err := writeTestCompletionReceipt(req, resp.OutputText, structuredPayloadJSONForTestOutput(resp.OutputText)); err != nil {
-			return opencode.ExecuteResponse{}, err
-		}
-	}
 	return resp, nil
 }
 
@@ -14130,30 +14196,6 @@ func (a *outcomeSequenceExecutionAdapter) Stream(context.Context, opencode.Strea
 	close(eventCh)
 	close(errCh)
 	return eventCh, errCh, nil
-}
-
-func shouldAcceptTestReceipt(resp opencode.ExecuteResponse) bool {
-	state := strings.TrimSpace(resp.Outcome.State)
-	return state == "" || state == "success"
-}
-
-func structuredPayloadJSONForTestOutput(outputText string) string {
-	for _, rawLine := range strings.Split(strings.TrimSpace(outputText), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			continue
-		}
-		upper := strings.ToUpper(line)
-		if strings.HasPrefix(upper, "VERDICT:") {
-			verdict := strings.TrimSpace(strings.TrimPrefix(upper, "VERDICT:"))
-			if verdict == "PASS" || verdict == "REWORK" {
-				raw, _ := json.Marshal(map[string]string{"verdict": verdict})
-				return string(raw)
-			}
-		}
-		break
-	}
-	return "{}"
 }
 
 func (a *errorMetadataExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
@@ -14185,23 +14227,39 @@ func newDelayedProcessStartExecutionAdapter() *delayedProcessStartExecutionAdapt
 }
 
 func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		_ = req.OnProcessGuardOwnership(context.Background(), ownership)
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+	if req.OnProviderSession != nil {
+		req.OnProviderSession("ses_test_" + sanitizeFileToken(req.InvocationID))
+	}
 	a.mu.Lock()
 	a.callCount++
 	call := a.callCount
 	a.mu.Unlock()
 
+	var executeErr error
 	if call == 1 {
 		select {
 		case <-a.blockFirst:
 		case <-ctx.Done():
-			return opencode.ExecuteResponse{}, ctx.Err()
+			executeErr = ctx.Err()
 		}
 	} else if call == 2 {
 		select {
 		case a.secondExecuteStarted <- struct{}{}:
 		default:
 		}
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		_ = req.OnProcessGuardQuiescence(context.Background(), quiescence)
+	}
+	if executeErr != nil {
+		return opencode.ExecuteResponse{}, executeErr
 	}
 
 	outputText := `{"summary":"ok"}`
@@ -14221,14 +14279,13 @@ func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req o
 		return opencode.ExecuteResponse{}, ctx.Err()
 	}
 	callOnProcessStarted(req)
-	if err := writeTestCompletionReceipt(req, `{"summary":"ok"}`, `{}`); err != nil {
-		return opencode.ExecuteResponse{}, err
-	}
+	outputText := `{"summary":"ok"}`
 	return opencode.ExecuteResponse{
 		Accepted:             true,
-		OutputText:           `{"summary":"ok"}`,
+		OutputText:           outputText,
 		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
 		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
 	}, nil
 }
 
@@ -14824,6 +14881,17 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 		ExpectedLeaseVersion: 1,
 	}); err != nil {
 		t.Fatalf("activate timeout diagnostic provider invocation: %v", err)
+	}
+}
+
+func attachTimeoutCancellationQuiescence(adapter *timeoutCancelObserverAdapter, db *sql.DB) {
+	var once sync.Once
+	var quiescenceErr error
+	adapter.onCancel = func() error {
+		once.Do(func() {
+			quiescenceErr = recordTestQuiescentProviderProcessGuard(executionstore.New(db), timeoutDiagnosticProviderInvocationID, "run_timeout_diag:decree_intake:1", "run_timeout_diag", "nr_timeout_diag_1", "runtime_orchestrator", 1, time.Now().UTC().Format(time.RFC3339Nano))
+		})
+		return quiescenceErr
 	}
 }
 

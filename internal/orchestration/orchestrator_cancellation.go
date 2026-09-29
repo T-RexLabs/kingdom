@@ -50,6 +50,9 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		if queryErr != nil {
 			return processed, queryErr
 		}
+		if o.executionAttemptInflight(rec.AttemptID) {
+			quiescent = false
+		}
 		if quiescent || rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
 			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
 			if err != nil {
@@ -67,6 +70,12 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 			}
 			if !quarantined {
 				return processed, fmt.Errorf("guardian evidence recovery for attempt %q no longer has a durable absence quarantine", rec.AttemptID)
+			}
+			if o.executionAttemptInflight(rec.AttemptID) {
+				if err := o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "The provider worker is still active, so Kingdom is waiting before restoring the shared workspace.", "awaiting_quiescence", publishedAt); err != nil {
+					return processed, err
+				}
+				continue
 			}
 			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
 			if err != nil {
@@ -98,6 +107,9 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		if queryErr != nil {
 			return processed, queryErr
 		}
+		if o.executionAttemptInflight(rec.AttemptID) {
+			quiescent = false
+		}
 		if quiescent {
 			completed, completeErr := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
 			if completeErr != nil {
@@ -115,6 +127,9 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 		quiescent, queryErr = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
 		if queryErr != nil {
 			return processed, queryErr
+		}
+		if o.executionAttemptInflight(rec.AttemptID) {
+			quiescent = false
 		}
 		var missing *opencode.AttemptNotFoundError
 		if quiescent && (err == nil || errors.As(err, &missing)) {
@@ -187,6 +202,9 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 	}
 	unlock := o.lockRunWorkspace(rec.RunID)
 	defer unlock()
+	if o.executionAttemptInflight(rec.AttemptID) {
+		return workspaceHandoffBlockedError{}
+	}
 	activeAttempts, err := o.executionStore.ListActiveRunAttempts(ctx, rec.RunID, rec.AttemptID)
 	if err != nil {
 		return err
@@ -202,7 +220,7 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 		if err != nil {
 			return err
 		}
-		if !quiescent {
+		if !quiescent || o.executionAttemptInflight(active.AttemptID) {
 			return workspaceHandoffBlockedError{}
 		}
 	}

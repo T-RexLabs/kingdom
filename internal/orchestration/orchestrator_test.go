@@ -35,14 +35,6 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	if strings.Contains(prompt, "kingdom_complete_attempt") {
 		t.Fatalf("expected runtime-owned prompt to omit completion tool guidance, got:\n%s", prompt)
 	}
-	for _, forbidden := range []string{
-		"Use the tool's default `attempt_id`, `invocation_id`, and `completion_capability` exactly as provided.",
-		"Do not edit, replace, or reuse those fields from another node, attempt, retry, or prior message.",
-	} {
-		if strings.Contains(prompt, forbidden) {
-			t.Fatalf("expected stale handshake guidance removed from prompt, found %q in:\n%s", forbidden, prompt)
-		}
-	}
 	if !strings.Contains(prompt, "- Assignment: Decree Intake") {
 		t.Fatalf("expected plain-language assignment in prompt, got:\n%s", prompt)
 	}
@@ -86,18 +78,18 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	}
 }
 
-func TestBuildNodePromptRendersCompletionModeSpecificFinalChecks(t *testing.T) {
+func TestBuildNodePromptUsesServerResponseCompletionForProviderNodes(t *testing.T) {
 	t.Parallel()
 
 	loop := &orchestrationLoop{}
 	builder := loop.buildNodePrompt(context.Background(), "run_1", "delegated_execution_berserker", "nr_builder", "builder-berserker", "delegated_execution", "Build a homepage", "council-member", "Plan", "Implement it.", "")
-	if !strings.Contains(builder, "Call `kingdom_complete_attempt` exactly once") || !strings.Contains(builder, "final_text") {
-		t.Fatalf("expected builder receipt instructions, got:\n%s", builder)
+	if strings.Contains(builder, "kingdom_complete_attempt") || !strings.Contains(builder, "Return the complete final response directly") {
+		t.Fatalf("expected builder server-response instructions, got:\n%s", builder)
 	}
 
 	review := loop.buildNodePrompt(context.Background(), "run_1", "execution_review_shieldmaiden", "nr_review", "reviewer-shieldmaiden", "execution_review", "Build a homepage", "council-member", "Plan", "Review it.", "")
-	if strings.Contains(review, "Call `kingdom_complete_attempt`") || !strings.Contains(review, "Return the complete final response directly") {
-		t.Fatalf("expected server-response instructions without receipt tool, got:\n%s", review)
+	if strings.Contains(review, "kingdom_complete_attempt") || !strings.Contains(review, "Return the complete final response directly") {
+		t.Fatalf("expected review server-response instructions, got:\n%s", review)
 	}
 	if !strings.Contains(review, "first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`") {
 		t.Fatalf("expected verdict contract in reviewer prompt, got:\n%s", review)

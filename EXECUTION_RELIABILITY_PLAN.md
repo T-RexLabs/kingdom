@@ -34,9 +34,9 @@ The final implementation must enforce all of the following:
 3. Provider process exit alone can never authorize success.
 4. `opencode export` is diagnostic evidence only and can never authorize or repair success.
 5. A response-first node succeeds only from an invocation-bound, structurally complete terminal response that satisfies its output contract.
-6. A builder succeeds only from one accepted invocation-scoped completion receipt and a valid terminal settlement.
-7. Receipt directory ownership and SQLite lineage determine routing; receipt payload identifiers are claims, never routing authority.
-8. Receipt publication and ingestion are bounded, no-follow, crash-safe, and idempotent.
+6. Every provider-backed decree node succeeds only from one invocation-scoped strict server response and a valid terminal settlement.
+7. A runtime-owned, invocation-hashed handoff preserves terminal evidence for restart replay; its payload does not authorize success on its own.
+8. Terminal handoff publication and replay are bounded, no-follow, crash-safe, and idempotent.
 9. A managed OpenCode process group cannot outlive Kingdom without an independent guardian terminating it.
 10. A stale replacement cannot dispatch until its predecessor is proven quiescent and the workspace is restored to trusted state.
 11. Completion and stale revocation compete through one durable authority boundary; exactly one wins.
@@ -61,11 +61,11 @@ Provider-backed nodes use exactly one of these modes:
 | `plan_drafting` | `server_response` |
 | `execution_review` | `server_response` |
 | `validation_gates` | `server_response` |
-| `delegated_execution` | `receipt_required` |
+| `delegated_execution` | `server_response` |
 
 Reviewers and validators use `server_response` because their canonical deliverable is response text with a strict verdict contract. Their workspace and tool permissions are separate from completion authority.
 
-Only builders publish canonical filesystem deliverables and retain access to `kingdom_complete_attempt`.
+Only builders publish canonical filesystem deliverables. Completion authority is identical across provider-backed decree nodes.
 
 Runtime-owned nodes do not have a provider completion mode.
 
@@ -73,7 +73,7 @@ Runtime-owned nodes do not have a provider completion mode.
 
 Completion mode is a server-owned property of canonical node behavior. Workflow authors do not configure it independently.
 
-The canonical node class resolves completion mode, and the resolved mode is persisted on the attempt and provider invocation before dispatch. Runtime execution reads the persisted mode and never infers it from an agent name, callback, capability, prompt, or receipt directory.
+The canonical node class resolves completion mode, and the resolved mode is persisted on the attempt and provider invocation before dispatch. Runtime execution reads the persisted mode and never infers it from an agent name, callback, prompt, or filesystem path.
 
 ### Process Quiescence
 
@@ -126,8 +126,8 @@ Make provider completion behavior explicit, immutable, and fail-closed.
 Add `ProviderCompletionMode` with exactly:
 
 ```text
+not_applicable
 server_response
-receipt_required
 ```
 
 Add completion mode to `workflow.NodeBehavior` in `internal/core/workflow/node_behavior.go`.
@@ -142,8 +142,8 @@ Modify `internal/dbmigrations/0001_initial_schema.up.sql` directly.
 
 Add completion mode to:
 
-- `attempt_executions`, allowing `not_applicable`, `server_response`, and `receipt_required`.
-- `provider_invocations`, allowing `server_response` and `receipt_required`.
+- `attempt_executions`, allowing `not_applicable` and `server_response`.
+- `provider_invocations`, fixed to `server_response`.
 - `planning_provider_invocations`, fixed to `server_response`.
 
 Persist mode in this order:
@@ -157,33 +157,15 @@ canonical node behavior
 
 After attempt creation, runtime code must use the persisted mode and reject mismatches between attempt and invocation.
 
-### Planning Schema Cleanup
+### Planning Schema
 
-Planning already uses server-owned settlement. Remove receipt-only planning schema and implementation that can never be valid:
+Planning already uses server-owned settlement and has a separate operation lifecycle. Keep its invocation identity, terminal-step output, and settlement contracts separate from decree execution.
 
-- Completion capability fields.
-- Receipt timestamps.
-- `receipt_persisted` planning invocation state.
-- Planning `completion_receipt` evidence kind.
-- Receipt-oriented planning helpers and tests.
-
-Because no databases exist, define only the desired final planning tables in the initial schema. Do not write migration or compatibility code for old planning rows.
+Because no databases exist, define only the desired final tables in the initial schema. Do not write migration or compatibility code for old rows.
 
 ### Managed Provider Profiles
 
-Allow `kingdom_complete_attempt` only in the builder profile.
-
-Deny it in advisor, chancellor, council, reviewer, QA, Nightraven, tester, king, and planner profiles.
-
-Server-response invocations must receive:
-
-- No completion capability.
-- No receipt directory.
-- No receipt callback.
-- No completion-capability environment variable.
-- No prompt instruction to call the completion tool.
-
-Receipt-required builder invocations must reject launch if any required completion field is absent.
+Managed profiles do not expose a model-invoked completion tool. Every provider-backed decree invocation returns its final response directly through OpenCode's terminal stream.
 
 ### Code Removal
 
@@ -192,7 +174,7 @@ Remove:
 - Completion-mode inference based on optional request fields.
 - Planner-agent name checks controlling empty-output behavior.
 - Any fallback that derives mode from callback presence.
-- Dead planning receipt states and helpers.
+- The superseded model-invoked completion callback, capability, and transport code.
 
 ### Tests
 
@@ -201,17 +183,17 @@ Cover:
 - Every valid node-class and role tuple.
 - Every invalid tuple category.
 - Persisted completion-mode agreement across attempt and invocation.
-- Server-response requests rejecting receipt fields.
-- Receipt-required requests rejecting missing receipt fields.
-- Tool denial for every non-builder managed profile.
-- Mode-specific prompt rendering.
+- Every provider-backed node resolving to `server_response`.
+- Builder and non-builder prompts returning final response text without tool instructions.
+- Managed profiles and OpenCode overlays containing no completion tool.
+- Strict terminal-stream adjudication and node-specific output validation.
 - Runtime-owned nodes remaining provider-free.
 
 ### Phase Exit Criteria
 
 - Completion mode is explicit at every durable execution boundary.
 - Invalid workflow authority combinations fail before dispatch.
-- Only builders can access the receipt tool.
+- No managed profile exposes a completion tool.
 - No implicit completion-mode branch remains.
 - Focused workflow, schema, bootstrap asset, provider request, and orchestration tests pass.
 
@@ -268,7 +250,7 @@ It must enforce:
 - Verdict placement as the first non-empty control line.
 - Rejection of duplicate or conflicting verdicts.
 - Canonical structured-payload generation.
-- Builder receipt text as authoritative over incidental assistant prose.
+- Canonical terminal-step text as authoritative over provisional assistant prose.
 
 A valid `REWORK` response is a structurally successful provider response that produces the existing workflow-level rework outcome.
 
@@ -284,14 +266,13 @@ Within one SQLite transaction:
 4. Apply the mode-specific success predicate.
 5. Validate and canonicalize output.
 6. Insert or idempotently verify the provider settlement.
-7. Revoke any remaining completion capability.
-8. Move the provider invocation to its terminal state.
-9. Link the attempt to its canonical settlement.
-10. Commit the attempt execution terminal state and clear its lease.
-11. Persist invocation token usage, including failures.
-12. Append the terminal attempt event.
-13. Enqueue the terminal projection outbox.
-14. Commit.
+7. Move the provider invocation to its terminal state.
+8. Link the attempt to its canonical settlement.
+9. Commit the attempt execution terminal state and clear its lease.
+10. Persist invocation token usage, including failures.
+11. Append the terminal attempt event.
+12. Enqueue the terminal projection outbox.
+13. Commit.
 
 Exact replay returns the existing result. Any changed lineage, mode, evidence, output, structured payload, or outcome is a settlement conflict.
 
@@ -304,7 +285,7 @@ It may project node state, workflow progression, mailbox responses, response art
 It may not:
 
 - Infer provider success.
-- Search for or demand a receipt.
+- Recover terminal evidence from uncommitted provider output.
 - Create or rewrite settlements.
 - Replace canonical output.
 - Retry empty output.
@@ -320,7 +301,7 @@ Delete paths allowing export to:
 - Replace terminal stream text.
 - Merge assistant answers.
 - Repair empty output.
-- Override stream or receipt settlement.
+- Override stream settlement.
 
 Delete unused deferred and late-repair export phases.
 
@@ -349,144 +330,125 @@ Cover:
 
 - One transaction owns canonical provider terminal truth.
 - Projection consumers cannot adjudicate or repair outcomes.
-- Server-response nodes complete without model-issued receipts.
+- Every provider-backed decree node completes without a model-issued completion call.
 - Export is diagnostic only in code and tests.
 - No generic empty-output retry remains in settlement.
 
-## Phase 3: Secure Durable Builder Receipt Spool
+## Phase 3: Runtime-Owned Durable Terminal Handoff
 
 ### Goal
 
-Make builder receipt transport invocation-scoped, bounded, secure, and recoverable independently of execution workspaces.
+Preserve invocation-bound terminal observations and restart recovery without making model tool calls a completion prerequisite.
 
 ### Canonical Location
 
-Store receipts under:
+Store terminal handoff files under:
 
 ```text
-<WorkspaceRoot>/provider-completion/receipts/<sha256(invocation-id)>/
+<WorkspaceRoot>/provider-completion/handoffs/<sha256(invocation-id)>.json
 ```
 
-The SQLite invocation record and hashed directory determine ownership. Payload identifiers are claims to validate, never routing authority.
+The SQLite invocation record and hashed path determine ownership. Payload identifiers are claims to validate, never routing authority.
 
-This location must be independent of direct publish roots, Git worktrees, workspace restoration, and worktree deletion.
+This location is independent of direct publish roots, Git worktrees, workspace restoration, and worktree deletion.
 
-### Receipt Contract
+### Handoff Contract
 
-Add one versioned JSON Schema requiring:
+Persist one bounded versioned runtime-owned record containing:
 
-- Exact protocol version.
-- Attempt ID.
-- Invocation ID.
-- Completion capability.
-- Non-empty final text.
-- Object-valued structured payload.
-- No additional properties.
+- Exact wire version.
+- Attempt, invocation, run, and node-run lineage.
+- Expected lease owner and version.
+- Canonical provider stream observation.
+- Execution replay payload and fixed observation time.
 
-Use a central 1 MiB receipt wire limit.
+Use the central terminal-handoff wire limit.
 
-Bound runtime ingestion to:
+Bound runtime replay to:
 
-- 16 receipt entries per invocation batch.
-- 128 invocation inboxes per runtime pass.
-- Regular `.json` files only.
+- 128 invocation candidates per pass.
+- One invocation-derived regular `.json` file per candidate.
 - No symlinks, FIFOs, sockets, devices, or nested directories.
 
 ### Secure Filesystem Primitives
 
 Extend `internal/securefs` and `internal/runtimefs` with focused operations for:
 
-- Descriptor-relative descendant directory creation.
-- Bounded directory enumeration.
-- Bounded regular-file reads.
+- Invocation-derived handoff paths.
+- Bounded regular-file creation and reads.
 - No-follow path traversal.
-- Empty-directory-only removal.
+- Exact-file identity checks for replay and cleanup.
 - Directory fsync after publication and deletion.
 
-Do not expose arbitrary path operations to orchestration. Receipt APIs accept invocation IDs and derive paths internally.
+Do not expose arbitrary path operations to orchestration. Handoff APIs accept invocation IDs and derive paths internally.
 
-### Atomic Tool Publication
+### Atomic Runtime Publication
 
-The runtime creates the inbox before provider launch.
+The runtime writes the handoff file after the provider process tree is quiescent and before inserting the lease-fenced SQLite handoff row.
 
-The completion tool:
+The handoff file is created atomically with mode `0600`, fsynced, and published without replacement. SQLite accepts only an exact replay with matching invocation, attempt, session, lease, observation, and payload lineage. File cleanup follows durable SQLite publication and settlement.
 
-1. Validates and serializes its payload.
-2. Enforces the byte limit.
-3. Creates a random temporary file exclusively with mode `0600`.
-4. Writes, fsyncs, and closes the temporary file.
-5. Publishes a unique final filename atomically without replacement.
-6. Fsyncs the inbox directory.
-7. Returns success only after durable publication.
+### Orchestration-Owned Settlement
 
-The tool must not recursively create directories.
+Every provider-backed decree invocation uses the existing strict `server_response` completion predicate and node-specific output validation.
 
-### Orchestration-Owned Ingestion
-
-Move receipt ingestion out of the OpenCode adapter.
-
-For each receipt, orchestration must:
+For each terminal handoff, orchestration must:
 
 1. Read through secure runtime filesystem APIs.
-2. Enforce file type, count, and byte limits.
-3. Validate the canonical schema.
-4. Validate attempt, invocation, capability, mode, and node contract.
-5. Record every disposition as `completion_receipt_attempt` evidence.
-6. Record accepted receipts as `completion_receipt` evidence.
-7. Delete the file only after its disposition is durable.
-8. Treat deletion failure as cleanup debt, not settlement failure.
+2. Enforce regular-file and byte limits.
+3. Validate wire version, attempt, invocation, node, stream/session, and lease lineage.
+4. Recover a file-only handoff into SQLite before lost-handoff recovery.
+5. Converge a SQLite handoff through the same strict response and output validators used during normal execution.
+6. Delete the exact file only after durable settlement.
+7. Treat deletion failure as cleanup debt, not settlement failure.
 
-Receipt acceptance records candidate evidence. Final attempt settlement still runs through the atomic settlement operation from Phase 2.
+The handoff is durable transport and replay evidence; it is not success authority. Final settlement remains atomic and requires quiescent guardian evidence.
 
 ### Startup Recovery
 
-Startup must replay receipt files before finalizing missing-receipt failure.
+Startup must replay handoff files and SQLite rows before finalizing a lost-handoff failure or allowing stale reconciliation.
 
 Recovery must:
 
-- Converge accepted receipt evidence through atomic settlement.
-- Treat exact duplicate receipts idempotently.
-- Reject contradictory receipts.
-- Preserve malformed receipt evidence without trusting payload lineage.
-- Remove only terminal empty inboxes.
+- Replay guardian evidence first.
+- Replay file-only handoffs, then converge SQLite handoffs.
+- Fence stale revocation transactionally while a SQLite handoff is pending.
+- Fail closed when a quiescent invocation has no recoverable handoff.
+- Retain malformed handoff files and keep startup recovery gated.
 - Never recursively delete unknown contents.
 
 ### Code Removal
 
-Remove adapter-owned:
+Remove the superseded completion callback protocol:
 
-- Receipt directory reads.
-- Receipt parsing.
-- Receipt file deletion.
-- Receipt disposition types.
-- Workspace-relative receipt paths.
-- Receipt callbacks.
+- Managed completion tool and profile permissions.
+- Completion capability generation, environment variables, and database fields.
+- Inbox/spool transport, schema, ingestion, evidence, UI, and public API fields.
+- Completion-only modes, states, and tests.
 
 ### Tests
 
 Cover:
 
-- Cross-invocation payload claims.
-- Crash before atomic publication.
-- Crash after publication but before SQLite acceptance.
-- Crash after acceptance but before deletion.
-- Crash after receipt persistence but before settlement.
-- Exact duplicate and conflicting receipts.
+- Handoff write before SQLite persistence.
+- Crash after file publication and before the SQLite row.
+- Crash after SQLite persistence and before settlement.
+- Crash after settlement and before file cleanup.
+- Exact replay and conflicting handoff payloads.
+- Lease expiry and active-invocation lineage fencing.
 - Symlinked parent and leaf paths.
-- FIFOs and non-regular entries.
 - Exact byte boundary and one-byte overflow.
-- Entry-count overflow.
 - Directory replacement races.
-- Direct and worktree modes resolving the same spool.
+- Direct and worktree modes resolving the same handoff root.
 - Deleted execution worktree during replay.
 
 ### Phase Exit Criteria
 
-- Builder receipt transport is independent of provider workspaces.
-- Receipt routing cannot cross invocation boundaries.
-- All provider-controlled receipt I/O is bounded and no-follow.
+- Terminal handoff transport is independent of provider workspaces.
+- Handoff replay cannot cross invocation boundaries.
+- All handoff I/O is bounded and no-follow.
 - Every crash window replays deterministically.
-- No adapter receipt filesystem code remains.
+- No model-invoked completion callback or transport path remains.
 
 ## Phase 4: Guardian-Owned Provider Processes
 
@@ -676,7 +638,7 @@ Never mark cancellation successful merely to unblock dispatch.
 
 - Completion committed before stale revocation wins.
 - Stale revocation committed first rejects later completion.
-- Accepted but unsettled receipt evidence does not override cancellation.
+- A pending durable terminal handoff fences stale revocation until settlement converges.
 - A stale attempt cannot snapshot, restore, publish artifacts, publish canonical mailbox output, or advance workflow state.
 
 ### Startup Ordering
@@ -685,8 +647,8 @@ Before planning recovery or decree dispatch:
 
 1. Validate the canonical schema and runtime configuration.
 2. Ingest durable guardian quiescence records.
-3. Ingest durable receipt records.
-4. Converge eligible terminal settlements.
+3. Replay file-only and SQLite terminal handoffs.
+4. Fail closed on quiescent invocations with no recoverable handoff.
 5. Drain completion and cancellation outboxes.
 6. Reconcile stale execution and planning state.
 7. Release due retries only after their handoff barriers are clear.
@@ -935,7 +897,7 @@ Centralize provider runtime limits for:
 - Provisional output bytes.
 - stderr diagnostic tail.
 - Provider event-line bytes.
-- Receipt entries and bytes.
+- Terminal handoff entries and bytes.
 - Workspace traversal entries and bytes.
 - Startup replay batch sizes.
 
@@ -1226,11 +1188,10 @@ Finish with one architecture, one vocabulary, and no abandoned implementation pa
 
 Search for and remove all remaining references to:
 
-- Adapter-owned receipt scanning.
-- Workspace-relative receipt routing.
+- Model-invoked completion callbacks and their transport.
+- Workspace-relative terminal handoff routing.
 - Implicit completion-mode detection.
-- Non-builder completion capabilities.
-- Planning receipt states.
+- Retired completion capabilities and mode branches.
 - Export-derived success.
 - Same-attempt empty-output retry.
 - Old stale reassignment.
@@ -1248,8 +1209,7 @@ Update `docs/system-architecture.md` to describe only implemented behavior:
 
 - Completion-mode ownership.
 - Server-response success predicate.
-- Builder receipt authority.
-- Runtime-owned receipt spool.
+- Runtime-owned terminal handoff and startup replay.
 - Atomic provider settlement.
 - Guardian process ownership.
 - Quiescence-before-retry invariant.
@@ -1389,13 +1349,13 @@ Then:
 3. Run `kd summon` on an available port other than `8080`.
 4. Use `OpenAI - GPT-5.6 Luna` with `None` thinking effort if model selection appears.
 5. Verify a normal server-response node.
-6. Verify a builder receipt completion.
+6. Verify a builder server-response completion and builder workspace publication.
 7. Verify a temporary rate-limit retry.
 8. Verify a hard usage-limit failure.
 9. Verify retry pause while predecessor cancellation is pending.
 10. Verify successful retry recovery.
 11. Verify retry exhaustion.
-12. Verify restart recovery from pending receipt ingestion.
+12. Verify restart recovery from a file-only terminal handoff and a pending SQLite handoff.
 13. Verify restart recovery from committed settlement with pending projection.
 14. Verify restart recovery from pending cancellation.
 15. Verify restart recovery from a scheduled retry.
@@ -1410,10 +1370,9 @@ Capture command output, logs, screenshots, and relevant artifacts in the fresh `
 The implementation is complete only when:
 
 - No stale process can overlap a replacement against the same workspace.
-- No receipt can settle a different invocation.
+- No terminal handoff can settle a different invocation.
 - No provider success can be fabricated from process exit or export.
-- Server-response nodes complete without model-issued receipts.
-- Only builders retain the completion tool.
+- Every provider-backed decree node completes from strict server-response evidence.
 - Settlement survives every tested crash boundary.
 - Retries survive restart without duplicate dispatch or recalculated timing.
 - Token-expensive retries are prevented after meaningful work.
@@ -1422,7 +1381,7 @@ The implementation is complete only when:
 - Retry causes remain prominent when attempts are grouped.
 - Every physical attempt remains auditable.
 - SQLite contention does not duplicate state or side effects.
-- Provider event, output, receipt, workspace, and replay accumulation remains bounded; Kingdom imposes no fixed aggregate provider-prompt byte maximum.
+- Provider event, output, terminal handoff, workspace, and replay accumulation remains bounded; Kingdom imposes no fixed aggregate provider-prompt byte maximum.
 - Desktop and mobile UX are responsive, accessible, and professional.
 - No superseded implementation or compatibility path remains.
 - The independent review gauntlet has passed.

@@ -2,7 +2,7 @@ import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/
 import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
-import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
+import { operatorFacingExecutionFailureText } from "./execution-failure-copy";
 import { presentRecoveryTimeline, type RecoveryLike } from "./run-execution-presentation";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
 
@@ -152,6 +152,13 @@ export function buildRawEventLabel(
 		return {
 			label: `${name || "Node"} started`,
 			detail: parts.length > 0 ? parts.join(" · ") : undefined,
+		};
+	}
+
+	if (event.event_type === "attempt.progress" && typeof payload.text === "string" && payload.text.trim() !== "") {
+		return {
+			label: `${name ? `${name} ` : ""}Provisional Stream Text`,
+			detail: "Not Canonical",
 		};
 	}
 
@@ -1042,7 +1049,6 @@ function failureDetailFromEvent(event: TimelineEvent, execution?: RunExecution):
 	const error = typeof event.payload_json?.error === "string" ? event.payload_json.error.trim() : "";
 	const operatorText = operatorFacingExecutionFailureText(
 		reasonCode || execution?.failure_code,
-		execution?.completion_invalid_reason,
 		error,
 		execution?.failure_text,
 	);
@@ -1064,7 +1070,6 @@ function failureDetailFromExecution(execution?: RunExecution): string | undefine
 	}
 	return operatorFacingExecutionFailureText(
 		execution.failure_code,
-		execution.completion_invalid_reason,
 		execution.failure_text,
 	) ?? undefined;
 }

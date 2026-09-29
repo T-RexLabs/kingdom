@@ -181,8 +181,17 @@ function presentStatus(status: string, handoffState?: RunExecution["handoff_stat
 			announcement: { role: "status", ariaLive: "polite" },
 		};
 	}
-	if (status === "running" || status === "starting" || status === "verifying") {
-		return { tone: "running", iconKey: "activity", heading: status === "verifying" ? "Verifying" : "In Progress", description: status === "verifying" ? "Kingdom is still confirming the final result for this step." : "This step is still running." };
+	if (status === "verifying") {
+		return {
+			tone: "running",
+			iconKey: "activity",
+			heading: "Verifying",
+			description: "Kingdom is still confirming the final result for this step.",
+			announcement: { role: "status", ariaLive: "polite" },
+		};
+	}
+	if (status === "running" || status === "starting") {
+		return { tone: "running", iconKey: "activity", heading: "In Progress", description: "This step is still running." };
 	}
 	if (status === "queued" || status === "pending" || status === "ready") {
 		return { tone: "ready", iconKey: "play", heading: "Queued", description: "This step is queued to start." };

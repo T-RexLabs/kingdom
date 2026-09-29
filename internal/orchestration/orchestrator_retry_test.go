@@ -465,7 +465,7 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 			job := asyncExecutionResult{
 				run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "draft"},
 				node:                      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-				attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+				attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 				attemptID:                 attemptID,
 				sessionID:                 sessionID,
 				providerSessionID:         providerSessionID,
@@ -478,6 +478,7 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 				outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: legacyCode, FailureText: "provider terminal failure", EvidenceSource: "stream"},
 				providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID},
 			}
+			persistProviderTerminalHandoffForTest(t, loop, &job)
 			if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
 				t.Fatalf("settle provider failure: %v", err)
 			}
@@ -547,7 +548,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 	job := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "draft"},
 		node:                      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		sessionID:                 sessionID,
 		providerSessionID:         providerSessionID,
@@ -561,6 +562,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 		err:                       limitErr,
 		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID},
 	}
+	persistProviderTerminalHandoffForTest(t, loop, &job)
 	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
 		t.Fatalf("settle resource-limit failure: %v", err)
 	}

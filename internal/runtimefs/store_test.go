@@ -93,6 +93,92 @@ func TestCaptureRestoreAndDiffSnapshots(t *testing.T) {
 	}
 }
 
+func TestResponseOnlyWorkspaceIsAttemptScopedAndSafelyRemoved(t *testing.T) {
+	t.Parallel()
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+
+	const runID = "run_response_only"
+	seedRuntimeFSRun(t, db, runID)
+	if _, err := db.Exec(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('advisor', 'Advisor', 0, '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only role: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, spawn_depth, created_at, updated_at) VALUES ('agent_response_only', 'advisor', 'idle', 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only agent: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_response_only', 'wfdef_runtimefs', 'advisor_node', 'advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only workflow node: %v", err)
+	}
+	for index, attemptID := range []string{"run_response_only:advisor:1", "run_response_only:advisor:2"} {
+		nodeRunID := fmt.Sprintf("nr_response_only_%d", index+1)
+		if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, started_at) VALUES (?, ?, 'advisor_node', ?, 1, 'ready', 'advisor', 'agent_response_only', NULL)`, nodeRunID, runID, index+1); err != nil {
+			t.Fatalf("insert response-only node run %d: %v", index+1, err)
+		}
+		if _, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, created_at, updated_at) VALUES (?, ?, ?, 'queued', 'provider_backed', 'server_response', 'session_response_only', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, attemptID, runID, nodeRunID); err != nil {
+			t.Fatalf("insert response-only attempt %d: %v", index+1, err)
+		}
+	}
+	markedAt := "2026-03-01T12:00:01Z"
+	workspaceRoot, err := store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:1", markedAt)
+	if err != nil {
+		t.Fatalf("prepare response-only workspace: %v", err)
+	}
+	if filepath.Clean(workspaceRoot) != filepath.Clean(store.ResponseOnlyWorkspaceRoot(runID, "run_response_only:advisor:1")) {
+		t.Fatalf("prepared workspace root=%q, want %q", workspaceRoot, store.ResponseOnlyWorkspaceRoot(runID, "run_response_only:advisor:1"))
+	}
+	otherAttemptRoot, err := store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:2", "2026-03-01T12:00:02Z")
+	if err != nil {
+		t.Fatalf("prepare second response-only workspace: %v", err)
+	}
+	if filepath.Clean(workspaceRoot) == filepath.Clean(otherAttemptRoot) {
+		t.Fatalf("different attempts share a response-only workspace: %q", workspaceRoot)
+	}
+	if err := store.RemoveResponseOnlyWorkspace(runID, "run_response_only:advisor:2"); err != nil {
+		t.Fatalf("remove second response-only workspace: %v", err)
+	}
+	if err := store.ClearResponseOnlyWorkspaceCleanupPending(context.Background(), "run_response_only:advisor:2", "2026-03-01T12:00:02Z", "2026-03-01T12:00:04Z"); err != nil {
+		t.Fatalf("clear second response-only cleanup debt: %v", err)
+	}
+
+	writeTestFile(t, workspaceRoot, "stale.txt", "stale")
+	markedAt = "2026-03-01T12:00:03Z"
+	workspaceRoot, err = store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:1", markedAt)
+	if err != nil {
+		t.Fatalf("reset response-only workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("reused attempt workspace retained stale content: %v", err)
+	}
+
+	externalFile := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(externalFile, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write external sentinel: %v", err)
+	}
+	if err := os.Symlink(externalFile, filepath.Join(workspaceRoot, "escape")); err != nil {
+		t.Fatalf("create provider-workspace symlink: %v", err)
+	}
+	if err := store.RemoveResponseOnlyWorkspace(runID, "run_response_only:advisor:1"); err != nil {
+		t.Fatalf("remove response-only workspace: %v", err)
+	}
+	if err := store.ClearResponseOnlyWorkspaceCleanupPending(context.Background(), "run_response_only:advisor:1", markedAt, "2026-03-01T12:00:04Z"); err != nil {
+		t.Fatalf("clear response-only workspace cleanup debt: %v", err)
+	}
+	if _, err := os.Lstat(workspaceRoot); !os.IsNotExist(err) {
+		t.Fatalf("response-only workspace remains after cleanup: %v", err)
+	}
+	if got, err := os.ReadFile(externalFile); err != nil || string(got) != "outside" {
+		t.Fatalf("response-only cleanup changed symlink target: %q err=%v", got, err)
+	}
+	var pending int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE attempt_id = 'run_response_only:advisor:1' AND response_only_workspace_cleanup_pending_at IS NOT NULL`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("response-only workspace cleanup debt remained: pending=%d err=%v", pending, err)
+	}
+}
+
 func TestCaptureSnapshotSyncsPublishedBlobDirectoryBeforeMetadataCommit(t *testing.T) {
 	db := openRuntimeFSTestDB(t)
 	applyRuntimeFSMigrations(t, db)
@@ -880,7 +966,7 @@ func TestRecoverMissingSnapshotBlobsRequiresMatchingSourceDigest(t *testing.T) {
 	}
 }
 
-func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
+func TestCountChangesAgainstSnapshotIgnoresKingdomRuntimePaths(t *testing.T) {
 	t.Parallel()
 
 	db := openRuntimeFSTestDB(t)
@@ -903,7 +989,7 @@ func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture base snapshot: %v", err)
 	}
-	writeTestFile(t, root, ".kingdom/provider-completion/receipts/x/receipt.json", "ignored")
+	writeTestFile(t, root, ".kingdom/runtime/provider-completion/handoffs/"+strings.Repeat("a", 64)+".json", "ignored")
 	changes, err := store.CountChangesAgainstSnapshot(context.Background(), root, base.SnapshotID)
 	if err != nil {
 		t.Fatalf("count changes: %v", err)

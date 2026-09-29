@@ -119,6 +119,13 @@ func TestStoreProviderProcessGuardQuiescenceIsIdempotentAndRejectsConflicts(t *t
 	if err != nil || !replay.Idempotent || replay.Guard != first.Guard {
 		t.Fatalf("exact quiescence replay did not converge: first=%#v replay=%#v err=%v", first, replay, err)
 	}
+	observedAgain := proof
+	observedAgain.ExitedAt = "2026-03-01T12:00:05Z"
+	observedAgain.QuiescentAt = "2026-03-01T12:00:05Z"
+	replay, err = s.IngestProviderProcessGuardQuiescence(context.Background(), observedAgain)
+	if err != nil || !replay.Idempotent || replay.Guard != first.Guard {
+		t.Fatalf("quiescence replay with a later observation timestamp did not converge: first=%#v replay=%#v err=%v", first, replay, err)
+	}
 
 	conflict := proof
 	conflict.TerminationForced = true
@@ -209,6 +216,29 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 	var handoffState string
 	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_evidence_lost'`).Scan(&handoffState); err != nil || handoffState != "cancellation_requested" {
 		t.Fatalf("valid guardian evidence did not resume cancellation handoff: state=%q err=%v", handoffState, err)
+	}
+}
+
+func TestAttemptProcessGuardsQuiescentRejectsAcknowledgedPrelaunchGuard(t *testing.T) {
+	t.Parallel()
+
+	s, db, req := providerProcessGuardFixture(t)
+	if _, err := db.Exec(`UPDATE attempt_executions
+		SET state = 'starting', launch_started_at = NULL, started_at = NULL, provider_session_id = ''
+		WHERE attempt_id = ?`, req.Settlement.AttemptID); err != nil {
+		t.Fatalf("prepare prelaunch attempt: %v", err)
+	}
+	ack := providerProcessGuardAcknowledgement(req, "guard_prelaunch_acknowledged", 1)
+	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+		t.Fatalf("acknowledge prelaunch provider guard: %v", err)
+	}
+
+	quiescent, err := s.AttemptProcessGuardsQuiescent(context.Background(), req.Settlement.AttemptID)
+	if err != nil {
+		t.Fatalf("check prelaunch provider guard quiescence: %v", err)
+	}
+	if quiescent {
+		t.Fatal("acknowledged launch guard must block quiescence before launch observation is recorded")
 	}
 }
 

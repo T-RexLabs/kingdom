@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -455,11 +456,15 @@ func (a *SessionAdapter) WarmRuntime(ctx context.Context) error {
 		return fmt.Errorf("wait for opencode database startup: %w", err)
 	}
 	defer release()
+	commandEnv, err := opencodeCommandEnvironment(ExecuteRequest{}, a.configDir, a.databasePath, a.inlineConfigContent)
+	if err != nil {
+		return fmt.Errorf("build opencode warmup environment: %w", err)
+	}
 	stdout, stderr, _, err := runGuardedCommand(ctx, a.runner, processguardian.Command{
 		Path: a.binaryPath,
 		Args: []string{"debug", "agent", agent},
 		Dir:  a.workDir,
-		Env:  opencodeProcessEnvironment(opencodeCommandEnvironment(ExecuteRequest{}, a.configDir, a.databasePath, a.inlineConfigContent)),
+		Env:  opencodeProcessEnvironment(commandEnv),
 	})
 	if err != nil {
 		return fmt.Errorf("resolve opencode agent %q: %w: %s", agent, err, strings.TrimSpace(string(append(stdout, stderr...))))
@@ -509,7 +514,11 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 		dir = strings.TrimSpace(req.WorkspacePath)
 	}
 	databasePath := effectiveDatabasePath(req.DatabasePath, a.databasePath)
-	command := processguardian.Command{Path: a.binaryPath, Args: args, Dir: dir, Env: opencodeProcessEnvironment(opencodeCommandEnvironment(req, a.configDir, databasePath, a.inlineConfigContent))}
+	commandEnv, err := opencodeCommandEnvironment(req, a.configDir, databasePath, a.inlineConfigContent)
+	if err != nil {
+		return startedOpencodeRun{}, fmt.Errorf("build opencode run environment: %w", err)
+	}
+	command := processguardian.Command{Path: a.binaryPath, Args: args, Dir: dir, Env: opencodeProcessEnvironment(commandEnv)}
 	releaseStartup, err := opencodeDatabaseStartupGates.acquire(ctx, databasePath)
 	if err != nil {
 		return startedOpencodeRun{}, fmt.Errorf("wait for opencode database startup: %w", err)
@@ -931,12 +940,6 @@ func mergeStderrCapture(current, next stderrCapture) stderrCapture {
 	return current
 }
 
-func completionReceiptModeEnabled(req ExecuteRequest) bool {
-	return req.CompletionMode == CompletionModeReceiptRequired
-}
-
-const completionAttemptEnvPrefix = "KINGDOM_COMPLETE_ATTEMPT_"
-
 func opencodeProcessEnvironment(explicitEnv ...[]string) []string {
 	base := os.Environ()
 	overrides := make(map[string]struct{})
@@ -950,9 +953,6 @@ func opencodeProcessEnvironment(explicitEnv ...[]string) []string {
 	for _, entry := range base {
 		name, _, _ := strings.Cut(entry, "=")
 		upperName := strings.ToUpper(name)
-		if strings.HasPrefix(upperName, completionAttemptEnvPrefix) {
-			continue
-		}
 		if _, replaced := overrides[upperName]; replaced {
 			continue
 		}
@@ -962,23 +962,6 @@ func opencodeProcessEnvironment(explicitEnv ...[]string) []string {
 		env = append(env, entries...)
 	}
 	return env
-}
-
-func completionProtocolVersionForRequest(req ExecuteRequest) string {
-	return firstNonEmpty(strings.TrimSpace(req.CompletionProtocolVersion), CompletionProtocolVersion)
-}
-
-func completionReceiptEnvironment(req ExecuteRequest) []string {
-	if !completionReceiptModeEnabled(req) {
-		return nil
-	}
-	return []string{
-		"KINGDOM_COMPLETE_ATTEMPT_PROTOCOL_VERSION=" + completionProtocolVersionForRequest(req),
-		"KINGDOM_COMPLETE_ATTEMPT_ATTEMPT_ID=" + strings.TrimSpace(req.AttemptID),
-		"KINGDOM_COMPLETE_ATTEMPT_INVOCATION_ID=" + strings.TrimSpace(req.InvocationID),
-		"KINGDOM_COMPLETE_ATTEMPT_CAPABILITY=" + strings.TrimSpace(req.CompletionCapability),
-		"KINGDOM_COMPLETE_ATTEMPT_RECEIPT_DIR=" + strings.TrimSpace(req.CompletionReceiptDir),
-	}
 }
 
 func ConfigDirEnvironment(configDir string) []string {
@@ -1013,8 +996,19 @@ func effectiveDatabasePath(requestDatabasePath, defaultDatabasePath string) stri
 	return databasePath
 }
 
-func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, databasePath string, defaultInlineConfigContent string) []string {
-	env := completionReceiptEnvironment(req)
+func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, databasePath string, defaultInlineConfigContent string) ([]string, error) {
+	var env []string
+	if projectRootBoundary := strings.TrimSpace(req.ProjectRootBoundary); projectRootBoundary != "" {
+		boundary, err := filepath.Abs(filepath.Clean(projectRootBoundary))
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenCode project root boundary: %w", err)
+		}
+		boundary, err = filepath.EvalSymlinks(boundary)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenCode project root boundary: %w", err)
+		}
+		env = append(env, "GIT_CEILING_DIRECTORIES="+filepath.Dir(boundary))
+	}
 	configDir := strings.TrimSpace(req.ConfigDir)
 	if configDir == "" {
 		configDir = strings.TrimSpace(defaultConfigDir)
@@ -1025,7 +1019,7 @@ func opencodeCommandEnvironment(req ExecuteRequest, defaultConfigDir string, dat
 	if inlineConfigContent == "" {
 		inlineConfigContent = defaultInlineConfigContent
 	}
-	return append(env, configContentEnvironment(inlineConfigContent)...)
+	return append(env, configContentEnvironment(inlineConfigContent)...), nil
 }
 
 func NewSessionAdapter(cfg SessionAdapterConfig) (*SessionAdapter, error) {
@@ -1626,7 +1620,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 		adjudicated = true
 	}
 
-	if req.CompletionMode == CompletionModeServerResponse && shouldContinueLiveStream(lastStepFinish) && !adjudicated {
+	if shouldContinueLiveStream(lastStepFinish) && !adjudicated {
 		execDiag.ContinuationTurnsMax = a.maxContinuationTurns - 1
 		remainingTurns := a.maxContinuationTurns - 1
 		for remainingTurns > 0 {
@@ -1872,7 +1866,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 			CleanEOF:                    waitErr == nil,
 			PendingToolCount:            pendingToolCount(toolStates),
 			LaterEventAfterTerminal:     laterEventAfterTerminal,
-			ReceiptRequired:             req.CompletionMode == CompletionModeReceiptRequired,
 		})
 		result = decision.Result
 	}
@@ -1929,9 +1922,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (Execu
 
 func buildProviderDiagnosticsJSON(req ExecuteRequest, diagnostics streamDiagnostics, execDiagnostics executionPathDiagnostics, stderr stderrCapture, retryAt string, retryAfterMS *float64) string {
 	payload := map[string]any{
-		"completion_receipt_mode_enabled": completionReceiptModeEnabled(req),
-		"stream_diagnostics":              diagnostics.toMap(),
-		"execution_path_diagnostics":      execDiagnostics.toMap(),
+		"stream_diagnostics":         diagnostics.toMap(),
+		"execution_path_diagnostics": execDiagnostics.toMap(),
 	}
 	if stderr.lineCount > 0 {
 		payload["stderr_line_count"] = stderr.lineCount
@@ -1980,10 +1972,7 @@ func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
 	switch normalizeActivityEventType(event.Type) {
 	case "tool", "tool_call", "tool_result", "tool_use":
 		toolName := strings.TrimSpace(event.Part.Tool)
-		// kingdom_complete_attempt is the runtime's internal completion-receipt
-		// plumbing, not operator-visible work; diagnostic export parsing
-		// filters it too, so keep both paths consistent.
-		if toolName == "" || toolName == "kingdom_complete_attempt" {
+		if toolName == "" {
 			return
 		}
 		observation.Kind = ExecuteActivityKindTool

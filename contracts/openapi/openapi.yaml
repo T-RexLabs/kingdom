@@ -5045,9 +5045,6 @@ components:
         failure_text:
           type: string
           minLength: 1
-        completion_invalid_reason:
-          type: string
-          minLength: 1
         handoff_state:
           type: string
           enum: [cancellation_requested, cancellation_dispatched, awaiting_quiescence, stop_retry_requested, stop_retry_dispatched, guardian_evidence_lost, guardian_evidence_recovery_requested, awaiting_workspace_quiescence, workspace_restore_failed]
@@ -5358,9 +5355,6 @@ components:
           type: string
           minLength: 1
         failure_text:
-          type: string
-          minLength: 1
-        completion_invalid_reason:
           type: string
           minLength: 1
         handoff_state:

@@ -562,7 +562,7 @@ func claimEntryAt(parentFD int, leaf string) (string, error) {
 		if _, err := rand.Read(raw); err != nil {
 			return "", err
 		}
-		claimName := ".receipt-cleanup-" + hex.EncodeToString(raw) + ".json"
+		claimName := ".cleanup-claim-" + hex.EncodeToString(raw) + ".tmp"
 		if err := renameAtNoReplace(parentFD, leaf, parentFD, claimName); err != nil {
 			if errors.Is(err, unix.EEXIST) {
 				continue

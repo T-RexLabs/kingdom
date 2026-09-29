@@ -47,15 +47,14 @@ func NormalizeExecutionMode(raw string) ExecutionMode {
 type ProviderCompletionMode string
 
 const (
-	ProviderCompletionModeNotApplicable   ProviderCompletionMode = "not_applicable"
-	ProviderCompletionModeServerResponse  ProviderCompletionMode = "server_response"
-	ProviderCompletionModeReceiptRequired ProviderCompletionMode = "receipt_required"
+	ProviderCompletionModeNotApplicable  ProviderCompletionMode = "not_applicable"
+	ProviderCompletionModeServerResponse ProviderCompletionMode = "server_response"
 )
 
 func ParseProviderCompletionMode(raw string) (ProviderCompletionMode, error) {
 	mode := ProviderCompletionMode(strings.TrimSpace(raw))
 	switch mode {
-	case ProviderCompletionModeNotApplicable, ProviderCompletionModeServerResponse, ProviderCompletionModeReceiptRequired:
+	case ProviderCompletionModeNotApplicable, ProviderCompletionModeServerResponse:
 		return mode, nil
 	default:
 		return "", fmt.Errorf("invalid provider completion mode: %q", strings.TrimSpace(raw))
@@ -69,8 +68,8 @@ func validateAttemptCompletionMode(executionMode ExecutionMode, completionMode P
 			return fmt.Errorf("runtime-owned attempts require completion_mode %q", ProviderCompletionModeNotApplicable)
 		}
 	case ExecutionModeProviderBacked:
-		if completionMode != ProviderCompletionModeServerResponse && completionMode != ProviderCompletionModeReceiptRequired {
-			return fmt.Errorf("provider-backed attempts require completion_mode %q or %q", ProviderCompletionModeServerResponse, ProviderCompletionModeReceiptRequired)
+		if completionMode != ProviderCompletionModeServerResponse {
+			return fmt.Errorf("provider-backed attempts require completion_mode %q", ProviderCompletionModeServerResponse)
 		}
 	default:
 		return fmt.Errorf("invalid execution mode: %q", executionMode)
@@ -159,7 +158,6 @@ type RunExecutionRecord struct {
 	CommittedAt              sql.NullString
 	FailureCode              sql.NullString
 	FailureText              sql.NullString
-	CompletionInvalidReason  sql.NullString
 	CancellationPending      bool
 	CancellationHandoffState sql.NullString
 	StopRetryAvailable       bool
@@ -586,7 +584,6 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       ae.committed_at,
 	       NULLIF(TRIM(ae.failure_code), '') AS failure_code,
 	       NULLIF(TRIM(ae.failure_text), '') AS failure_text,
-	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')) AS completion_invalid_reason,
 	       EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_pending,
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
@@ -639,7 +636,6 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&rec.CommittedAt,
 		&rec.FailureCode,
 		&rec.FailureText,
-		&rec.CompletionInvalidReason,
 		&rec.CancellationPending,
 		&rec.CancellationHandoffState,
 		&rec.StopRetryAvailable,

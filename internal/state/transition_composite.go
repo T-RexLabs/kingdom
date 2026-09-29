@@ -19,6 +19,11 @@ import (
 
 const executionStartReadbackTimeout = time.Second
 
+var (
+	errStaleAttemptExecutionLeaseChanged = errors.New("stale attempt execution lease changed")
+	errProviderTerminalHandoffPending    = errors.New("provider terminal handoff is pending")
+)
+
 type QueuedNodeAttempt struct {
 	NodeID       string
 	NodeRunID    string
@@ -133,13 +138,15 @@ type AutomaticDecreeRetryRecordRequest struct {
 }
 
 type DirectExecutionTerminalRequest struct {
-	Transition TransitionRequest
+	Transition   TransitionRequest
+	StaleAttempt *staleAttempt
 }
 
 // DirectExecutionTerminalWithRetryRequest atomically records a recovery-owned
 // terminal attempt and its automatic retry disposition.
 type DirectExecutionTerminalWithRetryRequest struct {
 	Transition            TransitionRequest
+	StaleAttempt          *staleAttempt
 	Decision              RetryDecisionCreateRequest
 	EscalationFromAgentID string
 }
@@ -197,6 +204,9 @@ type liveNodeAttempt struct {
 	SessionID                  string
 	ExecutionMode              executionstore.ExecutionMode
 	ExecutionState             string
+	LeaseOwner                 string
+	LeaseVersion               int64
+	LeaseExpiresAt             string
 	LaunchStartedAt            string
 	StartedAt                  string
 	ProviderSessionID          string
@@ -1866,6 +1876,21 @@ func (s *TransitionService) RecordDirectExecutionTerminal(ctx context.Context, r
 		if err := ensureAttemptExecutionRowForDirectTerminalTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.FromState, transition.OccurredAt); err != nil {
 			return err
 		}
+		if req.StaleAttempt != nil {
+			current, err := loadLiveNodeAttemptForStaleRetryTx(ctx, tx, transition.AttemptID, *req.StaleAttempt)
+			if err != nil {
+				return err
+			}
+			if isDurablyTerminalAttemptExecutionState(current.ExecutionState) {
+				return fmt.Errorf("stale terminal transition lost attempt authority for %q", current.AttemptID)
+			}
+			if err := lockStaleAttemptExecutionLeaseTx(ctx, tx, *req.StaleAttempt, current, transition.OccurredAt); err != nil {
+				return err
+			}
+			if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, current); err != nil {
+				return err
+			}
+		}
 		if err := ensureGenericRecoveryMayMutateAttemptTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String); err != nil {
 			return err
 		}
@@ -1896,7 +1921,7 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 				_ = tx.Rollback()
 			}
 		}()
-		current, err := loadLiveNodeAttemptForStaleRetryTx(ctx, tx, transition.AttemptID, staleAttempt{
+		stale := staleAttempt{
 			NodeRunID:     transition.NodeRunID.String,
 			RunID:         transition.RunID,
 			NodeID:        req.Decision.NodeID,
@@ -1904,12 +1929,21 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 			AgentID:       req.EscalationFromAgentID,
 			CurrentStatus: transition.FromState,
 			StartedAt:     transition.OccurredAt,
-		})
+		}
+		if req.StaleAttempt != nil {
+			stale = *req.StaleAttempt
+		}
+		current, err := loadLiveNodeAttemptForStaleRetryTx(ctx, tx, transition.AttemptID, stale)
 		if err != nil {
 			return err
 		}
 		if isDurablyTerminalAttemptExecutionState(current.ExecutionState) {
 			return fmt.Errorf("direct execution retry disposition lost terminal authority for attempt %q", current.AttemptID)
+		}
+		if req.StaleAttempt != nil {
+			if err := lockStaleAttemptExecutionLeaseTx(ctx, tx, *req.StaleAttempt, current, transition.OccurredAt); err != nil {
+				return err
+			}
 		}
 		if err := supersedeStaleProviderInvocationTx(ctx, tx, current, transition.OccurredAt); err != nil {
 			return err
@@ -2463,7 +2497,12 @@ func (s *TransitionService) terminalizeRunAndCancelLiveNodesTx(ctx context.Conte
 func (s *TransitionService) ScheduleFencedStaleRetry(ctx context.Context, req ScheduleFencedStaleRetryRequest) (QueuedNodeAttempt, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		queued, err := s.scheduleFencedStaleRetryOnce(ctx, req)
+		var queued QueuedNodeAttempt
+		_, err := sqlitex.Retry(ctx, func() error {
+			var retryErr error
+			queued, retryErr = s.scheduleFencedStaleRetryOnce(ctx, req)
+			return retryErr
+		}, sqlitex.Options{})
 		if err == nil {
 			return queued, nil
 		}
@@ -3837,6 +3876,9 @@ func (s *TransitionService) scheduleFencedStaleRetryOnce(ctx context.Context, re
 	if isDurablyTerminalAttemptExecutionState(current.ExecutionState) {
 		return QueuedNodeAttempt{}, fmt.Errorf("stale retry lost terminal authority for attempt %q", current.AttemptID)
 	}
+	if err := lockStaleAttemptExecutionLeaseTx(ctx, tx, attempt, current, occurredAt); err != nil {
+		return QueuedNodeAttempt{}, err
+	}
 
 	if req.HasReplacement {
 		if err := updateAgentStatusTx(ctx, tx, attempt.AgentID, AgentStatusBusy, AgentStatusBlocked, occurredAt); err != nil {
@@ -4152,12 +4194,15 @@ func loadLiveNodeAttemptForStaleRetryTx(ctx context.Context, tx *sql.Tx, attempt
 		return liveNodeAttempt{}, err
 	}
 	var executionMode string
-	err := tx.QueryRowContext(ctx, `SELECT state, execution_mode, session_ref, COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(provider_session_id, ''), COALESCE(active_provider_invocation_id, '')
+	err := tx.QueryRowContext(ctx, `SELECT state, execution_mode, session_ref, COALESCE(lease_owner, ''), lease_version, COALESCE(lease_expires_at, ''), COALESCE(launch_started_at, ''), COALESCE(started_at, ''), COALESCE(provider_session_id, ''), COALESCE(active_provider_invocation_id, '')
 		FROM attempt_executions
 		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?`, current.AttemptID, current.RunID, current.NodeRunID).Scan(
 		&current.ExecutionState,
 		&executionMode,
 		&current.SessionID,
+		&current.LeaseOwner,
+		&current.LeaseVersion,
+		&current.LeaseExpiresAt,
 		&current.LaunchStartedAt,
 		&current.StartedAt,
 		&current.ProviderSessionID,
@@ -4168,6 +4213,79 @@ func loadLiveNodeAttemptForStaleRetryTx(ctx context.Context, tx *sql.Tx, attempt
 	}
 	current.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
 	return current, nil
+}
+
+// lockStaleAttemptExecutionLeaseTx validates the candidate's exact lease
+// generation and expiry, then performs a compare-and-swap write to hold SQLite's
+// writer lock through the stale transition. A renewal between candidate lookup
+// and this transaction therefore cannot be revoked by stale recovery.
+func lockStaleAttemptExecutionLeaseTx(ctx context.Context, tx *sql.Tx, candidate staleAttempt, current liveNodeAttempt, occurredAt string) error {
+	if current.ExecutionMode != executionstore.ExecutionModeProviderBacked {
+		if candidate.ExecutionMode == executionstore.ExecutionModeProviderBacked {
+			return fmt.Errorf("%w: provider-backed candidate now has execution mode %q", errStaleAttemptExecutionLeaseChanged, current.ExecutionMode)
+		}
+		return nil
+	}
+	expectedLeaseOwner := candidate.LeaseOwner
+	expectedLeaseVersion := candidate.LeaseVersion
+	expectedLeaseExpiresAt := candidate.LeaseExpiresAt
+	if candidate.ExecutionMode != executionstore.ExecutionModeProviderBacked {
+		// Some recovery callers can construct a stale candidate without an
+		// attempt-execution row in the discovery query. Permit that only when
+		// the authoritative row currently has no active lease to revoke.
+		if candidate.LeaseOwner != "" || candidate.LeaseVersion != 0 || candidate.LeaseExpiresAt != "" || current.LeaseOwner != "" || current.LeaseExpiresAt != "" {
+			return fmt.Errorf("%w: provider lease snapshot is unavailable", errStaleAttemptExecutionLeaseChanged)
+		}
+		expectedLeaseOwner = current.LeaseOwner
+		expectedLeaseVersion = current.LeaseVersion
+		expectedLeaseExpiresAt = current.LeaseExpiresAt
+	} else if current.LeaseOwner != candidate.LeaseOwner || current.LeaseVersion != candidate.LeaseVersion || current.LeaseExpiresAt != candidate.LeaseExpiresAt {
+		return fmt.Errorf("%w: candidate mode=%q owner=%q version=%d expiry=%q; current mode=%q owner=%q version=%d expiry=%q",
+			errStaleAttemptExecutionLeaseChanged,
+			candidate.ExecutionMode, candidate.LeaseOwner, candidate.LeaseVersion, candidate.LeaseExpiresAt,
+			current.ExecutionMode, current.LeaseOwner, current.LeaseVersion, current.LeaseExpiresAt,
+		)
+	}
+	if current.LeaseOwner != "" {
+		if current.LeaseExpiresAt == "" {
+			return fmt.Errorf("provider execution lease expiry is missing for stale attempt %q", current.AttemptID)
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, current.LeaseExpiresAt)
+		if err != nil {
+			return fmt.Errorf("parse stale provider execution lease expiry for %q: %w", current.AttemptID, err)
+		}
+		now, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(occurredAt))
+		if err != nil {
+			return fmt.Errorf("parse stale provider execution lease evaluation time for %q: %w", current.AttemptID, err)
+		}
+		if now.Before(expiresAt) {
+			return errStaleAttemptExecutionLeaseChanged
+		}
+	} else if current.LeaseExpiresAt != "" {
+		return fmt.Errorf("provider execution lease owner is missing for stale attempt %q", current.AttemptID)
+	}
+
+	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+		SET updated_at = updated_at
+		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
+		  AND state IN ('queued', 'starting', 'running')
+		  AND COALESCE(lease_owner, '') = ?
+		  AND lease_version = ?
+		  AND COALESCE(lease_expires_at, '') = ?`,
+		current.AttemptID, current.RunID, current.NodeRunID,
+		expectedLeaseOwner, expectedLeaseVersion, expectedLeaseExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("fence stale provider execution lease for %q: %w", current.AttemptID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read stale provider execution lease fence for %q: %w", current.AttemptID, err)
+	}
+	if rows != 1 {
+		return errStaleAttemptExecutionLeaseChanged
+	}
+	return nil
 }
 
 func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
@@ -4203,6 +4321,9 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 		WHERE attempt_id = ?
 		  AND run_id = ?
 		  AND node_run_id = ?
+		  AND COALESCE(lease_owner, '') = ?
+		  AND lease_version = ?
+		  AND COALESCE(lease_expires_at, '') = ?
 		  AND state IN ('queued', 'starting', 'running')`,
 		occurredAt,
 		occurredAt,
@@ -4211,6 +4332,9 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 		attempt.AttemptID,
 		attempt.RunID,
 		attempt.NodeRunID,
+		attempt.LeaseOwner,
+		attempt.LeaseVersion,
+		attempt.LeaseExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("commit stale attempt cancellation: %w", err)
@@ -4227,15 +4351,16 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
+		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 			SET invocation_state = 'superseded',
-			    completion_capability_revoked_at = CASE WHEN completion_mode = 'receipt_required' THEN ? ELSE completion_capability_revoked_at END,
 			    failure_reason_code = 'agent_unresponsive',
 			    failure_reason_text = ?,
 			    updated_at = ?
 			WHERE provider_invocation_id = ?
-			  AND invocation_state IN ('issued', 'open', 'receipt_persisted')`,
-			occurredAt,
+			  AND invocation_state IN ('issued', 'open')`,
 			staleAttemptFailureReasonText,
 			occurredAt,
 			attempt.ActiveProviderInvocationID,
@@ -4250,6 +4375,24 @@ func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt
 		if rows != 1 {
 			return fmt.Errorf("stale retry lost provider invocation authority for %q", attempt.ActiveProviderInvocationID)
 		}
+	}
+	return nil
+}
+
+func ensureProviderTerminalHandoffNotPendingTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt) error {
+	if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(attempt.ActiveProviderInvocationID) == "" {
+		return nil
+	}
+	var handoffPending int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM provider_terminal_handoffs WHERE provider_invocation_id = ?)
+		OR EXISTS(SELECT 1 FROM provider_invocations WHERE provider_invocation_id = ? AND (terminal_handoff_pending_at IS NOT NULL OR terminal_recovery_required_at IS NOT NULL))`,
+		attempt.ActiveProviderInvocationID, attempt.ActiveProviderInvocationID,
+	).Scan(&handoffPending); err != nil {
+		return fmt.Errorf("check provider terminal handoff before stale recovery: %w", err)
+	}
+	if handoffPending != 0 {
+		return fmt.Errorf("%w for attempt %q", errProviderTerminalHandoffPending, attempt.AttemptID)
 	}
 	return nil
 }

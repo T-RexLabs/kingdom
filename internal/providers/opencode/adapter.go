@@ -35,30 +35,26 @@ type Adapter interface {
 	Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error)
 }
 
-const CompletionProtocolVersion = "v1"
-
 type ExecuteRequest struct {
-	CompletionMode            CompletionMode `json:"completion_mode"`
-	SessionID                 string         `json:"session_id"`
-	ProviderSessionID         string         `json:"provider_session_id,omitempty"`
-	AttemptID                 string         `json:"attempt_id"`
-	RunID                     string         `json:"run_id"`
-	NodeRunID                 string         `json:"node_run_id"`
-	Model                     string         `json:"model,omitempty"`
-	Variant                   string         `json:"variant,omitempty"`
-	Agent                     string         `json:"agent,omitempty"`
-	ForceNewSession           bool           `json:"force_new_session,omitempty"`
-	WorkspacePath             string         `json:"workspace_path"`
-	ConfigDir                 string         `json:"config_dir,omitempty"`
-	DatabasePath              string         `json:"database_path,omitempty"`
-	InlineConfigContent       string         `json:"-"`
-	Prompt                    string         `json:"prompt"`
-	OccurredAt                string         `json:"occurred_at"`
-	InvocationID              string         `json:"invocation_id,omitempty"`
-	InvocationIssuedAt        string         `json:"invocation_issued_at,omitempty"`
-	CompletionProtocolVersion string         `json:"completion_protocol_version,omitempty"`
-	CompletionCapability      string         `json:"completion_capability,omitempty"`
-	CompletionReceiptDir      string         `json:"completion_receipt_dir,omitempty"`
+	CompletionMode      CompletionMode `json:"completion_mode"`
+	SessionID           string         `json:"session_id"`
+	ProviderSessionID   string         `json:"provider_session_id,omitempty"`
+	AttemptID           string         `json:"attempt_id"`
+	RunID               string         `json:"run_id"`
+	NodeRunID           string         `json:"node_run_id"`
+	Model               string         `json:"model,omitempty"`
+	Variant             string         `json:"variant,omitempty"`
+	Agent               string         `json:"agent,omitempty"`
+	ForceNewSession     bool           `json:"force_new_session,omitempty"`
+	WorkspacePath       string         `json:"workspace_path"`
+	ProjectRootBoundary string         `json:"-"`
+	ConfigDir           string         `json:"config_dir,omitempty"`
+	DatabasePath        string         `json:"database_path,omitempty"`
+	InlineConfigContent string         `json:"-"`
+	Prompt              string         `json:"prompt"`
+	OccurredAt          string         `json:"occurred_at"`
+	InvocationID        string         `json:"invocation_id,omitempty"`
+	InvocationIssuedAt  string         `json:"invocation_issued_at,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
@@ -111,8 +107,7 @@ type ProcessGuardQuiescence struct {
 type CompletionMode string
 
 const (
-	CompletionModeServerResponse  CompletionMode = "server_response"
-	CompletionModeReceiptRequired CompletionMode = "receipt_required"
+	CompletionModeServerResponse CompletionMode = "server_response"
 )
 
 type ExecuteActivityKind string
@@ -406,29 +401,8 @@ func (a *MemoryAdapter) PublishEvent(req AttemptStreamEvent) error {
 }
 
 func validateExecuteRequest(req ExecuteRequest) error {
-	switch req.CompletionMode {
-	case CompletionModeServerResponse:
-		if strings.TrimSpace(req.CompletionProtocolVersion) != "" {
-			return fmt.Errorf("completion protocol version is only valid for receipt_required completion mode")
-		}
-		if strings.TrimSpace(req.CompletionCapability) != "" {
-			return fmt.Errorf("completion capability is only valid for receipt_required completion mode")
-		}
-		if strings.TrimSpace(req.CompletionReceiptDir) != "" {
-			return fmt.Errorf("completion receipt dir is only valid for receipt_required completion mode")
-		}
-	case CompletionModeReceiptRequired:
-		if strings.TrimSpace(req.InvocationID) == "" {
-			return fmt.Errorf("invocation id is required for receipt_required completion mode")
-		}
-		if strings.TrimSpace(req.CompletionCapability) == "" {
-			return fmt.Errorf("completion capability is required for receipt_required completion mode")
-		}
-		if strings.TrimSpace(req.CompletionReceiptDir) == "" {
-			return fmt.Errorf("completion receipt dir is required for receipt_required completion mode")
-		}
-	default:
-		return fmt.Errorf("completion mode must be %q or %q", CompletionModeServerResponse, CompletionModeReceiptRequired)
+	if req.CompletionMode != CompletionModeServerResponse {
+		return fmt.Errorf("completion mode must be %q", CompletionModeServerResponse)
 	}
 	if req.SessionID == "" {
 		return fmt.Errorf("session id is required")

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kingdom/internal/sqlitex"
 )
 
 type agentRegistryReadQuerier interface {
@@ -320,6 +322,13 @@ func (r *AgentRegistry) SyncOperationalStatus(ctx context.Context, agentID, upda
 }
 
 func (r *AgentRegistry) ReassignAgent(ctx context.Context, req ReassignAgentRequest) error {
+	_, err := sqlitex.Retry(ctx, func() error {
+		return r.reassignAgentOnce(ctx, req)
+	}, sqlitex.Options{})
+	return err
+}
+
+func (r *AgentRegistry) reassignAgentOnce(ctx context.Context, req ReassignAgentRequest) error {
 	if req.MaxSpawnDepth < 0 {
 		return fmt.Errorf("max spawn depth must be non-negative")
 	}

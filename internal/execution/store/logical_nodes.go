@@ -185,7 +185,6 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 	       COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at, ''), NULLIF(TRIM(ae.progress_event_type), ''),
 	       NULLIF(TRIM(ae.progress_reason_code), ''), ae.progress_at, ae.launch_started_at, ae.started_at, COALESCE(ae.updated_at, ''),
 	       ae.terminal_observed_at, ae.committed_at, NULLIF(TRIM(ae.failure_code), ''), NULLIF(TRIM(ae.failure_text), ''),
-	       COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')),
 	       EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
@@ -204,9 +203,6 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 	LEFT JOIN logical_activity la ON la.node_id = wn.node_id
 	LEFT JOIN node_runs nr ON nr.run_id = wr.run_id AND nr.node_run_id = vnr.node_run_id
 	LEFT JOIN attempt_executions ae ON ae.run_id = wr.run_id AND ae.node_run_id = vnr.node_run_id
-	LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
-	LEFT JOIN provider_invocations api ON api.provider_invocation_id = ae.active_provider_invocation_id
-	LEFT JOIN provider_invocations cpi ON cpi.provider_invocation_id = pcs.provider_invocation_id
 	LEFT JOIN current_recovery cr ON cr.node_id = wn.node_id AND cr.current_rank = 1
 	WHERE wr.run_id = ?
 	ORDER BY CASE COALESCE(vnr.node_status, 'pending')
@@ -245,7 +241,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 			&currentAttemptID, &current.RunID, &current.NodeRunID, &current.NodeID, &current.Attempt, &current.NodeStatus, &current.RequiredRole, &current.AgentID,
 			&current.State, &currentExecutionMode, &current.LogicalSessionID, &current.ProviderSessionID, &current.QueuedAt, &current.ActivityAt,
 			&current.ProgressEventType, &current.ProgressReasonCode, &current.ProgressAt, &current.LaunchStartedAt, &current.StartedAt, &current.UpdatedAt,
-			&current.TerminalObservedAt, &current.CommittedAt, &current.FailureCode, &current.FailureText, &current.CompletionInvalidReason,
+			&current.TerminalObservedAt, &current.CommittedAt, &current.FailureCode, &current.FailureText,
 			&current.CancellationPending, &current.CancellationHandoffState, &current.StopRetryAvailable,
 			&recovery.Phase, &recovery.Trigger, &recovery.ReasonCode, &recovery.SourceAttemptID, &recovery.SourceNodeRunID, &recovery.TargetAttemptID,
 			&recovery.TargetNodeRunID, &recovery.RetryIndex, &recovery.RetryMax, &recovery.ScheduledAt, &recovery.LastUpdatedAt, &recovery.OperatorText,
@@ -381,7 +377,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		NULLIF(TRIM(ae.provider_session_id), ''), COALESCE(ae.created_at, ''), COALESCE(ae.updated_at, ae.started_at, ae.launch_started_at, ae.created_at, ''),
 		NULLIF(TRIM(ae.progress_event_type), ''), NULLIF(TRIM(ae.progress_reason_code), ''), ae.progress_at, ae.launch_started_at,
 		ae.started_at, COALESCE(ae.updated_at, ''), ae.terminal_observed_at, ae.committed_at, NULLIF(TRIM(ae.failure_code), ''),
-		NULLIF(TRIM(ae.failure_text), ''), COALESCE(NULLIF(TRIM(cpi.invalid_reason), ''), NULLIF(TRIM(api.invalid_reason), '')),
+		NULLIF(TRIM(ae.failure_text), ''),
 		EXISTS(SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 		(SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 		CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
@@ -413,8 +409,6 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		LEFT JOIN attempt_executions ae ON ae.attempt_id = selected.attempt_id
 		LEFT JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
-		LEFT JOIN provider_invocations api ON api.provider_invocation_id = ae.active_provider_invocation_id
-		LEFT JOIN provider_invocations cpi ON cpi.provider_invocation_id = pcs.provider_invocation_id
 		LEFT JOIN token_usage_totals usage ON usage.attempt_id = ae.attempt_id
 		ORDER BY nr.attempt DESC, nr.node_run_id DESC
 		`, strings.TrimSpace(runID), strings.TrimSpace(nodeID), beforeAttempt, beforeAttempt, beforeAttempt, strings.TrimSpace(beforeNodeRunID), limit, strings.TrimSpace(runID), strings.TrimSpace(nodeID))
@@ -435,7 +429,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 			&record.RequiredRole, &record.AgentID, &record.State, &executionMode, &record.LogicalSessionID, &record.ProviderSessionID,
 			&record.QueuedAt, &record.ActivityAt, &record.ProgressEventType, &record.ProgressReasonCode, &record.ProgressAt, &record.LaunchStartedAt,
 			&record.StartedAt, &record.UpdatedAt, &record.TerminalObservedAt, &record.CommittedAt, &record.FailureCode, &record.FailureText,
-			&record.CompletionInvalidReason, &record.CancellationPending, &record.CancellationHandoffState, &record.StopRetryAvailable,
+			&record.CancellationPending, &record.CancellationHandoffState, &record.StopRetryAvailable,
 			&record.SupersededAt, &record.ProviderInvocationID, &usageCount, &usage.InputTokens, &usage.OutputTokens, &usage.TotalTokens, &usage.ReasoningTokens, &usage.CacheReadTokens, &usage.CacheWriteTokens, &relationshipsJSON); err != nil {
 			return RunNodeAttemptsPage{}, fmt.Errorf("scan node attempt for run=%q node=%q: %w", runID, nodeID, err)
 		}

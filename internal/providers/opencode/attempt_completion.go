@@ -59,7 +59,6 @@ type attemptCompletionEvidence struct {
 	FailureText                 string
 	PendingToolCount            int
 	LaterEventAfterTerminal     bool
-	ReceiptRequired             bool
 }
 
 type attemptCompletionResult struct {
@@ -132,11 +131,6 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 		result.State = attemptCompletionStateFailed
 		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_terminal_failure")
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
-		return attemptCompletionDecision{Result: result}
-	}
-	if e.ReceiptRequired {
-		result.State = attemptCompletionStateSuccess
-		result.ReasonCode = "execution_completed"
 		return attemptCompletionDecision{Result: result}
 	}
 	if e.StepFinishSeen {

@@ -128,26 +128,21 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
 		t.Fatal("expected attempt_executions.result_snapshot_id column to exist after up migration")
 	}
-	if !columnExists(t, db, "provider_invocations", "completion_capability_hash") {
-		t.Fatal("expected provider_invocations.completion_capability_hash column to exist after up migration")
+	for _, column := range []string{"completion_mode", "invalid_reason", "opened_at", "settled_at", "terminal_handoff_pending_at", "terminal_recovery_required_at", "terminal_handoff_file_cleanup_pending_at"} {
+		if !columnExists(t, db, "provider_invocations", column) {
+			t.Fatalf("expected provider_invocations.%s column to exist after up migration", column)
+		}
 	}
-	if !columnExists(t, db, "provider_invocations", "receipt_seen_count") {
-		t.Fatal("expected provider_invocations.receipt_seen_count column to exist after up migration")
+	for _, column := range []string{"completion_capability_hash", "completion_capability_issued_at", "completion_capability_used_at", "completion_capability_revoked_at", "receipt_seen_count", "first_receipt_seen_at", "last_receipt_seen_at", "last_receipt_disposition", "receipt_persisted_at", "receipt_inbox_cleaned_at"} {
+		if columnExists(t, db, "provider_invocations", column) {
+			t.Fatalf("expected retired provider_invocations.%s column to be absent", column)
+		}
 	}
-	if !columnExists(t, db, "provider_invocations", "first_receipt_seen_at") {
-		t.Fatal("expected provider_invocations.first_receipt_seen_at column to exist after up migration")
+	if columnExists(t, db, "provider_process_guards", "terminal_recovery_required_at") {
+		t.Fatal("expected terminal recovery markers to live on provider invocations, not process guards")
 	}
-	if !columnExists(t, db, "provider_invocations", "last_receipt_seen_at") {
-		t.Fatal("expected provider_invocations.last_receipt_seen_at column to exist after up migration")
-	}
-	if !columnExists(t, db, "provider_invocations", "last_receipt_disposition") {
-		t.Fatal("expected provider_invocations.last_receipt_disposition column to exist after up migration")
-	}
-	if !columnExists(t, db, "provider_invocations", "receipt_inbox_cleaned_at") {
-		t.Fatal("expected provider_invocations.receipt_inbox_cleaned_at column to exist after up migration")
-	}
-	if !indexExists(t, db, "idx_provider_invocations_receipt_ingestion") {
-		t.Fatal("expected receipt ingestion candidate index after up migration")
+	if indexExists(t, db, "idx_provider_invocations_receipt_ingestion") {
+		t.Fatal("expected retired receipt ingestion index to be absent after up migration")
 	}
 	for _, column := range []string{"handoff_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "expected_lease_owner", "expected_lease_version", "stream_observation_json", "payload_json", "created_at"} {
 		if !columnExists(t, db, "provider_terminal_handoffs", column) {
@@ -179,9 +174,6 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "planning_provider_invocations", "completion_mode") {
 		t.Fatal("expected planning_provider_invocations.completion_mode column to exist after up migration")
 	}
-	if indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
-		t.Fatal("expected planner receipt uniqueness index to be absent after up migration")
-	}
 	if !columnExists(t, db, "workflow_runs", "pending_approval_key") {
 		t.Fatal("expected workflow_runs.pending_approval_key column to exist after up migration")
 	}
@@ -199,6 +191,62 @@ func TestMigrationBaselineOmitsObsoleteRunDetailProjectionTables(t *testing.T) {
 	for _, tableName := range []string{"run_detail_stats", "run_agent_memberships", "run_agent_projection"} {
 		if tableExists(t, db, tableName) {
 			t.Fatalf("expected %s to be dropped after full migration", tableName)
+		}
+	}
+}
+
+func TestMigrationUpgradeAddsRecoveryLeaseAndResponseWorkspaceCleanupFields(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	var existingMigrations []SQLMigration
+	for _, name := range []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+		"0005_unbounded_planning_external_context.up.sql",
+	} {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatalf("read existing migration %s: %v", name, err)
+		}
+		existingMigrations = append(existingMigrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, existingMigrations, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply existing migration history: %v", err)
+	}
+	for _, tableColumn := range [][2]string{
+		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
+		{"provider_invocations", "terminal_handoff_pending_lease_version"},
+		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
+		{"provider_invocations", "terminal_recovery_required_lease_owner"},
+		{"provider_invocations", "terminal_recovery_required_lease_version"},
+		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
+		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
+	} {
+		if columnExists(t, db, tableColumn[0], tableColumn[1]) {
+			t.Fatalf("existing schema unexpectedly has %s.%s before forward migration", tableColumn[0], tableColumn[1])
+		}
+	}
+	raw, err := dbmigrations.Read("0006_execution_recovery_and_response_workspace_cleanup.up.sql")
+	if err != nil {
+		t.Fatalf("read forward recovery migration: %v", err)
+	}
+	if err := ApplySQLMigrations(context.Background(), db, []SQLMigration{{Name: "0006_execution_recovery_and_response_workspace_cleanup.up.sql", SQL: raw}}, time.Date(2026, 9, 29, 12, 1, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply forward recovery migration: %v", err)
+	}
+	for _, tableColumn := range [][2]string{
+		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
+		{"provider_invocations", "terminal_handoff_pending_lease_version"},
+		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
+		{"provider_invocations", "terminal_recovery_required_lease_owner"},
+		{"provider_invocations", "terminal_recovery_required_lease_version"},
+		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
+		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
+	} {
+		if !columnExists(t, db, tableColumn[0], tableColumn[1]) {
+			t.Fatalf("forward migration did not add %s.%s", tableColumn[0], tableColumn[1])
 		}
 	}
 }
@@ -821,7 +869,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql", "0004_resumable_workspace_tree_cleanup.up.sql", "0005_unbounded_planning_external_context.up.sql"}
+	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql", "0004_resumable_workspace_tree_cleanup.up.sql", "0005_unbounded_planning_external_context.up.sql", "0006_execution_recovery_and_response_workspace_cleanup.up.sql"}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)
 	}

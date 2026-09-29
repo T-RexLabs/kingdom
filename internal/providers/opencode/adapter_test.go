@@ -10,101 +10,78 @@ import (
 )
 
 func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
-	validReceiptRequest := func() ExecuteRequest {
+	validServerResponseRequest := func() ExecuteRequest {
 		return ExecuteRequest{
-			CompletionMode:       CompletionModeReceiptRequired,
-			SessionID:            "session_1",
-			AttemptID:            "attempt_1",
-			RunID:                "run_1",
-			NodeRunID:            "node_run_1",
-			Prompt:               "complete this work",
-			OccurredAt:           "2026-03-01T12:00:00Z",
-			InvocationID:         "invocation_1",
-			CompletionCapability: "capability_1",
-			CompletionReceiptDir: t.TempDir(),
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_1",
+			AttemptID:      "attempt_1",
+			RunID:          "run_1",
+			NodeRunID:      "node_run_1",
+			Prompt:         "complete this work",
+			OccurredAt:     "2026-03-01T12:00:00Z",
 		}
 	}
 
 	tests := []struct {
-		name string
-		req  ExecuteRequest
-		want string
+		name   string
+		mutate func(*ExecuteRequest)
+		want   string
 	}{
 		{
-			name: "missing mode",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionMode = ""; return req }(),
-			want: "completion mode must be",
+			name:   "missing mode",
+			mutate: func(req *ExecuteRequest) { req.CompletionMode = "" },
+			want:   "completion mode must be",
 		},
 		{
-			name: "unknown mode",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionMode = "unknown"; return req }(),
-			want: "completion mode must be",
+			name:   "unknown mode",
+			mutate: func(req *ExecuteRequest) { req.CompletionMode = "unknown" },
+			want:   "completion mode must be",
 		},
 		{
-			name: "server response protocol",
-			req: func() ExecuteRequest {
-				req := validReceiptRequest()
-				req.CompletionMode = CompletionModeServerResponse
-				req.CompletionProtocolVersion = CompletionProtocolVersion
-				req.CompletionCapability = ""
-				req.CompletionReceiptDir = ""
-				return req
-			}(),
-			want: "completion protocol version",
+			name:   "missing session id",
+			mutate: func(req *ExecuteRequest) { req.SessionID = "" },
+			want:   "session id",
 		},
 		{
-			name: "server response capability",
-			req: func() ExecuteRequest {
-				req := validReceiptRequest()
-				req.CompletionMode = CompletionModeServerResponse
-				req.CompletionReceiptDir = ""
-				return req
-			}(),
-			want: "completion capability",
+			name:   "missing attempt id",
+			mutate: func(req *ExecuteRequest) { req.AttemptID = "" },
+			want:   "attempt id",
 		},
 		{
-			name: "server response receipt directory",
-			req: func() ExecuteRequest {
-				req := validReceiptRequest()
-				req.CompletionMode = CompletionModeServerResponse
-				req.CompletionCapability = ""
-				return req
-			}(),
-			want: "completion receipt dir",
+			name:   "missing run id",
+			mutate: func(req *ExecuteRequest) { req.RunID = "" },
+			want:   "run id",
 		},
 		{
-			name: "receipt required invocation",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.InvocationID = ""; return req }(),
-			want: "invocation id",
+			name:   "missing node run id",
+			mutate: func(req *ExecuteRequest) { req.NodeRunID = "" },
+			want:   "node run id",
 		},
 		{
-			name: "receipt required capability",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionCapability = ""; return req }(),
-			want: "completion capability",
+			name:   "missing prompt",
+			mutate: func(req *ExecuteRequest) { req.Prompt = "" },
+			want:   "prompt",
 		},
 		{
-			name: "receipt required receipt directory",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.CompletionReceiptDir = ""; return req }(),
-			want: "completion receipt dir",
-		},
-		{
-			name: "receipt required attempt",
-			req:  func() ExecuteRequest { req := validReceiptRequest(); req.AttemptID = ""; return req }(),
-			want: "attempt id",
+			name:   "missing occurred at",
+			mutate: func(req *ExecuteRequest) { req.OccurredAt = "" },
+			want:   "occurred_at",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateExecuteRequest(test.req)
+			request := validServerResponseRequest()
+			test.mutate(&request)
+			err := validateExecuteRequest(request)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("validate execute request error = %v, want %q", err, test.want)
 			}
 		})
 	}
 
-	if err := validateExecuteRequest(validReceiptRequest()); err != nil {
-		t.Fatalf("expected receipt mode without callback to validate: %v", err)
+	if err := validateExecuteRequest(validServerResponseRequest()); err != nil {
+		t.Fatalf("expected server-response request to validate: %v", err)
 	}
 }
 
@@ -123,44 +100,6 @@ func TestValidateExecuteRequestAcceptsLongPrompt(t *testing.T) {
 	prompt := strings.Repeat("large prompt context ", 4096)
 	if err := validateExecuteRequest(request(prompt)); err != nil {
 		t.Fatalf("long prompt rejected: %v", err)
-	}
-}
-
-func TestMemoryAdapterReceiptModeDoesNotTouchReceiptPath(t *testing.T) {
-	t.Parallel()
-
-	receiptPath := filepath.Join(t.TempDir(), "opaque-receipt-path")
-	const sentinel = "not a receipt directory"
-	if err := os.WriteFile(receiptPath, []byte(sentinel), 0o600); err != nil {
-		t.Fatalf("write receipt path sentinel: %v", err)
-	}
-
-	res, err := NewMemoryAdapter().Execute(context.Background(), ExecuteRequest{
-		CompletionMode:            CompletionModeReceiptRequired,
-		SessionID:                 "session_receipt_observation",
-		AttemptID:                 "attempt_receipt_observation",
-		RunID:                     "run_1",
-		NodeRunID:                 "nr_1",
-		WorkspacePath:             t.TempDir(),
-		Prompt:                    "observe process only",
-		OccurredAt:                "2026-03-01T12:00:00Z",
-		InvocationID:              "invocation_receipt_observation",
-		CompletionProtocolVersion: CompletionProtocolVersion,
-		CompletionCapability:      "capability_receipt_observation",
-		CompletionReceiptDir:      receiptPath,
-	})
-	if err != nil {
-		t.Fatalf("execute receipt-mode process observation: %v", err)
-	}
-	if !res.Accepted || res.Outcome.State != string(attemptCompletionStateSuccess) {
-		t.Fatalf("expected process-only success candidate, got %#v", res)
-	}
-	raw, err := os.ReadFile(receiptPath)
-	if err != nil {
-		t.Fatalf("read receipt path sentinel: %v", err)
-	}
-	if string(raw) != sentinel {
-		t.Fatalf("receipt path was modified: %q", raw)
 	}
 }
 

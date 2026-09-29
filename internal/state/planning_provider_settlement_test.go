@@ -17,7 +17,7 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		t.Fatalf("mark initial planning operation terminal: %v", err)
 	}
 	secondOperation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
-		OperationID:        "po_planning_receipt_2",
+		OperationID:        "po_planning_reuse_2",
 		PlanningSessionID:  operation.PlanningSessionID,
 		Type:               PlanningOperationTypeReply,
 		Status:             PlanningOperationStatusRunning,
@@ -35,7 +35,7 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		PlanningProviderInvocationID: "ppinv_test_2",
 		PlanningOperationID:          secondOperation.OperationID,
 		PlanningSessionID:            secondOperation.PlanningSessionID,
-		LogicalSessionID:             "planner-ps_planning_receipt",
+		LogicalSessionID:             "planner-ps_planning_reuse",
 		CreatedAt:                    "2026-04-21T16:05:00Z",
 		LeaseOwner:                   "worker_2",
 		LeaseVersion:                 1,
@@ -45,7 +45,7 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
 		PlanningProviderInvocationID: "ppinv_test_2",
 		PlanningOperationID:          secondOperation.OperationID,
-		ProviderSessionID:            "ses_planning_receipt_2",
+		ProviderSessionID:            "ses_planning_reuse_2",
 		OpenedAt:                     "2026-04-21T16:05:01Z",
 		LeaseOwner:                   "worker_2",
 		LeaseVersion:                 1,
@@ -53,7 +53,7 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		t.Fatalf("mark second planning provider invocation open: %v", err)
 	}
 
-	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_receipt")
+	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_reuse")
 	if err != nil {
 		t.Fatalf("get latest reusable planning provider invocation: %v", err)
 	}
@@ -63,15 +63,15 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 	if invocation.PlanningProviderInvocationID != "ppinv_test_2" {
 		t.Fatalf("expected latest reusable invocation ppinv_test_2, got %#v", invocation)
 	}
-	if invocation.ProviderSessionID != "ses_planning_receipt_2" {
-		t.Fatalf("expected latest reusable provider session ses_planning_receipt_2, got %#v", invocation)
+	if invocation.ProviderSessionID != "ses_planning_reuse_2" {
+		t.Fatalf("expected latest reusable provider session ses_planning_reuse_2, got %#v", invocation)
 	}
 	if invocation.CompletionMode != PlanningProviderCompletionModeServerResponse {
 		t.Fatalf("expected planning invocation server_response completion mode, got %#v", invocation)
 	}
 }
 
-func TestPlanningProviderInvocationSchemaRejectsReceiptRequiredMode(t *testing.T) {
+func TestPlanningProviderInvocationSchemaRejectsUnknownCompletionMode(t *testing.T) {
 	t.Parallel()
 
 	store, operation := newPlanningProviderSettlementTestStore(t)
@@ -83,8 +83,8 @@ func TestPlanningProviderInvocationSchemaRejectsReceiptRequiredMode(t *testing.T
 		completion_mode,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, 'issued', 'receipt_required', '2026-04-21T16:00:00Z', '2026-04-21T16:00:00Z')`, "ppinv_invalid_mode", operation.OperationID, operation.PlanningSessionID); err == nil {
-		t.Fatal("expected planning provider invocation schema to reject receipt_required mode")
+	) VALUES (?, ?, ?, 'issued', 'external_callback', '2026-04-21T16:00:00Z', '2026-04-21T16:00:00Z')`, "ppinv_invalid_mode", operation.OperationID, operation.PlanningSessionID); err == nil {
+		t.Fatal("expected planning provider invocation schema to reject unknown completion mode")
 	}
 }
 
@@ -97,7 +97,7 @@ func TestPlanningStoreMarkPlanningProviderInvocationOpenRejectsProviderSessionLi
 	_, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PlanningOperationID:          operation.OperationID,
-		ProviderSessionID:            "ses_planning_receipt_conflict",
+		ProviderSessionID:            "ses_planning_reuse_conflict",
 		OpenedAt:                     "2026-04-21T16:00:04Z",
 		LeaseOwner:                   "worker_1",
 		LeaseVersion:                 1,
@@ -120,7 +120,7 @@ func TestPlanningStoreMarkPlanningProviderInvocationOpenRejectsProviderSessionLi
 	if !found {
 		t.Fatal("expected planning provider invocation to exist")
 	}
-	if invocation.ProviderSessionID != "ses_planning_receipt" {
+	if invocation.ProviderSessionID != "ses_planning_reuse" {
 		t.Fatalf("expected original planning provider session id to remain authoritative, got %#v", invocation)
 	}
 
@@ -131,7 +131,7 @@ func TestPlanningStoreMarkPlanningProviderInvocationOpenRejectsProviderSessionLi
 	if !found {
 		t.Fatal("expected planning operation to exist")
 	}
-	if persistedOperation.ProviderSessionID == nil || strings.TrimSpace(*persistedOperation.ProviderSessionID) != "ses_planning_receipt" {
+	if persistedOperation.ProviderSessionID == nil || strings.TrimSpace(*persistedOperation.ProviderSessionID) != "ses_planning_reuse" {
 		t.Fatalf("expected planning operation provider session id to remain unchanged, got %#v", persistedOperation)
 	}
 }
@@ -391,7 +391,7 @@ func TestFinalizePlanningProviderSettlementAllowsFailureRetryWhenOnlySettledAtDi
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PrimaryEvidenceID:            "evidence_terminal_ppinv_test_1_failed",
 		PrimaryEvidenceKind:          PlanningProviderCompletionEvidenceKindStreamObservation,
-		PrimaryEvidencePayloadJSON:   `{"failure_text":"planner failed","output_text":"partial output","provider_session":"ses_planning_receipt","reason_code":"internal_error","state":"failed"}`,
+		PrimaryEvidencePayloadJSON:   `{"failure_text":"planner failed","output_text":"partial output","provider_session":"ses_planning_reuse","reason_code":"internal_error","state":"failed"}`,
 		PrimaryEvidenceCreatedAt:     "2026-04-21T16:03:00Z",
 		Outcome:                      PlanningProviderCompletionOutcomeFailed,
 		FinalText:                    "partial output",
@@ -502,7 +502,7 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 		PlanningProviderInvocationID: "ppinv_conflict",
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
-		LogicalSessionID:             "planner-ps_planning_receipt",
+		LogicalSessionID:             "planner-ps_planning_reuse",
 		CreatedAt:                    "2026-04-21T16:00:04Z",
 		OpenedAt:                     "2026-04-21T16:00:04Z",
 		LeaseOwner:                   "worker_1",
@@ -645,8 +645,8 @@ func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*Pl
 	ctx := context.Background()
 
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_planning_receipt",
-		Title:              "Planning receipt settlement",
+		PlanningSessionID:  "ps_planning_reuse",
+		Title:              "Planning provider settlement",
 		TitleState:         "custom",
 		LifecycleState:     PlanningSessionLifecycleStateActive,
 		ConversationState:  PlanningSessionConversationStateReady,
@@ -657,10 +657,10 @@ func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*Pl
 	}); err != nil {
 		t.Fatalf("create planning session: %v", err)
 	}
-	bindTestPlanningContext(t, db, "ps_planning_receipt")
+	bindTestPlanningContext(t, db, "ps_planning_reuse")
 	operation, err := store.CreateOperation(ctx, CreatePlanningOperationRequest{
-		OperationID:        "po_planning_receipt",
-		PlanningSessionID:  "ps_planning_receipt",
+		OperationID:        "po_planning_reuse",
+		PlanningSessionID:  "ps_planning_reuse",
 		Type:               PlanningOperationTypeReply,
 		Status:             PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{"content_markdown":"hello"}`,
@@ -676,7 +676,7 @@ func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*Pl
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
-		LogicalSessionID:             "planner-ps_planning_receipt",
+		LogicalSessionID:             "planner-ps_planning_reuse",
 		CreatedAt:                    "2026-04-21T16:00:02Z",
 		LeaseOwner:                   "worker_1",
 		LeaseVersion:                 1,
@@ -686,7 +686,7 @@ func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*Pl
 	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PlanningOperationID:          operation.OperationID,
-		ProviderSessionID:            "ses_planning_receipt",
+		ProviderSessionID:            "ses_planning_reuse",
 		OpenedAt:                     "2026-04-21T16:00:03Z",
 		LeaseOwner:                   "worker_1",
 		LeaseVersion:                 1,
@@ -705,7 +705,7 @@ func streamObservationSuccessSettlementRequest(finalText, structuredPayloadJSON 
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PrimaryEvidenceID:            "evidence_success_ppinv_test_1",
 		PrimaryEvidenceKind:          PlanningProviderCompletionEvidenceKindStreamObservation,
-		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}","stream_observation":{"provider_session_id":"ses_planning_receipt","final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"` + finalText + `","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`,
+		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}","stream_observation":{"provider_session_id":"ses_planning_reuse","final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"` + finalText + `","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`,
 		PrimaryEvidenceCreatedAt:     "2026-04-21T16:02:05Z",
 		Outcome:                      PlanningProviderCompletionOutcomeSuccess,
 		FinalText:                    finalText,

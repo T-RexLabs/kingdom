@@ -19,7 +19,7 @@ func TestCanonicalNodeContractsResolveCompletionModes(t *testing.T) {
 		{NodeClassPlanDrafting, "council-member", ProviderCompletionModeServerResponse},
 		{NodeClassKingPlanDecision, "king", ProviderCompletionModeNotApplicable},
 		{NodeClassExecutionKickoff, "council-member", ProviderCompletionModeNotApplicable},
-		{NodeClassDelegatedExecution, "builder-berserker", ProviderCompletionModeReceiptRequired},
+		{NodeClassDelegatedExecution, "builder-berserker", ProviderCompletionModeServerResponse},
 		{NodeClassExecutionReview, "reviewer-shieldmaiden", ProviderCompletionModeServerResponse},
 		{NodeClassValidationGates, "intelligence-qa-scout", ProviderCompletionModeServerResponse},
 		{NodeClassValidationGates, "intelligence-nightraven", ProviderCompletionModeServerResponse},

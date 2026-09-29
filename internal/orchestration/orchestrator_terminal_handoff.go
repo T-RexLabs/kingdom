@@ -19,6 +19,13 @@ import (
 const providerTerminalHandoffPassLimit = 128
 const providerTerminalHandoffWireVersion = "v1"
 
+func (o *orchestrationLoop) lockProviderTerminalHandoffFile(providerInvocationID string) func() {
+	if o == nil {
+		return func() {}
+	}
+	return o.terminalHandoffFileLocks.Lock(providerInvocationID)
+}
+
 type providerTerminalHandoffWire struct {
 	Version              string                               `json:"version"`
 	ProviderInvocationID string                               `json:"provider_invocation_id"`
@@ -41,10 +48,79 @@ type providerTerminalHandoffStreamEnvelope struct {
 	Observation          opencode.InvocationStreamObservation  `json:"observation"`
 }
 
+type providerTerminalHandoffInfrastructureError struct {
+	cause error
+}
+
+func (o *orchestrationLoop) markProviderTerminalHandoffPending(ctx context.Context, result asyncExecutionResult) error {
+	if o == nil || o.executionStore == nil {
+		return fmt.Errorf("provider terminal recovery marker is not configured")
+	}
+	err := o.executionStore.MarkProviderTerminalHandoffPending(ctx, executionstore.MarkProviderTerminalHandoffPendingRequest{
+		ProviderInvocationID: result.providerInvocationID,
+		AttemptID:            result.attemptID,
+		RunID:                result.run.RunID,
+		NodeRunID:            result.attempt.NodeRunID,
+		ExpectedLeaseOwner:   result.expectedLeaseOwner,
+		ExpectedLeaseVersion: result.expectedLeaseVersion,
+		ProcessQuiescent:     result.providerStreamObservation.ProcessQuiescent,
+		MarkedAt:             o.now().UTC().Format(time.RFC3339Nano),
+	})
+	if err == nil {
+		return nil
+	}
+	return err
+}
+
+func (o *orchestrationLoop) markProviderTerminalRecoveryRequired(ctx context.Context, result asyncExecutionResult) error {
+	if o == nil || o.executionStore == nil {
+		return fmt.Errorf("provider terminal recovery marker is not configured")
+	}
+	return o.executionStore.MarkProviderTerminalRecoveryRequired(ctx, executionstore.MarkProviderTerminalRecoveryRequiredRequest{
+		ProviderInvocationID: result.providerInvocationID,
+		AttemptID:            result.attemptID,
+		RunID:                result.run.RunID,
+		NodeRunID:            result.attempt.NodeRunID,
+		ExpectedLeaseOwner:   result.expectedLeaseOwner,
+		ExpectedLeaseVersion: result.expectedLeaseVersion,
+		ProcessQuiescent:     result.providerStreamObservation.ProcessQuiescent,
+		MarkedAt:             o.now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func providerTerminalInvocationState(state executionstore.ProviderInvocationState) bool {
+	switch state {
+	case executionstore.ProviderInvocationStateSettledSuccess,
+		executionstore.ProviderInvocationStateSettledFailed,
+		executionstore.ProviderInvocationStateSettledCancelled,
+		executionstore.ProviderInvocationStateSuperseded,
+		executionstore.ProviderInvocationStateInvalidated:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *providerTerminalHandoffInfrastructureError) Error() string {
+	if e == nil || e.cause == nil {
+		return "provider terminal handoff infrastructure failure"
+	}
+	return e.cause.Error()
+}
+
+func (e *providerTerminalHandoffInfrastructureError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 func (o *orchestrationLoop) persistProviderTerminalHandoffFile(ctx context.Context, result *asyncExecutionResult, payloadJSON string) (executionstore.PersistProviderTerminalHandoffResult, error) {
 	if o == nil || o.fsStore == nil || o.executionStore == nil || result == nil {
 		return executionstore.PersistProviderTerminalHandoffResult{}, fmt.Errorf("provider terminal handoff persistence is not configured")
 	}
+	unlock := o.lockProviderTerminalHandoffFile(result.providerInvocationID)
+	defer unlock()
 	file, found, err := o.fsStore.ReadProviderTerminalHandoff(result.providerInvocationID)
 	if err != nil {
 		return executionstore.PersistProviderTerminalHandoffResult{}, err
@@ -97,50 +173,229 @@ func (o *orchestrationLoop) persistProviderTerminalHandoffFile(ctx context.Conte
 	if err != nil {
 		return executionstore.PersistProviderTerminalHandoffResult{}, err
 	}
-	if err := o.fsStore.RemoveProviderTerminalHandoff(wire.ProviderInvocationID, file.Identity); err != nil {
-		slog.Warn("provider terminal handoff file cleanup deferred", "provider_invocation_id", wire.ProviderInvocationID, "error", err)
-	}
+	o.removeProviderTerminalHandoffFileLocked(ctx, wire.ProviderInvocationID, file)
 	return persisted, nil
 }
 
-func (o *orchestrationLoop) recoverProviderTerminalHandoffFile(ctx context.Context, candidate executionstore.ProviderInvocation) error {
-	file, found, readErr := o.fsStore.ReadProviderTerminalHandoff(candidate.ProviderInvocationID)
-	if !found {
-		return nil
+func (o *orchestrationLoop) resetProviderTerminalHandoffFileRecoveryCursor() {
+	if o == nil {
+		return
 	}
-	if providerReceiptInvocationTerminal(candidate.InvocationState) {
-		if err := o.fsStore.RemoveProviderTerminalHandoff(candidate.ProviderInvocationID, file.Identity); err != nil {
-			slog.Warn("terminal provider handoff file cleanup deferred", "provider_invocation_id", candidate.ProviderInvocationID, "error", err)
+	o.terminalHandoffMu.Lock()
+	o.terminalHandoffFileCursor = ""
+	o.terminalHandoffMu.Unlock()
+}
+
+func (o *orchestrationLoop) resetProviderTerminalHandoffCleanupCursor() {
+	if o == nil {
+		return
+	}
+	o.terminalHandoffMu.Lock()
+	o.terminalHandoffCleanupCursor = ""
+	o.terminalHandoffMu.Unlock()
+}
+
+func (o *orchestrationLoop) removeProviderTerminalHandoffFile(ctx context.Context, providerInvocationID string, file runtimefs.ProviderTerminalHandoffFile) {
+	if o == nil || o.fsStore == nil || o.executionStore == nil {
+		return
+	}
+	unlock := o.lockProviderTerminalHandoffFile(providerInvocationID)
+	defer unlock()
+	o.removeProviderTerminalHandoffFileLocked(ctx, providerInvocationID, file)
+}
+
+func (o *orchestrationLoop) removeProviderTerminalHandoffFileLocked(ctx context.Context, providerInvocationID string, file runtimefs.ProviderTerminalHandoffFile) {
+	if o == nil || o.fsStore == nil || o.executionStore == nil {
+		return
+	}
+	if err := o.fsStore.RemoveProviderTerminalHandoff(providerInvocationID, file.Identity); err != nil {
+		markErr := o.markProviderTerminalHandoffFileCleanupPending(ctx, providerInvocationID)
+		slog.Warn("provider terminal handoff file cleanup deferred", "provider_invocation_id", providerInvocationID, "error", errors.Join(err, markErr))
+		return
+	}
+	clearCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	clearErr := o.executionStore.ClearProviderTerminalHandoffFileCleanupPending(clearCtx, providerInvocationID, "", o.now().UTC().Format(time.RFC3339Nano))
+	cancel()
+	if clearErr != nil {
+		slog.Warn("provider terminal handoff file cleanup marker clear deferred", "provider_invocation_id", providerInvocationID, "error", clearErr)
+	}
+}
+
+func (o *orchestrationLoop) markProviderTerminalHandoffFileCleanupPending(ctx context.Context, providerInvocationID string) error {
+	if o == nil || o.executionStore == nil {
+		return fmt.Errorf("provider terminal handoff cleanup store is not configured")
+	}
+	markCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	return o.executionStore.MarkProviderTerminalHandoffFileCleanupPending(markCtx, providerInvocationID, o.now().UTC().Format(time.RFC3339Nano))
+}
+
+func (o *orchestrationLoop) recoverProviderTerminalHandoffFileCleanupsWithLimit(ctx context.Context, limit int) (int, error) {
+	if o == nil || o.executionStore == nil {
+		return 0, fmt.Errorf("provider terminal handoff file cleanup is not configured")
+	}
+	if o.fsStore == nil {
+		return 0, nil
+	}
+	if limit <= 0 {
+		return 0, fmt.Errorf("limit must be positive")
+	}
+	o.terminalHandoffMu.Lock()
+	defer o.terminalHandoffMu.Unlock()
+	candidates, err := o.executionStore.ListProviderTerminalHandoffFileCleanupCandidates(ctx, o.terminalHandoffCleanupCursor, limit)
+	if err != nil {
+		return 0, err
+	}
+	visited := 0
+	for _, candidate := range candidates {
+		func() {
+			unlock := o.lockProviderTerminalHandoffFile(candidate.ProviderInvocationID)
+			defer unlock()
+			file, found, readErr := o.fsStore.ReadProviderTerminalHandoff(candidate.ProviderInvocationID)
+			if readErr != nil {
+				slog.Warn("provider terminal handoff cleanup replay deferred", "provider_invocation_id", candidate.ProviderInvocationID, "error", readErr)
+				o.terminalHandoffCleanupCursor = candidate.ProviderInvocationID
+				visited++
+				return
+			}
+			if found {
+				if removeErr := o.fsStore.RemoveProviderTerminalHandoff(candidate.ProviderInvocationID, file.Identity); removeErr != nil {
+					markErr := o.markProviderTerminalHandoffFileCleanupPending(ctx, candidate.ProviderInvocationID)
+					slog.Warn("provider terminal handoff cleanup replay deferred", "provider_invocation_id", candidate.ProviderInvocationID, "error", errors.Join(removeErr, markErr))
+					o.terminalHandoffCleanupCursor = candidate.ProviderInvocationID
+					visited++
+					return
+				}
+			}
+			clearCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+			clearErr := o.executionStore.ClearProviderTerminalHandoffFileCleanupPending(clearCtx, candidate.ProviderInvocationID, candidate.MarkedAt, o.now().UTC().Format(time.RFC3339Nano))
+			cancel()
+			if clearErr != nil {
+				slog.Warn("provider terminal handoff cleanup marker clear deferred", "provider_invocation_id", candidate.ProviderInvocationID, "error", clearErr)
+			}
+			o.terminalHandoffCleanupCursor = candidate.ProviderInvocationID
+			visited++
+		}()
+	}
+	if visited < limit {
+		o.terminalHandoffCleanupCursor = ""
+	}
+	return visited, nil
+}
+
+func (o *orchestrationLoop) recoverProviderTerminalHandoffFilesWithLimit(ctx context.Context, limit int) (int, error) {
+	if o == nil || o.executionStore == nil {
+		return 0, fmt.Errorf("provider terminal handoff file recovery is not configured")
+	}
+	if o.fsStore == nil {
+		return 0, nil
+	}
+	if limit <= 0 {
+		return 0, fmt.Errorf("limit must be positive")
+	}
+	o.terminalHandoffMu.Lock()
+	defer o.terminalHandoffMu.Unlock()
+	candidates, err := o.executionStore.ListProviderTerminalHandoffFileRecoveryCandidates(ctx, o.terminalHandoffFileCursor, limit)
+	if err != nil {
+		return 0, err
+	}
+	visited := 0
+	for _, candidate := range candidates {
+		if err := o.recoverProviderTerminalHandoffFile(ctx, candidate); err != nil {
+			return visited, fmt.Errorf("recover provider terminal handoff file %q: %w", candidate.ProviderInvocationID, err)
+		}
+		o.terminalHandoffFileCursor = candidate.ProviderInvocationID
+		visited++
+	}
+	return visited, nil
+}
+
+func (o *orchestrationLoop) recoverProviderTerminalHandoffFile(ctx context.Context, candidate executionstore.ProviderInvocation) error {
+	unlock := o.lockProviderTerminalHandoffFile(candidate.ProviderInvocationID)
+	defer unlock()
+
+	current, found, err := o.executionStore.GetProviderInvocation(ctx, candidate.ProviderInvocationID)
+	if err != nil {
+		return &providerTerminalHandoffInfrastructureError{cause: fmt.Errorf("reload provider invocation before handoff replay: %w", err)}
+	}
+	if !found {
+		return &providerTerminalHandoffInfrastructureError{cause: fmt.Errorf("provider invocation %q disappeared before handoff replay", candidate.ProviderInvocationID)}
+	}
+	_, handoffFound, err := o.executionStore.GetProviderTerminalHandoff(ctx, executionstore.ProviderTerminalHandoffID(candidate.ProviderInvocationID))
+	if err != nil {
+		return &providerTerminalHandoffInfrastructureError{cause: fmt.Errorf("reload provider terminal handoff before file replay: %w", err)}
+	}
+	file, fileFound, readErr := o.fsStore.ReadProviderTerminalHandoff(candidate.ProviderInvocationID)
+	if readErr != nil {
+		return &providerTerminalHandoffInfrastructureError{cause: readErr}
+	}
+	if providerTerminalInvocationState(current.InvocationState) || handoffFound {
+		if fileFound {
+			if err := o.markProviderTerminalHandoffFileCleanupPending(ctx, candidate.ProviderInvocationID); err != nil {
+				return &providerTerminalHandoffInfrastructureError{cause: fmt.Errorf("re-arm terminal handoff file cleanup before removal: %w", err)}
+			}
+			o.removeProviderTerminalHandoffFileLocked(ctx, candidate.ProviderInvocationID, file)
+		} else {
+			o.clearProviderTerminalHandoffFileCleanupPending(ctx, candidate.ProviderInvocationID, "")
 		}
 		return nil
 	}
-	if readErr != nil {
-		return &providerReceiptInfrastructureError{cause: readErr}
+	if !fileFound {
+		return nil
 	}
 	wire, err := decodeProviderTerminalHandoffWire(file.Wire)
 	if err != nil {
-		return &providerReceiptInfrastructureError{cause: err}
+		return &providerTerminalHandoffInfrastructureError{cause: err}
 	}
-	if err := validateProviderTerminalHandoffWireForCandidate(wire, candidate); err != nil {
-		return &providerReceiptInfrastructureError{cause: err}
+	if err := validateProviderTerminalHandoffWireForCandidate(wire, current); err != nil {
+		return &providerTerminalHandoffInfrastructureError{cause: err}
 	}
-	// Startup replay must verify the exact handoff file before restoring its
-	// SQLite projection as well.
+	// Re-arm cleanup debt before publication. A concurrent settlement can make
+	// this candidate stale, but cannot leave a recreated terminal file unmarked
+	// if the process stops before exact-identity removal.
+	if err := o.markProviderTerminalHandoffFileCleanupPending(ctx, candidate.ProviderInvocationID); err != nil {
+		return &providerTerminalHandoffInfrastructureError{cause: fmt.Errorf("mark replayed handoff file cleanup pending: %w", err)}
+	}
 	identity, persistErr := o.fsStore.PersistProviderTerminalHandoff(candidate.ProviderInvocationID, file.Wire)
 	if persistErr != nil {
-		return &providerReceiptInfrastructureError{cause: persistErr}
+		return &providerTerminalHandoffInfrastructureError{cause: persistErr}
 	}
 	file.Identity = identity
 	if err := o.retrySQLiteBusyWrite(ctx, func(writeCtx context.Context) error {
 		_, persistErr := o.executionStore.PersistProviderTerminalHandoff(writeCtx, providerTerminalHandoffStoreRequest(wire))
 		return persistErr
 	}); err != nil {
-		return &providerReceiptInfrastructureError{cause: err}
+		current, currentFound, readbackErr := o.executionStore.GetProviderInvocation(ctx, candidate.ProviderInvocationID)
+		if readbackErr == nil && currentFound && providerTerminalInvocationState(current.InvocationState) {
+			// A normal worker may have durably settled after this bounded file
+			// candidate was selected. The terminal transaction is authoritative;
+			// this file is only leftover cleanup debt.
+			o.removeProviderTerminalHandoffFileLocked(ctx, candidate.ProviderInvocationID, file)
+			return nil
+		}
+		_, persisted, handoffReadErr := o.executionStore.GetProviderTerminalHandoff(ctx, executionstore.ProviderTerminalHandoffID(candidate.ProviderInvocationID))
+		if handoffReadErr == nil && persisted {
+			o.removeProviderTerminalHandoffFileLocked(ctx, candidate.ProviderInvocationID, file)
+			return nil
+		}
+		if readbackErr != nil || handoffReadErr != nil {
+			err = errors.Join(err, readbackErr, handoffReadErr)
+		}
+		return &providerTerminalHandoffInfrastructureError{cause: err}
 	}
-	if err := o.fsStore.RemoveProviderTerminalHandoff(candidate.ProviderInvocationID, file.Identity); err != nil {
-		slog.Warn("recovered provider terminal handoff file cleanup deferred", "provider_invocation_id", candidate.ProviderInvocationID, "error", err)
-	}
+	o.removeProviderTerminalHandoffFileLocked(ctx, candidate.ProviderInvocationID, file)
 	return nil
+}
+
+func (o *orchestrationLoop) clearProviderTerminalHandoffFileCleanupPending(ctx context.Context, providerInvocationID, expectedMarkedAt string) {
+	if o == nil || o.executionStore == nil {
+		return
+	}
+	clearCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	if err := o.executionStore.ClearProviderTerminalHandoffFileCleanupPending(clearCtx, providerInvocationID, expectedMarkedAt, o.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		slog.Warn("provider terminal handoff cleanup marker clear deferred", "provider_invocation_id", providerInvocationID, "error", err)
+	}
 }
 
 func decodeProviderTerminalHandoffWire(raw []byte) (providerTerminalHandoffWire, error) {
@@ -176,8 +431,8 @@ func validateProviderTerminalHandoffWireForCandidate(wire providerTerminalHandof
 	if wire.StreamObservation.ProviderSessionID != strings.TrimSpace(wire.StreamObservation.ProviderSessionID) {
 		return fmt.Errorf("provider terminal handoff wire provider session is not canonical")
 	}
-	if candidate.CompletionMode != executionstore.ProviderCompletionModeReceiptRequired {
-		return fmt.Errorf("provider terminal handoff wire invocation is not receipt-required")
+	if candidate.CompletionMode != executionstore.ProviderCompletionModeServerResponse {
+		return fmt.Errorf("provider terminal handoff invocation is not server-response")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, wire.CreatedAt); err != nil {
 		return fmt.Errorf("provider terminal handoff wire created_at is invalid: %w", err)
@@ -222,11 +477,8 @@ func validateProviderTerminalHandoffResult(handoff executionstore.ProviderTermin
 	if result.attemptID != handoff.AttemptID || result.run.RunID != handoff.RunID || result.attempt.NodeRunID != handoff.NodeRunID || result.providerInvocationID != handoff.ProviderInvocationID || result.expectedLeaseOwner != handoff.ExpectedLeaseOwner || result.expectedLeaseVersion != handoff.ExpectedLeaseVersion {
 		return fmt.Errorf("terminal handoff payload lineage does not match durable handoff")
 	}
-	if result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked || result.attempt.CompletionMode != executionstore.ProviderCompletionModeReceiptRequired || result.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
-		return fmt.Errorf("terminal handoff payload is not a receipt-required provider execution")
-	}
-	if strings.TrimSpace(result.completionReceiptEvidenceID) != "" || strings.TrimSpace(result.completionStructuredPayloadJSON) != "" {
-		return fmt.Errorf("terminal handoff payload contains post-receipt evidence")
+	if result.attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked || result.attempt.CompletionMode != executionstore.ProviderCompletionModeServerResponse || result.completionMode != executionstore.ProviderCompletionModeServerResponse {
+		return fmt.Errorf("terminal handoff payload is not a server-response provider execution")
 	}
 	payloadObservation, err := json.Marshal(result.providerStreamObservation)
 	if err != nil {
@@ -281,12 +533,6 @@ func (o *orchestrationLoop) convergeProviderTerminalHandoffsWithLimit(ctx contex
 	visited := 0
 	for _, handoff := range handoffs {
 		if err := o.convergeProviderTerminalHandoff(ctx, handoff); err != nil {
-			var infrastructureErr *providerReceiptInfrastructureError
-			if errors.As(err, &infrastructureErr) && infrastructureErr.durablyDispositioned {
-				o.terminalHandoffCursor = handoff.ProviderInvocationID
-				visited++
-				continue
-			}
 			return visited, fmt.Errorf("converge provider terminal handoff %q: %w", handoff.HandoffID, err)
 		}
 		o.terminalHandoffCursor = handoff.ProviderInvocationID
@@ -305,18 +551,22 @@ func (o *orchestrationLoop) convergeProviderTerminalHandoff(ctx context.Context,
 	}
 	result.terminalHandoffID = strings.TrimSpace(handoff.HandoffID)
 
-	if err := o.ingestProviderCompletionReceiptInvocation(ctx, handoff.ProviderInvocationID); err != nil {
-		return err
-	}
-	if err := o.hydrateAcceptedProviderCompletionReceipt(ctx, &result); err != nil {
-		return err
-	}
 	claimant := "terminal_handoff:" + handoff.HandoffID
 	if !o.claimExecutionSettlement(result.attemptID, claimant) {
 		return nil
 	}
 	defer o.releaseExecutionSettlement(result.attemptID, claimant)
-	return o.commitExecutionCompletion(ctx, result)
+	if err := o.commitExecutionCompletion(ctx, result); err != nil {
+		return err
+	}
+	file, found, err := o.fsStore.ReadProviderTerminalHandoff(handoff.ProviderInvocationID)
+	if err != nil {
+		markErr := o.markProviderTerminalHandoffFileCleanupPending(ctx, handoff.ProviderInvocationID)
+		slog.Warn("settled provider terminal handoff file cleanup deferred", "provider_invocation_id", handoff.ProviderInvocationID, "error", errors.Join(err, markErr))
+	} else if found {
+		o.removeProviderTerminalHandoffFile(ctx, handoff.ProviderInvocationID, file)
+	}
+	return nil
 }
 
 func validateProviderTerminalHandoffPayload(handoff executionstore.ProviderTerminalHandoff, result asyncExecutionResult) error {
@@ -329,7 +579,7 @@ func validateProviderTerminalHandoffPayload(handoff executionstore.ProviderTermi
 	}
 	if envelope.AttemptID != handoff.AttemptID ||
 		envelope.ProviderInvocationID != handoff.ProviderInvocationID ||
-		envelope.CompletionMode != executionstore.ProviderCompletionModeReceiptRequired ||
+		envelope.CompletionMode != executionstore.ProviderCompletionModeServerResponse ||
 		envelope.LeaseOwner != handoff.ExpectedLeaseOwner ||
 		envelope.LeaseVersion != handoff.ExpectedLeaseVersion {
 		return fmt.Errorf("terminal handoff stream lineage does not match durable handoff")

@@ -18,43 +18,18 @@ import (
 	"kingdom/internal/state"
 )
 
-func TestCanonicalFailedNodeReasonDistinguishesReceiptConflicts(t *testing.T) {
+func TestCanonicalFailedNodeReasonUsesGenericIncompleteTurnCopy(t *testing.T) {
 	t.Parallel()
 
 	reason, ok := canonicalFailedNodeReason(
-		sql.NullString{String: "conflicting receipt invalidated invocation", Valid: true},
+		sql.NullString{String: "provider terminal response was not clean", Valid: true},
 		sql.NullString{String: "provider_incomplete_turn", Valid: true},
-		sql.NullString{String: "completion_receipt_conflict", Valid: true},
-	)
-	if !ok {
-		t.Fatal("expected canonical failure reason")
-	}
-	if reason != completionReceiptConflictFailureText {
-		t.Fatalf("expected receipt conflict copy, got %q", reason)
-	}
-
-	reason, ok = canonicalFailedNodeReason(
-		sql.NullString{String: "provider exited without an accepted kingdom_complete_attempt receipt", Valid: true},
-		sql.NullString{String: "provider_incomplete_turn", Valid: true},
-		sql.NullString{},
 	)
 	if !ok {
 		t.Fatal("expected canonical failure reason")
 	}
 	if reason != providerIncompleteTurnFailureText {
 		t.Fatalf("expected generic incomplete-turn copy, got %q", reason)
-	}
-
-	reason, ok = canonicalFailedNodeReason(
-		sql.NullString{String: "completion_receipt_conflict should not be a control channel", Valid: true},
-		sql.NullString{String: "provider_incomplete_turn", Valid: true},
-		sql.NullString{},
-	)
-	if !ok {
-		t.Fatal("expected canonical failure reason")
-	}
-	if reason != providerIncompleteTurnFailureText {
-		t.Fatalf("expected raw text marker to be ignored without structured invalid reason, got %q", reason)
 	}
 }
 
@@ -874,7 +849,7 @@ func TestServerGetRunIncludesPendingSettlementNodeInFailedNodes(t *testing.T) {
 
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-recovery-pending', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-recovery-pending', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-run-recovery-pending', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-run-recovery-pending', ?, 'nr-run-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-run-recovery-pending', 'ses-run-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-run-recovery-pending', ?, 'nr-run-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-run-recovery-pending', 'ses-run-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider terminal response was not clean', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1296,45 +1271,6 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 	t.Fatal("expected validation_gates_nightraven node in graph response")
 }
 
-func TestServerGetRunGraphUsesReceiptConflictReasonForRecoveredInvalidHandshake(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-06T10:01:00Z"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-receipt-conflict', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-receipt-conflict', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-graph-receipt-conflict', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'committed_failure', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', ?, ?, ?, 'provider_incomplete_turn', 'conflicting provider completion receipts invalidated the invocation', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, completion_capability_hash, completion_capability_issued_at, opened_at, receipt_seen_count, last_receipt_disposition, invalid_reason, created_at, updated_at) VALUES ('inv-graph-receipt-conflict', 'attempt-graph-receipt-conflict', ?, 'nr-graph-receipt-conflict', 'session-graph-receipt-conflict', 'ses-graph-receipt-conflict', 'invalid_handshake', 'receipt_required', 'test_capability_hash', ?, ?, 2, 'invalidated', 'completion_receipt_conflict', ?, ?)`, runID, now, now, now, now)
-	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-graph-receipt-conflict' WHERE attempt_id = 'attempt-graph-receipt-conflict'`)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-receipt-conflict', ?, 1, 'nr-graph-receipt-conflict', 'attempt-graph-receipt-conflict', 'v1', 'attempt.failed', 1, '{"error":"conflicting provider completion receipts invalidated the invocation"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-receipt-conflict', 'caus-graph-receipt-conflict', 'prev-graph-receipt-conflict', 'entry-graph-receipt-conflict', ?)`, runID, now)
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/runs/" + runID + "/graph",
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var payload gen.RunGraphResponse
-	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode run graph response: %v", err)
-	}
-
-	for _, node := range payload.Nodes {
-		if node.NodeId != "delegated_execution_berserker" {
-			continue
-		}
-		if node.FailureReason == nil || *node.FailureReason != completionReceiptConflictFailureText {
-			t.Fatalf("expected graph receipt conflict reason, got %#v", node.FailureReason)
-		}
-		return
-	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
-}
-
 func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 	t.Parallel()
 
@@ -1344,7 +1280,7 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-recovery-pending', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-recovery-pending', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-graph-recovery-pending', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-recovery-pending', ?, 'nr-graph-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-recovery-pending', 'ses-graph-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-recovery-pending', ?, 'nr-graph-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-recovery-pending', 'ses-graph-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider terminal response was not clean', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1447,7 +1383,7 @@ func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	// A reviewer whose receipt was unusable really did fail. Only a requested
+	// A reviewer whose response was invalid really did fail. Only a requested
 	// rework earns the softer state.
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
@@ -2957,55 +2893,6 @@ func TestServerListRunExecutionsOrdersLogicalNodesByCurrentActivity(t *testing.T
 	}
 }
 
-func TestServerRunExecutionsExposeCompletionInvalidReason(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	now := "2026-03-01T13:00:00Z"
-	attemptID := runID + ":delegated_execution_berserker:1"
-
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-invalid-reason', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-invalid-reason', ?, 'delegated_execution_berserker', 1, 1, 'failed', 'builder-berserker', 'agent-builder-invalid-reason', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-invalid-reason', 'committed_failure', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-builder-invalid-reason', 'ses-builder-invalid-reason', ?, ?, ?, 'provider_incomplete_turn', 'conflicting provider completion receipts invalidated the invocation', ?, ?)`, attemptID, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, completion_capability_hash, completion_capability_issued_at, opened_at, receipt_seen_count, last_receipt_disposition, invalid_reason, created_at, updated_at) VALUES ('inv-builder-invalid-reason', ?, ?, 'nr-builder-invalid-reason', 'session-builder-invalid-reason', 'ses-builder-invalid-reason', 'invalid_handshake', 'receipt_required', 'test_capability_hash', ?, ?, 2, 'invalidated', 'completion_receipt_conflict', ?, ?)`, attemptID, runID, now, now, now, now)
-	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-invalid-reason' WHERE attempt_id = ?`, attemptID)
-
-	listRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
-	if listRes.Code != http.StatusOK {
-		t.Fatalf("expected list executions 200, got %d (%s)", listRes.Code, listRes.Body.String())
-	}
-	var listPayload struct {
-		Items []struct {
-			AttemptID               string  `json:"attempt_id"`
-			CompletionInvalidReason *string `json:"completion_invalid_reason"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(listRes.Body.Bytes(), &listPayload); err != nil {
-		t.Fatalf("decode list executions payload: %v", err)
-	}
-	if len(listPayload.Items) != 1 || listPayload.Items[0].AttemptID != attemptID {
-		t.Fatalf("expected one execution item for %q, got %#v", attemptID, listPayload.Items)
-	}
-	if listPayload.Items[0].CompletionInvalidReason == nil || *listPayload.Items[0].CompletionInvalidReason != "completion_receipt_conflict" {
-		t.Fatalf("expected structured completion invalid reason, got %#v", listPayload.Items[0].CompletionInvalidReason)
-	}
-
-	detailRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
-	if detailRes.Code != http.StatusOK {
-		t.Fatalf("expected get execution 200, got %d (%s)", detailRes.Code, detailRes.Body.String())
-	}
-	var detailPayload struct {
-		CompletionInvalidReason *string `json:"completion_invalid_reason"`
-	}
-	if err := json.Unmarshal(detailRes.Body.Bytes(), &detailPayload); err != nil {
-		t.Fatalf("decode execution detail payload: %v", err)
-	}
-	if detailPayload.CompletionInvalidReason == nil || *detailPayload.CompletionInvalidReason != "completion_receipt_conflict" {
-		t.Fatalf("expected detail structured completion invalid reason, got %#v", detailPayload.CompletionInvalidReason)
-	}
-}
-
 func TestServerListRunExecutionsUsesVerifyingStatusForPendingSettlement(t *testing.T) {
 	t.Parallel()
 
@@ -3082,7 +2969,7 @@ func TestServerListRunExecutionsUsesPausedStatusOnlyWhileStaleCancellationIsPend
 
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-paused', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-paused', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-paused', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-paused', 'committed_cancelled', 'provider_backed', 'receipt_required', '', NULL, 1, 'session-builder-paused', 'ses-builder-paused', ?, ?, ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-paused', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-paused', 'ses-builder-paused', ?, ?, ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now, now, now)
 	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
 		CancelOutboxID: "cancel-builder-paused",
 		AttemptID:      attemptID,
@@ -3184,7 +3071,35 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	observation := providerexecution.InvocationStreamObservation{ProviderSessionID: "ses-review-detail", CanonicalTerminalText: "VERDICT: REWORK\n\nCanonical reviewer response."}
+	exitCode := 0
+	observation := providerexecution.InvocationStreamObservation{
+		ProviderSessionID:      "ses-review-detail",
+		FinalTurnID:            "turn-review-detail",
+		FinalStepID:            "step-review-detail",
+		FinalSequence:          1,
+		RawFinishReason:        "stop",
+		NormalizedFinishReason: "stop",
+		CanonicalTerminalText:  "VERDICT: REWORK\n\nCanonical reviewer response.",
+		ProcessExited:          true,
+		ProcessExitCode:        &exitCode,
+		StdoutDrained:          true,
+		StderrDrained:          true,
+		ProcessQuiescent:       true,
+	}
+	handoff, err := execStore.PersistProviderTerminalHandoff(context.Background(), executionstore.PersistProviderTerminalHandoffRequest{
+		ProviderInvocationID: "inv-review-detail",
+		AttemptID:            attemptID,
+		RunID:                runID,
+		NodeRunID:            "nr-review-detail",
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+		StreamObservation:    observation,
+		PayloadJSON:          `{"terminal_state":"committed_failure"}`,
+		CreatedAt:            now,
+	})
+	if err != nil {
+		t.Fatalf("persist provider terminal handoff: %v", err)
+	}
 	if _, err := execStore.SettleProviderCompletionAndTerminal(context.Background(), executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement: executionstore.FinalizeProviderCompletionSettlementRequest{
 			SettlementID:          "settlement-review-detail",
@@ -3202,6 +3117,7 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   claim.LeaseOwner,
 		ExpectedLeaseVersion: claim.LeaseVersion,
+		TerminalHandoffID:    handoff.Handoff.HandoffID,
 		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "reviewer-shieldmaiden"},
 		Terminal: executionstore.CommitTerminalRequest{
 			OutboxID:           "outbox-review-detail",

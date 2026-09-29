@@ -362,7 +362,7 @@ func acpActivityItemFromPayload(payloadJSON, eventID, createdAt string) (gen.Acp
 		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
 	case acp.KingdomToolKind:
 		toolName := strings.TrimSpace(stringValue(payload["tool_name"]))
-		if toolName == "" || toolName == "kingdom_complete_attempt" {
+		if toolName == "" {
 			return gen.AcpRunActivityItem{}, false
 		}
 		status := strings.TrimSpace(stringValue(payload["tool_status"]))

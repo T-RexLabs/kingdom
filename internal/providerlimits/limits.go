@@ -9,22 +9,21 @@ import (
 )
 
 const (
-	CompletionReceiptWireBytes int64 = 1 << 20
-	TerminalHandoffWireBytes   int64 = 32 * 1024 * 1024
-	OpenCodeEventLineBytes           = 8 * 1024 * 1024
-	OpenCodeEventBytes               = 32 * 1024 * 1024
-	OpenCodeEventCount               = 4096
-	CanonicalOutputBytes             = 4 * 1024 * 1024
-	StderrTailBytes                  = 4 * 1024
-	GuardedCommandStreamBytes  int64 = 1 << 20
-	TrackedWorkspaceEntries          = 10_000
-	TrackedWorkspaceDepth            = 64
-	SnapshotLineageDepth             = 64
-	TrackedWorkspaceFileBytes  int64 = 32 * 1024 * 1024
-	TrackedWorkspaceBytes      int64 = 256 * 1024 * 1024
-	StartupReplayBatchItems          = 64
-	StartupReplayMaxPasses           = 4
-	StartupReplayMaxItems            = StartupReplayBatchItems * StartupReplayMaxPasses
+	TerminalHandoffWireBytes  int64 = 32 * 1024 * 1024
+	OpenCodeEventLineBytes          = 8 * 1024 * 1024
+	OpenCodeEventBytes              = 32 * 1024 * 1024
+	OpenCodeEventCount              = 4096
+	CanonicalOutputBytes            = 4 * 1024 * 1024
+	StderrTailBytes                 = 4 * 1024
+	GuardedCommandStreamBytes int64 = 1 << 20
+	TrackedWorkspaceEntries         = 10_000
+	TrackedWorkspaceDepth           = 64
+	SnapshotLineageDepth            = 64
+	TrackedWorkspaceFileBytes int64 = 32 * 1024 * 1024
+	TrackedWorkspaceBytes     int64 = 256 * 1024 * 1024
+	StartupReplayBatchItems         = 64
+	StartupReplayMaxPasses          = 4
+	StartupReplayMaxItems           = StartupReplayBatchItems * StartupReplayMaxPasses
 )
 
 // LimitExceededError reports a safe provider-boundary resource failure.

@@ -25,9 +25,8 @@ const (
 type ProviderCompletionMode string
 
 const (
-	ProviderCompletionModeNotApplicable   ProviderCompletionMode = "not_applicable"
-	ProviderCompletionModeServerResponse  ProviderCompletionMode = "server_response"
-	ProviderCompletionModeReceiptRequired ProviderCompletionMode = "receipt_required"
+	ProviderCompletionModeNotApplicable  ProviderCompletionMode = "not_applicable"
+	ProviderCompletionModeServerResponse ProviderCompletionMode = "server_response"
 )
 
 type NodeBehavior struct {
@@ -79,7 +78,7 @@ var canonicalNodeContracts = map[string]canonicalNodeContract{
 		requiredRoles: roleSet("council-member"),
 	},
 	NodeClassDelegatedExecution: {
-		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeReceiptRequired, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
 		requiredRoles: roleSet("builder-berserker"),
 	},
 	NodeClassExecutionReview: {

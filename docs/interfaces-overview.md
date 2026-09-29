@@ -120,9 +120,9 @@ Activity semantics:
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
 - attempt detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
-- provisional output can be shown as observed output while settlement is still pending, but that detail never implies success by itself
+- the Outcome panel hides provider output and verdicts until canonical settlement commits; the Activity timeline may show explicitly labelled provisional stream text, which never implies success or canonical output
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
-- only builder attempts require and can be authorized by an accepted `kingdom_complete_attempt` receipt; response-first nodes settle from a valid server-observed terminal response
+- all provider-backed decree attempts settle from a valid server-observed terminal response and node-specific output validation
 - the Activity surface includes a collapsible event timeline rather than a separate Timeline tab
 
 When a stale provider process cannot be proven quiescent, Activity shows the attempt as paused and exposes **Retry Stop** only for its addressable guardian. That action requests one further bounded stop; it does not bypass quiescence, workspace restoration, or the cancellation handoff.

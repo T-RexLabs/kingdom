@@ -189,7 +189,7 @@ func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string)
 		return SessionActivityItem{ID: id, Kind: "thinking", Label: "Thinking", Detail: detail, OccurredAt: occurredAt}, true
 	case strings.Contains(partType, "tool"):
 		toolName := firstNonEmpty(strings.TrimSpace(stringValue(node["tool"])), strings.TrimSpace(stringValue(node["name"])))
-		if toolName == "" || toolName == "kingdom_complete_attempt" {
+		if toolName == "" {
 			return SessionActivityItem{}, false
 		}
 		status := sessionDiagnosticToolState(node)

@@ -42,54 +42,96 @@ func isImplementationRole(roleID string) bool {
 }
 
 type orchestrationLoop struct {
-	db                             *sql.DB
-	transition                     *state.TransitionService
-	registry                       *state.AgentRegistry
-	mailbox                        *state.MailboxStore
-	delegation                     *state.DelegationPolicyEngine
-	scheduler                      *workflow.Scheduler
-	sessions                       *state.SessionManager
-	events                         *state.AttemptEventIngestor
-	adapter                        opencode.Adapter
-	fsStore                        *runtimefs.Store
-	schemas                        *schemas.Set
-	validator                      *state.WorkerOutputValidator
-	tokenUsage                     *state.TokenUsageStore
-	planningOutputs                *state.RunPlanningOutputStore
-	executionStore                 *executionstore.Store
-	nodeTimeouts                   map[string]time.Duration
-	streamInactivity               time.Duration
-	cancelGrace                    time.Duration
-	cancelForce                    time.Duration
-	yoloRoot                       string
-	publishMode                    string
-	roleComm                       rolecomm.Policy
-	providerPolicy                 providerpolicy.Policy
-	retryEngine                    *retryengine.Engine
-	governanceMode                 string
-	autonomousApprovals            bool
-	runWorktrees                   *workspace.RunWorktreeStore
-	worktreeRetention              time.Duration
-	gitRunner                      gitCommandRunner
-	now                            func() time.Time
-	sleep                          func(time.Duration)
-	providerLeaseHeartbeatInterval time.Duration
-	newProviderLeaseTicker         func(time.Duration) providerLeaseTicker
-	execMu                         sync.Mutex
-	eventSeqMu                     sync.Mutex
-	receiptIngestionMu             sync.Mutex
-	receiptIngestionCursor         string
-	terminalHandoffMu              sync.Mutex
-	terminalHandoffCursor          string
-	workspaceLocks                 sync.Map
-	inflightExec                   map[string]struct{}
-	inflightSettlements            map[string]string
-	executionResults               map[string]chan asyncExecutionResult
-	asyncDrain                     *executionDrainTracker
-	notifyCompletionReady          func()
-	closeMode                      *runtimeCloseMode
-	processGuardRuntimeRoot        string
-	processGuardAbsent             func(executionstore.ProviderProcessGuard) bool
+	db                                 *sql.DB
+	transition                         *state.TransitionService
+	registry                           *state.AgentRegistry
+	mailbox                            *state.MailboxStore
+	delegation                         *state.DelegationPolicyEngine
+	scheduler                          *workflow.Scheduler
+	sessions                           *state.SessionManager
+	events                             *state.AttemptEventIngestor
+	adapter                            opencode.Adapter
+	fsStore                            *runtimefs.Store
+	schemas                            *schemas.Set
+	validator                          *state.WorkerOutputValidator
+	tokenUsage                         *state.TokenUsageStore
+	planningOutputs                    *state.RunPlanningOutputStore
+	executionStore                     *executionstore.Store
+	nodeTimeouts                       map[string]time.Duration
+	streamInactivity                   time.Duration
+	cancelGrace                        time.Duration
+	cancelForce                        time.Duration
+	yoloRoot                           string
+	publishMode                        string
+	roleComm                           rolecomm.Policy
+	providerPolicy                     providerpolicy.Policy
+	retryEngine                        *retryengine.Engine
+	governanceMode                     string
+	autonomousApprovals                bool
+	runWorktrees                       *workspace.RunWorktreeStore
+	worktreeRetention                  time.Duration
+	gitRunner                          gitCommandRunner
+	now                                func() time.Time
+	sleep                              func(time.Duration)
+	providerLeaseHeartbeatInterval     time.Duration
+	newProviderLeaseTicker             func(time.Duration) providerLeaseTicker
+	execMu                             sync.Mutex
+	eventSeqMu                         sync.Mutex
+	terminalHandoffMu                  sync.Mutex
+	terminalHandoffFileLocks           keyedLock
+	terminalHandoffCursor              string
+	terminalHandoffFileCursor          string
+	terminalHandoffCleanupCursor       string
+	responseOnlyWorkspaceCleanupCursor string
+	workspaceLocks                     sync.Map
+	inflightExec                       map[string]struct{}
+	inflightRunIDs                     map[string]string
+	inflightSettlements                map[string]string
+	executionResults                   map[string]chan asyncExecutionResult
+	asyncDrain                         *executionDrainTracker
+	notifyCompletionReady              func()
+	closeMode                          *runtimeCloseMode
+	processGuardRuntimeRoot            string
+	processGuardAbsent                 func(executionstore.ProviderProcessGuard) bool
+}
+
+type keyedLockEntry struct {
+	mu         sync.Mutex
+	references int
+}
+
+type keyedLock struct {
+	mu      sync.Mutex
+	entries map[string]*keyedLockEntry
+}
+
+func (l *keyedLock) Lock(key string) func() {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return func() {}
+	}
+	l.mu.Lock()
+	if l.entries == nil {
+		l.entries = make(map[string]*keyedLockEntry)
+	}
+	entry := l.entries[key]
+	if entry == nil {
+		entry = &keyedLockEntry{}
+		l.entries[key] = entry
+	}
+	entry.references++
+	l.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		l.mu.Lock()
+		entry.references--
+		if entry.references == 0 {
+			delete(l.entries, key)
+		}
+		l.mu.Unlock()
+	}
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {
@@ -124,6 +166,31 @@ func (o *orchestrationLoop) lockRunWorkspace(runID string) func() {
 	lock := value.(*sync.Mutex)
 	lock.Lock()
 	return lock.Unlock
+}
+
+func (o *orchestrationLoop) executionAttemptInflight(attemptID string) bool {
+	if o == nil || strings.TrimSpace(attemptID) == "" {
+		return false
+	}
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	_, ok := o.inflightExec[strings.TrimSpace(attemptID)]
+	return ok
+}
+
+func (o *orchestrationLoop) hasInflightRunExecution(runID string) bool {
+	if o == nil || strings.TrimSpace(runID) == "" {
+		return false
+	}
+	runID = strings.TrimSpace(runID)
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	for _, inflightRunID := range o.inflightRunIDs {
+		if inflightRunID == runID {
+			return true
+		}
+	}
+	return false
 }
 
 type runSnapshot struct {
@@ -175,43 +242,42 @@ type nodeAttempt struct {
 }
 
 type asyncExecutionResult struct {
-	run                             runSnapshot
-	node                            nodeDefinition
-	attempt                         nodeAttempt
-	outboxID                        string
-	attemptID                       string
-	sessionID                       string
-	providerSessionID               string
-	providerInvocationID            string
-	providerInvocationAt            string
-	terminalHandoffID               string
-	launchObservedAt                string
-	completionCapability            string
-	completionMode                  executionstore.ProviderCompletionMode
-	expectedLeaseOwner              string
-	expectedLeaseVersion            int64
-	expectedLeaseExpiresAt          string
-	providerLeaseDuration           time.Duration
-	completionReceiptDir            string
-	completionReceiptEvidenceID     string
-	completionStructuredPayloadJSON string
-	providerDiagnosticsJSON         string
-	providerStreamObservation       opencode.InvocationStreamObservation
-	baseSnapshotID                  string
-	resultSnapshotID                string
-	workspaceID                     string
-	workspacePath                   string
-	delegator                       string
-	prompt                          string
-	model                           string
-	variant                         string
-	agent                           string
-	occurredAt                      string
-	outputText                      string
-	tokens                          opencode.TokenUsage
-	outcome                         opencode.ExecutionOutcome
-	launchObserved                  bool
-	err                             error
+	run                                  runSnapshot
+	node                                 nodeDefinition
+	attempt                              nodeAttempt
+	outboxID                             string
+	attemptID                            string
+	sessionID                            string
+	providerSessionID                    string
+	providerInvocationID                 string
+	providerInvocationAt                 string
+	terminalHandoffID                    string
+	launchObservedAt                     string
+	completionMode                       executionstore.ProviderCompletionMode
+	expectedLeaseOwner                   string
+	expectedLeaseVersion                 int64
+	expectedLeaseExpiresAt               string
+	providerLeaseDuration                time.Duration
+	providerDiagnosticsJSON              string
+	providerStreamObservation            opencode.InvocationStreamObservation
+	baseSnapshotID                       string
+	resultSnapshotID                     string
+	workspaceID                          string
+	workspacePath                        string
+	ephemeralWorkspace                   bool
+	responseOnlyWorkspaceCleanupMarkedAt string
+	projectRootBoundary                  string
+	delegator                            string
+	prompt                               string
+	model                                string
+	variant                              string
+	agent                                string
+	occurredAt                           string
+	outputText                           string
+	tokens                               opencode.TokenUsage
+	outcome                              opencode.ExecutionOutcome
+	launchObserved                       bool
+	err                                  error
 }
 
 type communicationMessageRequest struct {
@@ -294,6 +360,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		sleep:                  time.Sleep,
 		newProviderLeaseTicker: newTimeProviderLeaseTicker,
 		inflightExec:           make(map[string]struct{}),
+		inflightRunIDs:         make(map[string]string),
 		inflightSettlements:    make(map[string]string),
 		executionResults:       make(map[string]chan asyncExecutionResult),
 		asyncDrain:             newExecutionDrainTracker(),

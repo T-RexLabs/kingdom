@@ -190,7 +190,7 @@ func TestRunSummonStatusDoesNotLetStaleTerminalStateHideCurrentGeneration(t *tes
 				State:                staleState,
 				ConfigPath:           configPath,
 				KingdomHome:          kingdomHome,
-				}); err != nil {
+			}); err != nil {
 				t.Fatalf("save stale summon state: %v", err)
 			}
 			stdout := &bytes.Buffer{}
@@ -727,6 +727,38 @@ func TestInitScaffoldIncludesManagedOpenCodeAgentProfiles(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(projectRoot, rel)); err != nil {
 			t.Fatalf("expected managed opencode agent profile %s: %v", rel, err)
+		}
+	}
+}
+
+func TestInitForceRemovesRetiredManagedToolFromProjectAndRunTargetOverlays(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run initial init command: %v", err)
+	}
+
+	toolName := "kingdom_complete_attempt.ts"
+	toolPaths := []string{
+		filepath.Join(projectRoot, ".kingdom", "opencode", "tools", toolName),
+		filepath.Join(projectRoot, ".kingdom", "runtime", "run-targets", "run-1", "target", ".kingdom", "opencode", "tools", toolName),
+	}
+	for _, toolPath := range toolPaths {
+		if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
+			t.Fatalf("create retired tool directory %s: %v", toolPath, err)
+		}
+		if err := os.WriteFile(toolPath, []byte("retired managed tool"), 0o644); err != nil {
+			t.Fatalf("write retired tool %s: %v", toolPath, err)
+		}
+	}
+
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot, "--force"}); err != nil {
+		t.Fatalf("run forced init command: %v", err)
+	}
+	for _, toolPath := range toolPaths {
+		if _, err := os.Stat(toolPath); !os.IsNotExist(err) {
+			t.Fatalf("expected forced init to remove retired managed tool %s, stat err=%v", toolPath, err)
 		}
 	}
 }

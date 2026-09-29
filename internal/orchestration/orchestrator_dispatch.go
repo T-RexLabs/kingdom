@@ -287,7 +287,22 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 
 	workspaceCtx := executionWorkspaceContext{}
 	workspacePath := ""
+	projectRootBoundary := ""
 	baseSnapshotID := ""
+	ephemeralWorkspace := false
+	responseOnlyWorkspaceCleanupMarkedAt := ""
+	responseOnlyWorkspaceDispatched := false
+	defer func() {
+		if ephemeralWorkspace && !responseOnlyWorkspaceDispatched && o.fsStore != nil {
+			unlockWorkspace := o.lockRunWorkspace(run.RunID)
+			defer unlockWorkspace()
+			cleanupCtx, cancelCleanup := detachedTimeoutContext(ctx, 5*time.Second)
+			defer cancelCleanup()
+			if err := o.removeResponseOnlyWorkspaceAndClear(cleanupCtx, run.RunID, attemptID, responseOnlyWorkspaceCleanupMarkedAt); err != nil {
+				slog.Warn("failed to remove unlaunched response-only workspace", "attempt_id", attemptID, "error", err)
+			}
+		}
+	}()
 	if executionSpec.RequiresWorkspace {
 		unlockWorkspace := o.lockRunWorkspace(run.RunID)
 		defer unlockWorkspace()
@@ -308,15 +323,21 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", workspaceCtxErr, now)
 		}
 		workspacePath = strings.TrimSpace(workspaceCtx.ExecutionRoot)
+		projectRootBoundary = strings.TrimSpace(workspaceCtx.ProjectRootBoundary)
 		baseSnapshotID = strings.TrimSpace(workspaceCtx.TrustedSnapshotID)
 	} else {
-		responseWorkspacePath, responseWorkspaceErr := o.resolveResponseOnlyWorkspacePath(ctx, run.RunID, run.PublishMode)
+		responseWorkspacePath, cleanupMarkedAt, responseWorkspaceErr := o.resolveResponseOnlyWorkspacePath(ctx, run.RunID, attemptID, run.PublishMode)
 		if responseWorkspaceErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve response-only workspace", responseWorkspaceErr, now)
 		}
 		workspacePath = strings.TrimSpace(responseWorkspacePath)
+		ephemeralWorkspace = normalizePublishMode(run.PublishMode) == PublishModeDirect && o.fsStore != nil
+		responseOnlyWorkspaceCleanupMarkedAt = cleanupMarkedAt
+		if o.fsStore != nil || normalizePublishMode(run.PublishMode) == PublishModeGitWorktree {
+			projectRootBoundary = workspacePath
+		}
 	}
-	providerInvocationID, providerInvocationAt, completionCapability, completionReceiptDir, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
+	providerInvocationID, providerInvocationAt, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
 	if invocationErr != nil {
 		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
 		if errors.As(invocationErr, &outcomeUnknown) {
@@ -367,31 +388,33 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	}
 	attempt.NodeStatus = "starting"
 
-	o.startAsyncExecution(ctx, asyncExecutionResult{
-		run:                    run,
-		node:                   node,
-		attempt:                attempt,
-		attemptID:              attemptID,
-		sessionID:              sessionID,
-		providerInvocationID:   providerInvocationID,
-		providerInvocationAt:   providerInvocationAt,
-		completionCapability:   completionCapability,
-		completionMode:         executionSpec.CompletionMode,
-		expectedLeaseOwner:     attempt.LeaseOwner,
-		expectedLeaseVersion:   attempt.LeaseVersion,
-		expectedLeaseExpiresAt: expectedLeaseExpiresAt,
-		providerLeaseDuration:  providerLeaseDuration,
-		completionReceiptDir:   completionReceiptDir,
-		baseSnapshotID:         baseSnapshotID,
-		workspaceID:            run.RunID,
-		workspacePath:          workspacePath,
-		delegator:              delegatorID,
-		prompt:                 providerOutputPrompt,
-		model:                  resolvedModel,
-		variant:                resolvedVariant,
-		agent:                  agentForRole,
-		occurredAt:             now,
+	started := o.startAsyncExecution(ctx, asyncExecutionResult{
+		run:                                  run,
+		node:                                 node,
+		attempt:                              attempt,
+		attemptID:                            attemptID,
+		sessionID:                            sessionID,
+		providerInvocationID:                 providerInvocationID,
+		providerInvocationAt:                 providerInvocationAt,
+		completionMode:                       executionSpec.CompletionMode,
+		expectedLeaseOwner:                   attempt.LeaseOwner,
+		expectedLeaseVersion:                 attempt.LeaseVersion,
+		expectedLeaseExpiresAt:               expectedLeaseExpiresAt,
+		providerLeaseDuration:                providerLeaseDuration,
+		baseSnapshotID:                       baseSnapshotID,
+		workspaceID:                          run.RunID,
+		workspacePath:                        workspacePath,
+		ephemeralWorkspace:                   ephemeralWorkspace,
+		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
+		projectRootBoundary:                  projectRootBoundary,
+		delegator:                            delegatorID,
+		prompt:                               providerOutputPrompt,
+		model:                                resolvedModel,
+		variant:                              resolvedVariant,
+		agent:                                agentForRole,
+		occurredAt:                           now,
 	})
+	responseOnlyWorkspaceDispatched = started
 
 	return nil
 }
@@ -762,13 +785,16 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 	})
 }
 
-func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncExecutionResult) {
-	if !o.markExecutionInflight(job.attemptID) {
-		return
+func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncExecutionResult) bool {
+	if !o.markExecutionInflight(job.attemptID, job.run.RunID) {
+		return false
 	}
 
 	go func() {
 		defer o.clearExecutionInflight(job.attemptID)
+		if job.ephemeralWorkspace {
+			defer o.cleanupResponseOnlyWorkspace(job)
+		}
 		executionCtx, cancelExecution := context.WithCancel(firstNonNilContext(ctx))
 		defer cancelExecution()
 		heartbeat := o.startProviderLeaseHeartbeat(executionCtx, cancelExecution, job)
@@ -786,24 +812,22 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			startPayloadRaw = "{}"
 		}
 		response, execErr := o.executeWithDurableProgress(executionCtx, job, opencode.ExecuteRequest{
-			SessionID:                 job.sessionID,
-			AttemptID:                 job.attemptID,
-			RunID:                     job.run.RunID,
-			NodeRunID:                 job.attempt.NodeRunID,
-			Model:                     job.model,
-			Variant:                   job.variant,
-			Agent:                     job.agent,
-			WorkspacePath:             job.workspacePath,
-			ConfigDir:                 workspaceOpenCode.ConfigDir,
-			DatabasePath:              workspaceOpenCode.DatabasePath,
-			Prompt:                    job.prompt,
-			OccurredAt:                job.occurredAt,
-			InvocationID:              job.providerInvocationID,
-			InvocationIssuedAt:        job.providerInvocationAt,
-			CompletionProtocolVersion: completionProtocolVersionForMode(job.completionMode),
-			CompletionMode:            opencode.CompletionMode(job.completionMode),
-			CompletionCapability:      completionCapabilityForMode(job.completionMode, job.completionCapability),
-			CompletionReceiptDir:      completionReceiptDirForMode(job.completionMode, job.completionReceiptDir),
+			SessionID:           job.sessionID,
+			AttemptID:           job.attemptID,
+			RunID:               job.run.RunID,
+			NodeRunID:           job.attempt.NodeRunID,
+			Model:               job.model,
+			Variant:             job.variant,
+			Agent:               job.agent,
+			WorkspacePath:       job.workspacePath,
+			ProjectRootBoundary: job.projectRootBoundary,
+			ConfigDir:           workspaceOpenCode.ConfigDir,
+			DatabasePath:        workspaceOpenCode.DatabasePath,
+			Prompt:              job.prompt,
+			OccurredAt:          job.occurredAt,
+			InvocationID:        job.providerInvocationID,
+			InvocationIssuedAt:  job.providerInvocationAt,
+			CompletionMode:      opencode.CompletionMode(job.completionMode),
 			OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
 				return o.acknowledgeProviderProcessGuard(callbackCtx, job, guard)
 			},
@@ -844,33 +868,53 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 		if hasSettlementAuthority {
 			defer o.releaseExecutionSettlement(job.attemptID, "provider_completion")
 		}
-		if hasSettlementAuthority && job.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
+		if hasSettlementAuthority && job.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked {
 			handoffCtx, cancelHandoff := detachedTimeoutContext(ctx, 5*time.Second)
+			if err := o.markProviderTerminalHandoffPending(handoffCtx, job); err != nil {
+				cancelHandoff()
+				recoveryCtx, cancelRecovery := detachedTimeoutContext(ctx, 5*time.Second)
+				recoveryMarkerErr := o.markProviderTerminalRecoveryRequired(recoveryCtx, job)
+				cancelRecovery()
+				if recoveryMarkerErr != nil {
+					err = errors.Join(err, fmt.Errorf("mark terminal handoff recovery required: %w", recoveryMarkerErr))
+				}
+				o.recordProviderTerminalHandoffError(job, err)
+				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be fenced for recovery.", EvidenceSource: "process_guard"}
+				job.err = err
+				if recoveryMarkerErr != nil {
+					return
+				}
+				o.publishExecutionResult(job.attemptID, job)
+				return
+			}
 			err := o.persistProviderTerminalHandoff(handoffCtx, &job)
 			cancelHandoff()
 			if err != nil {
+				if o.fsStore != nil {
+					if _, found, readErr := o.fsStore.ReadProviderTerminalHandoff(job.providerInvocationID); found && readErr == nil {
+						slog.Warn("provider terminal handoff SQLite replay deferred", "attempt_id", job.attemptID, "provider_invocation_id", job.providerInvocationID, "error", err)
+						// A durable file-only handoff remains authoritative transport
+						// evidence. Startup and the completion loop will retry its
+						// lease-fenced SQLite insertion before lost-handoff recovery.
+						o.publishExecutionResult(job.attemptID, job)
+						return
+					}
+				}
+				recoveryCtx, cancelRecovery := detachedTimeoutContext(ctx, 5*time.Second)
+				recoveryMarkerErr := o.markProviderTerminalRecoveryRequired(recoveryCtx, job)
+				cancelRecovery()
+				if recoveryMarkerErr != nil {
+					err = errors.Join(err, fmt.Errorf("mark terminal handoff recovery required: %w", recoveryMarkerErr))
+				}
 				o.recordProviderTerminalHandoffError(job, err)
-				_, _ = o.db.ExecContext(context.WithoutCancel(ctx), `UPDATE provider_process_guards SET terminal_recovery_required_at = COALESCE(terminal_recovery_required_at, ?) WHERE provider_invocation_id = ?`, o.now().UTC().Format(time.RFC3339Nano), job.providerInvocationID)
 				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be persisted.", EvidenceSource: "process_guard"}
 				job.err = err
+				if recoveryMarkerErr != nil {
+					return
+				}
 				if settleErr := o.commitRecoveredGuardFailure(ctx, job); settleErr != nil {
 					o.recordProviderTerminalHandoffError(job, settleErr)
 				}
-				return
-			}
-		}
-		if hasSettlementAuthority && job.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
-			ingestCtx, cancelIngest := detachedTimeoutContext(ctx, 5*time.Second)
-			err := o.fsStore.SyncProviderCompletionInbox(job.providerInvocationID)
-			if err == nil {
-				err = o.ingestProviderCompletionReceiptInvocation(ingestCtx, job.providerInvocationID)
-			}
-			if err == nil {
-				err = o.hydrateAcceptedProviderCompletionReceipt(ingestCtx, &job)
-			}
-			cancelIngest()
-			if err != nil {
-				slog.Warn("provider completion receipt ingestion will retry", "attempt_id", job.attemptID, "provider_invocation_id", job.providerInvocationID, "error", err)
 				return
 			}
 		}
@@ -883,7 +927,6 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			// Async completions must outlive the dispatch tick context because the
 			// execution store is the durable handoff into the canonical completion path.
 			if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
-				_, _ = o.db.ExecContext(context.WithoutCancel(ctx), `UPDATE provider_process_guards SET terminal_recovery_required_at = COALESCE(terminal_recovery_required_at, ?) WHERE provider_invocation_id = ?`, o.now().UTC().Format(time.RFC3339Nano), job.providerInvocationID)
 				if !o.forceCloseActive() {
 					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339Nano), map[string]any{"error": err.Error()})
 				}
@@ -893,6 +936,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			}
 		}
 	}()
+	return true
 }
 
 func (o *orchestrationLoop) recordProviderTerminalHandoffError(job asyncExecutionResult, err error) {
@@ -1205,16 +1249,20 @@ func (o *orchestrationLoop) emitWorkspacePreparedEvent(ctx context.Context, run 
 	})
 }
 
-func (o *orchestrationLoop) markExecutionInflight(attemptID string) bool {
+func (o *orchestrationLoop) markExecutionInflight(attemptID, runID string) bool {
 	o.execMu.Lock()
 	defer o.execMu.Unlock()
 	if o.inflightExec == nil {
 		o.inflightExec = make(map[string]struct{})
 	}
+	if o.inflightRunIDs == nil {
+		o.inflightRunIDs = make(map[string]string)
+	}
 	if _, exists := o.inflightExec[attemptID]; exists {
 		return false
 	}
 	o.inflightExec[attemptID] = struct{}{}
+	o.inflightRunIDs[attemptID] = strings.TrimSpace(runID)
 	if o.executionResults == nil {
 		o.executionResults = make(map[string]chan asyncExecutionResult)
 	}
@@ -1229,6 +1277,7 @@ func (o *orchestrationLoop) clearExecutionInflight(attemptID string) {
 	o.execMu.Lock()
 	defer o.execMu.Unlock()
 	delete(o.inflightExec, attemptID)
+	delete(o.inflightRunIDs, attemptID)
 	if _, claimed := o.inflightSettlements[attemptID]; !claimed {
 		delete(o.executionResults, attemptID)
 	}

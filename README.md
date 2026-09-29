@@ -45,7 +45,7 @@ What that means in practice:
 
 - Kingdom discovers selectable models from your local OpenCode installation.
   - If you have hosted or self-hosted providers configured in OpenCode, and OpenCode exposes them in its model catalog, those models will be available for selection in Kingdom.
-- `kd init` installs Kingdom-managed OpenCode profiles and tools into `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`.
+- `kd init` installs Kingdom-managed OpenCode profiles into `.kingdom/opencode/agents/`.
 - Kingdom launches OpenCode with that overlay via `OPENCODE_CONFIG_DIR`, so Kingdom sees its managed profiles while your normal repo and global OpenCode setup still apply and standalone `opencode` sessions are not polluted by Kingdom assets.
 
 Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
@@ -90,7 +90,7 @@ Run `kd init` from the root of the target project:
 kd init
 ```
 
-This creates Kingdom's local workspace under `.kingdom/`, a protected operator credential at `.kingdom/secrets/operator-token`, and Kingdom-managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`. Runtime startup validates those managed assets and secret permissions read-only and fails fast on drift instead of rewriting them. The credential value is never written to config, SQLite, logs, URLs, or browser storage.
+This creates Kingdom's local workspace under `.kingdom/`, a protected operator credential at `.kingdom/secrets/operator-token`, and Kingdom-managed OpenCode profiles under `.kingdom/opencode/agents/`. Runtime startup validates those managed assets and secret permissions read-only and fails fast on drift instead of rewriting them. The credential value is never written to config, SQLite, logs, URLs, or browser storage.
 
 ### 4. Start the runtime
 
@@ -169,7 +169,7 @@ Important boundaries:
 - Publication is done into the project root or a git worktree if toggled on and in a Git repo.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
-- The builder alone receives a completion receipt capability. Other provider-backed nodes settle from the server-observed terminal response; output, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
+- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 
@@ -296,7 +296,7 @@ Expected behavior:
 
 ### What `kd init` and `kd summon` Do
 
-`kd init` creates a local Kingdom workspace under `.kingdom/` and installs managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`.
+`kd init` creates a local Kingdom workspace under `.kingdom/` and installs managed OpenCode profiles under `.kingdom/opencode/agents/`.
 
 That scaffold includes:
 
@@ -338,7 +338,7 @@ When the migration baseline changes, `kd clean` followed by `kd init` is the sup
 
 | Command | Purpose |
 | --- | --- |
-| `kd init` | Scaffold `.kingdom/` and managed `.kingdom/opencode/agents/` profiles plus `.kingdom/opencode/tools/` |
+| `kd init` | Scaffold `.kingdom/` and managed `.kingdom/opencode/agents/` profiles |
 | `kd clean` | Remove local Kingdom state and managed profiles |
 | `kd summon` | Start the local runtime and web/API server |
 | `kd summon status` | Inspect the local summoned runtime |

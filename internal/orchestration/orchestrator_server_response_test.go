@@ -8,6 +8,7 @@ import (
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 )
 
@@ -25,7 +26,7 @@ func TestExecutionSpecForNodeUsesApprovedCompletionModes(t *testing.T) {
 		{name: "plan drafting", nodeID: "plan_drafting", nodeClass: workflow.NodeClassPlanDrafting, completionMode: executionstore.ProviderCompletionModeServerResponse},
 		{name: "review", nodeID: "execution_review_shieldmaiden", nodeClass: workflow.NodeClassExecutionReview, completionMode: executionstore.ProviderCompletionModeServerResponse},
 		{name: "validation", nodeID: "validation_gates_qa_scout", nodeClass: workflow.NodeClassValidationGates, completionMode: executionstore.ProviderCompletionModeServerResponse},
-		{name: "builder", nodeID: "delegated_execution_berserker", nodeClass: workflow.NodeClassDelegatedExecution, completionMode: executionstore.ProviderCompletionModeReceiptRequired},
+		{name: "builder", nodeID: "delegated_execution_berserker", nodeClass: workflow.NodeClassDelegatedExecution, completionMode: executionstore.ProviderCompletionModeServerResponse},
 	}
 
 	for _, test := range tests {
@@ -41,17 +42,8 @@ func TestExecutionSpecForNodeUsesApprovedCompletionModes(t *testing.T) {
 				t.Fatalf("completion mode = %q, want %q", spec.CompletionMode, test.completionMode)
 			}
 
-			capability := completionCapabilityForMode(spec.CompletionMode, "test-capability")
-			receiptDir := completionReceiptDirForMode(spec.CompletionMode, "/receipts/test")
-			protocolVersion := completionProtocolVersionForMode(spec.CompletionMode)
-			if test.completionMode == executionstore.ProviderCompletionModeReceiptRequired {
-				if capability != "test-capability" || receiptDir != "/receipts/test" || protocolVersion != opencode.CompletionProtocolVersion {
-					t.Fatalf("builder receipt configuration capability=%q directory=%q protocol=%q", capability, receiptDir, protocolVersion)
-				}
-				return
-			}
-			if capability != "" || receiptDir != "" || protocolVersion != "" {
-				t.Fatalf("response-first completion exposed receipt configuration capability=%q directory=%q protocol=%q", capability, receiptDir, protocolVersion)
+			if spec.CompletionMode != executionstore.ProviderCompletionModeServerResponse {
+				t.Fatalf("provider node %q does not use server-response completion: %q", test.name, spec.CompletionMode)
 			}
 		})
 	}
@@ -135,11 +127,16 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 		t.Fatalf("activate response-first invocation: %v", err)
 	}
 	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion, terminalObservedAt)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime filesystem store: %v", err)
+	}
 
 	loop := orchestrationLoop{
 		db:             db,
 		transition:     state.NewTransitionService(db, nil),
 		executionStore: store,
+		fsStore:        fsStore,
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC)
 		},
@@ -148,7 +145,7 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	result := asyncExecutionResult{
 		run:                       runSnapshot{RunID: runID, RunStatus: "running"},
 		node:                      nodeDefinition{NodeID: nodeID, NodeClass: workflow.NodeClassAdvisorConsultation, RequiredRole: "noble-delegate"},
-		attempt:                   nodeAttempt{NodeRunID: nodeRunID, NodeID: nodeID, Attempt: 1, RequiredRole: "noble-delegate", AgentID: agentID},
+		attempt:                   nodeAttempt{NodeRunID: nodeRunID, NodeID: nodeID, Attempt: 1, RequiredRole: "noble-delegate", AgentID: agentID, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		providerInvocationID:      invocationID,
 		completionMode:            executionstore.ProviderCompletionModeServerResponse,
@@ -161,6 +158,9 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 			ReasonCode:     "execution_completed",
 			EvidenceSource: "stream",
 		},
+	}
+	if err := loop.persistProviderTerminalHandoff(ctx, &result); err != nil {
+		t.Fatalf("persist provider terminal handoff: %v", err)
 	}
 	if err := loop.commitProviderExecutionCompletion(ctx, result); err != nil {
 		t.Fatalf("settle nonterminal response observation: %v", err)
@@ -186,8 +186,8 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	if err != nil || !found {
 		t.Fatalf("get response-first invocation: found=%t err=%v", found, err)
 	}
-	if invocation.CompletionMode != executionstore.ProviderCompletionModeServerResponse || invocation.CompletionCapabilityHash != "" || invocation.CompletionCapabilityIssuedAt != "" || invocation.ReceiptSeenCount != 0 {
-		t.Fatalf("response-first invocation unexpectedly used receipt authority: %#v", invocation)
+	if invocation.CompletionMode != executionstore.ProviderCompletionModeServerResponse {
+		t.Fatalf("invocation completion mode = %q, want server response", invocation.CompletionMode)
 	}
 	var primaryEvidenceKind string
 	if err := db.QueryRow(`SELECT evidence_kind FROM provider_completion_evidence WHERE evidence_id = ?`, settlement.PrimaryEvidenceID).Scan(&primaryEvidenceKind); err != nil {
@@ -196,14 +196,11 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	if primaryEvidenceKind != string(executionstore.ProviderCompletionEvidenceKindStreamObservation) {
 		t.Fatalf("response-first settlement primary evidence kind=%q, want stream observation", primaryEvidenceKind)
 	}
-	var streamEvidenceCount, receiptEvidenceCount int
+	var streamEvidenceCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM provider_completion_evidence WHERE provider_invocation_id = ? AND evidence_kind = 'stream_observation'`, invocationID).Scan(&streamEvidenceCount); err != nil {
 		t.Fatalf("count server-response stream evidence: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM provider_completion_evidence WHERE provider_invocation_id = ? AND evidence_kind IN ('completion_receipt', 'completion_receipt_attempt')`, invocationID).Scan(&receiptEvidenceCount); err != nil {
-		t.Fatalf("count receipt evidence: %v", err)
-	}
-	if streamEvidenceCount != 1 || receiptEvidenceCount != 0 {
-		t.Fatalf("response-first evidence stream=%d receipts=%d, want one stream observation and no receipt", streamEvidenceCount, receiptEvidenceCount)
+	if streamEvidenceCount != 1 {
+		t.Fatalf("response-first evidence stream=%d, want one stream observation", streamEvidenceCount)
 	}
 }

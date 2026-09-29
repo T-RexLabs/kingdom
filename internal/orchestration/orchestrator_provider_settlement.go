@@ -23,14 +23,6 @@ func newProviderInvocationID(attemptID string, now time.Time) string {
 	return fmt.Sprintf("pinv_%s_%d_%d", sanitizeFileToken(attemptID), now.UTC().UnixNano(), providerInvocationIDCounter.Add(1))
 }
 
-func generateCompletionCapability() (string, error) {
-	raw := make([]byte, 24)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate completion capability: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
 func generateExecutionLeaseOwner() (string, error) {
 	raw := make([]byte, 18)
 	if _, err := rand.Read(raw); err != nil {
@@ -47,9 +39,9 @@ func generateRunWorktreeCleanupOwner() (string, error) {
 	return "cleanup_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, string, string, error) {
+func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, error) {
 	if o == nil || o.executionStore == nil {
-		return "", "", "", "", fmt.Errorf("execution store is required for provider invocation activation")
+		return "", "", fmt.Errorf("execution store is required for provider invocation activation")
 	}
 	now, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(issuedAt))
 	if err != nil {
@@ -57,21 +49,6 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		issuedAt = now.Format(time.RFC3339Nano)
 	}
 	providerInvocationID := newProviderInvocationID(attemptID, now)
-	completionCapability := ""
-	receiptDir := ""
-	if completionMode == executionstore.ProviderCompletionModeReceiptRequired {
-		completionCapability, err = generateCompletionCapability()
-		if err != nil {
-			return "", "", "", "", err
-		}
-		if o.fsStore == nil {
-			return "", "", "", "", fmt.Errorf("runtime filesystem store is required for completion receipt inbox")
-		}
-		receiptDir, err = o.fsStore.EnsureProviderCompletionInbox(providerInvocationID)
-		if err != nil {
-			return "", "", "", "", err
-		}
-	}
 	if _, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID:         providerInvocationID,
 		AttemptID:                    attemptID,
@@ -79,7 +56,6 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 		NodeRunID:                    attempt.NodeRunID,
 		LogicalSessionID:             sessionID,
 		CompletionMode:               completionMode,
-		CompletionCapability:         completionCapability,
 		IssuedAt:                     issuedAt,
 		CreatedAt:                    issuedAt,
 		OpenedAt:                     issuedAt,
@@ -89,35 +65,11 @@ func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.C
 	}); err != nil {
 		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
 		if errors.As(err, &outcomeUnknown) {
-			return providerInvocationID, issuedAt, completionCapability, receiptDir, err
+			return providerInvocationID, issuedAt, err
 		}
-		if receiptDir != "" {
-			_ = o.fsStore.RemoveProviderCompletionInbox(providerInvocationID)
-		}
-		return "", "", "", "", err
+		return "", "", err
 	}
-	return providerInvocationID, issuedAt, completionCapability, receiptDir, nil
-}
-
-func completionProtocolVersionForMode(mode executionstore.ProviderCompletionMode) string {
-	if mode == executionstore.ProviderCompletionModeReceiptRequired {
-		return opencode.CompletionProtocolVersion
-	}
-	return ""
-}
-
-func completionCapabilityForMode(mode executionstore.ProviderCompletionMode, capability string) string {
-	if mode == executionstore.ProviderCompletionModeReceiptRequired {
-		return strings.TrimSpace(capability)
-	}
-	return ""
-}
-
-func completionReceiptDirForMode(mode executionstore.ProviderCompletionMode, receiptDir string) string {
-	if mode == executionstore.ProviderCompletionModeReceiptRequired {
-		return strings.TrimSpace(receiptDir)
-	}
-	return ""
+	return providerInvocationID, issuedAt, nil
 }
 
 func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func(context.Context) error) error {
@@ -125,14 +77,6 @@ func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func
 		Sleep: func(ctx context.Context, delay time.Duration) error { return sleepWithContext(ctx, o.sleep, delay) },
 	})
 	return err
-}
-
-func validateProviderCompletionReceiptForNode(node nodeDefinition, finalText, structuredPayloadJSON string) (string, error) {
-	validated, err := executionoutput.Validate(node.NodeID, node.NodeClass, finalText, structuredPayloadJSON)
-	if err != nil {
-		return "", err
-	}
-	return validated.StructuredPayloadJSON, nil
 }
 
 func (o *orchestrationLoop) observeProviderSessionForInvocation(ctx context.Context, attemptID, providerInvocationID, providerSessionID string) {
@@ -171,32 +115,60 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	if o == nil || o.executionStore == nil || strings.TrimSpace(result.providerInvocationID) == "" {
 		return fmt.Errorf("provider invocation identity is required for completion settlement")
 	}
+	if recoveredGuardQuiescence {
+		unlock := o.lockProviderTerminalHandoffFile(result.providerInvocationID)
+		defer unlock()
+		_, found, err := o.executionStore.GetProviderTerminalHandoff(ctx, executionstore.ProviderTerminalHandoffID(result.providerInvocationID))
+		if err != nil {
+			return fmt.Errorf("check for a concurrently recovered terminal handoff: %w", err)
+		}
+		if found {
+			return nil
+		}
+		if o.fsStore != nil {
+			_, fileFound, readErr := o.fsStore.ReadProviderTerminalHandoff(result.providerInvocationID)
+			if readErr != nil {
+				return fmt.Errorf("check for a file-backed terminal handoff before lost-handoff settlement: %w", readErr)
+			}
+			if fileFound {
+				return nil
+			}
+		}
+	}
+	if !recoveredGuardQuiescence && strings.TrimSpace(result.terminalHandoffID) == "" {
+		handoffCtx, cancelHandoff := detachedTimeoutContext(ctx, 5*time.Second)
+		err := o.markProviderTerminalHandoffPending(handoffCtx, result)
+		if err == nil {
+			err = o.persistProviderTerminalHandoff(handoffCtx, &result)
+		}
+		cancelHandoff()
+		if err != nil {
+			return err
+		}
+	}
 	currentOutcome := normalizeExecutionOutcome(result.outcome, result.err)
 	settlementOutcome := executionstore.ProviderCompletionOutcomeFailed
 	if strings.TrimSpace(currentOutcome.State) == "cancelled" {
 		settlementOutcome = executionstore.ProviderCompletionOutcomeCancelled
 	}
+	structuredPayloadJSON := "{}"
 
 	if strings.TrimSpace(currentOutcome.State) == "success" {
-		if result.completionMode == executionstore.ProviderCompletionModeServerResponse {
-			result.outputText = strings.TrimSpace(result.providerStreamObservation.CanonicalTerminalText)
-			if strings.TrimSpace(result.providerStreamObservation.ProviderSessionID) == "" {
-				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_unknown_failure", FailureText: "provider terminal response is missing session lineage", EvidenceSource: "stream"}
-			} else if err := providerexecution.ValidateServerResponseSuccess(result.providerStreamObservation); err != nil {
-				var observationErr *providerexecution.InvalidServerResponseObservationError
-				reasonCode := "provider_incomplete_turn"
-				if errors.As(err, &observationErr) {
-					reasonCode = observationErr.ReasonCode
-				}
-				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: reasonCode, FailureText: err.Error(), EvidenceSource: "stream"}
+		result.outputText = strings.TrimSpace(result.providerStreamObservation.CanonicalTerminalText)
+		if strings.TrimSpace(result.providerStreamObservation.ProviderSessionID) == "" {
+			currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_unknown_failure", FailureText: "provider terminal response is missing session lineage", EvidenceSource: "stream"}
+		} else if err := providerexecution.ValidateServerResponseSuccess(result.providerStreamObservation); err != nil {
+			var observationErr *providerexecution.InvalidServerResponseObservationError
+			reasonCode := "provider_incomplete_turn"
+			if errors.As(err, &observationErr) {
+				reasonCode = observationErr.ReasonCode
 			}
-		} else if result.completionMode == executionstore.ProviderCompletionModeReceiptRequired && strings.TrimSpace(result.completionReceiptEvidenceID) == "" {
-			currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_incomplete_turn", FailureText: "provider exited without an accepted kingdom_complete_attempt receipt", EvidenceSource: "stream"}
+			currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: reasonCode, FailureText: err.Error(), EvidenceSource: "stream"}
 		}
 	}
 
 	if strings.TrimSpace(currentOutcome.State) == "success" {
-		validated, err := executionoutput.Validate(result.node.NodeID, result.node.NodeClass, result.outputText, result.completionStructuredPayloadJSON)
+		validated, err := executionoutput.Validate(result.node.NodeID, result.node.NodeClass, result.outputText, "{}")
 		if err != nil {
 			reasonCode := "llm_invalid_response"
 			var validationErr *executionoutput.ValidationError
@@ -207,7 +179,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 		} else {
 			settlementOutcome = executionstore.ProviderCompletionOutcomeSuccess
 			result.outputText = validated.CanonicalText
-			result.completionStructuredPayloadJSON = validated.StructuredPayloadJSON
+			structuredPayloadJSON = validated.StructuredPayloadJSON
 			if validated.WorkflowFailureCode != "" {
 				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: validated.WorkflowFailureCode, FailureText: validated.WorkflowFailureText, EvidenceSource: firstNonEmptyString(currentOutcome.EvidenceSource, "stream")}
 			}
@@ -232,9 +204,8 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 		RunID:                   result.run.RunID,
 		NodeRunID:               result.attempt.NodeRunID,
 		Outcome:                 settlementOutcome,
-		PrimaryEvidenceID:       strings.TrimSpace(result.completionReceiptEvidenceID),
 		FinalText:               result.outputText,
-		StructuredPayloadJSON:   firstNonEmptyString(result.completionStructuredPayloadJSON, "{}"),
+		StructuredPayloadJSON:   structuredPayloadJSON,
 		ProviderDiagnosticsJSON: firstNonEmptyString(result.providerDiagnosticsJSON, "{}"),
 		FailureReasonCode:       failureCode,
 		FailureReasonText:       strings.TrimSpace(currentOutcome.FailureText),
@@ -286,9 +257,6 @@ func (o *orchestrationLoop) persistProviderTerminalHandoff(ctx context.Context, 
 	if o == nil || o.executionStore == nil || o.fsStore == nil || result == nil {
 		return fmt.Errorf("execution and runtime filesystem stores are required for provider terminal handoff")
 	}
-	if result.completionMode != executionstore.ProviderCompletionModeReceiptRequired {
-		return nil
-	}
 	payloadJSON, err := marshalExecutionOutboxPayload(*result)
 	if err != nil {
 		return fmt.Errorf("marshal provider terminal handoff payload for attempt %q: %w", result.attemptID, err)
@@ -331,7 +299,6 @@ func (o *orchestrationLoop) hydrateExecutionResultFromCanonicalSettlement(ctx co
 	if found {
 		result.providerInvocationID = strings.TrimSpace(settlement.ProviderInvocationID)
 		result.outputText = strings.TrimSpace(settlement.FinalText)
-		result.completionStructuredPayloadJSON = firstNonEmptyString(strings.TrimSpace(settlement.StructuredPayloadJSON), "{}")
 		result.providerDiagnosticsJSON = firstNonEmptyString(strings.TrimSpace(settlement.ProviderDiagnosticsJSON), strings.TrimSpace(result.providerDiagnosticsJSON), "{}")
 	}
 
@@ -344,7 +311,7 @@ func (o *orchestrationLoop) hydrateExecutionResultFromCanonicalSettlement(ctx co
 		return found, err
 	}
 	if invocationFound {
-		result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(result.providerInvocationAt), strings.TrimSpace(invocation.CompletionCapabilityIssuedAt))
+		result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(result.providerInvocationAt), strings.TrimSpace(invocation.OpenedAt))
 		result.providerSessionID = firstNonEmptyString(strings.TrimSpace(result.providerSessionID), strings.TrimSpace(invocation.ProviderSessionID))
 	}
 	return found, nil

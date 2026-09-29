@@ -2,9 +2,11 @@ package orchestration
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -45,6 +47,245 @@ func worktreePorcelainZ(fields ...string) string {
 	return strings.Join(fields, "\x00") + "\x00\x00"
 }
 
+func TestEnsureOpenCodeProjectBoundaryShadowsAncestorCheckout(t *testing.T) {
+	t.Parallel()
+
+	checkoutRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkoutRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create source checkout marker: %v", err)
+	}
+	projectRoot := filepath.Join(checkoutRoot, ".kingdom", "runtime", "run-targets", "run_1", "target")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("create direct execution root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".git"), []byte("gitdir: /outside/source/.git\n"), 0o600); err != nil {
+		t.Fatalf("create stale direct-target Git pointer: %v", err)
+	}
+
+	if err := (&orchestrationLoop{}).ensureOpenCodeProjectBoundary(projectRoot, false); err != nil {
+		t.Fatalf("ensure direct execution project boundary: %v", err)
+	}
+	marker, err := os.Lstat(filepath.Join(projectRoot, ".git"))
+	if err != nil || !marker.IsDir() {
+		t.Fatalf("expected a directory boundary marker at the execution root, marker=%v err=%v", marker, err)
+	}
+	discoveredRoot := ""
+	for current := projectRoot; ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			discoveredRoot = current
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	if discoveredRoot != projectRoot {
+		t.Fatalf("OpenCode's upward .git discovery would select %q, want execution root %q", discoveredRoot, projectRoot)
+	}
+	if _, err := os.Stat(filepath.Join(checkoutRoot, ".git")); err != nil {
+		t.Fatalf("expected source checkout marker to remain untouched: %v", err)
+	}
+}
+
+func TestNestedManagedWorktreeProjectBoundaryKeepsParentGitMetadata(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("Git is required for nested managed-worktree boundary verification")
+	}
+	runGit := func(directory string, args ...string) string {
+		t.Helper()
+		commandArgs := append([]string{"-C", directory}, args...)
+		output, err := exec.Command("git", commandArgs...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git -C %s %s: %v: %s", directory, strings.Join(args, " "), err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+
+	repositoryRoot := t.TempDir()
+	runGit(repositoryRoot, "init", "--quiet")
+	runGit(repositoryRoot, "config", "user.name", "Kingdom Test")
+	runGit(repositoryRoot, "config", "user.email", "kingdom-test@example.invalid")
+	projectRoot := filepath.Join(repositoryRoot, "apps", "service")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("create nested repository project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("nested project\n"), 0o644); err != nil {
+		t.Fatalf("write nested repository project seed: %v", err)
+	}
+	runGit(repositoryRoot, "add", "apps/service/README.md")
+	runGit(repositoryRoot, "commit", "--quiet", "-m", "seed")
+	worktreeRoot := filepath.Join(t.TempDir(), "run-worktree")
+	runGit(repositoryRoot, "worktree", "add", "--quiet", "--detach", worktreeRoot, "HEAD")
+	defer func() {
+		_ = exec.Command("git", "-C", repositoryRoot, "worktree", "remove", "--force", worktreeRoot).Run()
+	}()
+	scopedRoot := filepath.Join(worktreeRoot, "apps", "service")
+	// Existing managed worktrees may have the independent nested repository
+	// created by the previous boundary implementation.
+	runGit(scopedRoot, "init", "--quiet")
+
+	loop := orchestrationLoop{}
+	if err := loop.ensureOpenCodeProjectBoundary(scopedRoot, true); err != nil {
+		t.Fatalf("ensure nested managed-worktree project boundary: %v", err)
+	}
+	marker, err := os.Lstat(filepath.Join(scopedRoot, ".git"))
+	if err != nil || !marker.Mode().IsRegular() {
+		t.Fatalf("nested exact-root marker=%v err=%v, want a Git metadata pointer file", marker, err)
+	}
+	parentGitDir := runGit(worktreeRoot, "rev-parse", "--absolute-git-dir")
+	if got := runGit(scopedRoot, "rev-parse", "--absolute-git-dir"); !sameOpenCodeProjectRoot(got, parentGitDir) {
+		t.Fatalf("nested project uses Git directory %q, want managed worktree metadata %q", got, parentGitDir)
+	}
+	unrelatedRepository := t.TempDir()
+	runGit(unrelatedRepository, "init", "--quiet")
+	unrelatedGitDir := runGit(unrelatedRepository, "rev-parse", "--absolute-git-dir")
+	if err := os.WriteFile(filepath.Join(scopedRoot, ".git"), []byte("gitdir: "+unrelatedGitDir+"\n"), 0o600); err != nil {
+		t.Fatalf("replace nested Git metadata pointer: %v", err)
+	}
+	if err := loop.ensureOpenCodeProjectBoundary(scopedRoot, true); err != nil {
+		t.Fatalf("replace unrelated nested Git metadata pointer: %v", err)
+	}
+	if got := runGit(scopedRoot, "rev-parse", "--absolute-git-dir"); !sameOpenCodeProjectRoot(got, parentGitDir) {
+		t.Fatalf("nested Git file escaped the managed worktree metadata: got=%q want=%q", got, parentGitDir)
+	}
+	if err := os.WriteFile(filepath.Join(scopedRoot, "BOUNDARY-SMOKE.md"), []byte("workspace-root-ok"), 0o600); err != nil {
+		t.Fatalf("write scoped deliverable: %v", err)
+	}
+	status := runGit(worktreeRoot, "status", "--short", "--untracked-files=all")
+	if !strings.Contains(status, "apps/service/BOUNDARY-SMOKE.md") {
+		t.Fatalf("managed worktree status does not expose scoped deliverable: %q", status)
+	}
+	runGit(worktreeRoot, "add", "apps/service/BOUNDARY-SMOKE.md")
+	staged := runGit(worktreeRoot, "diff", "--cached", "--name-only")
+	if staged != "apps/service/BOUNDARY-SMOKE.md" {
+		t.Fatalf("managed worktree staged paths=%q, want scoped deliverable path", staged)
+	}
+	if output, err := exec.Command("git", "-C", repositoryRoot, "worktree", "remove", "--force", worktreeRoot).CombinedOutput(); err != nil {
+		t.Fatalf("remove managed worktree containing a nested Git root: %v: %s", err, output)
+	}
+}
+
+func TestResponseOnlyDirectWorkspaceIsIsolatedWithoutPersistentTarget(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_drafting', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_drafting', 'run_1', 'plan_drafting', 1, 1, 'ready', 'council-member', 'agent_council', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, created_at, updated_at) VALUES ('run_1:plan_drafting:1', 'run_1', 'nr_plan_drafting', 'queued', 'provider_backed', 'server_response', 'session_plan_drafting', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	checkoutRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(checkoutRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create ancestor repository marker: %v", err)
+	}
+	projectRoot := filepath.Join(checkoutRoot, "apps", "service")
+	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+		t.Fatalf("create nested project root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed content\n"), 0o644); err != nil {
+		t.Fatalf("write nested project seed: %v", err)
+	}
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("create runtime filesystem store: %v", err)
+	}
+	loop := orchestrationLoop{db: db, fsStore: fsStore, executionStore: executionstore.New(db), yoloRoot: projectRoot, now: time.Now}
+
+	const attemptID = "run_1:plan_drafting:1"
+	workspacePath, cleanupMarkedAt, err := loop.resolveResponseOnlyWorkspacePath(context.Background(), "run_1", attemptID, PublishModeDirect)
+	if err != nil {
+		t.Fatalf("resolve response-only direct workspace: %v", err)
+	}
+	if filepath.Clean(workspacePath) == filepath.Clean(projectRoot) {
+		t.Fatalf("response-only direct workspace points at the source project: %q", workspacePath)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspacePath, "README.md")); err != nil || string(got) != "seed content\n" {
+		t.Fatalf("response-only workspace seed=%q err=%v", got, err)
+	}
+	if want := filepath.Clean(fsStore.ResponseOnlyWorkspaceRoot("run_1", attemptID)); filepath.Clean(workspacePath) != want {
+		t.Fatalf("response-only workspace path=%q, want attempt-scoped root %q", workspacePath, want)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_1"); count != 0 {
+		t.Fatalf("response-only planning persisted %d execution targets", count)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = ?`, "run_1"); count != 0 {
+		t.Fatalf("response-only planning persisted %d filesystem snapshots", count)
+	}
+	var cleanupMarkerBefore sql.NullString
+	if err := db.QueryRow(`SELECT response_only_workspace_cleanup_pending_at FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&cleanupMarkerBefore); err != nil || !cleanupMarkerBefore.Valid || cleanupMarkerBefore.String != cleanupMarkedAt {
+		t.Fatalf("response-only workspace cleanup marker=%#v err=%v", cleanupMarkerBefore, err)
+	}
+	discoveredRoot := ""
+	for current := workspacePath; ; current = filepath.Dir(current) {
+		if _, err := os.Lstat(filepath.Join(current, ".git")); err == nil {
+			discoveredRoot = current
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	if filepath.Clean(discoveredRoot) != filepath.Clean(workspacePath) {
+		t.Fatalf("OpenCode's upward .git discovery would select %q, want isolated project root %q", discoveredRoot, workspacePath)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("changed during approval\n"), 0o644); err != nil {
+		t.Fatalf("update source project during approval: %v", err)
+	}
+	workspaceCtx, err := loop.resolveExecutionWorkspaceContextForMode(context.Background(), "run_1", PublishModeDirect)
+	if err != nil {
+		t.Fatalf("resolve first workspace-owning context: %v", err)
+	}
+	if workspaceCtx.TrustedSnapshotID == "" {
+		t.Fatal("first workspace-owning attempt has no trusted baseline")
+	}
+	if err := loop.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
+		t.Fatalf("prepare first workspace-owning target: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(workspaceCtx.ExecutionRoot, "README.md")); err != nil || string(got) != "changed during approval\n" {
+		t.Fatalf("workspace baseline captured after approval=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "README.md")); err != nil {
+		t.Fatalf("source project seed was changed or removed: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_failure' WHERE attempt_id = '`+attemptID+`'`)
+	loop.inflightExec = map[string]struct{}{attemptID: {}}
+	loop.inflightRunIDs = map[string]string{attemptID: "run_1"}
+	if visited, err := loop.recoverResponseOnlyWorkspaceCleanupsWithLimit(context.Background(), 8); err != nil || visited != 1 {
+		t.Fatalf("defer in-flight response-only workspace cleanup: visited=%d err=%v", visited, err)
+	}
+	if _, err := os.Stat(workspacePath); err != nil {
+		t.Fatalf("in-flight response-only workspace was removed: %v", err)
+	}
+	delete(loop.inflightExec, attemptID)
+	delete(loop.inflightRunIDs, attemptID)
+	if visited, err := loop.recoverResponseOnlyWorkspaceCleanupsWithLimit(context.Background(), 8); err != nil || visited != 1 {
+		t.Fatalf("replay response-only workspace cleanup: visited=%d err=%v", visited, err)
+	}
+	if _, err := os.Lstat(workspacePath); !os.IsNotExist(err) {
+		t.Fatalf("replayed cleanup left response-only workspace: %v", err)
+	}
+	var cleanupMarker sql.NullString
+	if err := db.QueryRow(`SELECT response_only_workspace_cleanup_pending_at FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&cleanupMarker); err != nil || cleanupMarker.Valid {
+		t.Fatalf("response-only cleanup debt remained: marker=%#v err=%v", cleanupMarker, err)
+	}
+}
+
+func TestResponseOnlyOutboxPayloadDoesNotRetainEphemeralWorkspacePath(t *testing.T) {
+	t.Parallel()
+	result := asyncExecutionResult{
+		workspacePath:      filepath.Join(t.TempDir(), "response-only"),
+		ephemeralWorkspace: true,
+	}
+	if payload := executionOutboxPayloadForResult(result); payload.Workspace != "" {
+		t.Fatalf("outbox retained ephemeral response-only workspace path %q", payload.Workspace)
+	}
+}
+
 func TestResolveExecutionWorkspaceContextGitWorktreeFailsFastWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -71,15 +312,31 @@ func TestResolveExecutionWorkspaceContextForModeHonorsRunPublishMode(t *testing.
 	worktreeName := workspace.RunPathName("D1", "run_1")
 	managedWorktreeRoot := filepath.Join(filepath.Dir(projectRoot), "kingdom-worktrees", filepath.Base(projectRoot), worktreeName)
 	registered := false
+	workspaceRoot := ""
 	fakeRunner := &fakeGitCommandRunner{}
 	fakeRunner.runFn = func(projectRootArg string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
+		case "init --quiet":
+			return "", nil
+		case "rev-parse --show-toplevel":
+			return projectRootArg, nil
 		case "rev-parse --is-inside-work-tree":
 			return "true", nil
 		case "rev-parse --is-bare-repository":
 			return "false", nil
 		case "rev-parse --path-format=absolute --show-toplevel":
+			if workspaceRoot != "" && sameOpenCodeProjectRoot(projectRootArg, workspaceRoot) {
+				return workspaceRoot, nil
+			}
+			if openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return managedWorktreeRoot, nil
+			}
 			return projectRoot, nil
+		case "rev-parse --path-format=absolute --git-dir":
+			if (workspaceRoot != "" && sameOpenCodeProjectRoot(projectRootArg, workspaceRoot)) || openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return filepath.Join(projectRoot, ".git", "worktrees", worktreeName), nil
+			}
+			return filepath.Join(projectRoot, ".git"), nil
 		case "rev-parse --show-prefix":
 			return "", nil
 		case "rev-parse --path-format=absolute --git-common-dir":
@@ -143,12 +400,24 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 	fakeRunner := &fakeGitCommandRunner{}
 	fakeRunner.runFn = func(projectRootArg string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
+		case "init --quiet":
+			return "", nil
+		case "rev-parse --show-toplevel":
+			return projectRootArg, nil
 		case "rev-parse --is-inside-work-tree":
 			return "true", nil
 		case "rev-parse --is-bare-repository":
 			return "false", nil
 		case "rev-parse --path-format=absolute --show-toplevel":
+			if openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return managedWorktreeRoot, nil
+			}
 			return repoRoot, nil
+		case "rev-parse --path-format=absolute --git-dir":
+			if openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return filepath.Join(repoRoot, ".git", "worktrees", worktreeName), nil
+			}
+			return filepath.Join(repoRoot, ".git"), nil
 		case "rev-parse --show-prefix":
 			return "apps/foo/", nil
 		case "rev-parse --path-format=absolute --git-common-dir":
@@ -182,6 +451,9 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 			if err := os.WriteFile(filepath.Join(worktreePath, "apps", "foo", "README.md"), []byte("nested project\n"), 0o644); err != nil {
 				return "", err
 			}
+			if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: "+filepath.Join(repoRoot, ".git", "worktrees", worktreeName)+"\n"), 0o600); err != nil {
+				return "", err
+			}
 			return worktreePath, nil
 		}
 		return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
@@ -200,9 +472,15 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 	if ctxInfo.SeedRoot != wantScopedRoot {
 		t.Fatalf("expected scoped seed root %q, got %q", wantScopedRoot, ctxInfo.SeedRoot)
 	}
-	workspaceRoot := t.TempDir()
+	if ctxInfo.ProjectRootBoundary != wantScopedRoot {
+		t.Fatalf("expected OpenCode project boundary %q, got %q", wantScopedRoot, ctxInfo.ProjectRootBoundary)
+	}
+	workspaceRoot := ctxInfo.ExecutionRoot
 	if err := loop.prepareExecutionWorkspace(workspaceRoot, ctxInfo); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
+	}
+	if marker, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err != nil || !marker.Mode().IsRegular() {
+		t.Fatalf("expected exact-root OpenCode Git metadata pointer file, marker=%v err=%v", marker, err)
 	}
 	if _, err := os.Stat(filepath.Join(workspaceRoot, "README.md")); err != nil {
 		t.Fatalf("expected nested project file to be seeded: %v", err)
@@ -228,6 +506,10 @@ func TestResolveExecutionWorkspaceContextForModeUsesMainWorktreeRootAcrossLinked
 	fakeRunner := &fakeGitCommandRunner{}
 	fakeRunner.runFn = func(projectRootArg string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
+		case "init --quiet":
+			return "", nil
+		case "rev-parse --show-toplevel":
+			return projectRootArg, nil
 		case "rev-parse --is-inside-work-tree":
 			return "true", nil
 		case "rev-parse --is-bare-repository":
@@ -627,15 +909,31 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 	worktreeName := workspace.RunPathName("D1", runID)
 	managedWorktreeRoot := filepath.Join(filepath.Dir(projectRoot), "kingdom-worktrees", filepath.Base(projectRoot), worktreeName)
 	registered := false
+	workspaceRoot := ""
 	fakeRunner := &fakeGitCommandRunner{}
 	fakeRunner.runFn = func(projectRootArg string, args ...string) (string, error) {
 		switch strings.Join(args, " ") {
+		case "init --quiet":
+			return "", nil
+		case "rev-parse --show-toplevel":
+			return projectRootArg, nil
 		case "rev-parse --is-inside-work-tree":
 			return "true", nil
 		case "rev-parse --is-bare-repository":
 			return "false", nil
 		case "rev-parse --path-format=absolute --show-toplevel":
+			if workspaceRoot != "" && sameOpenCodeProjectRoot(projectRootArg, workspaceRoot) {
+				return workspaceRoot, nil
+			}
+			if openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return managedWorktreeRoot, nil
+			}
 			return projectRoot, nil
+		case "rev-parse --path-format=absolute --git-dir":
+			if (workspaceRoot != "" && sameOpenCodeProjectRoot(projectRootArg, workspaceRoot)) || openCodePathWithinRoot(projectRootArg, managedWorktreeRoot) {
+				return filepath.Join(projectRoot, ".git", "worktrees", worktreeName), nil
+			}
+			return filepath.Join(projectRoot, ".git"), nil
 		case "rev-parse --show-prefix":
 			return "", nil
 		case "rev-parse --path-format=absolute --git-common-dir":
@@ -669,6 +967,9 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 			if err := os.WriteFile(filepath.Join(worktreePath, "docs", "upgrade-notes.md"), []byte("seed notes\n"), 0o644); err != nil {
 				return "", err
 			}
+			if err := os.WriteFile(filepath.Join(worktreePath, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", worktreeName)+"\n"), 0o600); err != nil {
+				return "", err
+			}
 			return worktreePath, nil
 		}
 		return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
@@ -693,7 +994,10 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 		t.Fatal("expected git worktree execution context")
 	}
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_worktree', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	workspaceRoot := t.TempDir()
+	workspaceRoot = t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", worktreeName)+"\n"), 0o600); err != nil {
+		t.Fatalf("create linked-worktree marker for artifact workspace: %v", err)
+	}
 	if err := rt.orchestrator.prepareExecutionWorkspace(workspaceRoot, ctxInfo); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
@@ -918,6 +1222,9 @@ func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
+	const attemptID = "run_1:decree_intake:1"
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+attemptID+`', 'run_1', 'nr_1', 'committed_success', 'runtime_owned', 'not_applicable', '2026-05-03T10:00:00Z', '2026-05-03T10:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, created_at, updated_at) VALUES ('outbox_run_worktree_cleanup_pending', '`+attemptID+`', 'run_1', 'nr_1', 1, 'committed_success', '{}', 'pending', '2026-05-03T10:00:00Z', '2026-05-03T10:00:00Z')`)
 
 	mainWorktreeRoot := t.TempDir()
 	worktreeName := workspace.RunPathName("D1", "run_1")
@@ -966,14 +1273,34 @@ func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 	if err := store.ScheduleTerminalCleanup(context.Background(), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
 		t.Fatalf("schedule managed worktree cleanup: %v", err)
 	}
-	loop := orchestrationLoop{db: db, runWorktrees: store, gitRunner: fakeRunner, now: func() time.Time { return now }}
+	loop := orchestrationLoop{db: db, executionStore: executionstore.New(db), runWorktrees: store, gitRunner: fakeRunner, now: func() time.Time { return now }}
+	loop.inflightExec = map[string]struct{}{attemptID: {}}
+	loop.inflightRunIDs = map[string]string{attemptID: "run_1"}
 	record, err := store.GetByRun(context.Background(), "run_1")
 	if err != nil {
 		t.Fatalf("load managed worktree: %v", err)
 	}
 	complete, err := loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
 	if err != nil || complete {
-		t.Fatalf("first cleanup batch complete=%t err=%v, want incomplete progress", complete, err)
+		t.Fatalf("cleanup while provider worker is active complete=%t err=%v, want deferred cleanup", complete, err)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("in-flight provider worktree was removed: %v", err)
+	}
+	if pruneCalls != 0 || !registered {
+		t.Fatalf("in-flight worktree registration changed: pruneCalls=%d registered=%t", pruneCalls, registered)
+	}
+	loop.inflightExec = nil
+	loop.inflightRunIDs = nil
+	mustExec(t, db, `UPDATE attempt_outbox SET status = 'published', published_at = '2026-05-03T10:00:00Z' WHERE outbox_id = 'outbox_run_worktree_cleanup_pending'`)
+	now = now.Add(workspace.DefaultCleanupRetryBackoff + time.Second)
+	record, err = store.GetByRun(context.Background(), "run_1")
+	if err != nil {
+		t.Fatalf("reload worktree before first removal batch: %v", err)
+	}
+	complete, err = loop.cleanupRunWorktree(context.Background(), record, now.Format(time.RFC3339))
+	if err != nil || complete {
+		t.Fatalf("first cleanup batch after provider quiescence complete=%t err=%v, want incomplete progress", complete, err)
 	}
 	progress, err := workspace.NewRunWorktreeStore(db).GetByRun(context.Background(), "run_1")
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"kingdom/internal/core/retryengine"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 )
 
@@ -49,11 +50,15 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), executionStore: store, retryEngine: retries, now: func() time.Time { return nowTime }}
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), executionStore: store, fsStore: fsStore, retryEngine: retries, now: func() time.Time { return nowTime }}
 	job := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
 		node:                      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		sessionID:                 sessionID,
 		providerSessionID:         providerSessionID,
@@ -65,6 +70,9 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 		occurredAt:                now,
 		outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "provider rate limit", EvidenceSource: "stream"},
 		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, ProviderErrorPresent: true, ProviderErrorStatus: 429},
+	}
+	if err := loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
+		t.Fatalf("persist provider terminal handoff: %v", err)
 	}
 
 	// The launch observer has not committed, but the provider's terminal result
