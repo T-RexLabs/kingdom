@@ -247,6 +247,14 @@ describe("PlanningSessionPage", () => {
     expect(screen.getByText("Planner kickoff")).toBeInTheDocument();
   });
 
+  it("reserves a usable planner thread area in the mobile page flow", () => {
+    render(<PlanningSessionPage />);
+
+    const sessionContent = screen.getByTestId("planning-session-content");
+    expect(sessionContent).toHaveClass("min-h-[28rem]");
+    expect(sessionContent).toHaveClass("xl:h-full", "xl:min-h-0", "xl:overflow-hidden");
+  });
+
   it("renders the planner thread content", () => {
     render(<PlanningSessionPage />);
     expect(screen.getByText("Planner Thread planning-session-1")).toBeInTheDocument();

@@ -820,9 +820,9 @@ export function RunDetailPage() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-hidden px-page py-3">
-        <div data-testid="run-detail-layout" className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
-          <section className="order-2 flex min-h-0 flex-col rounded-md border border-border bg-background lg:order-1">
+      <div data-testid="run-detail-content" className="flex-1 min-h-0 overflow-y-auto px-page py-3 lg:overflow-hidden">
+        <div data-testid="run-detail-layout" className="grid min-h-full min-w-0 gap-3 lg:h-full lg:min-h-0 lg:grid-cols-2">
+          <section className="order-2 flex min-h-[28rem] min-w-0 flex-col rounded-md border border-border bg-background lg:order-1 lg:min-h-0">
 	            {(failedNodeCount > 0 || cancelledNodes.length > 0) && (
 	              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
 	                 <GovernanceActions run={run} failedNodes={run.failed_nodes} cancelledNodes={cancelledNodes} showFinalApproval={false} />
@@ -1043,9 +1043,9 @@ export function RunDetailPage() {
             </div>
           </section>
 
-          <aside className="order-1 min-h-0 lg:order-2">
-            <div className="h-full lg:sticky lg:top-3">
-              <div data-testid="run-sidebar-scroll" className="h-full overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+          <aside className="order-1 min-h-0 min-w-0 lg:order-2">
+            <div className="lg:sticky lg:top-3 lg:h-full">
+              <div data-testid="run-sidebar-scroll" className="pr-1 lg:h-full lg:overflow-y-auto [scrollbar-gutter:stable]">
                 <div className="space-y-3">
                   <DecreePanel run={run} roles={roles?.items ?? []} />
                   <CurrentPlanPanel run={run} approvalSectionRef={planApprovalTargetRef} />

@@ -436,7 +436,10 @@ export function PlanningSessionPage() {
 	const isPlaceholderHeaderTitle = Boolean(session) && hasPlaceholderTitle(session) && displayTitle.trim().length === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border/80 bg-surface">
+    <div
+      data-testid="planning-session-content"
+      className="flex min-h-[28rem] flex-col rounded-xl border border-border/80 bg-surface xl:h-full xl:min-h-0 xl:overflow-hidden"
+    >
       <div className="relative z-20 shrink-0 space-y-3 border-b border-border/50 bg-surface-raised/20 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">

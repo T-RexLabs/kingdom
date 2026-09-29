@@ -6,6 +6,9 @@ import { PlanningSessionList } from "./planning-session-list";
 export function DecreesWorkspaceLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const mode = pathname.startsWith("/decrees/new") ? "issue" : "planning";
+  const workspaceGridClass = mode === "planning"
+    ? "grid grid-cols-1 gap-4 xl:flex-1 xl:min-h-0 xl:grid-cols-[280px_minmax(0,1fr)]"
+    : "grid flex-1 min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)]";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -63,19 +66,13 @@ export function DecreesWorkspaceLayout() {
           </Link>
         </div>
 
-        <div
-          className={`grid flex-1 min-h-0 grid-cols-1 gap-4 ${
-            mode === "planning"
-              ? "xl:grid-cols-[280px_minmax(0,1fr)]"
-              : "xl:grid-cols-[minmax(0,1fr)]"
-          }`}
-        >
+        <div className={workspaceGridClass}>
           {mode === "planning" ? (
-            <div className="min-h-0 h-full">
+            <div className="xl:min-h-0 xl:h-full">
               <PlanningSessionList />
             </div>
           ) : null}
-          <div className="min-h-0 h-full">
+          <div className={mode === "planning" ? "xl:min-h-0 xl:h-full" : "min-h-0 h-full"}>
             <Outlet />
           </div>
         </div>

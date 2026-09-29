@@ -1784,7 +1784,7 @@ describe("run detail page", () => {
   it("reserves scrollbar gutter space for the right sidebar cards", () => {
     render(<RunDetailPage />);
     const sidebar = screen.getByTestId("run-sidebar-scroll");
-    expect(sidebar).toHaveClass("overflow-y-auto", "pr-1");
+    expect(sidebar).toHaveClass("lg:overflow-y-auto", "pr-1");
     expect(sidebar.className).toContain("[scrollbar-gutter:stable]");
   });
 
@@ -1859,6 +1859,24 @@ describe("run detail page", () => {
 		expect(panel).toHaveClass("lg:overflow-hidden");
 		expect(panel).toHaveClass("lg:flex");
 		expect(panel).not.toHaveClass("overflow-auto");
+	});
+
+	it("allows mobile run-detail columns to shrink within the viewport", () => {
+		render(<RunDetailPage />);
+
+		const layout = screen.getByTestId("run-detail-layout");
+		expect(layout.querySelector(":scope > section")).toHaveClass("min-w-0");
+		expect(layout.querySelector(":scope > aside")).toHaveClass("min-w-0");
+	});
+
+	it("lets the stacked mobile run-detail layout scroll as a page", () => {
+		render(<RunDetailPage />);
+
+		const content = screen.getByTestId("run-detail-content");
+		const layout = screen.getByTestId("run-detail-layout");
+		expect(content).toHaveClass("overflow-y-auto", "lg:overflow-hidden");
+		expect(layout).toHaveClass("min-h-full", "lg:h-full");
+		expect(layout.querySelector(":scope > section")).toHaveClass("min-h-[28rem]", "lg:min-h-0");
 	});
 
   it("keeps the mailbox tab on the managed non-scrolling panel layout", () => {

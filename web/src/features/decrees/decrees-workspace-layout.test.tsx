@@ -51,6 +51,14 @@ describe("decrees workspace layout", () => {
     expect(scrollViewport).toContainElement(outlet);
   });
 
+  it("lets mobile planning content grow into the outer scroll viewport", () => {
+    render(<DecreesWorkspaceLayout />);
+
+    const grid = screen.getByTestId("workspace-outlet").closest(".grid");
+    expect(grid).not.toHaveClass("flex-1", "min-h-0");
+    expect(grid).toHaveClass("xl:flex-1", "xl:min-h-0");
+  });
+
   it("does not render a right rail draft panel", () => {
     render(<DecreesWorkspaceLayout />);
 
