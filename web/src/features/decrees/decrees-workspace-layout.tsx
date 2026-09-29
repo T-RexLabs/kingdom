@@ -1,5 +1,5 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { PageHeader } from "@/components/page-layout";
+import { PageContent, PageHeader } from "@/components/page-layout";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { PlanningSessionList } from "./planning-session-list";
 
@@ -41,7 +41,7 @@ export function DecreesWorkspaceLayout() {
         </div>
       </PageHeader>
 
-      <div className="flex flex-1 min-h-0 flex-col px-page py-4">
+      <PageContent className="flex flex-col">
         <div className="flex gap-2 md:hidden mb-4">
           <Link
             to="/decrees/planning"
@@ -79,7 +79,7 @@ export function DecreesWorkspaceLayout() {
             <Outlet />
           </div>
         </div>
-      </div>
+      </PageContent>
     </div>
   );
 }

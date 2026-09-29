@@ -42,6 +42,15 @@ describe("decrees workspace layout", () => {
     expect(screen.getAllByText("Issue Decree").length).toBeGreaterThan(0);
   });
 
+  it("keeps decree workspace content inside its own scroll viewport", () => {
+    render(<DecreesWorkspaceLayout />);
+
+    const outlet = screen.getByTestId("workspace-outlet");
+    const scrollViewport = outlet.closest(".overflow-auto");
+    expect(scrollViewport).toHaveClass("overflow-auto");
+    expect(scrollViewport).toContainElement(outlet);
+  });
+
   it("does not render a right rail draft panel", () => {
     render(<DecreesWorkspaceLayout />);
 
