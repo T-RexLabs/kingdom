@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { useTextReveal } from "@/lib/use-text-reveal";
 import { ActivityChecklist } from "./activity-checklist";
 import { activityToolSummary } from "./activity-tool-summary";
@@ -35,11 +36,7 @@ export function ActivityPreview({
       aria-label="Provider activity preview"
       className="space-y-2 text-left"
     >
-      {reasoning && (
-        <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground-muted text-wrap-anywhere">
-          {reasoning}
-        </p>
-      )}
+      {reasoning && <ReasoningWindow content={reasoning} />}
       {preview.reasoning && (preview.incomplete || hasGaps) && (
         <p className="text-xs text-foreground-muted">
           Reasoning preview.{" "}
@@ -68,6 +65,46 @@ export function ActivityPreview({
       {checklistContent && (
         <ActivityChecklist content={checklistContent} collapsible />
       )}
+    </div>
+  );
+}
+
+function ReasoningWindow({ content }: { content: string }) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useLayoutEffect(() => {
+    const frame = viewport.current;
+    const text = body.current;
+    if (!frame || !text) return;
+    const measure = () =>
+      setOverflowing(text.scrollHeight > frame.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, [content]);
+
+  return (
+    <div
+      ref={viewport}
+      role="group"
+      aria-label="Reasoning preview"
+      className="flex max-h-[120px] flex-col justify-end overflow-hidden"
+      style={{
+        maskImage: overflowing
+          ? "linear-gradient(to bottom, transparent, black 24px)"
+          : undefined,
+      }}
+    >
+      <div ref={body} data-reasoning-content className="shrink-0">
+        <MarkdownBlock
+          content={content}
+          interactiveLinks={false}
+          className="text-xs leading-relaxed text-foreground-muted [&_h1]:text-xs [&_h2]:text-xs [&_h3]:text-xs [&_h4]:text-xs [&_h5]:text-xs [&_h6]:text-xs [&_pre]:overflow-hidden [&_pre]:whitespace-pre-wrap"
+        />
+      </div>
     </div>
   );
 }
@@ -113,10 +150,10 @@ function selectPreview(items: ActivityItem[]) {
       incomplete = true;
       continue;
     }
-    let excerpt = text.slice(0, remaining);
+    let excerpt = text.slice(-remaining);
     // Keep the display boundary on a complete Unicode code point.
-    if (excerpt.length < text.length && /[\uD800-\uDBFF]$/.test(excerpt))
-      excerpt = excerpt.slice(0, -1);
+    if (excerpt.length < text.length && /^[\uDC00-\uDFFF]/.test(excerpt))
+      excerpt = excerpt.slice(1);
     if (excerpt.length < text.length) incomplete = true;
     reasoning.unshift(excerpt);
     remaining -= excerpt.length + 2;

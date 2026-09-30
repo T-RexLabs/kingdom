@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActivityDisclosure } from "./activity-disclosure";
 import { availableActivityContent } from "./activity-test-helpers";
 import type { ActivityItem } from "./activity-view";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 
 vi.mock("./activity-history", () => ({
   ActivityHistory: ({ items }: { items: ActivityItem[] }) => (
@@ -43,9 +44,167 @@ const tool: ActivityItem = {
   label: "Searching the route handler",
 };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("compact activity preview", () => {
+  it("keeps clipped reasoning readable without hidden keyboard links, while exact Markdown stays interactive", async () => {
+    const view = render(
+      <ActivityDisclosure
+        {...props}
+        items={[
+          {
+            ...thought,
+            reasoningContent: availableActivityContent(
+              "[Earlier source](https://example.com)\n\nNewest thought.",
+            ),
+          },
+        ]}
+      />,
+    );
+    const viewport = screen.getByRole("group", { name: "Reasoning preview" });
+    expect(within(viewport).getByText("Earlier source")).toBeInTheDocument();
+    expect(within(viewport).queryByRole("link")).not.toBeInTheDocument();
+    expect(viewport).not.toHaveAttribute("inert");
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Show Activity" })).toHaveFocus();
+    view.unmount();
+    render(<MarkdownBlock content="[Exact source](https://example.com)" />);
+    expect(screen.getByRole("link", { name: "Exact source" })).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
+  });
+
+  it("keeps the newest reasoning tail and renders its Markdown instead of stale leading text", () => {
+    render(
+      <ActivityDisclosure
+        {...props}
+        items={[
+          {
+            ...thought,
+            reasoningContent: availableActivityContent(
+              `Old leading thought ${"earlier reasoning ".repeat(300)}\n\n## Latest Direction\n\n**Inspect the newest route.**`,
+            ),
+          },
+        ]}
+      />,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Latest Direction" }),
+    ).toBeVisible();
+    expect(screen.getByText("Inspect the newest route.").tagName).toBe(
+      "STRONG",
+    );
+    expect(screen.queryByText(/Old leading thought/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\*\*Inspect/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read More" })).toBeVisible();
+  });
+
+  it("bottom-aligns a bounded reasoning area and fades only overflowing text, including after resize", () => {
+    let contentHeight = 240;
+    let resize: ResizeObserverCallback | undefined;
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.hasAttribute("data-reasoning-content") ? contentHeight : 0;
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.getAttribute("aria-label") === "Reasoning preview"
+          ? 120
+          : 0;
+      },
+    );
+    const disconnect = vi.fn();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resize = callback;
+        }
+        observe = vi.fn();
+        disconnect = disconnect;
+      },
+    );
+    const view = render(<ActivityDisclosure {...props} items={[thought]} />);
+    const viewport = screen.getByRole("group", { name: "Reasoning preview" });
+    expect(viewport).toHaveClass(
+      "max-h-[120px]",
+      "overflow-hidden",
+      "justify-end",
+    );
+    expect(viewport.style.maskImage).toContain("linear-gradient");
+    expect(viewport).not.toHaveAttribute("tabindex");
+    contentHeight = 60;
+    act(() => resize?.([], {} as ResizeObserver));
+    expect(viewport.style.maskImage).toBe("");
+    contentHeight = 180;
+    act(() => resize?.([], {} as ResizeObserver));
+    expect(viewport.style.maskImage).toContain("linear-gradient");
+    view.unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  it("renders updated reasoning immediately with reduced motion without adding a scrolling interaction", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    const requestFrame = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    const view = render(<ActivityDisclosure {...props} items={[]} />);
+    view.rerender(
+      <ActivityDisclosure
+        {...props}
+        items={[
+          {
+            ...thought,
+            reasoningContent: availableActivityContent(
+              "**Updated reasoning.**",
+            ),
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Updated reasoning.").tagName).toBe("STRONG");
+    expect(
+      screen.getByRole("group", { name: "Reasoning preview" }),
+    ).toHaveClass("overflow-hidden");
+    expect(requestFrame).not.toHaveBeenCalled();
+  });
+
+  it("immediately follows equal-length rolling tails as long reasoning grows", () => {
+    const frames = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", frames);
+    const first = `${"Earlier reasoning. ".repeat(200)}First latest sentence.`;
+    const item = (text: string): ActivityItem => ({
+      ...thought,
+      reasoningContent: availableActivityContent(text),
+    });
+    const view = render(
+      <ActivityDisclosure {...props} items={[item(first)]} />,
+    );
+    const viewport = screen.getByRole("group", { name: "Reasoning preview" });
+    const firstLength = viewport.textContent!.length;
+    expect(viewport.textContent).toMatch(/First latest sentence\.$/);
+    view.rerender(
+      <ActivityDisclosure
+        {...props}
+        items={[item(`${first} Second latest sentence.`)]}
+      />,
+    );
+    expect(viewport.textContent!.length).toBe(firstLength);
+    expect(viewport.textContent).toMatch(/Second latest sentence\.$/);
+    expect(frames).not.toHaveBeenCalled();
+  });
+
   it("shows plain reasoning and one useful action without automatically mounting history", () => {
     render(
       <ActivityDisclosure

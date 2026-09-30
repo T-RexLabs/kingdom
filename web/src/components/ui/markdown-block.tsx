@@ -72,6 +72,11 @@ const components = {
   ),
 };
 
+const textLinkComponents = {
+  ...components,
+  a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+};
+
 function safeMarkdownURL(raw?: string): string | undefined {
   if (!raw) return undefined;
   try {
@@ -92,16 +97,18 @@ function safeMarkdownURL(raw?: string): string | undefined {
 export const MarkdownBlock = memo(function MarkdownBlock({
   content,
   className,
+  interactiveLinks = true,
 }: {
   content: string;
   className?: string;
+  interactiveLinks?: boolean;
 }) {
   if (!content.trim()) {
     return null;
   }
   return (
     <div className={cn("text-wrap-anywhere", className)}>
-      <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} components={interactiveLinks ? components : textLinkComponents}>
         {content}
       </ReactMarkdown>
     </div>
