@@ -110,12 +110,10 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 2. Open **Planning** to develop a brief, or create new work directly.
 3. Choose a model from the models OpenCode exposes.
 4. Review the brief, approval choice, and delivery location before issuing it.
-5. Follow the run under **Runs** through **Workflow** and **Agent Activity**.
-6. Open **Run Files** for deliverables or **Run Details** for source context, diagnostics, messages, and audit history.
+5. Follow the run under **Runs** through **Workflow** and **Agent Activity**. **Show Activity** reveals real provider reasoning, tools, and reported checklists above the response, using the same presentation as planning. **Instructions** shows the complete stored dispatch body for the selected attempt; **Final Response** appears when a settled response exists, which also remains inline in the conversation.
+6. Open **Run Files** for deliverables or **Run Details** for the work order, settings, and audit history. Exact attempt evidence is available under **Audit**.
 
-Planning-session lists and run messages load history in pages. Use **Load More Sessions** in the planning rail, **Load Older Sessions** beside **From Plan**, or **Load Older Messages** in the message lanes to continue through older history. Message-lane counts say “loaded” while additional pages remain.
-
-Message details identify previews and offer **Load Full Content** and **Download Full Content** for complete stored instructions and responses.
+Planning-session lists load history in pages. Use **Load More Sessions** in the planning rail or **Load Older Sessions** beside **From Plan** to continue through older history. Provider activity has independent bounded history and exact-content reads.
 
 Plan-review history and planning-context entries are also paginated through the API; page sizes are read boundaries, not retention ceilings. Context snapshots retain complete included/excluded file metadata under the project enumeration rules, while the planner receives a project-shape summary rather than source-file contents.
 

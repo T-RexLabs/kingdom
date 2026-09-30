@@ -75,7 +75,7 @@ Capabilities:
 
 Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
 
-Planner user messages align to the right. Real provider thinking and tool activity precede the canonical assistant response; **View Options** exposes routine lifecycle events and observed message inspection without duplicating the settled reply. Short activity trails fit their content, while long histories retain bounded scrolling and earlier-page access. Raw event identifiers sit behind **Event Details**.
+Planner user messages align to the right. **Show Activity** opens recorded provider thinking, tools, checklist snapshots, and observed message inspection above the canonical assistant response. Short activity trails fit their content, while long histories retain bounded scrolling and earlier-page access. Raw event identifiers sit behind **Event Details**.
 
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
@@ -99,21 +99,21 @@ Capabilities:
 Run detail starts in **Workflow**, which displays the stored workflow DAG. The two primary views are **Workflow** and **Agent Activity**. Quiet contextual actions keep supporting material available without competing with the conversation:
 
 - **Workflow**: actual topology, live execution state, and node selection.
-- **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** opens the original issued work brief without placing it in the conversation.
+- **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** reads the complete immutable prompt body prepared for the selected attempt, without reconstructing it from the issued brief. **Final Response** appears when a canonical settled response exists and also remains inline in the conversation.
 - **View Plan**: the plan and its review history, with current approval/rework controls where applicable.
 - **Run Files**: artifact downloads and publication results.
-- **Run Details**: issued brief/source context, execution diagnostics, messages, and audit history.
+- **Run Details**: the full issued work order, source context, settings, and audit history.
 
 The run surface is also where operators handle manual approvals when approvals are not autonomous.
 
 Activity semantics:
 
 - Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
-- Agent Activity shows real provider messages as readable conversation with reasoning and tool records; View Options reveals routine progress markers without changing the recorded history
+- Agent Activity shares the planner’s Show Activity disclosure for actual reasoning, tools, reported checklists, and observed messages; it has no user composer or display filters
 - provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
-- a collapsed **Diagnostics** disclosure in **Run Details** carries selected-attempt failure, settlement, identity, and retry evidence without duplicating its conversation response
+- a collapsed **Attempt Record** disclosure under **Run Details → Audit** carries selected-attempt failure, settlement, identity, and retry evidence without duplicating its conversation response
 - The conversation keeps canonical settled responses distinct from observed or provisional evidence; neither activity nor an observed response implies success
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
 - all provider-backed work order attempts settle from a valid server-observed terminal response and node-specific output validation
@@ -183,7 +183,9 @@ Use this section as a guide to the major API areas, not as a complete route inve
 - paged physical attempt history at `GET /runs/{id}/nodes/{nodeId}/attempts`
 - paged plan-review history at `GET /runs/{id}/plan-reviews`
 
-### Mailbox
+### Mailbox API
+
+The backend mailbox contract remains operational; the web UI has no Messages panel or mailbox controls.
 
 - run mailbox listing and detail
 - read markers for mailbox messages
@@ -192,8 +194,8 @@ Mailbox semantics:
 
 - mailbox is a communication and audit surface, not settlement authority
 - response text in mailbox can help operators inspect context, but it does not determine canonical success or settled review/validation outcomes
-- mailbox history uses signed continuation cursors bound to the run and filters; **Load Older Messages** continues through the history, and lane counts say “loaded” while more pages remain
-- referenced instructions and responses expose **Load Full Content** and **Download Full Content** in message details. The list remains a preview; full content is fetched only on demand through the authenticated, run/message-scoped content endpoint. Content identity and integrity are verified before serving it as a download.
+- mailbox history uses signed continuation cursors bound to the run and filters
+- referenced instructions and responses remain available through the authenticated, run/message-scoped content endpoint. Content identity and integrity are verified before serving complete bytes; list responses contain previews.
 
 Planning-session, plan-review, mailbox, and context-entry page sizes are read boundaries rather than retention ceilings. Continue with the returned `next_cursor` and the same filter scope.
 
