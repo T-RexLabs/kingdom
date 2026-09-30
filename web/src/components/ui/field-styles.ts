@@ -10,3 +10,6 @@ export const fieldClass =
 
 /** Field label styling, so labels stay consistent across forms. */
 export const fieldLabelClass = "mb-1.5 block text-sm font-medium";
+
+/** A choice has the same field rhythm, with room for a visible menu affordance. */
+export const selectTriggerClass = `${fieldClass} group flex min-h-10 items-center text-left disabled:cursor-not-allowed disabled:opacity-50 enabled:hover:border-border-strong`;

@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Menu, X } from "lucide-react";
+import { Menu, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
 import { useHealth, useWorkspaceCapabilities } from "@/api/hooks";
 import { cn } from "@/lib/utils";
@@ -21,13 +21,26 @@ const secondaryNavigation = [
   { name: "Appearance", href: "/appearance", icon: "nav.appearance" },
 ] as const;
 
+const navigationPreferenceKey = "kingdom:navigation:v1:collapsed";
+function readNavigationPreference() {
+  try { return localStorage.getItem(navigationPreferenceKey) === "true"; }
+  catch { return false; }
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { location } = useRouterState();
   const { helpOpen, closeHelp, shortcuts, pendingG } = useKeyboardShortcuts();
   const { isPreviewing, cancelPreview, theme, error: themeError } = useTheme();
   const [openAt, setOpenAt] = useState<object | null>(null);
+  const [collapsed, setCollapsed] = useState(readNavigationPreference);
   const menuRef = useRef<HTMLButtonElement>(null);
   const mobileOpen = openAt === location;
+  function toggleNavigation() {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { localStorage.setItem(navigationPreferenceKey, String(next)); }
+    catch { /* Navigation remains usable when personal storage is unavailable. */ }
+  }
   return (
     <div className="flex h-dvh min-h-0 bg-background text-foreground">
       <a
@@ -37,10 +50,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         Skip to content
       </a>
       <aside
-        className="hidden w-56 shrink-0 flex-col border-r border-border bg-background-secondary md:flex"
+        id="workspace-navigation"
+        className={cn("hidden shrink-0 flex-col overflow-y-auto border-r border-border bg-background-secondary md:flex motion-safe:transition-[width] motion-safe:duration-200", collapsed ? "w-16" : "w-56")}
         aria-label="Workspace navigation"
       >
-        <SidebarContent />
+        <SidebarContent collapsed={collapsed} onToggle={toggleNavigation} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
@@ -128,18 +142,20 @@ export function AppShell({ children }: { children: ReactNode }) {
     </div>
   );
 }
-function Brand() {
+function Brand({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <Link
       to="/"
+      aria-label="Kingdom"
+      title={collapsed ? "Kingdom" : undefined}
       className="flex w-fit items-center gap-2.5 rounded-md text-accent"
     >
       <ThemeIcon slot="brand" className="h-5 w-5" />
-      <span className="font-display text-2xl">Kingdom</span>
+      <span className={collapsed ? "sr-only" : "font-display text-2xl"}>Kingdom</span>
     </Link>
   );
 }
-function SidebarContent() {
+function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; onToggle?: () => void }) {
   const { location } = useRouterState();
   const { theme } = useTheme();
   const health = useHealth();
@@ -157,26 +173,40 @@ function SidebarContent() {
         <Link
           key={item.href}
           to={item.href}
+          aria-label={item.name}
+          title={collapsed ? item.name : undefined}
           aria-current={active ? "page" : undefined}
           className={cn(
-            "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",
+            "flex min-h-10 items-center rounded-lg py-2.5 text-sm transition-colors",
+            collapsed ? "justify-center px-2" : "gap-3 px-3",
             active
               ? "bg-accent/10 text-accent"
               : "text-foreground-muted hover:bg-surface-raised hover:text-foreground",
           )}
         >
           <ThemeIcon slot={item.icon} className="h-[18px] w-[18px] shrink-0" />
-          {item.name}
+          <span className={collapsed ? "sr-only" : undefined}>{item.name}</span>
         </Link>
       );
     });
   }
   return (
     <>
-      <div className="px-6 pb-7 pt-7">
-        <Brand />
+      <div className={cn("flex gap-3 pb-6 pt-6", collapsed ? "flex-col items-center px-2" : "items-center justify-between pl-6 pr-3")}>
+        <Brand collapsed={collapsed} />
+        {onToggle && <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+          title={collapsed ? "Expand navigation" : "Collapse navigation"}
+          aria-expanded={!collapsed}
+          aria-controls="workspace-navigation"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-foreground-muted transition-colors hover:bg-surface-raised hover:text-foreground"
+        >
+          {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
+        </button>}
       </div>
-      <div
+      {!collapsed && <div
         className="mx-4 mb-7 rounded-lg border border-border bg-surface px-3 py-3"
         title={projectPath}
       >
@@ -184,16 +214,16 @@ function SidebarContent() {
         <div className="mt-1 text-xs text-foreground-muted">
           Local Workspace
         </div>
-      </div>
-      <nav aria-label="Main" className="space-y-1 px-4">
+      </div>}
+      <nav aria-label="Main" className={cn("space-y-1", collapsed ? "px-2" : "px-4")}>
         {links(primaryNavigation)}
       </nav>
       <div className="min-h-8 flex-1" />
-      <nav aria-label="Settings" className="space-y-1 px-4">
+      <nav aria-label="Settings" className={cn("space-y-1", collapsed ? "px-2" : "px-4")}>
         {links(secondaryNavigation)}
       </nav>
-      <footer className="space-y-4 px-7 pb-6 pt-6">
-        <div className="flex items-center gap-2.5 text-xs text-foreground-muted">
+      <footer className={cn("space-y-4 pb-6 pt-6", collapsed ? "px-2" : "px-7")}>
+        <div className={cn("flex items-center gap-2.5 text-xs text-foreground-muted", collapsed && "justify-center")} title={collapsed ? (health.isError ? "Runtime Unavailable" : health.data?.status === "ok" ? "Local Runtime" : "Connecting…") : undefined}>
           <span
             aria-hidden="true"
             className={cn(
@@ -205,15 +235,15 @@ function SidebarContent() {
                   : "bg-foreground-subtle",
             )}
           />
-          {health.isError
+          <span className={collapsed ? "sr-only" : undefined}>{health.isError
             ? "Runtime Unavailable"
             : health.data?.status === "ok"
               ? "Local Runtime"
-              : "Connecting…"}
+              : "Connecting…"}</span>
         </div>
-        <p className="text-xs leading-relaxed text-foreground-subtle">
+        {!collapsed && <p className="text-xs leading-relaxed text-foreground-subtle">
           {theme.copy["brand.tagline"]}
-        </p>
+        </p>}
       </footer>
     </>
   );

@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
-import { fieldClass, fieldLabelClass } from "./field-styles";
+import { fieldLabelClass, selectTriggerClass } from "./field-styles";
 import { PopoverListbox, type PopoverListboxItem } from "./popover-listbox";
+import { SelectTriggerContent } from "./select-trigger";
 
 export type SelectOption = {
   label: string;
@@ -15,6 +16,7 @@ export type SelectOption = {
 export function SelectField({
   id,
   label,
+  ariaLabel,
   value,
   options,
   placeholder = "Select...",
@@ -26,6 +28,7 @@ export function SelectField({
 }: {
   id: string;
   label?: string;
+  ariaLabel?: string;
   value: string;
   options: SelectOption[];
   placeholder?: string;
@@ -52,18 +55,16 @@ export function SelectField({
       <PopoverListbox
         triggerId={id}
         triggerRole="button"
-        triggerAriaLabel={label || undefined}
+        triggerAriaLabel={ariaLabel || label || undefined}
         triggerDisabled={disabled}
         triggerClassName={cn(
-          fieldClass,
-          "truncate text-left",
-          disabled ? "cursor-not-allowed opacity-50" : "hover:border-border/80",
+          selectTriggerClass,
           selected ? "text-foreground" : "text-foreground-subtle",
           triggerClassName,
         )}
-        triggerContent={selected?.label ?? placeholder}
+        triggerContent={<SelectTriggerContent>{selected?.label ?? placeholder}</SelectTriggerContent>}
         items={items}
-        selectedId={value || null}
+        selectedId={selected?.value ?? null}
         onSelect={onChange}
         minWidth={160}
       />

@@ -1,5 +1,6 @@
 import { FloatingFocusManager, FloatingPortal, type FloatingContext } from "@floating-ui/react";
 import { resolveOverlayContainer } from "@/lib/overlay-system";
+import { cn } from "@/lib/utils";
 
 /**
  * The portalled, focus-managed body every Kingdom popover renders into.
@@ -37,7 +38,7 @@ export function PopoverSurface({
 					ref={panelRef}
 					style={style}
 					data-popover-placement={context.placement}
-					className={className ?? "flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"}
+					className={cn("theme-overlay flex flex-col overflow-hidden text-foreground", className)}
 					{...floatingProps}
 					onKeyDownCapture={onKeyDownCapture}
 				>

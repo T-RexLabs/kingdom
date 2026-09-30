@@ -1,32 +1,40 @@
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { cn } from "@/lib/utils";
+import { useId } from "react";
 
 export function ToggleRow({
   label,
   checked,
   onChange,
   info,
+  description,
   disabled = false,
   className,
 }: {
   label: string;
   checked: boolean;
   onChange: (next: boolean) => void;
-  info: string;
+  info?: string;
+  description?: string;
   disabled?: boolean;
   className?: string;
 }) {
+  const descriptionId = useId();
   return (
     <div className={cn("flex min-h-10 w-full items-center justify-between gap-3", disabled && "opacity-60", className)}>
-      <span className="text-sm font-medium leading-snug text-foreground">{label}</span>
-      <div className="flex items-center gap-2">
-        <InfoTooltip label={`${label} definition`} message={info} />
+      <div className="min-w-0">
+        <span className="text-sm font-medium leading-snug text-foreground">{label}</span>
+        {description && <p id={descriptionId} className="mt-1 text-xs leading-relaxed text-foreground-muted">{description}</p>}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        {info && <InfoTooltip label={`${label} definition`} message={info} />}
         <button
           type="button"
           role="switch"
           aria-checked={checked}
           aria-disabled={disabled}
           aria-label={label}
+          aria-describedby={description ? descriptionId : undefined}
           disabled={disabled}
           onClick={() => onChange(!checked)}
           className={cn(

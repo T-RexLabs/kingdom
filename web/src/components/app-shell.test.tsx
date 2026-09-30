@@ -1,6 +1,6 @@
 import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./app-shell";
 
 let routerLocation = { pathname: "/runs" };
@@ -54,12 +54,50 @@ vi.mock("@/components/notifications", () => ({
 }));
 
 describe("app shell", () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
+    localStorage.clear();
     routerLocation = { pathname: "/runs" };
     previewing = false;
     healthError = false;
     themeError = null;
     cancelPreview.mockClear();
+  });
+  it("remembers a collapsed desktop rail while keeping every destination named", async () => {
+    const user = userEvent.setup();
+    const view = render(<AppShell>content</AppShell>);
+    const sidebar = screen.getByRole("complementary", { name: "Workspace navigation" });
+    const toggle = within(sidebar).getByRole("button", { name: "Collapse navigation" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(within(sidebar).getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");
+    for (const name of ["Overview", "Planning", "Runs", "Agents", "Analytics", "Connections", "Appearance"]) {
+      expect(within(sidebar).getByRole("link", { name })).toHaveAttribute("title", name);
+    }
+    expect(within(sidebar).getByRole("link", { name: "Runs" })).toHaveAttribute("aria-current", "page");
+    expect(toggle).toHaveFocus();
+    view.unmount();
+    render(<AppShell>reloaded content</AppShell>);
+    expect(screen.getByRole("button", { name: "Expand navigation" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand navigation" }));
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeInTheDocument();
+  });
+  it("keeps mobile navigation expanded independently from the desktop preference", async () => {
+    const user = userEvent.setup();
+    render(<AppShell>content</AppShell>);
+    await user.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const drawer = screen.getByRole("dialog", { name: "Navigation" });
+    expect(within(drawer).getByRole("link", { name: "Planning" }).textContent).toBe("Planning");
+    expect(within(drawer).getByText("Local Workspace")).toBeInTheDocument();
+    expect(within(drawer).queryByRole("button", { name: "Expand navigation" })).not.toBeInTheDocument();
+  });
+  it("still collapses when browser preference storage is unavailable", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    render(<AppShell>content</AppShell>);
+    await userEvent.click(screen.getByRole("button", { name: "Collapse navigation" }));
+    expect(screen.getByRole("button", { name: "Expand navigation" })).toBeInTheDocument();
   });
   it("keeps navigation stable across themes and appearance in settings", () => {
     render(<AppShell>content</AppShell>);

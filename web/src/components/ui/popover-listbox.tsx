@@ -1,5 +1,6 @@
 import { useInteractions, useTypeahead } from "@floating-ui/react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import { usePopoverFloating, usePopoverOpenState } from "@/lib/use-popover-floating";
 import { PopoverSurface } from "./popover-surface";
 
@@ -305,7 +306,7 @@ export function PopoverListbox({
                           <p
                             key={`group-${row.label}`}
                             role="presentation"
-                            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-foreground-subtle/70"
+                            className="px-3 pb-1.5 pt-3 text-xs font-medium text-foreground-muted"
                           >
                             {row.label}
                           </p>
@@ -375,15 +376,18 @@ function PopoverOption({
       onFocus={onFocus}
       onKeyDown={onKeyDown}
     >
-      {renderItem ? renderItem(item, { active, selected }) : item.label}
+      {renderItem ? renderItem(item, { active, selected }) : <>
+        <span className="min-w-0 flex-1 text-wrap-anywhere">{item.label}</span>
+        <Check size={15} aria-hidden="true" className={selected ? "shrink-0" : "invisible shrink-0"} />
+      </>}
     </button>
   );
 }
 
 function optionClassName(active: boolean, selected: boolean, disabled: boolean): string {
-  const base = "block w-full rounded-md px-3 py-2 text-left text-sm transition-colors";
+  const base = "flex min-h-9 w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors";
   if (disabled) return `${base} cursor-not-allowed text-foreground-subtle opacity-50`;
-  if (selected) return `${base} bg-accent/15 font-medium text-accent`;
+  if (selected) return `${base} bg-accent-subtle font-medium text-accent`;
   if (active) return `${base} bg-surface-raised/60 text-foreground`;
   return `${base} text-foreground hover:bg-surface-raised/60`;
 }
