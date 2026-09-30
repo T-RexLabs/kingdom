@@ -3,9 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/api/client";
 import type { RunNodeExecution } from "@/api/hooks";
 import type { components } from "@/api/schema";
-import { ThemeIcon, useRoleIdentity } from "@/theme";
-import { RelativeTime } from "@/components/ui/relative-time";
+import { useRoleIdentity } from "@/theme";
+import { timestampDescription } from "@/lib/date-time";
 import { activityItemFromApi } from "@/features/activity/activity-view";
+import { activityToolSummary } from "@/features/activity/activity-tool-summary";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { observedProviderRunning } from "./run-graph-model";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
@@ -26,13 +27,13 @@ export function RunLiveStatus({
     isActiveProviderBackedExecution(node.current_execution),
   );
   if (!active.length) return null;
-  const shown = expanded ? active : active.slice(0, 3);
+  const shown = expanded ? active : active.slice(0, 2);
   return (
     <div
       data-testid="run-live-status"
-      className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-raised/40 p-2"
+      className={`flex items-center gap-x-4 gap-y-1 border-l-2 border-accent/60 pl-3 ${expanded ? "flex-wrap" : "flex-nowrap"}`}
     >
-      <span className="px-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+      <span className="shrink-0 text-xs text-foreground-muted">
         {connected ? "Live" : "Reconnecting"}
       </span>
       {shown.map((node) => (
@@ -44,14 +45,14 @@ export function RunLiveStatus({
           onSelect={onSelect}
         />
       ))}
-      {active.length > 3 && (
+      {active.length > 2 && (
         <button
           type="button"
           aria-expanded={expanded}
-          className="min-h-9 px-2 text-xs text-accent"
+          className="min-h-8 shrink-0 text-xs text-accent"
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? "Show Less" : `+${active.length - 3} More`}
+          {expanded ? "Show Less" : `+${active.length - 2} More`}
         </button>
       )}
     </div>
@@ -98,36 +99,39 @@ function LiveAgent({
         ? activityItemFromApi(durable)
         : live;
   const observed = observedProviderRunning(execution, connected);
+  const label =
+    event?.kind === "tool"
+      ? activityToolSummary(event)
+      : (event?.label ??
+        (execution.status === "starting"
+          ? "Starting"
+          : execution.status === "verifying"
+            ? "Verifying"
+            : "Waiting for provider activity"));
+  const eventTime = event?.occurredAt
+    ? `Occurred: ${timestampDescription(event.occurredAt)} (${event.occurredAt})`
+    : event?.recordedAt
+      ? `Recorded: ${timestampDescription(event.recordedAt)} (${event.recordedAt})`
+      : null;
   return (
     <button
       type="button"
       onClick={() => onSelect?.(node.node_id)}
-      title={`${identity.canonicalName} · Attempt ${execution.attempt}`}
-      className="flex min-h-9 min-w-0 max-w-full items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-2.5 py-1.5 text-left text-xs transition-colors hover:border-accent/40"
+      title={[identity.canonicalName, `Attempt ${execution.attempt}`, eventTime]
+        .filter(Boolean)
+        .join(" · ")}
+      className="flex min-h-8 min-w-0 max-w-80 items-center gap-2 text-left text-xs hover:text-accent focus-visible:outline-accent"
     >
-      <ThemeIcon
-        slot={`role.${node.required_role}`}
-        size={15}
-        className={
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
           observed
-            ? "text-status-running motion-safe:animate-pulse"
-            : "text-foreground-muted"
-        }
+            ? "bg-status-running motion-safe:animate-pulse"
+            : "bg-foreground-muted"
+        }`}
       />
-      <span className="font-medium">{identity.name}</span>
-      <span className="max-w-48 truncate text-foreground-muted">
-        {event?.label ??
-          (execution.status === "starting"
-            ? "Starting"
-            : execution.status === "verifying"
-              ? "Verifying"
-              : "Waiting for provider activity")}
-      </span>
-      {event?.occurredAt && (
-        <span className="shrink-0 text-[10px] text-foreground-subtle">
-          <RelativeTime iso={event.occurredAt} />
-        </span>
-      )}
+      <span className="shrink-0 font-medium">{identity.name}</span>
+      <span className="truncate text-foreground-muted">{label}</span>
     </button>
   );
 }
